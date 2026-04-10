@@ -1890,42 +1890,57 @@ function editEmployeeAssignment(employeeId, dateStr) {
 
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
-  overlay.innerHTML = `
-    <div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
-        <div style="font-size:16px;font-weight:700">${emp.name}</div>
-        <div style="font-size:12px;color:var(--muted)">${dateLabel} · Currently: <span style="color:var(--accent)">${currentTeam || 'Unassigned'}</span></div>
-      </div>
-      <div style="padding:12px 16px">
-        ${teams.map((t,i) => `
-          <button onclick="confirmTeamAssign('${employeeId}','${dateStr}','${t}',this)" 
-            style="display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;
-            background:${t === currentTeam ? 'rgba(108,143,255,0.15)' : 'var(--surface2)'};
-            border:1px solid ${t === currentTeam ? 'var(--accent)' : 'var(--border)'};
-            border-radius:10px;cursor:pointer;text-align:left">
-            <span style="width:12px;height:12px;border-radius:50%;background:${teamColors[i]};flex-shrink:0"></span>
-            <span style="font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--text)">${t}</span>
-            ${t === currentTeam ? '<span style="font-size:11px;color:var(--accent);margin-left:auto">Current</span>' : ''}
-          </button>`).join('')}
-        <button onclick="confirmTeamAssign('${employeeId}','${dateStr}','OFF',this)"
-          style="display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;
-          background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);
-          border-radius:10px;cursor:pointer;text-align:left">
-          <span style="width:12px;height:12px;border-radius:50%;background:var(--red);flex-shrink:0"></span>
-          <span style="font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--red)">Day Off</span>
-        </button>
-        <button onclick="this.closest('[style*=fixed]').remove()"
-          style="width:100%;padding:12px;background:none;border:1px solid var(--border);
-          border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;color:var(--muted)">
-          Cancel
-        </button>
-      </div>
-    </div>`;
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  // Build picker using DOM (avoids quote escaping issues)
+  const sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden';
+  
+  const header = document.createElement('div');
+  header.style.cssText = 'padding:16px 20px;border-bottom:1px solid var(--border)';
+  header.innerHTML = '<div style="font-size:16px;font-weight:700">' + emp.name + '</div>' +
+    '<div style="font-size:12px;color:var(--muted)">' + dateLabel + ' · Currently: <span style="color:var(--accent)">' + (currentTeam || 'Unassigned') + '</span></div>';
+  sheet.appendChild(header);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:12px 16px';
+
+  // Team buttons
+  teams.forEach(function(t, i) {
+    const btn = document.createElement('button');
+    btn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
+      'background:' + (t === currentTeam ? 'rgba(108,143,255,0.15)' : 'var(--surface2)') + ';' +
+      'border:1px solid ' + (t === currentTeam ? 'var(--accent)' : 'var(--border)') + ';' +
+      'border-radius:10px;cursor:pointer;text-align:left';
+    btn.innerHTML = '<span style="width:12px;height:12px;border-radius:50%;background:' + teamColors[i] + ';flex-shrink:0"></span>' +
+      '<span style="font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;color:var(--text)">' + t + '</span>' +
+      (t === currentTeam ? '<span style="font-size:11px;color:var(--accent);margin-left:auto">Current</span>' : '');
+    btn.addEventListener('click', function() { confirmTeamAssign(employeeId, dateStr, t, overlay); });
+    body.appendChild(btn);
+  });
+
+  // Day Off button
+  const offBtn = document.createElement('button');
+  offBtn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
+    'background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:10px;cursor:pointer;text-align:left';
+  offBtn.innerHTML = '<span style="width:12px;height:12px;border-radius:50%;background:var(--red);flex-shrink:0"></span>' +
+    '<span style="font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;color:var(--red)">Day Off</span>';
+  offBtn.addEventListener('click', function() { confirmTeamAssign(employeeId, dateStr, 'OFF', overlay); });
+  body.appendChild(offBtn);
+
+  // Cancel button
+  const cancelBtn = document.createElement('button');
+  cancelBtn.style.cssText = 'width:100%;padding:12px;background:none;border:1px solid var(--border);' +
+    'border-radius:10px;cursor:pointer;font-family:DM Sans,sans-serif;font-size:14px;color:var(--muted)';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', function() { overlay.remove(); });
+  body.appendChild(cancelBtn);
+
+  sheet.appendChild(body);
+  overlay.appendChild(sheet);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
 }
 
-function confirmTeamAssign(employeeId, dateStr, team, btn) {
+function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
   if (!emp) return;
 
@@ -1940,8 +1955,7 @@ function confirmTeamAssign(employeeId, dateStr, team, btn) {
     new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
   );
 
-  // Close picker
-  btn.closest('[style*="position:fixed"]').remove();
+  overlay.remove();
   renderTeamManager();
 }
 
