@@ -823,8 +823,8 @@ body {
       </div>
       <div style="display:flex;gap:6px">
         <button class="gps-refresh-btn" onclick="toggleMap()" id="map-toggle-btn">🗺 Map</button>
+        <button class="gps-refresh-btn" onclick="openTeamManager()">👥 Teams</button>
         <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
-        <button class="gps-refresh-btn" onclick="debugTrips()" style="background:rgba(251,191,36,0.2);color:var(--amber)">🔍 Debug</button>
       </div>
     </div>
     <!-- Live Map -->
@@ -1799,6 +1799,177 @@ let currentConv = null;
 
 updateTaskBadge();
 rcInit();
+
+// ─────────────────────────────────────────
+// TEAM MANAGER
+// ─────────────────────────────────────────
+
+function openTeamManager() {
+  const overlay = document.getElementById('team-manager-overlay');
+  overlay.style.display = 'flex';
+  const picker = document.getElementById('team-mgr-date');
+  picker.value = new Date().toISOString().split('T')[0];
+  renderTeamManager();
+}
+
+function closeTeamManager() {
+  document.getElementById('team-manager-overlay').style.display = 'none';
+}
+
+function renderTeamManager() {
+  const dateStr = document.getElementById('team-mgr-date').value;
+  const date = new Date(dateStr + 'T00:00:00');
+  document.getElementById('team-mgr-date-label').textContent =
+    date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+
+  const teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
+  let html = '';
+
+  teams.forEach(team => {
+    const color = team_colors_map[team] || '#6b7280';
+    const employees = EMPLOYEE_ROSTER.filter(e => getEmployeeTeam(e.id, dateStr) === team);
+
+    html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
+      <div style="padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)">
+        <span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>
+        <span style="font-weight:700;font-size:15px">${team}</span>
+        <span style="font-size:12px;color:var(--muted)">${employees.length} members</span>
+      </div>
+      <div style="padding:8px 14px">
+        ${employees.map(emp => {
+          const roleStr = emp.role.length ? ' · ' + emp.role.join('/') : '';
+          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:14px">${emp.name}<span style="font-size:11px;color:var(--muted)">${roleStr}</span></span>
+            <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')" 
+              style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+              Move
+            </button>
+          </div>`;
+        }).join('')}
+        ${employees.length === 0 ? '<div style="color:var(--muted);font-size:13px;padding:4px 0">No employees assigned</div>' : ''}
+      </div>
+    </div>`;
+  });
+
+  // Floaters / unassigned
+  const unassigned = EMPLOYEE_ROSTER.filter(e => !getEmployeeTeam(e.id, dateStr));
+  if (unassigned.length > 0) {
+    html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
+        <span style="font-weight:700;font-size:15px;color:var(--muted)">⚪ Unassigned</span>
+      </div>
+      <div style="padding:8px 14px">
+        ${unassigned.map(emp => `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:14px">${emp.name} ${emp.floater ? '<span style="font-size:10px;color:var(--amber)">FLOATER</span>' : ''}</span>
+          <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')"
+            style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+            Assign
+          </button>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  document.getElementById('team-mgr-content').innerHTML = html;
+}
+
+function editEmployeeAssignment(employeeId, dateStr) {
+  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  if (!emp) return;
+  const currentTeam = getEmployeeTeam(employeeId, dateStr);
+  const teams = ['B1','B3','B5','S1','S3','M1','M2','M3','Off'];
+
+  const choice = prompt(
+    emp.name + ' — assign to team for ' + new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}) +
+    '\n\nCurrent: ' + (currentTeam || 'Unassigned') +
+    '\n\nEnter team (B1/B3/B5/S1/S3/M1/M2/M3) or OFF for day off:'
+  );
+
+  if (!choice) return;
+  const team = choice.trim().toUpperCase();
+
+  if (team === 'OFF') {
+    dailyAssignments[dateStr + '_' + employeeId] = null;
+  } else if (teams.includes(team)) {
+    assignEmployee(employeeId, team, dateStr);
+  } else {
+    alert('Invalid team. Use B1, B3, B5, S1, S3, M1, M2, or M3');
+    return;
+  }
+
+  // Log change to updates
+  logPendingUpdate(
+    emp.name + ' moved to ' + (team === 'OFF' ? 'Day Off' : team),
+    new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
+  );
+
+  renderTeamManager();
+}
+
+
+// ─────────────────────────────────────────
+// EMPLOYEE ROSTER
+// ─────────────────────────────────────────
+
+const EMPLOYEE_ROSTER = [
+  // B1
+  { id: 'e1',  name: 'Viviana',     defaultTeam: 'B1', role: ['TL'],     depot: 'abington' },
+  { id: 'e2',  name: 'Keyshla',     defaultTeam: 'B1', role: ['D'],      depot: 'abington' },
+  { id: 'e3',  name: 'Katia',       defaultTeam: 'B1', role: [],         depot: 'abington' },
+  // B3
+  { id: 'e4',  name: 'Etelvina',    defaultTeam: 'B3', role: ['TL','D'], depot: 'abington' },
+  { id: 'e5',  name: 'Eunice',      defaultTeam: 'B3', role: [],         depot: 'abington' },
+  { id: 'e6',  name: 'Maria Vieira', defaultTeam: 'B3', role: [],         depot: 'abington' },
+  // B5
+  { id: 'e7',  name: 'Ines',        defaultTeam: 'B5', role: ['TL','D'], depot: 'abington' },
+  { id: 'e8',  name: 'Maria Ventura',defaultTeam: 'B5', role: [],         depot: 'abington' },
+  { id: 'e9',  name: 'Fernanda',    defaultTeam: 'B5', role: [],         depot: 'abington' },
+  // S1
+  { id: 'e10', name: 'Nadia',       defaultTeam: 'S1', role: ['TL','D'], depot: 'abington' },
+  { id: 'e11', name: 'Franchesca',  defaultTeam: 'S1', role: [],         depot: 'abington' },
+  { id: 'e12', name: 'Natalia',     defaultTeam: 'S1', role: [],         depot: 'abington' },
+  // S3
+  { id: 'e13', name: 'Joana',       defaultTeam: 'S3', role: ['TL'],     depot: 'abington' },
+  { id: 'e14', name: 'Analia',      defaultTeam: 'S3', role: [],         depot: 'abington' },
+  { id: 'e15', name: 'Lucia',       defaultTeam: 'S3', role: ['D'],      depot: 'abington' },
+  { id: 'e16', name: 'Elvia',       defaultTeam: null, role: [],         depot: 'abington', floater: true },
+  // M1
+  { id: 'e17', name: 'Yennifer',    defaultTeam: 'M1', role: ['D'],      depot: 'marlborough' },
+  { id: 'e18', name: 'Kati',        defaultTeam: 'M1', role: [],         depot: 'marlborough' },
+  // M2
+  { id: 'e19', name: 'Candida',     defaultTeam: 'M2', role: [],         depot: 'marlborough' },
+  { id: 'e20', name: 'Laura',       defaultTeam: 'M2', role: ['D'],      depot: 'marlborough' },
+  // M3
+  { id: 'e21', name: 'Blanca',      defaultTeam: 'M3', role: ['TL','D'], depot: 'marlborough' },
+  { id: 'e22', name: 'Idania',      defaultTeam: 'M3', role: ['D'],      depot: 'marlborough' },
+  { id: 'e23', name: 'Ana',         defaultTeam: 'M3', role: ['D'],      depot: 'marlborough' },
+];
+
+// Daily assignments — overrides defaultTeam for a specific date
+// key: 'YYYY-MM-DD_employeeId' -> teamName
+let dailyAssignments = JSON.parse(localStorage.getItem('daily_assignments') || '{}');
+
+function saveDailyAssignments() {
+  localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+}
+
+function getEmployeeTeam(employeeId, dateStr) {
+  const key = dateStr + '_' + employeeId;
+  if (dailyAssignments[key] !== undefined) return dailyAssignments[key];
+  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  return emp ? emp.defaultTeam : null;
+}
+
+function getTeamEmployees(team, dateStr) {
+  return EMPLOYEE_ROSTER.filter(e => getEmployeeTeam(e.id, dateStr) === team);
+}
+
+function assignEmployee(employeeId, team, dateStr) {
+  const key = dateStr + '_' + employeeId;
+  dailyAssignments[key] = team;
+  saveDailyAssignments();
+}
+
 
 // ─────────────────────────────────────────
 // NEW / EDIT CUSTOMER FORM
@@ -2867,7 +3038,7 @@ function renderHoursTable(days, dayNames) {
 
   let html = `<table class="hours-table">
     <thead><tr>
-      <th>Team</th>
+      <th>Employee</th>
       ${days.map((d,i) => {
         const isToday = d.toDateString() === today.toDateString();
         return `<th style="${isToday?'color:var(--accent)':''}">${dayNames[i]}<br><span style="font-size:10px;font-weight:400">${d.getDate()}</span></th>`;
@@ -2882,36 +3053,55 @@ function renderHoursTable(days, dayNames) {
   teams.forEach(team => {
     const data = weekHours[team];
     const color = team_colors_map[team] || '#6b7280';
+
+    // Get employees for this team for each day
+    const teamEmployees = EMPLOYEE_ROSTER.filter(e => {
+      // Check if employee was on this team for any day this week
+      return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team) || e.defaultTeam === team;
+    });
+
+    if (!data && teamEmployees.length === 0) return;
+
+    // Team header row
+    html += `<tr style="background:rgba(${color.replace('#','').match(/.{2}/g).map(x=>parseInt(x,16)).join(',')},0.08)">
+      <td colspan="${days.length + 2}" style="font-size:11px;font-weight:700;color:${color};padding:6px 10px;text-transform:uppercase;letter-spacing:.06em">
+        <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;margin-right:6px"></span>${team}
+      </td>
+    </tr>`;
+
     if (!data) {
-      html += `<tr>
-        <td><span class="team-dot" style="background:${color}"></span>${team}</td>
-        ${days.map(() => '<td>—</td>').join('')}
-        <td class="total-col">—</td>
-      </tr>`;
+      html += `<tr><td colspan="${days.length + 2}" style="color:var(--muted);font-size:12px;padding:6px 10px">No GPS data this week</td></tr>`;
       return;
     }
-    html += `<tr>
-      <td><span class="team-dot" style="background:${color}"></span>${team}</td>
-      ${data.days.map((h,i) => {
+
+    // One row per employee on this team
+    teamEmployees.forEach(emp => {
+      const roleStr = emp.role.length ? ' <span style="font-size:10px;color:var(--muted)">' + emp.role.join('/') + '</span>' : '';
+      const floatBadge = emp.floater ? '<span style="font-size:9px;color:var(--amber);margin-left:4px">FLOAT</span>' : '';
+      const dayCells = data.days.map(function(h,i) {
         depotTotals[i] += h;
-        if (!h) return '<td><span style="color:var(--border2)">—</span></td>';
+        if (!h) return '<td><span style="color:var(--border2)">&#8212;</span></td>';
         const s = data.starts[i] ? fmt12(data.starts[i]) : '';
         const e = data.ends[i] ? fmt12(data.ends[i]) : '';
         const lunch = data.lunch && data.lunch[i];
-        const lunchStr = lunch ? `<div style="font-size:10px;color:var(--amber)">🍔 ${lunch.duration}m</div>` : '';
-        const dayDate = days[i];
-        return `<td style="padding:6px 4px;cursor:pointer;-webkit-tap-highlight-color:rgba(108,143,255,0.2)" 
-          onclick="showDayHistory('${team}', ${dayDate.getTime()})">
-          <div style="font-weight:600">${formatHrs(h)}</div>
-          <div style="font-size:10px;color:var(--green)">${s}</div>
-          <div style="font-size:10px;color:var(--red)">${e}</div>
-          ${lunchStr}
-        </td>`;
-      }).join('')}
-      <td class="total-col">${formatHrs(data.total)}</td>
-    </tr>`;
-    grandTotal += data.total;
-  });
+        const lunchStr = lunch ? '<div style="font-size:10px;color:var(--amber)">&#127828; ' + lunch.duration + 'm</div>' : '';
+        const dayMs = days[i].getTime();
+        const el = document.createElement('td');
+        el.style.cssText = 'padding:6px 4px;cursor:pointer';
+        el.setAttribute('data-team', team);
+        el.setAttribute('data-ms', dayMs);
+        el.innerHTML = '<div style="font-weight:600">' + formatHrs(h) + '</div><div style="font-size:10px;color:var(--green)">' + s + '</div><div style="font-size:10px;color:var(--red)">' + e + '</div>' + lunchStr;
+        el.addEventListener('click', function(){ showDayHistory(this.getAttribute('data-team'), parseInt(this.getAttribute('data-ms'))); });
+        return el.outerHTML;
+      }).join('');
+      html += '<tr>' +
+        '<td style="padding-left:20px">' + emp.name + roleStr + floatBadge + '</td>' +
+        dayCells +
+        '<td class="total-col">' + formatHrs(data.total) + '</td>' +
+        '</tr>';
+      grandTotal += data.total;
+    });
+  }); // end teams.forEach
 
   // Totals row
   html += `<tr style="background:rgba(255,255,255,0.03)">
@@ -4296,6 +4486,24 @@ function updateNavBadge() {
     <div class="route-content" id="route-content">
       <div class="route-loading">Select a date to optimize routes</div>
     </div>
+  </div>
+</div>
+
+
+<!-- TEAM MANAGER MODAL -->
+<div id="team-manager-overlay" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.85);display:none;align-items:flex-end" onclick="if(event.target===this)closeTeamManager()">
+  <div style="background:var(--surface);width:100%;max-height:92vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div>
+        <div style="font-size:17px;font-weight:700">👥 Team Assignments</div>
+        <div style="font-size:12px;color:var(--muted)" id="team-mgr-date-label">Today</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="team-mgr-date" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 8px;border-radius:8px;outline:none" onchange="renderTeamManager()">
+        <button onclick="closeTeamManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+      </div>
+    </div>
+    <div id="team-mgr-content" style="padding:16px"></div>
   </div>
 </div>
 
