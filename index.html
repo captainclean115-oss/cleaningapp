@@ -729,10 +729,15 @@ body {
 
 <!-- CALENDAR VIEW -->
 <div id="cal-view">
-  <div style="padding:8px 12px;display:flex;justify-content:flex-end;border-bottom:1px solid var(--border)">
+  <div style="padding:8px 12px;display:flex;justify-content:flex-end;gap:8px;border-bottom:1px solid var(--border)">
+    <button onclick="openTeamManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);
+      font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:8px 16px;
+      border-radius:20px;cursor:pointer">
+      👥 Teams
+    </button>
     <button onclick="openRouteOptimizer()" style="background:var(--accent);border:none;color:#fff;
       font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:8px 16px;
-      border-radius:20px;cursor:pointer;display:flex;align-items:center;gap:6px">
+      border-radius:20px;cursor:pointer">
       🗺 Route Optimizer
     </button>
   </div>
@@ -823,7 +828,6 @@ body {
       </div>
       <div style="display:flex;gap:6px">
         <button class="gps-refresh-btn" onclick="toggleMap()" id="map-toggle-btn">🗺 Map</button>
-        <button class="gps-refresh-btn" onclick="openTeamManager()">👥 Teams</button>
         <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
       </div>
     </div>
@@ -1837,7 +1841,8 @@ function renderTeamManager() {
       </div>
       <div style="padding:8px 14px">
         ${employees.map(emp => {
-          const roleStr = emp.role.length ? ' · ' + emp.role.join('/') : '';
+          const roleIcons = emp.role.map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : r).join(' ');
+          const roleStr = emp.role.length ? ' ' + roleIcons : '';
           return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
             <span style="font-size:14px">${emp.name}<span style="font-size:11px;color:var(--muted)">${roleStr}</span></span>
             <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')" 
@@ -1877,32 +1882,66 @@ function editEmployeeAssignment(employeeId, dateStr) {
   const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
   if (!emp) return;
   const currentTeam = getEmployeeTeam(employeeId, dateStr);
-  const teams = ['B1','B3','B5','S1','S3','M1','M2','M3','Off'];
+  const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
 
-  const choice = prompt(
-    emp.name + ' — assign to team for ' + new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}) +
-    '\n\nCurrent: ' + (currentTeam || 'Unassigned') +
-    '\n\nEnter team (B1/B3/B5/S1/S3/M1/M2/M3) or OFF for day off:'
-  );
+  // Build picker modal
+  const teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
+  const teamColors = teams.map(t => team_colors_map[t] || '#6b7280');
 
-  if (!choice) return;
-  const team = choice.trim().toUpperCase();
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  overlay.innerHTML = `
+    <div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
+        <div style="font-size:16px;font-weight:700">${emp.name}</div>
+        <div style="font-size:12px;color:var(--muted)">${dateLabel} · Currently: <span style="color:var(--accent)">${currentTeam || 'Unassigned'}</span></div>
+      </div>
+      <div style="padding:12px 16px">
+        ${teams.map((t,i) => `
+          <button onclick="confirmTeamAssign('${employeeId}','${dateStr}','${t}',this)" 
+            style="display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;
+            background:${t === currentTeam ? 'rgba(108,143,255,0.15)' : 'var(--surface2)'};
+            border:1px solid ${t === currentTeam ? 'var(--accent)' : 'var(--border)'};
+            border-radius:10px;cursor:pointer;text-align:left">
+            <span style="width:12px;height:12px;border-radius:50%;background:${teamColors[i]};flex-shrink:0"></span>
+            <span style="font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--text)">${t}</span>
+            ${t === currentTeam ? '<span style="font-size:11px;color:var(--accent);margin-left:auto">Current</span>' : ''}
+          </button>`).join('')}
+        <button onclick="confirmTeamAssign('${employeeId}','${dateStr}','OFF',this)"
+          style="display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;
+          background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);
+          border-radius:10px;cursor:pointer;text-align:left">
+          <span style="width:12px;height:12px;border-radius:50%;background:var(--red);flex-shrink:0"></span>
+          <span style="font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--red)">Day Off</span>
+        </button>
+        <button onclick="this.closest('[style*=fixed]').remove()"
+          style="width:100%;padding:12px;background:none;border:1px solid var(--border);
+          border-radius:10px;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:14px;color:var(--muted)">
+          Cancel
+        </button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+function confirmTeamAssign(employeeId, dateStr, team, btn) {
+  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  if (!emp) return;
 
   if (team === 'OFF') {
     dailyAssignments[dateStr + '_' + employeeId] = null;
-  } else if (teams.includes(team)) {
-    assignEmployee(employeeId, team, dateStr);
   } else {
-    alert('Invalid team. Use B1, B3, B5, S1, S3, M1, M2, or M3');
-    return;
+    assignEmployee(employeeId, team, dateStr);
   }
 
-  // Log change to updates
   logPendingUpdate(
-    emp.name + ' moved to ' + (team === 'OFF' ? 'Day Off' : team),
+    emp.name + ' → ' + (team === 'OFF' ? 'Day Off' : team),
     new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
   );
 
+  // Close picker
+  btn.closest('[style*="position:fixed"]').remove();
   renderTeamManager();
 }
 
@@ -3076,7 +3115,8 @@ function renderHoursTable(days, dayNames) {
 
     // One row per employee on this team
     teamEmployees.forEach(emp => {
-      const roleStr = emp.role.length ? ' <span style="font-size:10px;color:var(--muted)">' + emp.role.join('/') + '</span>' : '';
+      const roleIcons = emp.role.map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : r).join(' ');
+      const roleStr = emp.role.length ? ' <span style="font-size:12px">' + roleIcons + '</span>' : '';
       const floatBadge = emp.floater ? '<span style="font-size:9px;color:var(--amber);margin-left:4px">FLOAT</span>' : '';
       const dayCells = data.days.map(function(h,i) {
         depotTotals[i] += h;
