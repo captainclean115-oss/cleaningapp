@@ -1805,6 +1805,9 @@ rcInit();
 // ─────────────────────────────────────────
 
 function openNewCustomerForm() {
+  // Make sure overlay exists
+  const overlay = document.getElementById('customer-form-overlay');
+  if (!overlay) { console.error('Form overlay not found'); return; }
   // Clear all fields
   document.getElementById('form-client-id').value = '';
   document.getElementById('form-title').textContent = 'New Customer';
@@ -4248,7 +4251,7 @@ function updateNavBadge() {
         </div>
       </div>
 
-      <button class="form-save-btn" onclick="saveCustomerForm()">💾 Save Customer</button>
+      <button class="form-save-btn" id="form-save-btn" onclick="saveCustomerForm()">💾 Save Customer</button>
       <button class="form-delete-btn" id="form-delete-btn" style="display:none" onclick="deleteCustomer()">🗑 Delete Customer</button>
     </div>
   </div>
