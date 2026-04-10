@@ -1821,6 +1821,7 @@ function openNewCustomerForm() {
   document.getElementById('form-firstclean').value = '';
   document.getElementById('form-team').value = '';
   document.getElementById('form-prefday').value = '';
+  document.getElementById('form-preftime').value = '';
   document.getElementById('form-payment').value = '';
   document.getElementById('form-notes').value = '';
   document.getElementById('form-delete-btn').style.display = 'none';
@@ -1845,6 +1846,7 @@ function openEditCustomerForm(clientId) {
   document.getElementById('form-firstclean').value = c.next || '';
   document.getElementById('form-team').value = ex.team || c.team || '';
   document.getElementById('form-prefday').value = ex.prefDay || '';
+  document.getElementById('form-preftime').value = ex.prefTime || '';
   document.getElementById('form-payment').value = ex.payment || '';
   document.getElementById('form-notes').value = ex.notes || c.notes || '';
   document.getElementById('form-delete-btn').style.display = 'block';
@@ -1873,6 +1875,7 @@ function saveCustomerForm() {
   const firstclean = document.getElementById('form-firstclean').value;
   const team = document.getElementById('form-team').value;
   const prefDay = document.getElementById('form-prefday').value;
+  const prefTime = document.getElementById('form-preftime').value;
   const payment = document.getElementById('form-payment').value;
   const notes = document.getElementById('form-notes').value.trim();
 
@@ -1897,7 +1900,7 @@ function saveCustomerForm() {
     // Save extras
     clientExtras[newId] = {
       notes, payment, avgRev: price,
-      prefDay, prefTime: '', extraPhone: '', upcoming: '', team
+      prefDay, prefTime, extraPhone: '', upcoming: '', team
     };
     localStorage.setItem('client_extras', JSON.stringify(clientExtras));
 
@@ -4222,7 +4225,7 @@ function updateNavBadge() {
           <div class="form-field">
             <label class="form-label">Preferred Day</label>
             <select class="form-select" id="form-prefday">
-              <option value="">Any</option>
+              <option value="">Any Day</option>
               <option value="Monday">Monday</option>
               <option value="Tuesday">Tuesday</option>
               <option value="Wednesday">Wednesday</option>
@@ -4230,6 +4233,22 @@ function updateNavBadge() {
               <option value="Friday">Friday</option>
             </select>
           </div>
+          <div class="form-field">
+            <label class="form-label">Preferred Time</label>
+            <select class="form-select" id="form-preftime">
+              <option value="">Any Time</option>
+              <option value="First thing (8-9am)">First thing (8-9am)</option>
+              <option value="Morning (9-12pm)">Morning (9-12pm)</option>
+              <option value="Before noon">Before noon</option>
+              <option value="Between 9-11am">Between 9-11am</option>
+              <option value="Between 10-12pm">Between 10-12pm</option>
+              <option value="Afternoon (12-3pm)">Afternoon (12-3pm)</option>
+              <option value="After 1pm">After 1pm</option>
+              <option value="Late afternoon (3-5pm)">Late afternoon (3-5pm)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
           <div class="form-field">
             <label class="form-label">Payment Method</label>
             <select class="form-select" id="form-payment">
@@ -4241,6 +4260,7 @@ function updateNavBadge() {
               <option value="Credit Card">Credit Card</option>
             </select>
           </div>
+          <div class="form-field"></div>
         </div>
       </div>
 
