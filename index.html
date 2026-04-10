@@ -640,6 +640,42 @@ body {
   font-family:'DM Sans',sans-serif;font-size:13px;padding:6px 10px;border-radius:8px;outline:none; }
 .route-loading { padding:40px 20px;text-align:center;color:var(--muted);font-size:14px; }
 
+
+/* ── CUSTOMER FORM ── */
+.form-overlay { position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end; }
+.form-sheet { background:var(--surface);width:100%;max-height:94vh;overflow-y:auto;
+  border-radius:16px 16px 0 0;border-top:1px solid var(--border2); }
+.form-header { display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;
+  background:var(--surface);z-index:1; }
+.form-title { font-size:17px;font-weight:700; }
+.form-close { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer; }
+.form-body { padding:16px 20px 32px; }
+.form-section { margin-bottom:20px; }
+.form-section-title { font-size:11px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--muted);margin-bottom:10px; }
+.form-row { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px; }
+.form-row.full { grid-template-columns:1fr; }
+.form-field { display:flex;flex-direction:column;gap:4px; }
+.form-label { font-size:12px;color:var(--muted); }
+.form-input { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
+  outline:none;width:100%;box-sizing:border-box; }
+.form-input:focus { border-color:var(--accent); }
+.form-select { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
+  outline:none;width:100%;box-sizing:border-box;appearance:none; }
+.form-textarea { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
+  outline:none;width:100%;box-sizing:border-box;min-height:80px;resize:vertical; }
+.form-save-btn { width:100%;padding:14px;background:var(--accent);border:none;
+  color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;
+  border-radius:12px;cursor:pointer;margin-top:8px; }
+.form-delete-btn { width:100%;padding:12px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);
+  color:var(--red);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;
+  border-radius:12px;cursor:pointer;margin-top:8px; }
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -806,6 +842,122 @@ body {
     </div>
   </div>
   <div class="bottom-pad"></div>
+</div>
+
+<!-- NEW/EDIT CUSTOMER FORM -->
+<div id="customer-form-overlay" class="form-overlay" style="display:none" onclick="if(event.target===this)closeCustomerForm()">
+  <div class="form-sheet">
+    <div class="form-header">
+      <div class="form-title" id="form-title">New Customer</div>
+      <button class="form-close" onclick="closeCustomerForm()">×</button>
+    </div>
+    <div class="form-body">
+      <input type="hidden" id="form-client-id" value="">
+      
+      <div class="form-section">
+        <div class="form-section-title">Contact Info</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">First Name *</label>
+            <input class="form-input" id="form-fn" placeholder="Jane" type="text">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Last Name *</label>
+            <input class="form-input" id="form-ln" placeholder="Smith" type="text">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Phone</label>
+            <input class="form-input" id="form-ph" placeholder="(508) 555-0100" type="tel">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Email</label>
+            <input class="form-input" id="form-email" placeholder="jane@email.com" type="email">
+          </div>
+        </div>
+        <div class="form-row full">
+          <div class="form-field">
+            <label class="form-label">Address *</label>
+            <input class="form-input" id="form-addr" placeholder="123 Main St, Abington MA" type="text">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Service Details</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Frequency</label>
+            <select class="form-select" id="form-freq">
+              <option value="W">Weekly</option>
+              <option value="BW">Bi-Weekly</option>
+              <option value="M">Monthly</option>
+              <option value="OMS">One-Time</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Price Per Clean</label>
+            <input class="form-input" id="form-price" placeholder="$150" type="text">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">First Clean Date</label>
+            <input class="form-input" id="form-firstclean" type="date">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Preferred Team</label>
+            <select class="form-select" id="form-team">
+              <option value="">— Unassigned —</option>
+              <option value="B1">B1</option>
+              <option value="B3">B3</option>
+              <option value="B5">B5</option>
+              <option value="S1">S1</option>
+              <option value="S3">S3</option>
+              <option value="M1">M1</option>
+              <option value="M2">M2</option>
+              <option value="M3">M3</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Preferred Day</label>
+            <select class="form-select" id="form-prefday">
+              <option value="">Any</option>
+              <option value="Monday">Monday</option>
+              <option value="Tuesday">Tuesday</option>
+              <option value="Wednesday">Wednesday</option>
+              <option value="Thursday">Thursday</option>
+              <option value="Friday">Friday</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Payment Method</label>
+            <select class="form-select" id="form-payment">
+              <option value="">Unknown</option>
+              <option value="Cash">Cash</option>
+              <option value="Check">Check</option>
+              <option value="Venmo">Venmo</option>
+              <option value="Zelle">Zelle</option>
+              <option value="Credit Card">Credit Card</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Notes</div>
+        <div class="form-row full">
+          <textarea class="form-textarea" id="form-notes" placeholder="Special instructions, access codes, pets, preferences..."></textarea>
+        </div>
+      </div>
+
+      <button class="form-save-btn" onclick="saveCustomerForm()">💾 Save Customer</button>
+      <button class="form-delete-btn" id="form-delete-btn" style="display:none" onclick="deleteCustomer()">🗑 Delete Customer</button>
+    </div>
+  </div>
 </div>
 
 <!-- ROUTE OPTIMIZER MODAL -->
@@ -1781,6 +1933,177 @@ let currentConv = null;
 
 updateTaskBadge();
 rcInit();
+
+// ─────────────────────────────────────────
+// NEW / EDIT CUSTOMER FORM
+// ─────────────────────────────────────────
+
+function openNewCustomerForm() {
+  // Clear all fields
+  document.getElementById('form-client-id').value = '';
+  document.getElementById('form-title').textContent = 'New Customer';
+  document.getElementById('form-fn').value = '';
+  document.getElementById('form-ln').value = '';
+  document.getElementById('form-ph').value = '';
+  document.getElementById('form-email').value = '';
+  document.getElementById('form-addr').value = '';
+  document.getElementById('form-freq').value = 'BW';
+  document.getElementById('form-price').value = '';
+  document.getElementById('form-firstclean').value = '';
+  document.getElementById('form-team').value = '';
+  document.getElementById('form-prefday').value = '';
+  document.getElementById('form-payment').value = '';
+  document.getElementById('form-notes').value = '';
+  document.getElementById('form-delete-btn').style.display = 'none';
+  document.getElementById('form-save-btn').textContent = '💾 Save Customer';
+  document.getElementById('customer-form-overlay').style.display = 'flex';
+}
+
+function openEditCustomerForm(clientId) {
+  const c = CLIENTS.find(x => x.id === clientId);
+  if (!c) return;
+  const ex = getClientExtras(clientId) || {};
+
+  document.getElementById('form-client-id').value = clientId;
+  document.getElementById('form-title').textContent = 'Edit ' + c.fn + ' ' + c.ln;
+  document.getElementById('form-fn').value = c.fn || '';
+  document.getElementById('form-ln').value = c.ln || '';
+  document.getElementById('form-ph').value = c.ph || '';
+  document.getElementById('form-email').value = c.email || '';
+  document.getElementById('form-addr').value = c.addr || '';
+  document.getElementById('form-freq').value = c.freq || 'BW';
+  document.getElementById('form-price').value = ex.avgRev || '';
+  document.getElementById('form-firstclean').value = c.next || '';
+  document.getElementById('form-team').value = ex.team || c.team || '';
+  document.getElementById('form-prefday').value = ex.prefDay || '';
+  document.getElementById('form-payment').value = ex.payment || '';
+  document.getElementById('form-notes').value = ex.notes || c.notes || '';
+  document.getElementById('form-delete-btn').style.display = 'block';
+  document.getElementById('form-save-btn').textContent = '💾 Save Changes';
+  document.getElementById('customer-form-overlay').style.display = 'flex';
+}
+
+function closeCustomerForm() {
+  document.getElementById('customer-form-overlay').style.display = 'none';
+}
+
+function saveCustomerForm() {
+  const fn = document.getElementById('form-fn').value.trim();
+  const ln = document.getElementById('form-ln').value.trim();
+  const addr = document.getElementById('form-addr').value.trim();
+
+  if (!fn || !ln) { alert('First and last name are required'); return; }
+
+  const clientId = document.getElementById('form-client-id').value;
+  const isNew = !clientId;
+
+  const ph = document.getElementById('form-ph').value.trim();
+  const email = document.getElementById('form-email').value.trim();
+  const freq = document.getElementById('form-freq').value;
+  const price = document.getElementById('form-price').value.trim();
+  const firstclean = document.getElementById('form-firstclean').value;
+  const team = document.getElementById('form-team').value;
+  const prefDay = document.getElementById('form-prefday').value;
+  const payment = document.getElementById('form-payment').value;
+  const notes = document.getElementById('form-notes').value.trim();
+
+  if (isNew) {
+    // Create new client
+    const newId = 'new_' + Date.now();
+    const newClient = {
+      id: newId,
+      fn, ln,
+      ph, email, addr, freq,
+      next: firstclean,
+      last: '',
+      pkg: freq,
+      zone: addr.split(',').pop().trim(),
+      bal: 0,
+      notes: '',
+      margin: '',
+      team
+    };
+    CLIENTS.unshift(newClient);
+
+    // Save extras
+    clientExtras[newId] = {
+      notes, payment, avgRev: price,
+      prefDay, prefTime: '', extraPhone: '', upcoming: '', team
+    };
+    localStorage.setItem('client_extras', JSON.stringify(clientExtras));
+
+    // Add to schedule if first clean date set
+    if (firstclean) {
+      jobs.push({
+        id: 'job_' + Date.now(),
+        clientId: newId,
+        clientName: ln + ', ' + fn,
+        addr,
+        date: firstclean,
+        time: '',
+        flexible: true,
+        done: false,
+        team,
+        freq,
+        auto: false
+      });
+      localStorage.setItem('cleanco_jobs', JSON.stringify(jobs));
+    }
+
+    // Log to updates
+    logPendingUpdate('New customer added: ' + fn + ' ' + ln, addr + ' · ' + freq + ' · ' + (team||'Unassigned'));
+    alert('✓ ' + fn + ' ' + ln + ' added successfully!');
+
+  } else {
+    // Edit existing client
+    const idx = CLIENTS.findIndex(c => c.id === clientId);
+    if (idx >= 0) {
+      CLIENTS[idx] = {
+        ...CLIENTS[idx],
+        fn, ln, ph, email, addr, freq,
+        next: firstclean || CLIENTS[idx].next,
+        team
+      };
+    }
+
+    // Update extras
+    clientExtras[clientId] = {
+      ...((clientExtras[clientId]) || {}),
+      notes, payment, avgRev: price,
+      prefDay, team
+    };
+    localStorage.setItem('client_extras', JSON.stringify(clientExtras));
+    logPendingUpdate('Client updated: ' + fn + ' ' + ln, 'Profile changes saved');
+    alert('✓ ' + fn + ' ' + ln + ' updated successfully!');
+  }
+
+  closeCustomerForm();
+  render();
+}
+
+function deleteCustomer() {
+  const clientId = document.getElementById('form-client-id').value;
+  if (!clientId) return;
+  const c = CLIENTS.find(x => x.id === clientId);
+  if (!c) return;
+  if (!confirm('Delete ' + c.fn + ' ' + c.ln + '? This cannot be undone.')) return;
+
+  // Remove from CLIENTS
+  const idx = CLIENTS.findIndex(x => x.id === clientId);
+  if (idx >= 0) CLIENTS.splice(idx, 1);
+
+  // Remove extras
+  delete clientExtras[clientId];
+  localStorage.setItem('client_extras', JSON.stringify(clientExtras));
+
+  // Log update
+  logPendingUpdate('Customer deleted: ' + c.fn + ' ' + c.ln, 'Removed from client list');
+
+  closeCustomerForm();
+  render();
+  alert('✓ ' + c.fn + ' ' + c.ln + ' deleted');
+}
+
 
 // ─────────────────────────────────────────
 // ROUTE OPTIMIZER
