@@ -1,0 +1,1449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Manna Maids — Employee Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --surface2: #1a1a24;
+  --border: rgba(255,255,255,0.08);
+  --text: #f0f0f5;
+  --muted: #7070a0;
+  --accent: #6c8fff;
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+  --purple: #a78bfa;
+  --radius: 14px;
+  --radius-sm: 9px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+/* ── LOGIN ── */
+#login-screen {
+  min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 32px 24px;
+  background: radial-gradient(ellipse at 50% 0%, rgba(108,143,255,0.12) 0%, transparent 70%);
+}
+.login-logo { font-size: 28px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.5px; }
+.login-logo span { color: var(--accent); }
+.login-sub { font-size: 14px; color: var(--muted); margin-bottom: 40px; }
+.login-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; padding: 28px 24px; width: 100%; max-width: 360px;
+}
+.login-label { font-size: 13px; color: var(--muted); margin-bottom: 12px; text-align: center; }
+.pin-dots { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
+.pin-dot {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--border); background: transparent;
+  transition: all 0.2s;
+}
+.pin-dot.filled { background: var(--accent); border-color: var(--accent); }
+.pin-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.pin-key {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 16px 8px;
+  font-size: 20px; font-weight: 500; color: var(--text);
+  cursor: pointer; text-align: center; transition: all 0.15s;
+  user-select: none;
+}
+.pin-key:active { background: rgba(108,143,255,0.2); transform: scale(0.95); }
+.pin-key.del { font-size: 16px; color: var(--muted); }
+.pin-key.empty { background: transparent; border-color: transparent; }
+.login-error { color: var(--red); font-size: 13px; text-align: center; margin-top: 12px; min-height: 20px; }
+
+/* ── LANG TOGGLE ── */
+.lang-toggle {
+  display: flex; gap: 6px; justify-content: center; margin-bottom: 28px;
+}
+.lang-btn {
+  padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border); background: transparent; color: var(--muted);
+  cursor: pointer; transition: all 0.2s;
+}
+.lang-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── PORTAL ── */
+#portal-screen { display: none; padding-bottom: 80px; }
+.portal-header {
+  padding: 20px 16px 12px;
+  background: linear-gradient(180deg, rgba(108,143,255,0.08) 0%, transparent 100%);
+  border-bottom: 1px solid var(--border);
+}
+.portal-greeting { font-size: 22px; font-weight: 700; margin-bottom: 2px; }
+.portal-team { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.team-badge {
+  display: inline-flex; align-items: center; padding: 2px 10px;
+  border-radius: 20px; font-size: 12px; font-weight: 700;
+}
+
+/* ── TABS ── */
+.portal-tabs {
+  display: flex; overflow-x: auto; scrollbar-width: none;
+  gap: 0; border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.portal-tabs::-webkit-scrollbar { display: none; }
+.ptab {
+  flex-shrink: 0; padding: 12px 16px; font-size: 13px; font-weight: 500;
+  color: var(--muted); border-bottom: 2px solid transparent;
+  cursor: pointer; white-space: nowrap; transition: all 0.2s;
+}
+.ptab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ── SCHEDULE ── */
+.section { padding: 16px; }
+.section-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--muted); margin-bottom: 12px;
+}
+.job-item {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: 10px;
+}
+.job-num { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.job-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.job-addr { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.job-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.job-tag {
+  font-size: 11px; padding: 3px 9px; border-radius: 20px;
+  background: var(--surface2); border: 1px solid var(--border);
+}
+.job-notes {
+  font-size: 12px; color: var(--muted); background: var(--surface2);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 10px;
+  white-space: pre-wrap; line-height: 1.5;
+}
+.job-actions { display: flex; gap: 8px; }
+.job-btn {
+  flex: 1; padding: 9px; border-radius: 9px; font-family: 'DM Sans', sans-serif;
+  font-size: 13px; font-weight: 500; border: none; cursor: pointer;
+  text-decoration: none; text-align: center;
+}
+.job-btn-dir { background: rgba(108,143,255,0.15); color: var(--accent); }
+.job-btn-call { background: rgba(52,211,153,0.15); color: var(--green); }
+.job-btn-done { background: rgba(52,211,153,0.15); color: var(--green); border: 1px solid rgba(52,211,153,0.3); }
+.job-btn-done.completed { background: rgba(52,211,153,0.3); }
+
+/* ── HOURS ── */
+.hours-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+}
+.hours-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.hours-row:last-child { border-bottom: none; }
+.hours-day { font-size: 14px; }
+.hours-val { font-size: 14px; font-weight: 600; font-family: 'DM Mono', monospace; }
+.hours-time { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.hours-total {
+  background: rgba(108,143,255,0.08); border: 1px solid rgba(108,143,255,0.2);
+  border-radius: var(--radius); padding: 16px; text-align: center; margin-bottom: 12px;
+}
+.hours-total-val { font-size: 36px; font-weight: 700; color: var(--accent); font-family: 'DM Mono', monospace; }
+.hours-total-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ── FORMS ── */
+.form-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+  cursor: pointer;
+}
+.form-card-header { display: flex; align-items: center; gap: 12px; }
+.form-icon { font-size: 24px; }
+.form-card-title { font-size: 15px; font-weight: 600; }
+.form-card-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.form-arrow { margin-left: auto; color: var(--muted); font-size: 18px; }
+
+/* ── MODAL ── */
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0,0,0,0.8); display: flex; align-items: flex-end;
+}
+.modal-sheet {
+  background: var(--surface); width: 100%; max-height: 90vh;
+  overflow-y: auto; border-radius: 20px 20px 0 0;
+  border-top: 1px solid var(--border2);
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0;
+  background: var(--surface); z-index: 1;
+}
+.modal-title { font-size: 17px; font-weight: 600; }
+.modal-close {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); width: 32px; height: 32px; border-radius: 50%;
+  font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.modal-body { padding: 20px; }
+
+/* ── FORM FIELDS ── */
+.field-group { margin-bottom: 16px; }
+.field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+.field-input {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-family: 'DM Sans', sans-serif;
+  font-size: 15px; padding: 11px 14px; outline: none;
+}
+.field-input:focus { border-color: var(--accent); }
+textarea.field-input { resize: none; min-height: 80px; line-height: 1.5; }
+select.field-input { appearance: none; }
+.submit-btn {
+  width: 100%; background: var(--accent); border: none; border-radius: var(--radius-sm);
+  color: #fff; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 600;
+  padding: 14px; cursor: pointer; margin-top: 8px;
+}
+.submit-btn:active { opacity: 0.85; }
+.success-msg {
+  background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3);
+  border-radius: var(--radius-sm); padding: 12px; color: var(--green);
+  font-size: 14px; text-align: center; margin-top: 12px;
+}
+
+/* ── HANDBOOK ── */
+.handbook-section { margin-bottom: 20px; }
+.handbook-h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; color: var(--accent); }
+.handbook-h2 { font-size: 16px; font-weight: 600; margin-bottom: 8px; margin-top: 16px; }
+.handbook-h3 { font-size: 14px; font-weight: 600; margin-bottom: 6px; margin-top: 12px; color: var(--accent); }
+.handbook-p { font-size: 14px; line-height: 1.7; color: rgba(240,240,245,0.85); margin-bottom: 8px; }
+.handbook-divider { height: 1px; background: var(--border); margin: 20px 0; }
+
+/* E-SIGN */
+.esign-box {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-top: 20px;
+}
+.esign-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.esign-signed {
+  background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3);
+  border-radius: var(--radius-sm); padding: 14px; text-align: center;
+}
+.esign-signed-name { font-size: 18px; font-weight: 600; color: var(--green); font-style: italic; }
+.esign-signed-date { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* ── BOTTOM NAV ── */
+.bottom-nav {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: rgba(13,13,20,0.95); backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex; padding: 8px 0 12px; z-index: 200;
+}
+.nav-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  gap: 3px; background: none; border: none; cursor: pointer;
+  color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 10px;
+  padding: 4px 0; transition: color 0.2s;
+}
+.nav-btn.active { color: var(--accent); }
+.nav-icon { font-size: 20px; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="login-logo">Manna <span>Maids</span></div>
+  <div class="login-sub" id="login-sub-text">Employee Portal</div>
+
+  <div class="lang-toggle">
+    <button class="lang-btn active" onclick="setLang('en')">EN</button>
+    <button class="lang-btn" onclick="setLang('es')">ES</button>
+    <button class="lang-btn" onclick="setLang('pt')">PT</button>
+    <button class="lang-btn" onclick="setLang('cv')">KR</button>
+  </div>
+
+  <div class="login-card">
+    <div class="login-label" id="pin-label">Enter your PIN</div>
+    <div class="pin-dots">
+      <div class="pin-dot" id="d0"></div>
+      <div class="pin-dot" id="d1"></div>
+      <div class="pin-dot" id="d2"></div>
+      <div class="pin-dot" id="d3"></div>
+    </div>
+    <div class="pin-keypad">
+      <div class="pin-key" onclick="pinPress('1')">1</div>
+      <div class="pin-key" onclick="pinPress('2')">2</div>
+      <div class="pin-key" onclick="pinPress('3')">3</div>
+      <div class="pin-key" onclick="pinPress('4')">4</div>
+      <div class="pin-key" onclick="pinPress('5')">5</div>
+      <div class="pin-key" onclick="pinPress('6')">6</div>
+      <div class="pin-key" onclick="pinPress('7')">7</div>
+      <div class="pin-key" onclick="pinPress('8')">8</div>
+      <div class="pin-key" onclick="pinPress('9')">9</div>
+      <div class="pin-key empty"></div>
+      <div class="pin-key" onclick="pinPress('0')">0</div>
+      <div class="pin-key del" onclick="pinDel()">⌫</div>
+    </div>
+    <div class="login-error" id="login-error"></div>
+  </div>
+  <div style="margin-top:20px;text-align:center">
+    <button onclick="showApplication()" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline" id="apply-link">
+      Interested in joining our team? Apply here
+    </button>
+  </div>
+</div>
+
+<!-- APPLICATION SCREEN -->
+<div id="application-screen" style="display:none;padding:24px 20px 40px;max-width:500px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+    <button onclick="hideApplication()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">←</button>
+    <div>
+      <div style="font-size:20px;font-weight:700">Manna <span style="color:var(--accent)">Maids</span></div>
+      <div style="font-size:13px;color:var(--muted)" id="app-subtitle">Join Our Team</div>
+    </div>
+  </div>
+
+  <div id="app-form">
+    <!-- Personal Info -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-personal">Personal Information</div>
+    
+    <div class="field-group">
+      <div class="field-label" id="app-firstname-label">First Name *</div>
+      <input type="text" class="field-input" id="app-firstname">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-lastname-label">Last Name *</div>
+      <input type="text" class="field-input" id="app-lastname">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-phone-label">Phone Number *</div>
+      <input type="tel" class="field-input" id="app-phone">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-email-label">Email Address</div>
+      <input type="email" class="field-input" id="app-email">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-address-label">Home Address *</div>
+      <input type="text" class="field-input" id="app-address">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-city-label">City *</div>
+      <input type="text" class="field-input" id="app-city">
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+
+    <!-- Work Authorization -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-work">Work Authorization</div>
+    
+    <div class="field-group">
+      <div class="field-label" id="app-auth-label">Are you authorized to work in the US? *</div>
+      <select class="field-input" id="app-auth">
+        <option value="">Select...</option>
+        <option value="citizen">US Citizen</option>
+        <option value="resident">Permanent Resident</option>
+        <option value="visa">Work Visa</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-license-label">Do you have a valid driver's license? *</div>
+      <select class="field-input" id="app-license">
+        <option value="">Select...</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+
+    <!-- Experience -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-exp">Experience</div>
+    
+    <div class="field-group">
+      <div class="field-label" id="app-exp-label">Prior cleaning or service experience?</div>
+      <select class="field-input" id="app-exp">
+        <option value="none">No experience</option>
+        <option value="some">Some experience (less than 1 year)</option>
+        <option value="1-2">1-2 years</option>
+        <option value="3+">3+ years</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-expnotes-label">Describe your experience (optional)</div>
+      <textarea class="field-input" id="app-expnotes" rows="3"></textarea>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+
+    <!-- Availability -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-avail">Availability</div>
+    
+    <div class="field-group">
+      <div class="field-label" id="app-days-label">Available days *</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px" id="app-days-grid">
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Mon" style="accent-color:var(--accent)"> Mon
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Tue" style="accent-color:var(--accent)"> Tue
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Wed" style="accent-color:var(--accent)"> Wed
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Thu" style="accent-color:var(--accent)"> Thu
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Fri" style="accent-color:var(--accent)"> Fri
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Sat" style="accent-color:var(--accent)"> Sat
+        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
+          <input type="checkbox" value="Sun" style="accent-color:var(--accent)"> Sun
+        </label>
+      </div>
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-hours-label">Preferred start time</div>
+      <select class="field-input" id="app-hours">
+        <option value="early">Early (7-8am)</option>
+        <option value="morning">Morning (8-9am)</option>
+        <option value="flexible">Flexible</option>
+      </select>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+
+    <!-- Languages -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-lang">Languages Spoken</div>
+    
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+        <input type="checkbox" value="English" style="accent-color:var(--accent)"> English
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+        <input type="checkbox" value="Spanish" style="accent-color:var(--accent)"> Spanish
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+        <input type="checkbox" value="Portuguese" style="accent-color:var(--accent)"> Portuguese
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
+        <input type="checkbox" value="Kriolu" style="accent-color:var(--accent)"> Kriolu
+      </label>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+
+    <!-- How did you hear -->
+    <div class="field-group">
+      <div class="field-label" id="app-hear-label">How did you hear about us? *</div>
+      <select class="field-input" id="app-hear">
+        <option value="">Select...</option>
+        <option value="friend">Friend or family member</option>
+        <option value="indeed">Indeed</option>
+        <option value="craigslist">Craigslist</option>
+        <option value="nextdoor">Nextdoor</option>
+        <option value="google">Google</option>
+        <option value="flyer">Flyer or door hanger</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+
+    <!-- Emergency Contact -->
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-emergency">Emergency Contact</div>
+    
+    <div class="field-group">
+      <div class="field-label" id="app-emname-label">Name *</div>
+      <input type="text" class="field-input" id="app-emname">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-emphone-label">Phone *</div>
+      <input type="tel" class="field-input" id="app-emphone">
+    </div>
+    <div class="field-group">
+      <div class="field-label" id="app-emrel-label">Relationship</div>
+      <input type="text" class="field-input" id="app-emrel" placeholder="e.g. Spouse, Parent, Sibling">
+    </div>
+
+    <!-- E-Signature -->
+    <div style="height:1px;background:var(--border);margin:20px 0"></div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
+      <div style="font-size:13px;color:var(--muted);line-height:1.6" id="app-consent-text">
+        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize Manna Maids, Inc. to verify all information provided.
+      </div>
+      <div class="field-group" style="margin-top:12px;margin-bottom:0">
+        <div class="field-label" id="app-sig-label">Full name (acts as your signature) *</div>
+        <input type="text" class="field-input" id="app-signature" placeholder="Type your full name">
+      </div>
+    </div>
+
+    <button class="submit-btn" onclick="submitApplication()" id="app-submit-btn">Submit Application</button>
+    <div id="app-error" style="color:var(--red);font-size:13px;text-align:center;margin-top:10px;min-height:20px"></div>
+  </div>
+
+  <!-- Success screen -->
+  <div id="app-success" style="display:none;text-align:center;padding:40px 20px">
+    <div style="font-size:48px;margin-bottom:16px">✅</div>
+    <div style="font-size:22px;font-weight:700;margin-bottom:8px" id="app-success-title">Application Submitted!</div>
+    <div style="font-size:14px;color:var(--muted);line-height:1.6" id="app-success-msg">
+      Thank you for applying to Manna Maids, Inc. We will review your application and contact you within a few days.
+    </div>
+    <button onclick="hideApplication()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
+      Back to Login
+    </button>
+  </div>
+</div>
+
+<!-- PORTAL SCREEN -->
+<div id="portal-screen">
+  <div class="portal-header">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between">
+      <div>
+        <div class="portal-greeting" id="portal-greeting">Good morning!</div>
+        <div class="portal-team">
+          <span class="team-badge" id="team-badge"></span>
+          <span id="portal-date"></span>
+        </div>
+      </div>
+      <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">
+        <span id="logout-text">Log out</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="portal-tabs">
+    <div class="ptab active" id="ptab-schedule" onclick="showPortalTab('schedule')" id-text="tab-schedule">📅 Schedule</div>
+    <div class="ptab" id="ptab-hours" onclick="showPortalTab('hours')" id-text="tab-hours">⏱ Hours</div>
+    <div class="ptab" id="ptab-forms" onclick="showPortalTab('forms')" id-text="tab-forms">📋 Forms</div>
+    <div class="ptab" id="ptab-handbook" onclick="showPortalTab('handbook')" id-text="tab-handbook">📖 Handbook</div>
+  </div>
+
+  <!-- SCHEDULE TAB -->
+  <div id="tab-schedule" class="section">
+    <div class="section-title" id="today-label">TODAY'S JOBS</div>
+    <div id="schedule-list">
+      <div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:14px" id="no-jobs-text">No jobs scheduled for today</div>
+    </div>
+  </div>
+
+  <!-- HOURS TAB -->
+  <div id="tab-hours" class="section" style="display:none">
+    <div class="section-title" id="week-label">THIS WEEK</div>
+    <div class="hours-total">
+      <div class="hours-total-val" id="total-hrs">0h</div>
+      <div class="hours-total-label" id="total-label">Total hours this week</div>
+    </div>
+    <div class="hours-card" id="hours-breakdown">
+      <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px" id="hours-loading-text">Connect GPS to see hours</div>
+    </div>
+  </div>
+
+  <!-- FORMS TAB -->
+  <div id="tab-forms" class="section" style="display:none">
+    <div class="section-title" id="forms-label">SUBMIT A REQUEST</div>
+    <div class="form-card" onclick="openForm('timeoff')">
+      <div class="form-card-header">
+        <div class="form-icon">🏖️</div>
+        <div>
+          <div class="form-card-title" id="form-timeoff-title">Time Off Request</div>
+          <div class="form-card-sub" id="form-timeoff-sub">Request vacation or personal day</div>
+        </div>
+        <div class="form-arrow">›</div>
+      </div>
+    </div>
+    <div class="form-card" onclick="openForm('callout')">
+      <div class="form-card-header">
+        <div class="form-icon">🤒</div>
+        <div>
+          <div class="form-card-title" id="form-callout-title">Call Out</div>
+          <div class="form-card-sub" id="form-callout-sub">Report that you cannot come in</div>
+        </div>
+        <div class="form-arrow">›</div>
+      </div>
+    </div>
+    <div class="form-card" onclick="openForm('supplies')">
+      <div class="form-card-header">
+        <div class="form-icon">🧹</div>
+        <div>
+          <div class="form-card-title" id="form-supplies-title">Supply Request</div>
+          <div class="form-card-sub" id="form-supplies-sub">Request cleaning supplies or equipment</div>
+        </div>
+        <div class="form-arrow">›</div>
+      </div>
+    </div>
+    <div class="form-card" onclick="openForm('incident')">
+      <div class="form-card-header">
+        <div class="form-icon">⚠️</div>
+        <div>
+          <div class="form-card-title" id="form-incident-title">Incident Report</div>
+          <div class="form-card-sub" id="form-incident-sub">Report an accident, injury or issue</div>
+        </div>
+        <div class="form-arrow">›</div>
+      </div>
+    </div>
+    <div id="forms-submitted" style="margin-top:16px"></div>
+  </div>
+
+  <!-- HANDBOOK TAB -->
+  <div id="tab-handbook" class="section" style="display:none">
+    <div class="section-title" id="handbook-label">EMPLOYEE HANDBOOK</div>
+    <div id="handbook-content"></div>
+    <div class="esign-box" id="esign-box">
+      <div class="esign-title" id="esign-title">Acknowledge & Sign</div>
+      <div id="esign-form">
+        <div class="field-group">
+          <div class="field-label" id="esign-name-label">Your full name</div>
+          <input type="text" class="field-input" id="esign-name-input" placeholder="Type your name">
+        </div>
+        <button class="submit-btn" onclick="signHandbook()" id="esign-btn">I have read and agree to the terms</button>
+      </div>
+      <div id="esign-signed-display" style="display:none"></div>
+    </div>
+  </div>
+
+  <div style="height:20px"></div>
+</div>
+
+<!-- FORM MODAL -->
+<div id="form-modal" style="display:none" class="modal-overlay" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal-sheet">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">Form</div>
+      <button class="modal-close" onclick="document.getElementById('form-modal').style.display='none'">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────
+// EMPLOYEE DATA (loaded from main app)
+// ─────────────────────────────────────────
+
+// Employees — PINs set here, edit to add/change
+// Format: { pin, name, team, payRate, lang }
+const EMPLOYEES = [
+  // PINs — owner edits these
+  // Add one entry per employee
+  { pin: '1111', name: 'Employee 1', team: 'B1', payRate: 0, lang: 'en' },
+  { pin: '2222', name: 'Employee 2', team: 'B3', payRate: 0, lang: 'es' },
+  { pin: '3333', name: 'Employee 3', team: 'B5', payRate: 0, lang: 'es' },
+  { pin: '4444', name: 'Employee 4', team: 'S1', payRate: 0, lang: 'cv' },
+  { pin: '5555', name: 'Employee 5', team: 'S3', payRate: 0, lang: 'cv' },
+  { pin: '6666', name: 'Employee 6', team: 'M1', payRate: 0, lang: 'pt' },
+  { pin: '7777', name: 'Employee 7', team: 'M2', payRate: 0, lang: 'pt' },
+  { pin: '8888', name: 'Employee 8', team: 'M3', payRate: 0, lang: 'en' },
+];
+
+// Team colors
+const TEAM_COLORS = {
+  B1:'#7c3aed', B3:'#db2777', B5:'#6b7280',
+  S1:'#ca8a04', S3:'#9333ea', M1:'#dc2626', M2:'#2563eb', M3:'#16a34a'
+};
+
+// ─────────────────────────────────────────
+// TRANSLATIONS
+// ─────────────────────────────────────────
+const T = {
+  en: {
+    portal: 'Employee Portal',
+    enterPin: 'Enter your PIN',
+    wrongPin: 'Incorrect PIN. Please try again.',
+    goodMorning: 'Good morning',
+    goodAfternoon: 'Good afternoon',
+    goodEvening: 'Good evening',
+    logout: 'Log out',
+    todayJobs: "TODAY'S JOBS",
+    noJobs: 'No jobs scheduled for today',
+    directions: '🗺 Directions',
+    call: '📞 Call',
+    markDone: '✓ Mark Done',
+    thisWeek: 'THIS WEEK',
+    totalHours: 'Total hours this week',
+    connectGPS: 'Connect GPS to see hours',
+    forms: 'SUBMIT A REQUEST',
+    timeOffTitle: 'Time Off Request',
+    timeOffSub: 'Request vacation or personal day',
+    calloutTitle: 'Call Out',
+    calloutSub: 'Report that you cannot come in',
+    suppliesTitle: 'Supply Request',
+    suppliesSub: 'Request cleaning supplies or equipment',
+    incidentTitle: 'Incident Report',
+    incidentSub: 'Report an accident, injury or issue',
+    handbook: 'EMPLOYEE HANDBOOK',
+    signTitle: 'Acknowledge & Sign',
+    signNameLabel: 'Your full name',
+    signBtn: 'I have read and agree to the terms',
+    signedOn: 'Signed on',
+    notes: 'Client Notes',
+    price: 'Price/Clean',
+    nextClean: 'Next Clean',
+    keycode: 'Key Code',
+    job: 'Job',
+    of: 'of',
+  },
+  es: {
+    portal: 'Portal de Empleados',
+    enterPin: 'Ingresa tu PIN',
+    wrongPin: 'PIN incorrecto. Intenta de nuevo.',
+    goodMorning: 'Buenos días',
+    goodAfternoon: 'Buenas tardes',
+    goodEvening: 'Buenas noches',
+    logout: 'Cerrar sesión',
+    todayJobs: 'TRABAJOS DE HOY',
+    noJobs: 'No hay trabajos programados para hoy',
+    directions: '🗺 Cómo llegar',
+    call: '📞 Llamar',
+    markDone: '✓ Marcar hecho',
+    thisWeek: 'ESTA SEMANA',
+    totalHours: 'Total de horas esta semana',
+    connectGPS: 'Conecta el GPS para ver las horas',
+    forms: 'ENVIAR UNA SOLICITUD',
+    timeOffTitle: 'Solicitud de Tiempo Libre',
+    timeOffSub: 'Solicitar vacaciones o día personal',
+    calloutTitle: 'Llamar para ausentarse',
+    calloutSub: 'Reportar que no puedes venir',
+    suppliesTitle: 'Solicitud de Suministros',
+    suppliesSub: 'Solicitar artículos de limpieza o equipo',
+    incidentTitle: 'Reporte de Incidente',
+    incidentSub: 'Reportar un accidente, lesión o problema',
+    handbook: 'MANUAL DEL EMPLEADO',
+    signTitle: 'Reconocer y Firmar',
+    signNameLabel: 'Tu nombre completo',
+    signBtn: 'He leído y acepto los términos',
+    signedOn: 'Firmado el',
+    notes: 'Notas del cliente',
+    price: 'Precio/Limpieza',
+    nextClean: 'Próxima limpieza',
+    keycode: 'Código de llave',
+    job: 'Trabajo',
+    of: 'de',
+  },
+  pt: {
+    portal: 'Portal do Funcionário',
+    enterPin: 'Digite seu PIN',
+    wrongPin: 'PIN incorreto. Tente novamente.',
+    goodMorning: 'Bom dia',
+    goodAfternoon: 'Boa tarde',
+    goodEvening: 'Boa noite',
+    logout: 'Sair',
+    todayJobs: 'TRABALHOS DE HOJE',
+    noJobs: 'Nenhum trabalho agendado para hoje',
+    directions: '🗺 Direções',
+    call: '📞 Ligar',
+    markDone: '✓ Marcar como feito',
+    thisWeek: 'ESTA SEMANA',
+    totalHours: 'Total de horas esta semana',
+    connectGPS: 'Conecte o GPS para ver as horas',
+    forms: 'ENVIAR UMA SOLICITAÇÃO',
+    timeOffTitle: 'Solicitação de Folga',
+    timeOffSub: 'Solicitar férias ou dia pessoal',
+    calloutTitle: 'Aviso de Ausência',
+    calloutSub: 'Informar que não pode comparecer',
+    suppliesTitle: 'Solicitação de Suprimentos',
+    suppliesSub: 'Solicitar produtos de limpeza ou equipamentos',
+    incidentTitle: 'Relatório de Incidente',
+    incidentSub: 'Relatar um acidente, lesão ou problema',
+    handbook: 'MANUAL DO FUNCIONÁRIO',
+    signTitle: 'Reconhecer e Assinar',
+    signNameLabel: 'Seu nome completo',
+    signBtn: 'Li e concordo com os termos',
+    signedOn: 'Assinado em',
+    notes: 'Notas do cliente',
+    price: 'Preço/Limpeza',
+    nextClean: 'Próxima limpeza',
+    keycode: 'Código da chave',
+    job: 'Trabalho',
+    of: 'de',
+  },
+  cv: {
+    portal: 'Portal di Trabalhador',
+    enterPin: 'Mete bo PIN',
+    wrongPin: 'PIN inkorretu. Tenta di novu.',
+    goodMorning: 'Bon dia',
+    goodAfternoon: 'Bon tardi',
+    goodEvening: 'Bon noti',
+    logout: 'Sai',
+    todayJobs: 'TRABALHU DI OJI',
+    noJobs: 'Ka ten trabalhu marcadu pa oji',
+    directions: '🗺 Diresaun',
+    call: '📞 Tchama',
+    markDone: '✓ Marca feitu',
+    thisWeek: 'ESTA SIMANA',
+    totalHours: 'Total di oras esta simana',
+    connectGPS: 'Liga GPS pa odja oras',
+    forms: 'MANDA UN PEDIDU',
+    timeOffTitle: 'Pedidu di Folga',
+    timeOffSub: 'Pidi ferias o dia pessoal',
+    calloutTitle: 'Avisu di Falta',
+    calloutSub: 'Informa ki bu ka pode bin',
+    suppliesTitle: 'Pedidu di Suprimentus',
+    suppliesSub: 'Pidi produtus di limpeza o ekipamentu',
+    incidentTitle: 'Relatoriu di Insidensia',
+    incidentSub: 'Relata un asidente, ferida o problema',
+    handbook: 'MANUAL DI TRABALHADOR',
+    signTitle: 'Rekonhese y Firma',
+    signNameLabel: 'Bo nomi kumpletu',
+    signBtn: 'N le y konsorda ku termus',
+    signedOn: 'Firmadu na',
+    notes: 'Notas di klientu',
+    price: 'Presu/Limpeza',
+    nextClean: 'Proxima limpeza',
+    keycode: 'Kodugu di txavi',
+    job: 'Trabalhu',
+    of: 'di',
+  }
+};
+
+// ─────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────
+let currentLang = 'en';
+let currentPin = '';
+let currentEmployee = null;
+let currentTab = 'schedule';
+let completedJobs = JSON.parse(localStorage.getItem('emp_completed') || '{}');
+let submittedForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
+let signatures = JSON.parse(localStorage.getItem('emp_signatures') || '{}');
+
+// ─────────────────────────────────────────
+// LANG
+// ─────────────────────────────────────────
+function setLang(lang) {
+  currentLang = lang;
+  document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  updateLoginText();
+  if (currentEmployee) updatePortalText();
+}
+
+function t(key) {
+  return (T[currentLang] || T.en)[key] || T.en[key] || key;
+}
+
+function updateLoginText() {
+  document.getElementById('login-sub-text').textContent = t('portal');
+  document.getElementById('pin-label').textContent = t('enterPin');
+  document.getElementById('login-error').textContent = '';
+}
+
+function updatePortalText() {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? t('goodMorning') : hour < 17 ? t('goodAfternoon') : t('goodEvening');
+  document.getElementById('portal-greeting').textContent = greeting + ', ' + currentEmployee.name.split(' ')[0] + '!';
+  document.getElementById('logout-text').textContent = t('logout');
+  document.getElementById('ptab-schedule').textContent = '📅 ' + (currentLang === 'en' ? 'Schedule' : currentLang === 'es' ? 'Horario' : currentLang === 'pt' ? 'Horário' : 'Orario');
+  document.getElementById('ptab-hours').textContent = '⏱ ' + (currentLang === 'en' ? 'Hours' : currentLang === 'es' ? 'Horas' : currentLang === 'pt' ? 'Horas' : 'Oras');
+  document.getElementById('ptab-forms').textContent = '📋 ' + (currentLang === 'en' ? 'Forms' : currentLang === 'es' ? 'Formularios' : currentLang === 'pt' ? 'Formulários' : 'Formularius');
+  document.getElementById('ptab-handbook').textContent = '📖 ' + (currentLang === 'en' ? 'Handbook' : currentLang === 'es' ? 'Manual' : currentLang === 'pt' ? 'Manual' : 'Manual');
+}
+
+// ─────────────────────────────────────────
+// PIN LOGIN
+// ─────────────────────────────────────────
+function pinPress(digit) {
+  if (currentPin.length >= 4) return;
+  currentPin += digit;
+  updatePinDots();
+  if (currentPin.length === 4) setTimeout(checkPin, 200);
+}
+
+function pinDel() {
+  currentPin = currentPin.slice(0, -1);
+  updatePinDots();
+  document.getElementById('login-error').textContent = '';
+}
+
+function updatePinDots() {
+  for (let i = 0; i < 4; i++) {
+    document.getElementById('d' + i).classList.toggle('filled', i < currentPin.length);
+  }
+}
+
+function checkPin() {
+  const emp = EMPLOYEES.find(e => e.pin === currentPin);
+  if (emp) {
+    currentEmployee = emp;
+    currentLang = emp.lang || 'en';
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+    const langMap = { en: 0, es: 1, pt: 2, cv: 3 };
+    document.querySelectorAll('.lang-btn')[langMap[currentLang] || 0].classList.add('active');
+    loginSuccess();
+  } else {
+    document.getElementById('login-error').textContent = t('wrongPin');
+    currentPin = '';
+    updatePinDots();
+    // Shake animation
+    const card = document.querySelector('.login-card');
+    card.style.animation = 'none';
+    card.offsetHeight;
+    card.style.animation = 'shake 0.4s ease';
+  }
+}
+
+function loginSuccess() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('portal-screen').style.display = 'block';
+
+  // Set team badge
+  const team = currentEmployee.team;
+  const color = TEAM_COLORS[team] || '#6b7280';
+  const badge = document.getElementById('team-badge');
+  badge.textContent = 'Team ' + team;
+  badge.style.background = color + '22';
+  badge.style.color = color;
+  badge.style.border = '1px solid ' + color + '44';
+
+  // Set date
+  const now = new Date();
+  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+  updatePortalText();
+  renderSchedule();
+  renderHours();
+  renderHandbook();
+  checkExistingSignature();
+}
+
+function logout() {
+  currentEmployee = null;
+  currentPin = '';
+  updatePinDots();
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('portal-screen').style.display = 'none';
+  document.getElementById('login-error').textContent = '';
+}
+
+// ─────────────────────────────────────────
+// SCHEDULE
+// ─────────────────────────────────────────
+function renderSchedule() {
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+  const team = currentEmployee.team;
+
+  document.getElementById('today-label').textContent = t('todayJobs');
+
+  // Try to get jobs from localStorage (set by main app)
+  let jobs = [];
+  try {
+    const stored = localStorage.getItem('cleanco_jobs');
+    if (stored) {
+      const allJobs = JSON.parse(stored);
+      jobs = allJobs.filter(j => j.date === todayStr && j.team === team);
+    }
+  } catch(e) {}
+
+  // Also try clientExtras for team assignment
+  let extras = {};
+  try {
+    const stored = localStorage.getItem('client_extras');
+    if (stored) extras = JSON.parse(stored);
+  } catch(e) {}
+
+  const list = document.getElementById('schedule-list');
+  if (jobs.length === 0) {
+    list.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:14px">${t('noJobs')}</div>`;
+    return;
+  }
+
+  list.innerHTML = jobs.map((j, i) => {
+    const ex = extras[j.clientId] || {};
+    const isDone = completedJobs[j.id];
+    const mapsUrl = `https://maps.apple.com/?q=${encodeURIComponent(j.addr || '')}`;
+    const telUrl = j.phone ? `tel:${j.phone}` : '';
+
+    return `<div class="job-item" style="border-left:3px solid ${TEAM_COLORS[team] || '#6b7280'}${isDone ? ';opacity:0.6' : ''}">
+      <div class="job-num">${t('job')} ${i+1} ${t('of')} ${jobs.length}${j.time ? ' · ' + j.time : ''}</div>
+      <div class="job-name">${j.clientName || '—'}</div>
+      <div class="job-addr">${j.addr || '—'}</div>
+      <div class="job-meta">
+        ${ex.avgRev ? `<span class="job-tag" style="color:var(--green)">${t('price')}: ${ex.avgRev}</span>` : ''}
+        ${ex.prefTime ? `<span class="job-tag">${ex.prefTime}</span>` : ''}
+        ${j.next ? `<span class="job-tag" style="color:var(--accent)">${t('nextClean')}: ${j.next}</span>` : ''}
+        ${ex.payment ? `<span class="job-tag">💳 ${ex.payment}</span>` : ''}
+      </div>
+      ${ex.keyCode || j.keyCode ? `<div class="job-tag" style="margin-bottom:8px;display:inline-flex;gap:5px;align-items:center">🔑 ${t('keycode')}: <strong>${ex.keyCode || j.keyCode}</strong></div>` : ''}
+      ${ex.notes || j.notes ? `<div class="job-notes">📋 ${ex.notes || j.notes}</div>` : ''}
+      <div class="job-actions">
+        <a class="job-btn job-btn-dir" href="${mapsUrl}">${t('directions')}</a>
+        ${telUrl ? `<a class="job-btn job-btn-call" href="${telUrl}">${t('call')}</a>` : ''}
+        <button class="job-btn job-btn-done${isDone?' completed':''}" onclick="toggleDone('${j.id}',this)">
+          ${isDone ? '✓ Done' : t('markDone')}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleDone(jobId, btn) {
+  completedJobs[jobId] = !completedJobs[jobId];
+  localStorage.setItem('emp_completed', JSON.stringify(completedJobs));
+  renderSchedule();
+}
+
+// ─────────────────────────────────────────
+// HOURS
+// ─────────────────────────────────────────
+function renderHours() {
+  document.getElementById('week-label').textContent = t('thisWeek');
+  document.getElementById('total-label').textContent = t('totalHours');
+
+  // Try to get hours from localStorage (set by main app GPS)
+  try {
+    const weekData = localStorage.getItem('weekHours_cache');
+    if (weekData) {
+      const data = JSON.parse(weekData);
+      const teamData = data[currentEmployee.team];
+      if (teamData) {
+        renderHoursData(teamData);
+        return;
+      }
+    }
+  } catch(e) {}
+
+  document.getElementById('hours-breakdown').innerHTML =
+    `<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">${t('connectGPS')}</div>`;
+}
+
+function renderHoursData(data) {
+  const days = ['Mon','Tue','Wed','Thu','Fri'];
+  const daysFull = {
+    en: ['Monday','Tuesday','Wednesday','Thursday','Friday'],
+    es: ['Lunes','Martes','Miércoles','Jueves','Viernes'],
+    pt: ['Segunda','Terça','Quarta','Quinta','Sexta'],
+    cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta']
+  };
+
+  let totalHrs = 0;
+  const breakdown = data.days.map((h, i) => {
+    totalHrs += h || 0;
+    const s = data.starts && data.starts[i] ? new Date(data.starts[i]).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+    const e = data.ends && data.ends[i] ? new Date(data.ends[i]).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+    const hh = Math.floor(h||0);
+    const mm = Math.round(((h||0)-hh)*60);
+    const hStr = h ? `${hh}h${mm>0?' '+mm+'m':''}` : '—';
+    return `<div class="hours-row">
+      <div>
+        <div class="hours-day">${(daysFull[currentLang]||daysFull.en)[i]}</div>
+        ${s && e ? `<div class="hours-time">${s} → ${e}</div>` : ''}
+      </div>
+      <div class="hours-val" style="color:${h?'var(--accent)':'var(--muted)'}">${hStr}</div>
+    </div>`;
+  }).join('');
+
+  const hh = Math.floor(totalHrs);
+  const mm = Math.round((totalHrs-hh)*60);
+  document.getElementById('total-hrs').textContent = `${hh}h${mm>0?' '+mm+'m':''}`;
+  document.getElementById('hours-breakdown').innerHTML = breakdown;
+}
+
+// ─────────────────────────────────────────
+// FORMS
+// ─────────────────────────────────────────
+function openForm(type) {
+  const modal = document.getElementById('form-modal');
+  const title = document.getElementById('modal-title');
+  const body = document.getElementById('modal-body');
+
+  const forms = {
+    timeoff: {
+      title: { en:'Time Off Request', es:'Solicitud de Tiempo Libre', pt:'Solicitação de Folga', cv:'Pedidu di Folga' },
+      fields: `
+        <div class="field-group">
+          <div class="field-label">${{en:'Start Date',es:'Fecha de inicio',pt:'Data de início',cv:'Data di kumesa'}[currentLang]}</div>
+          <input type="date" class="field-input" id="f-start">
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'End Date',es:'Fecha de fin',pt:'Data de fim',cv:'Data di fina'}[currentLang]}</div>
+          <input type="date" class="field-input" id="f-end">
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Reason',es:'Razón',pt:'Motivo',cv:'Motivo'}[currentLang]}</div>
+          <select class="field-input" id="f-reason">
+            <option value="vacation">${{en:'Vacation',es:'Vacaciones',pt:'Férias',cv:'Ferias'}[currentLang]}</option>
+            <option value="personal">${{en:'Personal Day',es:'Día personal',pt:'Dia pessoal',cv:'Dia pessoal'}[currentLang]}</option>
+            <option value="medical">${{en:'Medical',es:'Médico',pt:'Médico',cv:'Mediku'}[currentLang]}</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Notes (optional)',es:'Notas (opcional)',pt:'Notas (opcional)',cv:'Notas (opsional)'}[currentLang]}</div>
+          <textarea class="field-input" id="f-notes" rows="3"></textarea>
+        </div>`
+    },
+    callout: {
+      title: { en:'Call Out', es:'Llamar para ausentarse', pt:'Aviso de Ausência', cv:'Avisu di Falta' },
+      fields: `
+        <div class="field-group">
+          <div class="field-label">${{en:'Date',es:'Fecha',pt:'Data',cv:'Data'}[currentLang]}</div>
+          <input type="date" class="field-input" id="f-date" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Reason',es:'Razón',pt:'Motivo',cv:'Motivo'}[currentLang]}</div>
+          <select class="field-input" id="f-reason">
+            <option value="sick">${{en:'Sick',es:'Enfermo/a',pt:'Doente',cv:'Doenti'}[currentLang]}</option>
+            <option value="family">${{en:'Family Emergency',es:'Emergencia familiar',pt:'Emergência familiar',cv:'Emerjensia di familia'}[currentLang]}</option>
+            <option value="other">${{en:'Other',es:'Otro',pt:'Outro',cv:'Otru'}[currentLang]}</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Notes',es:'Notas',pt:'Notas',cv:'Notas'}[currentLang]}</div>
+          <textarea class="field-input" id="f-notes" rows="3"></textarea>
+        </div>`
+    },
+    supplies: {
+      title: { en:'Supply Request', es:'Solicitud de Suministros', pt:'Solicitação de Suprimentos', cv:'Pedidu di Suprimentus' },
+      fields: `
+        <div class="field-group">
+          <div class="field-label">${{en:'Item(s) Needed',es:'Artículos necesarios',pt:'Itens necessários',cv:'Itens presizadus'}[currentLang]}</div>
+          <textarea class="field-input" id="f-items" rows="4" placeholder="${{en:'List what you need...',es:'Lista lo que necesitas...',pt:'Liste o que precisa...',cv:'Lista kuzas ki bu preciza...'}[currentLang]}"></textarea>
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Urgency',es:'Urgencia',pt:'Urgência',cv:'Urjensia'}[currentLang]}</div>
+          <select class="field-input" id="f-urgency">
+            <option value="normal">${{en:'Normal',es:'Normal',pt:'Normal',cv:'Normal'}[currentLang]}</option>
+            <option value="urgent">${{en:'Urgent — need ASAP',es:'Urgente — necesito ahora',pt:'Urgente — preciso já',cv:'Urjenti — preciza ja'}[currentLang]}</option>
+          </select>
+        </div>`
+    },
+    incident: {
+      title: { en:'Incident Report', es:'Reporte de Incidente', pt:'Relatório de Incidente', cv:'Relatoriu di Insidensia' },
+      fields: `
+        <div class="field-group">
+          <div class="field-label">${{en:'Date & Time',es:'Fecha y hora',pt:'Data e hora',cv:'Data y ora'}[currentLang]}</div>
+          <input type="datetime-local" class="field-input" id="f-datetime">
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Location',es:'Lugar',pt:'Local',cv:'Lokal'}[currentLang]}</div>
+          <input type="text" class="field-input" id="f-location" placeholder="${{en:'Client address or location',es:'Dirección del cliente',pt:'Endereço do cliente',cv:'Diresaun di klientu'}[currentLang]}">
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'What happened?',es:'¿Qué pasó?',pt:'O que aconteceu?',cv:'Kuzas ki akontesu?'}[currentLang]}</div>
+          <textarea class="field-input" id="f-what" rows="4"></textarea>
+        </div>
+        <div class="field-group">
+          <div class="field-label">${{en:'Was anyone injured?',es:'¿Alguien se lastimó?',pt:'Alguém se machucou?',cv:'Algen feridu?'}[currentLang]}</div>
+          <select class="field-input" id="f-injured">
+            <option value="no">${{en:'No',es:'No',pt:'Não',cv:'Nau'}[currentLang]}</option>
+            <option value="yes">${{en:'Yes',es:'Sí',pt:'Sim',cv:'Sin'}[currentLang]}</option>
+          </select>
+        </div>`
+    }
+  };
+
+  const form = forms[type];
+  title.textContent = form.title[currentLang] || form.title.en;
+
+  const submitLabel = {en:'Submit',es:'Enviar',pt:'Enviar',cv:'Manda'}[currentLang];
+  body.innerHTML = form.fields + `
+    <button class="submit-btn" onclick="submitForm('${type}')">${submitLabel}</button>
+    <div id="form-success"></div>`;
+
+  modal.style.display = 'flex';
+}
+
+function submitForm(type) {
+  const now = new Date();
+  const entry = {
+    type,
+    employee: currentEmployee.name,
+    team: currentEmployee.team,
+    timestamp: now.toISOString(),
+    dateStr: now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}),
+    data: {}
+  };
+
+  // Collect form data
+  ['f-start','f-end','f-date','f-reason','f-notes','f-items','f-urgency',
+   'f-datetime','f-location','f-what','f-injured'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) entry.data[id] = el.value;
+  });
+
+  submittedForms.push(entry);
+  localStorage.setItem('emp_forms', JSON.stringify(submittedForms));
+  // Also log to main app updates
+  const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
+  const typeLabels = {timeoff:'Time Off Request',callout:'Call Out',supplies:'Supply Request',incident:'Incident Report'};
+  updates.unshift({ id: Date.now().toString(), text: `${typeLabels[type]} — ${currentEmployee.name} (${currentEmployee.team})`, done: false, date: now.toISOString() });
+  localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+
+  const success = document.getElementById('form-success');
+  const msg = {en:'✓ Submitted successfully',es:'✓ Enviado correctamente',pt:'✓ Enviado com sucesso',cv:'✓ Mandadu ku susesu'}[currentLang];
+  success.innerHTML = `<div class="success-msg">${msg}</div>`;
+  setTimeout(() => { document.getElementById('form-modal').style.display = 'none'; }, 1500);
+}
+
+// ─────────────────────────────────────────
+// HANDBOOK
+// ─────────────────────────────────────────
+const HANDBOOK_EN = `
+<div class="handbook-section">
+<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h2">Employee Handbook</div>
+<div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Effective April 10, 2026</div>
+<div class="handbook-p">Welcome to Manna Maids, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 1 — EMPLOYMENT</div>
+<div class="handbook-h3">1.1 At-Will Employment</div>
+<div class="handbook-p">Employment at Manna Maids, Inc. is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
+<div class="handbook-h3">1.2 Equal Opportunity</div>
+<div class="handbook-p">We do not discriminate based on race, color, religion, sex, national origin, age, disability, sexual orientation, gender identity, or any other characteristic protected by Massachusetts or federal law.</div>
+<div class="handbook-h3">1.3 Anti-Harassment</div>
+<div class="handbook-p">Harassment of any kind will not be tolerated. Report any harassment immediately to management. All reports will be investigated promptly and confidentially.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 2 — PAY AND HOURS</div>
+<div class="handbook-h3">2.1 Pay Rate</div>
+<div class="handbook-p">Your hourly pay rate is documented in your employee profile and is confidential between you and management.</div>
+<div class="handbook-h3">2.2 Pay Schedule</div>
+<div class="handbook-p">Employees are paid weekly every Friday for the work week of Monday through Sunday of the prior week.</div>
+<div class="handbook-h3">2.3 Overtime</div>
+<div class="handbook-p">Hours worked over 40 in a single work week will be paid at 1.5 times your regular hourly rate, as required by Massachusetts law.</div>
+<div class="handbook-h3">2.4 Tips</div>
+<div class="handbook-p">Cash tips are yours to keep. Tips received by check will be included in your paycheck. Tips are taxable income.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 3 — SCHEDULES AND ATTENDANCE</div>
+<div class="handbook-h3">3.1 Your Schedule</div>
+<div class="handbook-p">Your daily schedule is available through this employee portal. Check it each morning before leaving the office.</div>
+<div class="handbook-h3">3.2 Calling Out</div>
+<div class="handbook-p">If you cannot work, notify management no later than one hour before your scheduled start time using the Call Out form in this portal.</div>
+<div class="handbook-h3">3.3 Inclement Weather</div>
+<div class="handbook-p">Do not assume work is canceled due to weather. Wait for confirmation from management.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 4 — PAID SICK TIME</div>
+<div class="handbook-h3">4.1 Massachusetts Earned Sick Time</div>
+<div class="handbook-p">You earn one hour of paid sick time for every 30 hours worked, up to 40 hours per calendar year. Sick time may be used for your own illness, care of a family member, or reasons related to domestic violence.</div>
+<div class="handbook-h3">4.2 Massachusetts Paid Family and Medical Leave (PFML)</div>
+<div class="handbook-p">You may be eligible for paid family and medical leave under the Massachusetts PFML program. Contact management for more information.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 5 — COMPANY VEHICLES</div>
+<div class="handbook-h3">5.1 Use of Company Vehicles</div>
+<div class="handbook-p">Company vehicles are provided for work purposes. You are responsible for the safe operation of your assigned vehicle.</div>
+<div class="handbook-h3">5.2 Personal Use</div>
+<div class="handbook-p">Limited personal use is permitted but is not compensated and must not interfere with your work schedule.</div>
+<div class="handbook-h3">5.3 GPS Tracking</div>
+<div class="handbook-p">All company vehicles are equipped with GPS tracking devices monitored by management for scheduling, safety, and payroll purposes.</div>
+<div class="handbook-h3">5.4 No Alcohol or Drugs</div>
+<div class="handbook-p">Operating a company vehicle under the influence of alcohol or drugs is strictly prohibited and grounds for immediate termination.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 6 — UNIFORMS</div>
+<div class="handbook-p">Uniforms are provided at no cost and must be worn during all working hours. Uniforms must be returned upon separation from the company. Failure to return uniforms may result in a deduction from your final paycheck to the extent permitted by Massachusetts law.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 7 — CLIENT INTERACTION</div>
+<div class="handbook-h3">7.1 Professionalism</div>
+<div class="handbook-p">Always be courteous, respectful, and professional in every client's home.</div>
+<div class="handbook-h3">7.2 Client Privacy</div>
+<div class="handbook-p">Client information — addresses, key codes, payment info — is strictly confidential. Do not share client information with anyone outside the company.</div>
+<div class="handbook-h3">7.3 Client Property</div>
+<div class="handbook-p">Treat every client's home and belongings with care. Report any accidental damage to management immediately. Never remove anything from a client's home.</div>
+<div class="handbook-h3">7.4 Client Communication</div>
+<div class="handbook-p">Do not give clients your personal phone number. All client communication goes through the company.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 8 — CONDUCT</div>
+<div class="handbook-p">The following are grounds for immediate termination: theft, harassment or discrimination, insubordination, falsifying records, use of alcohol or drugs during work hours, damage to client property through negligence, failure to return uniforms, excessive absenteeism.</div>
+<div class="handbook-h3">8.1 Social Media</div>
+<div class="handbook-p">Do not post photos of client homes or make negative statements about clients, coworkers, or the company on social media.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 9 — SAFETY</div>
+<div class="handbook-p">Your safety is our priority. Use cleaning products as directed. Report any unsafe conditions immediately. If injured at work, report it to management right away. Never mix cleaning chemicals unless instructed.</div>
+</div>
+<div class="handbook-divider"></div>
+
+<div class="handbook-section">
+<div class="handbook-h2">SECTION 10 — TERMINATION</div>
+<div class="handbook-p">If you choose to leave, return all uniforms and company property on your last day. Your final paycheck will be issued on the next regular Friday payday as required by Massachusetts law.</div>
+</div>`;
+
+function renderHandbook() {
+  document.getElementById('handbook-label').textContent = t('handbook');
+  // For now show English — translation of full handbook can be added
+  document.getElementById('handbook-content').innerHTML = HANDBOOK_EN;
+  document.getElementById('esign-title').textContent = t('signTitle');
+  document.getElementById('esign-name-label').textContent = t('signNameLabel');
+  document.getElementById('esign-btn').textContent = t('signBtn');
+}
+
+function checkExistingSignature() {
+  const key = currentEmployee.name + '_sig';
+  const sig = signatures[key];
+  if (sig) {
+    document.getElementById('esign-form').style.display = 'none';
+    document.getElementById('esign-signed-display').style.display = 'block';
+    document.getElementById('esign-signed-display').innerHTML = `
+      <div class="esign-signed">
+        <div class="esign-signed-name">${sig.name}</div>
+        <div class="esign-signed-date">${t('signedOn')} ${sig.date}</div>
+      </div>`;
+  }
+}
+
+function signHandbook() {
+  const name = document.getElementById('esign-name-input').value.trim();
+  if (!name) {
+    alert(t('signNameLabel'));
+    return;
+  }
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const key = currentEmployee.name + '_sig';
+  signatures[key] = { name, date: dateStr, timestamp: now.toISOString(), employee: currentEmployee.name, team: currentEmployee.team };
+  localStorage.setItem('emp_signatures', JSON.stringify(signatures));
+
+  // Log to main app
+  const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
+  updates.unshift({ id: Date.now().toString(), text: `Handbook signed — ${currentEmployee.name} (${currentEmployee.team})`, done: false, date: now.toISOString() });
+  localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+
+  document.getElementById('esign-form').style.display = 'none';
+  document.getElementById('esign-signed-display').style.display = 'block';
+  document.getElementById('esign-signed-display').innerHTML = `
+    <div class="esign-signed">
+      <div class="esign-signed-name">${name}</div>
+      <div class="esign-signed-date">${t('signedOn')} ${dateStr}</div>
+    </div>`;
+}
+
+// ─────────────────────────────────────────
+// TABS
+// ─────────────────────────────────────────
+function showPortalTab(tab) {
+  ['schedule','hours','forms','handbook'].forEach(t => {
+    document.getElementById('tab-' + t).style.display = t === tab ? 'block' : 'none';
+    document.getElementById('ptab-' + t).classList.toggle('active', t === tab);
+  });
+  currentTab = tab;
+}
+
+
+// ─────────────────────────────────────────
+// JOB APPLICATION
+// ─────────────────────────────────────────
+let applications = JSON.parse(localStorage.getItem('job_applications') || '[]');
+
+function showApplication() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('application-screen').style.display = 'block';
+}
+
+function hideApplication() {
+  document.getElementById('application-screen').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+}
+
+function submitApplication() {
+  // Validate required fields
+  const required = {
+    'app-firstname': 'First Name',
+    'app-lastname': 'Last Name',
+    'app-phone': 'Phone Number',
+    'app-address': 'Home Address',
+    'app-city': 'City',
+    'app-auth': 'Work Authorization',
+    'app-license': "Driver's License",
+    'app-hear': 'How did you hear about us',
+    'app-emname': 'Emergency Contact Name',
+    'app-emphone': 'Emergency Contact Phone',
+    'app-signature': 'Signature'
+  };
+
+  for (const [id, label] of Object.entries(required)) {
+    const el = document.getElementById(id);
+    if (!el || !el.value.trim()) {
+      document.getElementById('app-error').textContent = label + ' is required.';
+      el && el.focus();
+      el && el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+  }
+
+  // Collect availability days
+  const days = Array.from(document.querySelectorAll('#app-days-grid input:checked')).map(c => c.value);
+  if (days.length === 0) {
+    document.getElementById('app-error').textContent = 'Please select at least one available day.';
+    return;
+  }
+
+  // Collect languages
+  const langs = Array.from(document.querySelectorAll('#application-screen input[type=checkbox]:checked'))
+    .filter(c => ['English','Spanish','Portuguese','Kriolu'].includes(c.value))
+    .map(c => c.value);
+
+  const now = new Date();
+  const app = {
+    id: Date.now().toString(),
+    status: 'pending', // pending, approved, declined
+    submittedAt: now.toISOString(),
+    submittedStr: now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}),
+    firstName: document.getElementById('app-firstname').value.trim(),
+    lastName: document.getElementById('app-lastname').value.trim(),
+    phone: document.getElementById('app-phone').value.trim(),
+    email: document.getElementById('app-email').value.trim(),
+    address: document.getElementById('app-address').value.trim(),
+    city: document.getElementById('app-city').value.trim(),
+    workAuth: document.getElementById('app-auth').value,
+    hasLicense: document.getElementById('app-license').value,
+    experience: document.getElementById('app-exp').value,
+    expNotes: document.getElementById('app-expnotes').value.trim(),
+    availDays: days,
+    prefHours: document.getElementById('app-hours').value,
+    languages: langs,
+    heardFrom: document.getElementById('app-hear').value,
+    emergencyName: document.getElementById('app-emname').value.trim(),
+    emergencyPhone: document.getElementById('app-emphone').value.trim(),
+    emergencyRel: document.getElementById('app-emrel').value.trim(),
+    signature: document.getElementById('app-signature').value.trim()
+  };
+
+  applications.push(app);
+  localStorage.setItem('job_applications', JSON.stringify(applications));
+
+  // Log to main app updates tab
+  const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
+  updates.unshift({
+    id: Date.now().toString(),
+    text: '📋 New job application — ' + app.firstName + ' ' + app.lastName + ' · ' + app.phone,
+    done: false,
+    date: now.toISOString()
+  });
+  localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+
+  // Show success
+  document.getElementById('app-form').style.display = 'none';
+  document.getElementById('app-success').style.display = 'block';
+}
+
+// Shake animation
+const style = document.createElement('style');
+style.textContent = '@keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }';
+document.head.appendChild(style);
+</script>
+</body>
+</html>
