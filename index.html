@@ -847,143 +847,6 @@ body {
   <div class="bottom-pad"></div>
 </div>
 
-<!-- NEW/EDIT CUSTOMER FORM -->
-<div id="customer-form-overlay" class="form-overlay" style="display:none" onclick="if(event.target===this)closeCustomerForm()">
-  <div class="form-sheet">
-    <div class="form-header">
-      <div class="form-title" id="form-title">New Customer</div>
-      <button class="form-close" onclick="closeCustomerForm()">×</button>
-    </div>
-    <div class="form-body">
-      <input type="hidden" id="form-client-id" value="">
-      
-      <div class="form-section">
-        <div class="form-section-title">Contact Info</div>
-        <div class="form-row">
-          <div class="form-field">
-            <label class="form-label">First Name *</label>
-            <input class="form-input" id="form-fn" placeholder="Jane" type="text">
-          </div>
-          <div class="form-field">
-            <label class="form-label">Last Name *</label>
-            <input class="form-input" id="form-ln" placeholder="Smith" type="text">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-field">
-            <label class="form-label">Phone</label>
-            <input class="form-input" id="form-ph" placeholder="(508) 555-0100" type="tel">
-          </div>
-          <div class="form-field">
-            <label class="form-label">Email</label>
-            <input class="form-input" id="form-email" placeholder="jane@email.com" type="email">
-          </div>
-        </div>
-        <div class="form-row full">
-          <div class="form-field">
-            <label class="form-label">Address *</label>
-            <input class="form-input" id="form-addr" placeholder="123 Main St, Abington MA" type="text">
-          </div>
-        </div>
-      </div>
-
-      <div class="form-section">
-        <div class="form-section-title">Service Details</div>
-        <div class="form-row">
-          <div class="form-field">
-            <label class="form-label">Frequency</label>
-            <select class="form-select" id="form-freq">
-              <option value="W">Weekly</option>
-              <option value="BW">Bi-Weekly</option>
-              <option value="M">Monthly</option>
-              <option value="OMS">One-Time</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label class="form-label">Price Per Clean</label>
-            <input class="form-input" id="form-price" placeholder="$150" type="text">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-field">
-            <label class="form-label">First Clean Date</label>
-            <input class="form-input" id="form-firstclean" type="date">
-          </div>
-          <div class="form-field">
-            <label class="form-label">Preferred Team</label>
-            <select class="form-select" id="form-team">
-              <option value="">— Unassigned —</option>
-              <option value="B1">B1</option>
-              <option value="B3">B3</option>
-              <option value="B5">B5</option>
-              <option value="S1">S1</option>
-              <option value="S3">S3</option>
-              <option value="M1">M1</option>
-              <option value="M2">M2</option>
-              <option value="M3">M3</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-field">
-            <label class="form-label">Preferred Day</label>
-            <select class="form-select" id="form-prefday">
-              <option value="">Any</option>
-              <option value="Monday">Monday</option>
-              <option value="Tuesday">Tuesday</option>
-              <option value="Wednesday">Wednesday</option>
-              <option value="Thursday">Thursday</option>
-              <option value="Friday">Friday</option>
-            </select>
-          </div>
-          <div class="form-field">
-            <label class="form-label">Payment Method</label>
-            <select class="form-select" id="form-payment">
-              <option value="">Unknown</option>
-              <option value="Cash">Cash</option>
-              <option value="Check">Check</option>
-              <option value="Venmo">Venmo</option>
-              <option value="Zelle">Zelle</option>
-              <option value="Credit Card">Credit Card</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-section">
-        <div class="form-section-title">Notes</div>
-        <div class="form-row full">
-          <textarea class="form-textarea" id="form-notes" placeholder="Special instructions, access codes, pets, preferences..."></textarea>
-        </div>
-      </div>
-
-      <button class="form-save-btn" onclick="saveCustomerForm()">💾 Save Customer</button>
-      <button class="form-delete-btn" id="form-delete-btn" style="display:none" onclick="deleteCustomer()">🗑 Delete Customer</button>
-    </div>
-  </div>
-</div>
-
-<!-- ROUTE OPTIMIZER MODAL -->
-<div id="route-modal-overlay" class="route-modal-overlay" style="display:none" onclick="if(event.target===this)closeRouteOptimizer()">
-  <div class="route-modal">
-    <div class="route-modal-header">
-      <div>
-        <div class="route-modal-title">🗺 Route Optimizer</div>
-        <div style="font-size:12px;color:var(--muted)" id="route-subtitle">Optimized for min drive time</div>
-      </div>
-      <button class="route-close-btn" onclick="closeRouteOptimizer()">×</button>
-    </div>
-    <div class="route-date-row">
-      <span style="font-size:13px;color:var(--muted)">Date:</span>
-      <input type="date" id="route-date-picker" class="route-date-pick" onchange="buildRoutes()">
-    </div>
-    <div class="route-team-tabs" id="route-team-tabs"></div>
-    <div class="route-content" id="route-content">
-      <div class="route-loading">Select a date to optimize routes</div>
-    </div>
-  </div>
-</div>
-
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
   <button class="nav-btn active" id="nav-clients" onclick="showTab('clients')">
@@ -4274,5 +4137,144 @@ function updateNavBadge() {
 }
 
 </script>
+
+<!-- NEW/EDIT CUSTOMER FORM -->
+<div id="customer-form-overlay" class="form-overlay" style="display:none" onclick="if(event.target===this)closeCustomerForm()">
+  <div class="form-sheet">
+    <div class="form-header">
+      <div class="form-title" id="form-title">New Customer</div>
+      <button class="form-close" onclick="closeCustomerForm()">×</button>
+    </div>
+    <div class="form-body">
+      <input type="hidden" id="form-client-id" value="">
+      
+      <div class="form-section">
+        <div class="form-section-title">Contact Info</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">First Name *</label>
+            <input class="form-input" id="form-fn" placeholder="Jane" type="text">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Last Name *</label>
+            <input class="form-input" id="form-ln" placeholder="Smith" type="text">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Phone</label>
+            <input class="form-input" id="form-ph" placeholder="(508) 555-0100" type="tel">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Email</label>
+            <input class="form-input" id="form-email" placeholder="jane@email.com" type="email">
+          </div>
+        </div>
+        <div class="form-row full">
+          <div class="form-field">
+            <label class="form-label">Address *</label>
+            <input class="form-input" id="form-addr" placeholder="123 Main St, Abington MA" type="text">
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Service Details</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Frequency</label>
+            <select class="form-select" id="form-freq">
+              <option value="W">Weekly</option>
+              <option value="BW">Bi-Weekly</option>
+              <option value="M">Monthly</option>
+              <option value="OMS">One-Time</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Price Per Clean</label>
+            <input class="form-input" id="form-price" placeholder="$150" type="text">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">First Clean Date</label>
+            <input class="form-input" id="form-firstclean" type="date">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Preferred Team</label>
+            <select class="form-select" id="form-team">
+              <option value="">— Unassigned —</option>
+              <option value="B1">B1</option>
+              <option value="B3">B3</option>
+              <option value="B5">B5</option>
+              <option value="S1">S1</option>
+              <option value="S3">S3</option>
+              <option value="M1">M1</option>
+              <option value="M2">M2</option>
+              <option value="M3">M3</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-field">
+            <label class="form-label">Preferred Day</label>
+            <select class="form-select" id="form-prefday">
+              <option value="">Any</option>
+              <option value="Monday">Monday</option>
+              <option value="Tuesday">Tuesday</option>
+              <option value="Wednesday">Wednesday</option>
+              <option value="Thursday">Thursday</option>
+              <option value="Friday">Friday</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Payment Method</label>
+            <select class="form-select" id="form-payment">
+              <option value="">Unknown</option>
+              <option value="Cash">Cash</option>
+              <option value="Check">Check</option>
+              <option value="Venmo">Venmo</option>
+              <option value="Zelle">Zelle</option>
+              <option value="Credit Card">Credit Card</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-section-title">Notes</div>
+        <div class="form-row full">
+          <textarea class="form-textarea" id="form-notes" placeholder="Special instructions, access codes, pets, preferences..."></textarea>
+        </div>
+      </div>
+
+      <button class="form-save-btn" onclick="saveCustomerForm()">💾 Save Customer</button>
+      <button class="form-delete-btn" id="form-delete-btn" style="display:none" onclick="deleteCustomer()">🗑 Delete Customer</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ROUTE OPTIMIZER MODAL -->
+<div id="route-modal-overlay" class="route-modal-overlay" style="display:none" onclick="if(event.target===this)closeRouteOptimizer()">
+  <div class="route-modal">
+    <div class="route-modal-header">
+      <div>
+        <div class="route-modal-title">🗺 Route Optimizer</div>
+        <div style="font-size:12px;color:var(--muted)" id="route-subtitle">Optimized for min drive time</div>
+      </div>
+      <button class="route-close-btn" onclick="closeRouteOptimizer()">×</button>
+    </div>
+    <div class="route-date-row">
+      <span style="font-size:13px;color:var(--muted)">Date:</span>
+      <input type="date" id="route-date-picker" class="route-date-pick" onchange="buildRoutes()">
+    </div>
+    <div class="route-team-tabs" id="route-team-tabs"></div>
+    <div class="route-content" id="route-content">
+      <div class="route-loading">Select a date to optimize routes</div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
