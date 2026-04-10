@@ -993,7 +993,7 @@ function render() {
         ${schedHtml}
         <div class="action-row" onclick="event.stopPropagation()">
           ${c.ph ? `<a class="action-btn btn-call" href="glip://r/call?number=${toE164(c.ph)}" onclick="event.stopPropagation()">📞 Call</a>` : ''}
-          ${c.ph ? `<a class="action-btn btn-sms" href="glip://r/sms?type=new&number=${toE164(c.ph)}" onclick="event.stopPropagation()">✉ SMS</a>` : ''}
+          ${c.ph ? `<button class="action-btn btn-sms" onclick="event.stopPropagation();openClientMessages('${c.id}','${c.ph}','${c.fn} ${c.ln}')">✉ SMS</button>` : ''}
           <button class="action-btn btn-msg" onclick="event.stopPropagation();openDrawer(event,'${c.id}')">✦ Draft msg</button>
         </div>
         ${c.bal > 0 ? `<div onclick="event.stopPropagation()" style="margin-top:8px">
@@ -1711,6 +1711,33 @@ let currentConv = null;
 
 updateTaskBadge();
 rcInit();
+
+function openClientMessages(clientId, phone, name) {
+  // Switch to messages tab
+  showTab('messages');
+  // If RC is connected, find or open conversation with this number
+  if (!rcToken) return;
+  const digits = phone.replace(/\D/g,'').slice(-10);
+  // Look for existing conversation
+  const existing = rcConversations.find(t => t.phone.replace(/\D/g,'').slice(-10) === digits);
+  if (existing) {
+    const idx = rcConversations.indexOf(existing);
+    setTimeout(() => openConversation(idx), 300);
+  } else {
+    // No existing conversation — pre-fill a new one
+    setTimeout(() => {
+      document.getElementById('rc-conv-section').style.display = 'block';
+      document.getElementById('rc-inbox-section').style.display = 'none';
+      document.getElementById('conv-name').textContent = name;
+      document.getElementById('conv-number').textContent = phone;
+      document.getElementById('conv-messages').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">No messages yet with ' + name + '</div>';
+      currentConv = { phone: '+1' + digits, name, messages: [] };
+      // Set draft placeholder
+      document.getElementById('draft-text').placeholder = 'Type a message to ' + name + '...';
+    }, 300);
+  }
+}
+
 
 // ── DAY HISTORY MODAL ──
 async function showDayHistory(team, dateMs) {
@@ -2882,6 +2909,7 @@ function renderGPS() {
           <div class="tvc-name">${v.team} <span style="font-size:12px;color:var(--muted);font-weight:400">${v.name}</span></div>
           <div class="tvc-location">${v.address || 'Location unknown'}</div>
         </div>
+        <div style="font-size:20px;color:var(--muted);padding:0 4px;line-height:1">${isExp ? '✕' : '☰'}</div>
         <div class="tvc-status">
           <span class="tvc-moving ${v.isMoving?'yes':'no'}">${v.isMoving?'Moving':'Stopped'}</span>
           ${v.isMoving ? `<span class="tvc-speed">${v.speed} mph</span>` : ''}
