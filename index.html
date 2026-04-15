@@ -1865,7 +1865,7 @@ function getJobDurationMins(job) {
     if (diff > 0) return diff;
   }
   var ex = job.clientId ? (getClientExtras(job.clientId) || {}) : {};
-  var totalMins = parseInt(ex.quotedMin) || 120;
+  var totalMins = parseInt(job.quotedMin) || parseInt(ex.quotedMin) || 120;
   var dateStr = job.date || dateKey(calDate);
   var members = getTeamEmployees(job.team, dateStr).length || 2;
   return Math.round(totalMins / members);
