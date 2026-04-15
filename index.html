@@ -2240,7 +2240,7 @@ function renderCal() {
             +' style="position:absolute;left:'+blockL+'px;top:4px;width:'+blockW+'px;height:64px;'
             +'background:'+(isCancelled?'rgba(248,113,113,0.08)':'var(--surface)')+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
             +'border-radius:8px;padding:5px 6px;overflow:hidden;box-sizing:border-box;'
-            +'cursor:grab;opacity:'+(isDone||isCancelled?'0.5':'1')+';user-select:none;-webkit-user-select:none;touch-action:none">'
+            +'cursor:grab;opacity:'+(isDone||isCancelled?'0.5':'1')+';user-select:none;-webkit-user-select:none;touch-action:auto">'
             +'<div style="font-size:11px;font-weight:600;color:'+(isCancelled?'var(--red)':'var(--text)')+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
             +(timeLabel?'<div style="font-size:9px;color:var(--muted);white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
             +(city&&blockW>80?'<div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
@@ -11420,11 +11420,11 @@ function jobDragStart(e, el) {
 }
 
 function jobDragMove(e) {
-  if (!_dragTimer) return;
+  if (!_dragTimer && !_dragActive) return;
   var dx = Math.abs(e.touches[0].clientX - _dragStartX);
   var dy = Math.abs(e.touches[0].clientY - _dragStartY);
-  // Cancel timer if moved too much before long press
-  if (!_dragActive && (dx > 8 || dy > 8)) {
+  // Cancel timer if moved before long press fires — let browser scroll normally
+  if (!_dragActive && (dx > 5 || dy > 5)) {
     clearTimeout(_dragTimer);
     _dragTimer = null;
     return;
