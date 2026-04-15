@@ -3320,6 +3320,9 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
   if (!emp) return;
 
+  // Track old team so we can recalc its schedule
+  var oldTeam = getEmployeeTeam(employeeId, dateStr);
+
   if (team === 'OFF') {
     dailyAssignments[dateStr + '_' + employeeId] = 'OFF';
     saveDailyAssignments();
@@ -3334,6 +3337,10 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay) {
 
   overlay.remove();
   renderTeamManager();
+
+  // Recalc job times for affected teams (durations changed with different team size)
+  if (oldTeam) recalcTeamTimes(oldTeam, dateStr);
+  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
 }
 
 
