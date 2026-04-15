@@ -2196,7 +2196,7 @@ function renderCal() {
 
           var maxChars = Math.floor(blockW / 7);
           if (shortName.length > maxChars) shortName = shortName.substring(0, Math.max(maxChars-1,4))+'…';
-          var timeLabel = j.flexible ? '~flex' : (j.time ? j.time.replace(/:\d{2}(\s|$)/,'$1').trim() : '');
+          var timeLabel = j.flexible ? '~flex' : (j.time ? (function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time) : '');
           var endM = startM !== null ? startM + durM : null;
           var endLabel = endM ? (function(m){ var hh=Math.floor(m/60)%24,mm=m%60,ap=hh>=12?'p':'a'; if(hh>12)hh-=12; if(hh===0)hh=12; return hh+(mm?':'+String(mm).padStart(2,'0'):'')+ap; })(endM) : '';
 
@@ -2287,7 +2287,7 @@ function renderCal() {
       gridHtml += `<div class="wg-col">
         <div class="wg-head${isTd?' today':''}">${DAYS[d.getDay()]}</div>
         <div class="wg-num${isTd?' today':''}" style="cursor:pointer" onclick="calDate=new Date(${d.getTime()});setCalMode('day')">${d.getDate()}</div>
-        ${visible.map(j => `<div class="wg-job${j.done?' done':''}" style="border-left-color:${(team_colors_map[(j.team||(getClientExtras(j.clientId||'')).team||'')] || '#6b7280')}" onclick="calDate=new Date(${d.getTime()});setCalMode('day')" title="${j.clientName}">${j.flexible?'~':j.time||'?'} ${j.clientName.split(' ')[0]}</div>`).join('')}
+        ${visible.map(j => `<div class="wg-job${j.done?' done':''}" style="border-left-color:${(team_colors_map[(j.team||(getClientExtras(j.clientId||'')).team||'')] || '#6b7280')}" onclick="calDate=new Date(${d.getTime()});setCalMode('day')" title="${j.clientName}">${j.flexible?'~':(j.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time):'?')} ${j.clientName.split(' ')[0]}</div>`).join('')}
         ${extra > 0 ? `<div class="wg-more">+${extra} more</div>` : ''}
         <div class="wg-add" onclick="calDate=new Date(${d.getTime()});openJobModal(null)">+</div>
       </div>`;
@@ -2418,8 +2418,9 @@ function saveJob() {
   const dateDisp = new Date(+yr2,+mo2-1,+dy2).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   if (editingJob) {
     const oldDate = editingJob.date;
-    const oldTime = editingJob.flexible ? 'Flexible' : editingJob.time;
-    const newTime = flex ? 'Flexible' : time;
+    const _fmt12 = function(t){ if(!t)return''; var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; };
+    const oldTime = editingJob.flexible ? 'Flexible' : _fmt12(editingJob.time);
+    const newTime = flex ? 'Flexible' : _fmt12(time);
     let changes = [];
     if (oldDate !== date) changes.push('Date: ' + dateDisp);
     if (oldTime !== newTime) changes.push('Time: ' + oldTime + ' → ' + newTime);
@@ -2454,7 +2455,7 @@ function deleteJob(id) {
   if (job) {
     const [yr2,mo2,dy2] = job.date.split('-');
     const dateDisp = new Date(+yr2,+mo2-1,+dy2).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    logPendingUpdate('Remove job: ' + job.clientName, 'Originally scheduled ' + (job.flexible?'flexible':(job.time||'')) + ' on ' + dateDisp);
+    logPendingUpdate('Remove job: ' + job.clientName, 'Originally scheduled ' + (job.flexible?'flexible':(job.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(job.time):'')) + ' on ' + dateDisp);
   }
   jobs = jobs.filter(j => j.id !== id);
   saveJobs();
