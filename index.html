@@ -11518,10 +11518,10 @@ function jobDragEnd(e) {
 
 // ── DRIVE TIME BETWEEN JOBS ──
 // One-time cache clear for geocodes without MA state
-if (!localStorage.getItem('ff_geocache_v2')) {
+if (!localStorage.getItem('ff_geocache_v3')) {
   localStorage.removeItem('ff_geocache');
   localStorage.removeItem('ff_drivecache');
-  localStorage.setItem('ff_geocache_v2', '1');
+  localStorage.setItem('ff_geocache_v3', '1');
 }
 var _driveTimeCache = JSON.parse(localStorage.getItem('ff_drivecache') || '{}');
 
@@ -11582,16 +11582,9 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
   });
   if (teamJobs.length < 2) return;
 
-  // Find where the moved job landed in the sorted order
-  var startIdx = 0;
-  if (movedJobId) {
-    for (var s = 0; s < teamJobs.length; s++) {
-      if (teamJobs[s].id === movedJobId) { startIdx = s; break; }
-    }
-  }
-
-  // Adjust all jobs after the moved one
-  var i = startIdx;
+  // Always start from the first job — the first job keeps its time,
+  // every job after it gets adjusted based on previous clean end + drive time
+  var i = 0;
   function processNext() {
     if (i >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
     var curr = teamJobs[i];
@@ -11622,7 +11615,13 @@ function getClientAddrForJob(j) {
   var addr = '';
   if (c) {
     var ln = c.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim();
-    addr = CLIENT_ADDRS[ln] || ((c.addr||'') + (c.city ? ', '+c.city : ''));
+    if (CLIENT_ADDRS[ln]) {
+      addr = CLIENT_ADDRS[ln];
+    } else {
+      addr = (c.addr||'');
+      if (c.city) addr += ', ' + c.city;
+      if (c.zip) addr += ' ' + c.zip;
+    }
   } else {
     addr = j.addr || '';
   }
