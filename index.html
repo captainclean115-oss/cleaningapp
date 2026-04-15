@@ -3321,7 +3321,8 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   if (!emp) return;
 
   if (team === 'OFF') {
-    dailyAssignments[dateStr + '_' + employeeId] = null;
+    dailyAssignments[dateStr + '_' + employeeId] = 'OFF';
+    saveDailyAssignments();
   } else {
     assignEmployee(employeeId, team, dateStr);
   }
@@ -3406,7 +3407,9 @@ function saveDailyAssignments() {
 
 function getEmployeeTeam(employeeId, dateStr) {
   const key = dateStr + '_' + employeeId;
-  if (dailyAssignments[key] !== undefined) return dailyAssignments[key];
+  if (dailyAssignments[key] !== undefined) {
+    return dailyAssignments[key] === 'OFF' ? null : dailyAssignments[key];
+  }
   const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
   return emp ? emp.defaultTeam : null;
 }
