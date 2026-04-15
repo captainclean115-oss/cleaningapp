@@ -1859,6 +1859,11 @@ function updateRevDisplay() {
 }
 
 function getJobDurationMins(job) {
+  if (job.endTime && job.time) {
+    var sp = job.time.split(':'), ep = job.endTime.split(':');
+    var diff = (parseInt(ep[0])*60+parseInt(ep[1])) - (parseInt(sp[0])*60+parseInt(sp[1]));
+    if (diff > 0) return diff;
+  }
   var ex = job.clientId ? (getClientExtras(job.clientId) || {}) : {};
   var totalMins = parseInt(ex.quotedMin) || 120;
   var dateStr = job.date || dateKey(calDate);
@@ -2197,7 +2202,7 @@ function renderCal() {
           var maxChars = Math.floor(blockW / 7);
           if (shortName.length > maxChars) shortName = shortName.substring(0, Math.max(maxChars-1,4))+'…';
           var timeLabel = j.flexible ? '~flex' : (j.time ? (function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time) : '');
-          var endM = startM !== null ? startM + durM : null;
+          var endM = j.endTime ? (function(t){ var p=t.split(':'); return parseInt(p[0])*60+parseInt(p[1]); })(j.endTime) : (startM !== null ? startM + durM : null);
           var endLabel = endM ? (function(m){ var hh=Math.floor(m/60)%24,mm=m%60,ap=hh>=12?'p':'a'; if(hh>12)hh-=12; if(hh===0)hh=12; return hh+(mm?':'+String(mm).padStart(2,'0'):'')+ap; })(endM) : '';
 
           bodyHtml += '<div id="sqjob_'+safeId+'" data-jid="'+safeId+'" data-team="'+team+'" data-time="'+(j.time||'')+'"'
@@ -2336,7 +2341,10 @@ function openJobModal(jobId) {
             <button class="time-flex-btn${editingJob&&editingJob.flexible?'':' active'}" id="btn-set-time" onclick="setTimeMode(false)">Set time</button>
             <button class="time-flex-btn${editingJob&&editingJob.flexible?' active':''}" id="btn-flex-time" onclick="setTimeMode(true)">Flexible</button>
           </div>
-          <input type="time" class="form-input" id="job-time" value="${editingJob&&!editingJob.flexible ? editingJob.time : ''}" style="display:${editingJob&&editingJob.flexible?'none':'block'}">
+          <div style="display:${editingJob&&editingJob.flexible?'none':'flex'};gap:8px;align-items:center" id="time-fields">
+            <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Start</div><input type="time" class="form-input" id="job-time" value="${editingJob&&!editingJob.flexible ? editingJob.time : ''}"></div>
+            <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">End</div><input type="time" class="form-input" id="job-end-time" value="${editingJob&&!editingJob.flexible&&editingJob.endTime ? editingJob.endTime : ''}"></div>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">Team</label>
@@ -2373,7 +2381,7 @@ function openJobModal(jobId) {
 function setTimeMode(flex) {
   document.getElementById('btn-set-time').classList.toggle('active', !flex);
   document.getElementById('btn-flex-time').classList.toggle('active', flex);
-  document.getElementById('job-time').style.display = flex ? 'none' : 'block';
+  document.getElementById('time-fields').style.display = flex ? 'none' : 'flex';
 }
 
 function suggestClients(q) {
@@ -2409,6 +2417,7 @@ function saveJob() {
   const date = document.getElementById('job-date').value;
   const flex = document.getElementById('btn-flex-time').classList.contains('active');
   const time = flex ? '' : document.getElementById('job-time').value;
+  const endTime = flex ? '' : (document.getElementById('job-end-time').value || '');
   const notes = document.getElementById('job-notes').value.trim();
   const jobPrice = document.getElementById('job-price') ? document.getElementById('job-price').value.trim() : '';
 
@@ -2433,11 +2442,12 @@ function saveJob() {
     editingJob.date = date;
     editingJob.flexible = flex;
     editingJob.time = time;
+    editingJob.endTime = endTime;
     editingJob.notes = notes;
     editingJob.team = team;
     editingJob.color = color;
   } else {
-    jobs.push({ id: Date.now().toString(), clientName, clientId, addr, date, flexible: flex, time, notes, done: false, team, color });
+    jobs.push({ id: Date.now().toString(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, done: false, team, color });
     logPendingUpdate('Add job: ' + clientName, (flex ? 'Flexible time' : (time||'No time')) + ' on ' + dateDisp);
   }
   saveJobs();
