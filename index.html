@@ -11498,6 +11498,7 @@ function jobDragEnd(e) {
 
   var _movedTeam = _dragJob.team;
   var _movedDate = _dragJob.date;
+  var _movedId = _dragJob.id;
 
   saveJobs();
   if (navigator.vibrate) navigator.vibrate(30);
@@ -11512,10 +11513,16 @@ function jobDragEnd(e) {
   renderCal();
 
   // Recalculate subsequent job times based on drive time
-  recalcTeamTimes(_movedTeam, _movedDate);
+  recalcTeamTimes(_movedTeam, _movedDate, _movedId);
 }
 
 // ── DRIVE TIME BETWEEN JOBS ──
+// One-time cache clear for geocodes without MA state
+if (!localStorage.getItem('ff_geocache_v2')) {
+  localStorage.removeItem('ff_geocache');
+  localStorage.removeItem('ff_drivecache');
+  localStorage.setItem('ff_geocache_v2', '1');
+}
 var _driveTimeCache = JSON.parse(localStorage.getItem('ff_drivecache') || '{}');
 
 function getDriveTimeCacheKey(addr1, addr2) {
@@ -11567,15 +11574,24 @@ function calcTeamDriveTimes(teamJobs, callback) {
 }
 
 // After moving/dropping a job, recalculate start times for subsequent jobs on that team
-function recalcTeamTimes(team, dateStr) {
+function recalcTeamTimes(team, dateStr, movedJobId) {
   var teamJobs = jobs.filter(function(j) {
-    return j.date === dateStr && j.team === team && !j.cancelled && !j.flexible;
+    return j.date === dateStr && j.team === team && !j.cancelled && !j.flexible && j.time;
   }).sort(function(a,b) {
     return (jobStartMins(a)||0) - (jobStartMins(b)||0);
   });
   if (teamJobs.length < 2) return;
 
-  var i = 0;
+  // Find where the moved job landed in the sorted order
+  var startIdx = 0;
+  if (movedJobId) {
+    for (var s = 0; s < teamJobs.length; s++) {
+      if (teamJobs[s].id === movedJobId) { startIdx = s; break; }
+    }
+  }
+
+  // Adjust all jobs after the moved one
+  var i = startIdx;
   function processNext() {
     if (i >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
     var curr = teamJobs[i];
@@ -11583,7 +11599,6 @@ function recalcTeamTimes(team, dateStr) {
     var currEnd = (jobStartMins(curr) || 0) + getJobDurationMins(curr);
     var a1 = getClientAddrForJob(curr), a2 = getClientAddrForJob(next);
     if (!a1 || !a2) {
-      // No addresses — just use clean end time + 15 min buffer
       var newStart = currEnd + 15;
       next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
       i++; processNext();
@@ -11604,12 +11619,15 @@ var _geocodeCache = {};
 
 function getClientAddrForJob(j) {
   var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
+  var addr = '';
   if (c) {
     var ln = c.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim();
-    if (CLIENT_ADDRS[ln]) return CLIENT_ADDRS[ln];
-    return (c.addr||'') + (c.city ? ', '+c.city : '');
+    addr = CLIENT_ADDRS[ln] || ((c.addr||'') + (c.city ? ', '+c.city : ''));
+  } else {
+    addr = j.addr || '';
   }
-  return j.addr || '';
+  if (addr && !/\bMA\b/i.test(addr)) addr += ', MA';
+  return addr;
 }
 
 function geocodeAddress(addr, callback) {
