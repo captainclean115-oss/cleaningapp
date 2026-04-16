@@ -5521,25 +5521,46 @@ function renderGPS() {
         });
       });
 
-      // Match stop addresses to client names
+      // Match stop addresses to client names — fuzzy by street name
+      function getStreetName(addr) {
+        if (!addr) return '';
+        // Strip numbers, unit/apt, city/state/zip — keep just the street name words
+        return addr.toLowerCase()
+          .replace(/,.*$/,'') // remove everything after comma (city, state)
+          .replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'') // remove apt/unit
+          .replace(/[^a-z ]/g,' ') // remove numbers and special chars
+          .replace(/\s+/g,' ').trim();
+      }
       function matchClientName(addr) {
         if (!addr) return '';
         var a = addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-        // Check today's jobs for this team first
+        var aStreet = getStreetName(addr);
+        // Check today's jobs for this team first (most likely match)
         for (var ji = 0; ji < teamJobs.length; ji++) {
           var j = teamJobs[ji];
           var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
           if (c && c.addr) {
             var ca = c.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+            // Exact match
             if (a.includes(ca) || ca.includes(a)) return (c.fn || '') + ' ' + (c.ln || '');
+            // Street name match
+            var cStreet = getStreetName(c.addr);
+            if (aStreet && cStreet && aStreet.length > 3 && (aStreet.includes(cStreet) || cStreet.includes(aStreet))) return (c.fn || '') + ' ' + (c.ln || '');
           }
         }
-        // Check all clients
+        // Check all clients — street name match
         for (var ci = 0; ci < CLIENTS.length; ci++) {
           var cl = CLIENTS[ci];
           if (cl.addr) {
-            var cla = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-            if (a.includes(cla) || cla.includes(a)) return (cl.fn || '') + ' ' + (cl.ln || '');
+            var ca2 = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+            if (a.includes(ca2) || ca2.includes(a)) return (cl.fn || '') + ' ' + (cl.ln || '');
+            var cStreet2 = getStreetName(cl.addr);
+            // Also check city match to avoid false positives on common street names
+            var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
+            var cCity = (cl.city||'').toLowerCase();
+            if (aStreet && cStreet2 && aStreet.length > 3 && (aStreet.includes(cStreet2) || cStreet2.includes(aStreet))) {
+              if (!aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity)) return (cl.fn || '') + ' ' + (cl.ln || '');
+            }
           }
         }
         return '';
