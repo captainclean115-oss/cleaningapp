@@ -4605,6 +4605,9 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Hours</div>'
     +'<div id="emp-hr-calc" style="font-size:22px;font-weight:700;color:var(--accent)">'+hrsVal.toFixed(1)+'</div></div></div>'
     +'<div id="emp-stops-area" style="margin-bottom:16px"></div>'
+    +'<div id="emp-tasks-area" style="margin-bottom:16px"></div>'
+    +'<button onclick="showAddTaskMenu(\''+empId+'\',\''+dk+'\')" style="width:100%;padding:12px;background:rgba(108,143,255,0.1);border:1px solid rgba(108,143,255,0.25);border-radius:10px;color:var(--accent);font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:14px">+ Add Task</button>'
+    +'<div id="add-task-form" style="display:none;margin-bottom:14px"></div>'
     +'<div style="display:flex;gap:8px">'
     +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="flex:1;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
     +'<button onclick="saveEmpDayHours(\''+empId+'\',\''+dk+'\')" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-family:DM Sans,sans-serif;font-size:14px;font-weight:600;cursor:pointer">Save</button>'
@@ -4620,7 +4623,9 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     var e = document.getElementById('emp-hr-end').value;
     var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
     var hrs = calcHoursFromTimes(s, e, l);
-    document.getElementById('emp-hr-calc').textContent = hrs.toFixed(1);
+    var tasks = getEmpTasks(empId, dk);
+    var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
+    document.getElementById('emp-hr-calc').textContent = (hrs + taskHrs).toFixed(1);
   }
   document.getElementById('emp-hr-start').addEventListener('input', updateCalc);
   document.getElementById('emp-hr-end').addEventListener('input', updateCalc);
@@ -4628,6 +4633,9 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
 
   // Load team stops for this day
   showEmpStops(team, dateMs);
+
+  // Render existing extra tasks
+  renderEmpTasks(empId, dk);
 }
 
 async function showEmpStops(team, dateMs) {
@@ -4709,6 +4717,124 @@ async function showEmpStops(team, dateMs) {
   }
 }
 
+// ── EMPLOYEE EXTRA TASKS ──
+var EMP_TASK_TYPES = [
+  { id: 'office', label: 'Office Cleaning', icon: '🏢' },
+  { id: 'meeting', label: 'Paid Meeting', icon: '📋' },
+  { id: 'training', label: 'Training', icon: '📚' },
+  { id: 'supply_run', label: 'Supply Run', icon: '🛒' },
+  { id: 'vehicle', label: 'Vehicle Maintenance', icon: '🚗' },
+  { id: 'other', label: 'Other', icon: '⚡' }
+];
+
+function getEmpTasks(empId, dk) {
+  return JSON.parse(localStorage.getItem('empTasks_' + empId + '_' + dk) || '[]');
+}
+function saveEmpTasks(empId, dk, tasks) {
+  localStorage.setItem('empTasks_' + empId + '_' + dk, JSON.stringify(tasks));
+}
+
+function renderEmpTasks(empId, dk) {
+  var area = document.getElementById('emp-tasks-area');
+  if (!area) return;
+  var tasks = getEmpTasks(empId, dk);
+  if (tasks.length === 0) { area.innerHTML = ''; return; }
+
+  var html = '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Extra Tasks</div>';
+  tasks.forEach(function(t, i) {
+    var type = EMP_TASK_TYPES.find(function(x){ return x.id === t.type; }) || { icon:'⚡', label:'Other' };
+    var dur = 0;
+    if (t.start && t.end) dur = calcHoursFromTimes(t.start, t.end, 0);
+    var startFmt = t.start ? (function(s){ var p=s.split(':'),h=parseInt(p[0]),m=parseInt(p[1]),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(t.start) : '';
+    var endFmt = t.end ? (function(s){ var p=s.split(':'),h=parseInt(p[0]),m=parseInt(p[1]),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(t.end) : '';
+    html += '<div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--surface2);border-radius:8px;margin-bottom:6px">'
+      +'<div style="font-size:20px">'+type.icon+'</div>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:13px;font-weight:500">'+type.label+(t.note?' — '+t.note:'')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted)">'+startFmt+' → '+endFmt+' · '+dur.toFixed(1)+'h</div>'
+      +'</div>'
+      +'<button onclick="removeEmpTask(\''+empId+'\',\''+dk+'\','+i+')" style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:4px">×</button>'
+      +'</div>';
+  });
+  area.innerHTML = html;
+}
+
+function showAddTaskMenu(empId, dk) {
+  var form = document.getElementById('add-task-form');
+  if (!form) return;
+  if (form.style.display === 'block') { form.style.display = 'none'; return; }
+
+  var html = '<div style="background:var(--surface2);border-radius:10px;padding:14px">'
+    +'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px;text-transform:uppercase">What type of task?</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+  EMP_TASK_TYPES.forEach(function(t) {
+    html += '<button onclick="selectTaskType(\''+t.id+'\')" id="task-type-'+t.id+'" style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:12px;cursor:pointer;transition:all .15s">'+t.icon+' '+t.label+'</button>';
+  });
+  html += '</div>'
+    +'<div style="display:flex;gap:10px;margin-bottom:10px">'
+    +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Start</div>'
+    +'<input type="time" id="task-start" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box"></div>'
+    +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">End</div>'
+    +'<input type="time" id="task-end" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box"></div></div>'
+    +'<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Note (optional)</div>'
+    +'<input type="text" id="task-note" placeholder="Details..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box"></div>'
+    +'<button onclick="addEmpTask(\''+empId+'\',\''+dk+'\')" style="width:100%;padding:11px;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">Add Task</button>'
+    +'</div>';
+  form.innerHTML = html;
+  form.style.display = 'block';
+}
+
+var _selectedTaskType = null;
+function selectTaskType(typeId) {
+  _selectedTaskType = typeId;
+  EMP_TASK_TYPES.forEach(function(t) {
+    var btn = document.getElementById('task-type-'+t.id);
+    if (btn) {
+      btn.style.borderColor = t.id === typeId ? 'var(--accent)' : 'var(--border)';
+      btn.style.color = t.id === typeId ? 'var(--accent)' : 'var(--muted)';
+      btn.style.background = t.id === typeId ? 'rgba(108,143,255,0.1)' : 'var(--bg)';
+    }
+  });
+}
+
+function addEmpTask(empId, dk) {
+  if (!_selectedTaskType) { alert('Select a task type'); return; }
+  var start = document.getElementById('task-start').value;
+  var end = document.getElementById('task-end').value;
+  if (!start || !end) { alert('Enter start and end times'); return; }
+  var note = (document.getElementById('task-note') || {}).value || '';
+  var tasks = getEmpTasks(empId, dk);
+  tasks.push({ type: _selectedTaskType, start: start, end: end, note: note });
+  saveEmpTasks(empId, dk, tasks);
+  _selectedTaskType = null;
+  document.getElementById('add-task-form').style.display = 'none';
+  renderEmpTasks(empId, dk);
+  recalcWithTasks(empId, dk);
+}
+
+function removeEmpTask(empId, dk, idx) {
+  var tasks = getEmpTasks(empId, dk);
+  tasks.splice(idx, 1);
+  saveEmpTasks(empId, dk, tasks);
+  renderEmpTasks(empId, dk);
+  recalcWithTasks(empId, dk);
+}
+
+function recalcWithTasks(empId, dk) {
+  // Add task hours to the calculated hours display
+  var tasks = getEmpTasks(empId, dk);
+  var taskHrs = tasks.reduce(function(sum, t) {
+    return sum + calcHoursFromTimes(t.start, t.end, 0);
+  }, 0);
+  var s = document.getElementById('emp-hr-start').value;
+  var e = document.getElementById('emp-hr-end').value;
+  var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
+  var baseHrs = calcHoursFromTimes(s, e, l);
+  var total = baseHrs + taskHrs;
+  var calcEl = document.getElementById('emp-hr-calc');
+  if (calcEl) calcEl.textContent = total.toFixed(1);
+}
+
 function setLunchStop(stopIdx) {
   var stops = window._empStops;
   if (!stops || !stops[stopIdx]) return;
@@ -4786,7 +4912,9 @@ function saveEmpDayHours(empId, dk) {
   var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
   var t = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
   var hrs = calcHoursFromTimes(s, e, l);
-  saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs, team: t });
+  var tasks = getEmpTasks(empId, dk);
+  var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
+  saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
   document.getElementById('emp-hours-overlay').remove();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
 }
