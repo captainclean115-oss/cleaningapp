@@ -11437,6 +11437,8 @@ function showPortalTab(tab) {
       renderPortalFormCards();
       renderPortalCustomFormCards();
       renderPortalSubmittedForms();
+      renderHandbook();
+      checkExistingSignature();
     } catch(e) {}
   }
   if (tab === 'schedule') {
@@ -13672,8 +13674,7 @@ function syncSheets() {
     <div class="ptab active" id="ptab-schedule" onclick="showPortalTab('schedule')" id-text="tab-schedule">📅 Schedule</div>
     <div class="ptab" id="ptab-hours" onclick="showPortalTab('hours')" id-text="tab-hours">⏱ Hours</div>
     <div class="ptab" id="ptab-forms" onclick="showPortalTab('forms')" id-text="tab-forms">📋 Forms</div>
-    <div class="ptab" id="ptab-handbook" onclick="showPortalTab('handbook')" id-text="tab-handbook">📖 Handbook</div>
-    <div class="ptab" id="ptab-rate" onclick="showPortalTab('rate')">⭐ Rate Week</div>
+    <div class="ptab" id="ptab-rate" onclick="showPortalTab('rate')">⭐ Rate</div>
   </div>
 
   <!-- SCHEDULE TAB -->
@@ -13702,9 +13703,23 @@ function syncSheets() {
     <div id="portal-form-cards"></div>
     <div id="custom-form-cards"></div>
     <div id="forms-submitted" style="margin-top:16px"></div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
+      <div class="section-title" id="handbook-label">EMPLOYEE HANDBOOK</div>
+      <div id="handbook-content"></div>
+      <div class="esign-box" id="esign-box">
+        <div class="esign-title" id="esign-title">Acknowledge & Sign</div>
+        <div id="esign-form">
+          <div class="field-group">
+            <div class="field-label" id="esign-name-label">Your full name</div>
+            <input type="text" class="field-input" id="esign-name-input" placeholder="Type your name">
+          </div>
+          <button class="submit-btn" onclick="signHandbook()" id="esign-btn">I have read and agree to the terms</button>
+        </div>
+        <div id="esign-signed-display" style="display:none"></div>
+      </div>
+    </div>
   </div>
 
-  <!-- HANDBOOK TAB -->
   <!-- RATE WEEK TAB -->
   <div id="tab-rate" class="section" style="display:none">
     <div class="section-title">RATE YOUR WEEK</div>
@@ -13712,21 +13727,8 @@ function syncSheets() {
     <div id="past-ratings"></div>
   </div>
 
-  <div id="tab-handbook" class="section" style="display:none">
-    <div class="section-title" id="handbook-label">EMPLOYEE HANDBOOK</div>
-    <div id="handbook-content"></div>
-    <div class="esign-box" id="esign-box">
-      <div class="esign-title" id="esign-title">Acknowledge & Sign</div>
-      <div id="esign-form">
-        <div class="field-group">
-          <div class="field-label" id="esign-name-label">Your full name</div>
-          <input type="text" class="field-input" id="esign-name-input" placeholder="Type your name">
-        </div>
-        <button class="submit-btn" onclick="signHandbook()" id="esign-btn">I have read and agree to the terms</button>
-      </div>
-      <div id="esign-signed-display" style="display:none"></div>
-    </div>
-  </div>
+  <!-- Hidden handbook tab (content moved to forms) -->
+  <div id="tab-handbook" style="display:none"></div>
 
   <div style="height:20px"></div>
 </div>
