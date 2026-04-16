@@ -4444,6 +4444,50 @@ async function loadWeekHours() {
     });
 
     loadLunchEdits();
+
+    // Save weekHours to localStorage so employee portal can access it
+    try {
+      var cacheData = {};
+      Object.keys(weekHours).forEach(function(team) {
+        var d = weekHours[team];
+        cacheData[team] = {
+          days: d.days,
+          starts: d.starts ? d.starts.map(function(s){ return s ? s.toISOString() : null; }) : [],
+          ends: d.ends ? d.ends.map(function(s){ return s ? s.toISOString() : null; }) : [],
+          lunch: d.lunch,
+          total: d.total
+        };
+      });
+      localStorage.setItem('weekHours_cache', JSON.stringify(cacheData));
+
+      // Archive this week's data with week key for history
+      var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[4]);
+      localStorage.setItem(weekKey, JSON.stringify(cacheData));
+
+      // Save per-employee overrides into a format the portal can read
+      var empCache = {};
+      EMPLOYEE_ROSTER.forEach(function(emp) {
+        days.forEach(function(d, i) {
+          var dk = dateKey(d);
+          var override = getEmpHours(emp.id, dk);
+          if (override) {
+            if (!empCache[emp.id]) empCache[emp.id] = {};
+            empCache[emp.id][dk] = override;
+          }
+        });
+      });
+      localStorage.setItem('empHours_cache', JSON.stringify(empCache));
+
+      // Track archived weeks
+      var archived = JSON.parse(localStorage.getItem('weekHours_archived') || '[]');
+      if (archived.indexOf(weekKey) === -1) {
+        archived.push(weekKey);
+        // Keep last 26 weeks (6 months)
+        if (archived.length > 26) archived = archived.slice(-26);
+        localStorage.setItem('weekHours_archived', JSON.stringify(archived));
+      }
+    } catch(e2) {}
+
     renderHoursTable(days, DAYS_SHORT);
 
   } catch(e) {
@@ -10214,12 +10258,37 @@ function renderHours() {
 
   // Try to get hours from localStorage (set by main app GPS)
   try {
-    const weekData = localStorage.getItem('weekHours_cache');
+    var weekData = localStorage.getItem('weekHours_cache');
     if (weekData) {
-      const data = JSON.parse(weekData);
-      const teamData = data[currentEmployee.team];
+      var data = JSON.parse(weekData);
+      var teamData = data[currentEmployee.team];
       if (teamData) {
+        // Check for per-employee overrides
+        var empCache = JSON.parse(localStorage.getItem('empHours_cache') || '{}');
+        var empOverrides = empCache[currentEmployee.id] || {};
+        if (Object.keys(empOverrides).length > 0) {
+          // Apply overrides to team data for this employee
+          var days = getPortalWeekDates();
+          days.forEach(function(d, i) {
+            var dk = d.toISOString().split('T')[0];
+            if (empOverrides[dk]) {
+              teamData.days[i] = empOverrides[dk].hours || 0;
+              if (empOverrides[dk].start) {
+                var sp = empOverrides[dk].start.split(':');
+                var sd = new Date(d); sd.setHours(parseInt(sp[0]),parseInt(sp[1]),0,0);
+                teamData.starts[i] = sd.toISOString();
+              }
+              if (empOverrides[dk].end) {
+                var ep = empOverrides[dk].end.split(':');
+                var ed = new Date(d); ed.setHours(parseInt(ep[0]),parseInt(ep[1]),0,0);
+                teamData.ends[i] = ed.toISOString();
+              }
+            }
+          });
+          teamData.total = teamData.days.reduce(function(s,h){ return s+(h||0); },0);
+        }
         renderHoursData(teamData);
+        renderPastWeeks();
         return;
       }
     }
@@ -10227,6 +10296,62 @@ function renderHours() {
 
   // No GPS data yet — show empty week layout so it doesn't look broken
   renderHoursData({ days: [0,0,0,0,0], starts: [], ends: [] });
+  renderPastWeeks();
+}
+
+function getPortalWeekDates() {
+  var today = new Date(); today.setHours(0,0,0,0);
+  var dow = today.getDay(); // 0=Sun
+  var mon = new Date(today); mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  var days = [];
+  for (var i = 0; i < 5; i++) { var d = new Date(mon); d.setDate(mon.getDate()+i); days.push(d); }
+  return days;
+}
+
+function renderPastWeeks() {
+  var container = document.getElementById('hours-breakdown');
+  if (!container) return;
+  try {
+    var archived = JSON.parse(localStorage.getItem('weekHours_archived') || '[]');
+    if (archived.length === 0) return;
+
+    var html = '<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">'
+      +'<div style="font-size:14px;font-weight:600;margin-bottom:12px">Past Weeks</div>';
+
+    // Show in reverse order (newest first), skip current week
+    var currentWeekKey = null;
+    var today = new Date();
+    var dow = today.getDay();
+    var mon = new Date(today); mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1)); mon.setHours(0,0,0,0);
+    var fri = new Date(mon); fri.setDate(mon.getDate()+4);
+    currentWeekKey = 'weekHours_' + dateKey(mon) + '_' + dateKey(fri);
+
+    var shown = 0;
+    for (var i = archived.length - 1; i >= 0 && shown < 8; i--) {
+      if (archived[i] === currentWeekKey) continue;
+      var weekData = localStorage.getItem(archived[i]);
+      if (!weekData) continue;
+      var data = JSON.parse(weekData);
+      var teamData = data[currentEmployee.team];
+      if (!teamData) continue;
+
+      // Parse week dates from key: weekHours_YYYY-MM-DD_YYYY-MM-DD
+      var parts = archived[i].replace('weekHours_','').split('_');
+      var weekStart = new Date(parts[0]+'T00:00:00');
+      var weekEnd = new Date(parts[1]+'T00:00:00');
+      var weekLabel = weekStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + weekEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+      var total = teamData.days.reduce(function(s,h){return s+(h||0);},0);
+      var hh = Math.floor(total), mm = Math.round((total-hh)*60);
+
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="font-size:13px;color:var(--muted)">'+weekLabel+'</div>'
+        +'<div style="font-size:14px;font-weight:600;color:var(--accent)">'+hh+'h'+(mm>0?' '+mm+'m':'')+'</div>'
+        +'</div>';
+      shown++;
+    }
+    html += '</div>';
+    if (shown > 0) container.innerHTML += html;
+  } catch(e) {}
 }
 
 function renderHoursData(data) {
