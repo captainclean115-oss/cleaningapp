@@ -1285,12 +1285,11 @@ select.field-input { appearance: none; }
         <span class="gps-last-update" id="gps-last-update">Loading...</span>
       </div>
       <div style="display:flex;gap:6px">
-        <button class="gps-refresh-btn" onclick="toggleMap()" id="map-toggle-btn">🗺 Map</button>
         <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
       </div>
     </div>
     <!-- Live Map -->
-    <div id="gps-map-container" style="display:none;margin:0 12px 12px;border-radius:12px;overflow:hidden;border:1px solid var(--border)">
+    <div id="gps-map-container" style="display:block;margin:0 12px 12px;border-radius:12px;overflow:hidden;border:1px solid var(--border)">
       <div id="gps-map" style="height:280px;width:100%"></div>
     </div>
     <div class="gps-summary-bar" id="gps-summary"></div>
@@ -4918,20 +4917,7 @@ function renderHoursTable(days, dayNames) {
 
 let gpsMap = null;
 let gpsMarkers = [];
-let mapVisible = false;
-
-function toggleMap() {
-  mapVisible = !mapVisible;
-  const container = document.getElementById('gps-map-container');
-  const btn = document.getElementById('map-toggle-btn');
-  container.style.display = mapVisible ? 'block' : 'none';
-  btn.style.background = mapVisible ? 'var(--accent)' : '';
-  btn.style.color = mapVisible ? '#fff' : '';
-  if (mapVisible) {
-    initMap();
-    updateMapMarkers();
-  }
-}
+let mapVisible = true;
 
 function initMap() {
   if (gpsMap) { gpsMap.invalidateSize(); return; }
@@ -5130,6 +5116,7 @@ function gpsInit() {
       document.getElementById('gps-status').textContent = 'Connected to MyGeotab ✓';
       loadGPSData();
       loadWeekHours();
+      setTimeout(function(){ initMap(); updateMapMarkers(); }, 500);
     } catch(e) {
       gpsSession = null;
     }
@@ -5448,7 +5435,7 @@ function renderGPS() {
   }
 
   // Update map if visible
-  if (mapVisible) updateMapMarkers();
+  initMap(); updateMapMarkers();
 }
 
 function toggleGPSCard(id) {
