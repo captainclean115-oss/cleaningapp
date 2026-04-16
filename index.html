@@ -4684,9 +4684,13 @@ async function showEmpStops(team, dateMs) {
         if (s.inTime && Math.abs(s.inTime.getTime() - lt) < 300000) lunchStopIdx = si;
       });
     }
-    // Also check manual override
-    var manualLunchIdx = parseInt(localStorage.getItem('_empLunchStop') || '-1');
-    if (manualLunchIdx >= 0) lunchStopIdx = manualLunchIdx;
+    // Also check manual override — '-1' means explicitly cleared, '-2' or absent means no override
+    var manualLunchRaw = localStorage.getItem('_empLunchStop');
+    if (manualLunchRaw !== null) {
+      var manualLunchIdx = parseInt(manualLunchRaw);
+      if (manualLunchIdx === -1) lunchStopIdx = -1; // explicitly cleared
+      else if (manualLunchIdx >= 0) lunchStopIdx = manualLunchIdx;
+    }
 
     // Store stops globally so tap handler can access them
     window._empStops = stops;
