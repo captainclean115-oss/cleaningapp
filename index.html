@@ -5146,20 +5146,44 @@ function updateMapMarkers() {
 }
 
 // Shared function to match GPS address to client name
+// Normalize street abbreviations for matching
+function normalizeStreet(s) {
+  if (!s) return '';
+  return s.toLowerCase()
+    .replace(/,.*$/,'') // remove city/state after comma
+    .replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'') // remove apt/unit
+    .replace(/\bst\b/g,'street').replace(/\bstr\b/g,'street')
+    .replace(/\brd\b/g,'road')
+    .replace(/\bdr\b/g,'drive')
+    .replace(/\bave\b/g,'avenue').replace(/\bav\b/g,'avenue')
+    .replace(/\bln\b/g,'lane')
+    .replace(/\bct\b/g,'court')
+    .replace(/\bcir\b/g,'circle')
+    .replace(/\bpl\b/g,'place')
+    .replace(/\bblvd\b/g,'boulevard')
+    .replace(/\bpkwy\b/g,'parkway').replace(/\bpky\b/g,'parkway')
+    .replace(/\btpke\b/g,'turnpike').replace(/\btrnpk\b/g,'turnpike')
+    .replace(/\bhwy\b/g,'highway')
+    .replace(/\bter\b/g,'terrace').replace(/\bterr\b/g,'terrace')
+    .replace(/\bway\b/g,'way')
+    .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+}
+
 function matchStopToClient(addr, teamJobs) {
   if (!addr) return '';
-  var a = addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-  var aStreet = addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
+  var aNorm = normalizeStreet(addr);
   // Check team jobs first
   if (teamJobs) {
     for (var ji = 0; ji < teamJobs.length; ji++) {
       var j = teamJobs[ji];
       var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
       if (c && c.addr) {
-        var ca = c.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-        if (a.includes(ca) || ca.includes(a)) return (c.fn||'') + ' ' + (c.ln||'');
-        var cs = c.addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
-        if (aStreet && cs && aStreet.length > 3 && (aStreet.includes(cs) || cs.includes(aStreet))) return (c.fn||'') + ' ' + (c.ln||'');
+        var cNorm = normalizeStreet(c.addr);
+        if (aNorm.includes(cNorm) || cNorm.includes(aNorm)) return (c.fn||'') + ' ' + (c.ln||'');
+        // Street name only (drop house number)
+        var aWords = aNorm.replace(/^\d+\s*/,'');
+        var cWords = cNorm.replace(/^\d+\s*/,'');
+        if (aWords.length > 3 && cWords.length > 3 && (aWords.includes(cWords) || cWords.includes(aWords))) return (c.fn||'') + ' ' + (c.ln||'');
       }
     }
   }
@@ -5167,12 +5191,14 @@ function matchStopToClient(addr, teamJobs) {
   for (var ci = 0; ci < CLIENTS.length; ci++) {
     var cl = CLIENTS[ci];
     if (cl.addr) {
-      var ca2 = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-      if (a.includes(ca2) || ca2.includes(a)) return (cl.fn||'') + ' ' + (cl.ln||'');
-      var cs2 = cl.addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
-      var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
-      var cCity = (cl.city||'').toLowerCase();
-      if (aStreet && cs2 && aStreet.length > 3 && (aStreet.includes(cs2) || cs2.includes(aStreet))) {
+      var cNorm2 = normalizeStreet(cl.addr);
+      if (aNorm.includes(cNorm2) || cNorm2.includes(aNorm)) return (cl.fn||'') + ' ' + (cl.ln||'');
+      var aWords2 = aNorm.replace(/^\d+\s*/,'');
+      var cWords2 = cNorm2.replace(/^\d+\s*/,'');
+      if (aWords2.length > 3 && cWords2.length > 3 && (aWords2.includes(cWords2) || cWords2.includes(aWords2))) {
+        // Also check city to avoid false positives
+        var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
+        var cCity = (cl.city||'').toLowerCase();
         if (!aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity)) return (cl.fn||'') + ' ' + (cl.ln||'');
       }
     }
