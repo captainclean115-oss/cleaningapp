@@ -4709,7 +4709,9 @@ async function showEmpStops(team, dateMs) {
         +(s.inTime&&s.outTime?'<span style="font-size:11px;color:var(--red)">Out: '+outStr+'</span>':'')
         +(durStr?'<span style="font-size:11px;color:var(--muted)">'+durStr+'</span>':'')
         +(isLunch?'<span style="font-size:11px;color:var(--amber);font-weight:600">LUNCH</span>':'')
-        +'</div></div></div>';
+        +'</div></div>'
+        +(isLunch?'<button onclick="event.stopPropagation();clearLunchStop()" style="background:none;border:none;color:var(--red);font-size:16px;cursor:pointer;padding:4px;flex-shrink:0">×</button>':'')
+        +'</div>';
     });
     area.innerHTML = html;
   } catch(e) {
@@ -4856,6 +4858,19 @@ function setLunchStop(stopIdx) {
   localStorage.setItem('_empLunchStop', stopIdx);
 
   // Re-render stops to move the 🍔
+  var team = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
+  if (team && window._empStopsDateMs) {
+    showEmpStops(team, window._empStopsDateMs);
+  }
+}
+
+function clearLunchStop() {
+  localStorage.setItem('_empLunchStop', '-1');
+  var lunchInput = document.getElementById('emp-hr-lunch');
+  if (lunchInput) {
+    lunchInput.value = 0;
+    lunchInput.dispatchEvent(new Event('input'));
+  }
   var team = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
   if (team && window._empStopsDateMs) {
     showEmpStops(team, window._empStopsDateMs);
