@@ -4805,6 +4805,9 @@ function renderHoursTable(days, dayNames) {
     📍 B1/B3/B5/S1/S3 hours from 800 Brockton Ave · M1/M2/M3 from 910 Boston Post Rd
   </div>`;
 
+  // Employee ratings report button
+  html += `<button onclick="showRatingsReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.25);border-radius:10px;color:#fbbf24;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">⭐ Employee Weekly Ratings Report</button>`;
+
   document.getElementById('hours-table').innerHTML = html;
 }
 
@@ -11413,11 +11416,16 @@ function signHandbook() {
 // TABS
 // ─────────────────────────────────────────
 function showPortalTab(tab) {
-  ['schedule','hours','forms','handbook'].forEach(t => {
-    document.getElementById('tab-' + t).style.display = t === tab ? 'block' : 'none';
-    document.getElementById('ptab-' + t).classList.toggle('active', t === tab);
+  ['schedule','hours','forms','handbook','rate'].forEach(t => {
+    var el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === tab ? 'block' : 'none';
+    var pt = document.getElementById('ptab-' + t);
+    if (pt) pt.classList.toggle('active', t === tab);
   });
   currentTab = tab;
+  if (tab === 'rate') {
+    renderRateWeek();
+  }
   if (tab === 'handbook') {
     renderHandbook();
     checkExistingSignature();
@@ -11435,6 +11443,229 @@ function showPortalTab(tab) {
   }
 }
 
+
+// ─────────────────────────────────────────
+// WEEKLY EMPLOYEE RATINGS
+// ─────────────────────────────────────────
+const RATE_CATEGORIES = [
+  { id: 'teammates', label: { en:'Teammates', es:'Compañeros', pt:'Colegas', cv:'Kolegus' }, desc: { en:'How well did your team work together?', es:'¿Qué tal trabajó tu equipo?', pt:'Como a equipe trabalhou?', cv:'Komu ekipa trabadja?' } },
+  { id: 'workload', label: { en:'Workload', es:'Carga de trabajo', pt:'Carga de trabalho', cv:'Karga di trabadju' }, desc: { en:'Was the amount of work reasonable?', es:'¿La cantidad de trabajo fue razonable?', pt:'A carga foi razoável?', cv:'Karga sta razoavel?' } },
+  { id: 'houses', label: { en:'House Difficulty', es:'Dificultad', pt:'Dificuldade', cv:'Difikuldadi' }, desc: { en:'How tough were the houses this week?', es:'¿Qué tan difíciles fueron las casas?', pt:'Quão difíceis foram as casas?', cv:'Komu difisil kazas sta?' } },
+  { id: 'supplies', label: { en:'Equipment & Supplies', es:'Equipo y suministros', pt:'Equipamento', cv:'Ekipamentu' }, desc: { en:'Did you have everything you needed?', es:'¿Tuviste todo lo necesario?', pt:'Tinha tudo que precisava?', cv:'Bu tinha tudu ki bu presiza?' } },
+  { id: 'driving', label: { en:'Drive Time', es:'Tiempo de manejo', pt:'Tempo dirigindo', cv:'Tempu di konduzi' }, desc: { en:'Was driving between jobs manageable?', es:'¿El tiempo manejando fue razonable?', pt:'O tempo dirigindo foi ok?', cv:'Tempu di konduzi sta bon?' } }
+];
+
+function getWeekRatingKey() {
+  var today = new Date(); today.setHours(0,0,0,0);
+  var dow = today.getDay();
+  var mon = new Date(today); mon.setDate(today.getDate() - (dow===0?6:dow-1));
+  return dateKey(mon);
+}
+
+function getWeekRating(empId, weekKey) {
+  var all = JSON.parse(localStorage.getItem('emp_week_ratings') || '{}');
+  return (all[empId] && all[empId][weekKey]) || null;
+}
+
+function saveWeekRating(empId, weekKey, ratings, comment) {
+  var all = JSON.parse(localStorage.getItem('emp_week_ratings') || '{}');
+  if (!all[empId]) all[empId] = {};
+  all[empId][weekKey] = { ratings: ratings, comment: comment || '', submitted: new Date().toISOString(), team: currentEmployee.team, name: currentEmployee.name };
+  localStorage.setItem('emp_week_ratings', JSON.stringify(all));
+}
+
+function renderRateWeek() {
+  var container = document.getElementById('rate-week-content');
+  if (!container) return;
+  var weekKey = getWeekRatingKey();
+  var existing = getWeekRating(currentEmployee.id, weekKey);
+  var lang = currentLang || 'en';
+
+  // Week label
+  var today = new Date(); today.setHours(0,0,0,0);
+  var dow = today.getDay();
+  var mon = new Date(today); mon.setDate(today.getDate()-(dow===0?6:dow-1));
+  var fri = new Date(mon); fri.setDate(mon.getDate()+4);
+  var weekLabel = mon.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' – '+fri.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+  if (existing) {
+    // Already submitted — show summary
+    var html = '<div style="text-align:center;padding:20px 0"><div style="font-size:15px;font-weight:600;margin-bottom:4px">'+weekLabel+'</div>'
+      +'<div style="font-size:13px;color:var(--green);margin-bottom:16px">✓ Submitted</div></div>';
+    RATE_CATEGORIES.forEach(function(cat) {
+      var val = existing.ratings[cat.id] || 0;
+      var stars = '';
+      for (var s=1;s<=5;s++) stars += '<span style="font-size:20px;color:'+(s<=val?'#fbbf24':'var(--border2)')+'">★</span>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="font-size:14px;font-weight:500">'+(cat.label[lang]||cat.label.en)+'</div>'
+        +'<div>'+stars+'</div></div>';
+    });
+    if (existing.comment) {
+      html += '<div style="margin-top:12px;padding:10px;background:var(--surface2);border-radius:8px;font-size:13px;color:var(--muted)">'+existing.comment+'</div>';
+    }
+    container.innerHTML = html;
+  } else {
+    // Show rating form
+    var html = '<div style="text-align:center;padding:16px 0 8px"><div style="font-size:15px;font-weight:600;margin-bottom:4px">'+weekLabel+'</div>'
+      +'<div style="font-size:13px;color:var(--muted)">'+{en:'How was your week?',es:'¿Cómo fue tu semana?',pt:'Como foi sua semana?',cv:'Komu bu simana sta?'}[lang]+'</div></div>';
+
+    RATE_CATEGORIES.forEach(function(cat) {
+      html += '<div style="padding:14px 0;border-bottom:1px solid var(--border)">'
+        +'<div style="font-size:14px;font-weight:500;margin-bottom:2px">'+(cat.label[lang]||cat.label.en)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'+(cat.desc[lang]||cat.desc.en)+'</div>'
+        +'<div style="display:flex;gap:6px" id="rate-'+cat.id+'">';
+      for (var s=1;s<=5;s++) {
+        html += '<button onclick="setRateStar(\''+cat.id+'\','+s+')" data-star="'+s+'" style="background:none;border:none;font-size:28px;color:var(--border2);cursor:pointer;padding:2px 4px;transition:color .15s">★</button>';
+      }
+      html += '</div></div>';
+    });
+
+    html += '<div style="padding:14px 0"><div style="font-size:14px;font-weight:500;margin-bottom:6px">'+{en:'Anything else?',es:'¿Algo más?',pt:'Mais alguma coisa?',cv:'Algun koza mas?'}[lang]+'</div>'
+      +'<textarea id="rate-comment" placeholder="'+{en:'Optional — share any feedback',es:'Opcional — comparte cualquier comentario',pt:'Opcional — compartilhe feedback',cv:'Opsional — kompartilha feedback'}[lang]+'" '
+      +'style="width:100%;min-height:80px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;padding:12px;outline:none;resize:vertical;box-sizing:border-box"></textarea></div>'
+      +'<button onclick="submitWeekRating()" style="width:100%;padding:14px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;cursor:pointer;margin-bottom:16px">'+{en:'Submit Rating',es:'Enviar',pt:'Enviar',cv:'Envia'}[lang]+'</button>';
+
+    container.innerHTML = html;
+  }
+
+  // Past ratings
+  renderPastRatings();
+}
+
+var _rateStars = {};
+function setRateStar(catId, val) {
+  _rateStars[catId] = val;
+  var row = document.getElementById('rate-'+catId);
+  if (!row) return;
+  row.querySelectorAll('button').forEach(function(btn) {
+    var s = parseInt(btn.dataset.star);
+    btn.style.color = s <= val ? '#fbbf24' : 'var(--border2)';
+  });
+}
+
+function submitWeekRating() {
+  // Check all categories rated
+  var missing = RATE_CATEGORIES.filter(function(c){ return !_rateStars[c.id]; });
+  if (missing.length > 0) {
+    var lang = currentLang || 'en';
+    alert({en:'Please rate all categories',es:'Por favor califica todas las categorías',pt:'Por favor avalie todas as categorias',cv:'Por favor avalia tudu kategoria'}[lang]);
+    return;
+  }
+  var comment = (document.getElementById('rate-comment') || {}).value || '';
+  saveWeekRating(currentEmployee.id, getWeekRatingKey(), Object.assign({}, _rateStars), comment);
+  _rateStars = {};
+  var lang = currentLang || 'en';
+  alert({en:'Thank you! Your rating has been submitted.',es:'¡Gracias! Tu calificación ha sido enviada.',pt:'Obrigado! Sua avaliação foi enviada.',cv:'Obrigadu! Bu avaliasaun foi enviadu.'}[lang]);
+  renderRateWeek();
+}
+
+function renderPastRatings() {
+  var container = document.getElementById('past-ratings');
+  if (!container) return;
+  var all = JSON.parse(localStorage.getItem('emp_week_ratings') || '{}');
+  var empRatings = all[currentEmployee.id] || {};
+  var weeks = Object.keys(empRatings).sort().reverse();
+  var currentWeek = getWeekRatingKey();
+  weeks = weeks.filter(function(w){ return w !== currentWeek; });
+  if (weeks.length === 0) { container.innerHTML = ''; return; }
+
+  var html = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">'
+    +'<div style="font-size:14px;font-weight:600;margin-bottom:12px">Past Ratings</div>';
+  weeks.slice(0,8).forEach(function(wk) {
+    var r = empRatings[wk];
+    var mon = new Date(wk+'T00:00:00');
+    var fri = new Date(mon); fri.setDate(mon.getDate()+4);
+    var label = mon.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' – '+fri.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    var vals = Object.values(r.ratings);
+    var avg = vals.reduce(function(s,v){return s+v;},0) / vals.length;
+    var stars = '';
+    for (var s=1;s<=5;s++) stars += '<span style="font-size:14px;color:'+(s<=Math.round(avg)?'#fbbf24':'var(--border2)')+'">★</span>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">'
+      +'<div style="font-size:13px;color:var(--muted)">'+label+'</div>'
+      +'<div>'+stars+' <span style="font-size:11px;color:var(--muted)">'+avg.toFixed(1)+'</span></div></div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ── MANAGER RATINGS REPORT ──
+function showRatingsReport() {
+  var all = JSON.parse(localStorage.getItem('emp_week_ratings') || '{}');
+  var empIds = Object.keys(all);
+  if (empIds.length === 0) {
+    alert('No employee ratings submitted yet.');
+    return;
+  }
+
+  var old = document.getElementById('ratings-report-overlay');
+  if (old) old.remove();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'ratings-report-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end';
+
+  var html = '<div style="background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    +'<div><div style="font-size:17px;font-weight:600">Employee Ratings</div><div style="font-size:13px;color:var(--muted)">Weekly feedback from your teams</div></div>'
+    +'<button onclick="document.getElementById(\'ratings-report-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>'
+    +'</div><div style="padding:16px 20px">';
+
+  // Collect all weeks across all employees, sorted newest first
+  var allWeeks = new Set();
+  empIds.forEach(function(eid) {
+    Object.keys(all[eid]).forEach(function(wk) { allWeeks.add(wk); });
+  });
+  var weeks = Array.from(allWeeks).sort().reverse();
+
+  weeks.forEach(function(wk) {
+    var mon = new Date(wk+'T00:00:00');
+    var fri = new Date(mon); fri.setDate(mon.getDate()+4);
+    var weekLabel = mon.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' – '+fri.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+    html += '<div style="margin-bottom:20px"><div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:10px">'+weekLabel+'</div>';
+
+    // Each employee who rated this week
+    empIds.forEach(function(eid) {
+      var r = all[eid][wk];
+      if (!r) return;
+      var name = r.name || eid;
+      var team = r.team || '?';
+      var tc = team_colors_map[team] || '#6b7280';
+      var vals = Object.values(r.ratings);
+      var avg = vals.reduce(function(s,v){return s+v;},0) / vals.length;
+
+      html += '<div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:8px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        +'<div><span style="font-size:13px;font-weight:600">'+name+'</span> <span style="font-size:11px;color:'+tc+';font-weight:600">'+team+'</span></div>'
+        +'<div style="font-size:13px;font-weight:700;color:#fbbf24">'+avg.toFixed(1)+' ★</div></div>';
+
+      RATE_CATEGORIES.forEach(function(cat) {
+        var v = r.ratings[cat.id] || 0;
+        var stars = '';
+        for (var s=1;s<=5;s++) stars += '<span style="color:'+(s<=v?'#fbbf24':'var(--border2)')+'">★</span>';
+        var barColor = v >= 4 ? 'var(--green)' : v >= 3 ? 'var(--amber)' : 'var(--red)';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">'
+          +'<span style="font-size:12px;color:var(--muted)">'+cat.label.en+'</span>'
+          +'<span style="font-size:12px">'+stars+'</span></div>';
+      });
+
+      if (r.comment) {
+        html += '<div style="margin-top:6px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;color:var(--muted);font-style:italic">"'+r.comment+'"</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+
+  if (weeks.length === 0) {
+    html += '<div style="text-align:center;color:var(--muted);padding:40px">No ratings submitted yet</div>';
+  }
+
+  html += '</div></div>';
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+}
 
 // ─────────────────────────────────────────
 // JOB APPLICATION
@@ -13441,6 +13672,7 @@ function syncSheets() {
     <div class="ptab" id="ptab-hours" onclick="showPortalTab('hours')" id-text="tab-hours">⏱ Hours</div>
     <div class="ptab" id="ptab-forms" onclick="showPortalTab('forms')" id-text="tab-forms">📋 Forms</div>
     <div class="ptab" id="ptab-handbook" onclick="showPortalTab('handbook')" id-text="tab-handbook">📖 Handbook</div>
+    <div class="ptab" id="ptab-rate" onclick="showPortalTab('rate')">⭐ Rate Week</div>
   </div>
 
   <!-- SCHEDULE TAB -->
@@ -13472,6 +13704,13 @@ function syncSheets() {
   </div>
 
   <!-- HANDBOOK TAB -->
+  <!-- RATE WEEK TAB -->
+  <div id="tab-rate" class="section" style="display:none">
+    <div class="section-title">RATE YOUR WEEK</div>
+    <div id="rate-week-content"></div>
+    <div id="past-ratings"></div>
+  </div>
+
   <div id="tab-handbook" class="section" style="display:none">
     <div class="section-title" id="handbook-label">EMPLOYEE HANDBOOK</div>
     <div id="handbook-content"></div>
