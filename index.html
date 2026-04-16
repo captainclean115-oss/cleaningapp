@@ -11592,29 +11592,55 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
   });
   if (teamJobs.length < 2) return;
 
-  // Always start from the first job — the first job keeps its time,
-  // every job after it gets adjusted based on previous clean end + drive time
-  var i = 0;
-  function processNext() {
-    if (i >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
-    var curr = teamJobs[i];
-    var next = teamJobs[i + 1];
+  // First pass: immediately adjust using cached drive times or default 15 min
+  for (var k = 0; k < teamJobs.length - 1; k++) {
+    var curr = teamJobs[k];
+    var next = teamJobs[k + 1];
     var currEnd = (jobStartMins(curr) || 0) + getJobDurationMins(curr);
     var a1 = getClientAddrForJob(curr), a2 = getClientAddrForJob(next);
-    if (!a1 || !a2) {
-      var newStart = currEnd + 15;
-      next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
-      i++; processNext();
-      return;
+    var drive = 15; // default
+    if (a1 && a2) {
+      var cacheKey = getDriveTimeCacheKey(a1, a2);
+      if (_driveTimeCache[cacheKey] !== undefined) drive = _driveTimeCache[cacheKey];
     }
-    fetchDriveTime(a1, a2, function(mins) {
-      var drive = mins || 15;
-      var newStart = currEnd + drive;
+    var newStart = currEnd + drive;
+    // Only push forward, never pull back earlier than current time
+    if (newStart > (jobStartMins(next) || 0)) {
       next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
-      i++; processNext();
-    });
+    }
   }
-  processNext();
+  saveJobs();
+  renderCal();
+
+  // Second pass: async fetch real drive times for any uncached routes, then re-adjust
+  var needsAsync = false;
+  for (var m = 0; m < teamJobs.length - 1; m++) {
+    var a1b = getClientAddrForJob(teamJobs[m]), a2b = getClientAddrForJob(teamJobs[m+1]);
+    if (a1b && a2b && _driveTimeCache[getDriveTimeCacheKey(a1b, a2b)] === undefined) {
+      needsAsync = true; break;
+    }
+  }
+  if (needsAsync) {
+    var idx = 0;
+    function asyncPass() {
+      if (idx >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
+      var c = teamJobs[idx], n = teamJobs[idx + 1];
+      var cEnd = (jobStartMins(c) || 0) + getJobDurationMins(c);
+      var ad1 = getClientAddrForJob(c), ad2 = getClientAddrForJob(n);
+      if (!ad1 || !ad2) {
+        var ns = cEnd + 15;
+        n.time = String(Math.floor(ns/60)).padStart(2,'0') + ':' + String(ns%60).padStart(2,'0');
+        idx++; asyncPass(); return;
+      }
+      fetchDriveTime(ad1, ad2, function(mins) {
+        var dr = mins || 15;
+        var ns2 = cEnd + dr;
+        n.time = String(Math.floor(ns2/60)).padStart(2,'0') + ':' + String(ns2%60).padStart(2,'0');
+        idx++; asyncPass();
+      });
+    }
+    asyncPass();
+  }
 }
 
 // ── SCHEDULE MAP ──
