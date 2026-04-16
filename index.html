@@ -4557,6 +4557,7 @@ function calcHoursFromTimes(startStr, endStr, lunchMins) {
 }
 
 function showEmpDayDetail(empId, empName, team, dateMs) {
+  localStorage.removeItem('_empLunchStop');
   var date = new Date(dateMs);
   var dk = dateKey(date);
   var dateLabel = date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
@@ -4665,26 +4666,74 @@ async function showEmpStops(team, dateMs) {
       stops.push({ addr: t.stopAddress || 'Unknown', inTime: arr, outTime: nextDep, isDepot: isDepotAddress(t.stopAddress||'',team), distMi: dist, driveMins: dm });
     });
 
-    var html = '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Stops</div>';
+    // Find current lunch stop index
+    var curTeam = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : team;
+    var dayIdx = getWeekDates(hoursWeekOffset).findIndex(function(d){ return d.getTime() === new Date(dateMs).setHours(0,0,0,0); });
+    var lunchData = weekHours[curTeam] && weekHours[curTeam].lunch && weekHours[curTeam].lunch[dayIdx];
+    var lunchStopIdx = -1;
+    if (lunchData && lunchData.time) {
+      var lt = new Date(lunchData.time).getTime();
+      stops.forEach(function(s,si) {
+        if (s.inTime && Math.abs(s.inTime.getTime() - lt) < 300000) lunchStopIdx = si;
+      });
+    }
+    // Also check manual override
+    var manualLunchIdx = parseInt(localStorage.getItem('_empLunchStop') || '-1');
+    if (manualLunchIdx >= 0) lunchStopIdx = manualLunchIdx;
+
+    // Store stops globally so tap handler can access them
+    window._empStops = stops;
+    window._empStopsDateMs = dateMs;
+
+    var html = '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Stops <span style="font-size:10px;font-weight:400;text-transform:none">(tap a stop to set as lunch)</span></div>';
     stops.forEach(function(s,si) {
       var inStr = s.inTime ? fmt12(s.inTime) : '—';
       var outStr = s.outTime ? fmt12(s.outTime) : (si===stops.length-1?'Last stop':'—');
       var dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime)/60000) : null;
       var durStr = dur ? (dur>=60?Math.floor(dur/60)+'h '+(dur%60)+'m':dur+'m') : '';
       var dot = s.isDepot ? 'var(--green)' : 'var(--accent)';
+      var isLunch = si === lunchStopIdx;
       var driveInfo = s.distMi && si>0 ? '<div style="font-size:10px;color:var(--muted);padding:2px 0 2px 18px">▲ '+s.distMi+'mi · '+(s.driveMins||'?')+'m drive</div>' : '';
-      html += driveInfo + '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border)">'
+      html += driveInfo + '<div onclick="setLunchStop('+si+')" style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;background:'+(isLunch?'rgba(251,191,36,0.08)':'transparent')+';border-radius:6px;'+(isLunch?'margin:0 -6px;padding-left:6px;padding-right:6px;border:1px solid rgba(251,191,36,0.2)':'')+'">'
         +'<div style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;margin-top:4px"></div>'
-        +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;margin-bottom:2px">'+s.addr+'</div>'
+        +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;margin-bottom:2px">'+(isLunch?'🍔 ':'')+s.addr+'</div>'
         +'<div style="display:flex;gap:12px;flex-wrap:wrap">'
         +(s.inTime?'<span style="font-size:11px;color:var(--green)">In: '+inStr+'</span>':'<span style="font-size:11px;color:var(--green)">Out: '+outStr+'</span>')
         +(s.inTime&&s.outTime?'<span style="font-size:11px;color:var(--red)">Out: '+outStr+'</span>':'')
         +(durStr?'<span style="font-size:11px;color:var(--muted)">'+durStr+'</span>':'')
+        +(isLunch?'<span style="font-size:11px;color:var(--amber);font-weight:600">LUNCH</span>':'')
         +'</div></div></div>';
     });
     area.innerHTML = html;
   } catch(e) {
     area.innerHTML = '<div style="color:var(--muted);font-size:12px">Could not load stops</div>';
+  }
+}
+
+function setLunchStop(stopIdx) {
+  var stops = window._empStops;
+  if (!stops || !stops[stopIdx]) return;
+  var s = stops[stopIdx];
+
+  // Calculate duration at this stop
+  var dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : 0;
+  if (dur <= 0) dur = 30; // default if can't calculate
+
+  // Update lunch input
+  var lunchInput = document.getElementById('emp-hr-lunch');
+  if (lunchInput) {
+    lunchInput.value = dur;
+    // Trigger recalculate
+    lunchInput.dispatchEvent(new Event('input'));
+  }
+
+  // Store which stop is lunch so the list re-renders correctly
+  localStorage.setItem('_empLunchStop', stopIdx);
+
+  // Re-render stops to move the 🍔
+  var team = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
+  if (team && window._empStopsDateMs) {
+    showEmpStops(team, window._empStopsDateMs);
   }
 }
 
