@@ -10489,23 +10489,57 @@ function toggleJobDetail(jobId, btn) {
 // ─────────────────────────────────────────
 // HOURS
 // ─────────────────────────────────────────
+var _portalWeekOffset = 0;
+
+function portalWeekNav(dir) {
+  if (dir > 0 && _portalWeekOffset >= 0) return; // can't go future
+  _portalWeekOffset += dir;
+  if (_portalWeekOffset > 0) _portalWeekOffset = 0;
+  renderHours();
+}
+
 function renderHours() {
-  document.getElementById('week-label').textContent = t('thisWeek');
+  var days = getPortalWeekDates(_portalWeekOffset);
+  var mon = days[0];
+  var fri = days[4];
+  var lang = currentLang || 'en';
+
+  // Update header
+  if (_portalWeekOffset === 0) {
+    document.getElementById('week-label').textContent = t('thisWeek');
+  } else if (_portalWeekOffset === -1) {
+    document.getElementById('week-label').textContent = {en:'Last Week',es:'Semana pasada',pt:'Semana passada',cv:'Simana pasadu'}[lang] || 'Last Week';
+  } else {
+    document.getElementById('week-label').textContent = Math.abs(_portalWeekOffset) + ' ' + ({en:'weeks ago',es:'semanas atrás',pt:'semanas atrás',cv:'simanas atras'}[lang] || 'weeks ago');
+  }
+  var datesEl = document.getElementById('portal-week-dates');
+  if (datesEl) datesEl.textContent = mon.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + fri.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+  // Disable forward button if on current week
+  var fwdBtn = document.getElementById('portal-week-fwd');
+  if (fwdBtn) {
+    fwdBtn.style.opacity = _portalWeekOffset >= 0 ? '0.3' : '1';
+    fwdBtn.style.pointerEvents = _portalWeekOffset >= 0 ? 'none' : 'auto';
+  }
+
   document.getElementById('total-label').textContent = t('totalHours');
 
-  // Try to get hours from localStorage (set by main app GPS)
+  // Find the archived week data
+  var weekKey = 'weekHours_' + dateKey(mon) + '_' + dateKey(fri);
+  var teamData = null;
+
   try {
-    var weekData = localStorage.getItem('weekHours_cache');
+    var weekData = _portalWeekOffset === 0
+      ? localStorage.getItem('weekHours_cache')
+      : localStorage.getItem(weekKey);
     if (weekData) {
       var data = JSON.parse(weekData);
-      var teamData = data[currentEmployee.team];
+      teamData = data[currentEmployee.team];
       if (teamData) {
         // Check for per-employee overrides
         var empCache = JSON.parse(localStorage.getItem('empHours_cache') || '{}');
         var empOverrides = empCache[currentEmployee.id] || {};
         if (Object.keys(empOverrides).length > 0) {
-          // Apply overrides to team data for this employee
-          var days = getPortalWeekDates();
           days.forEach(function(d, i) {
             var dk = d.toISOString().split('T')[0];
             if (empOverrides[dk]) {
@@ -10524,26 +10558,42 @@ function renderHours() {
           });
           teamData.total = teamData.days.reduce(function(s,h){ return s+(h||0); },0);
         }
-        renderHoursData(teamData);
-        renderPastWeeks();
-        return;
       }
     }
   } catch(e) {}
 
-  // No GPS data yet — show empty week layout so it doesn't look broken
-  renderHoursData({ days: [0,0,0,0,0], starts: [], ends: [] });
-  renderPastWeeks();
+  renderHoursData(teamData || { days: [0,0,0,0,0], starts: [], ends: [] });
 }
 
-function getPortalWeekDates() {
+function getPortalWeekDates(offset) {
+  var off = offset || 0;
   var today = new Date(); today.setHours(0,0,0,0);
   var dow = today.getDay(); // 0=Sun
-  var mon = new Date(today); mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  var mon = new Date(today); mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) + (off * 7));
   var days = [];
   for (var i = 0; i < 5; i++) { var d = new Date(mon); d.setDate(mon.getDate()+i); days.push(d); }
   return days;
 }
+
+// Swipe left/right on hours card to change weeks
+(function() {
+  var sx = 0, sy = 0;
+  document.addEventListener('touchstart', function(e) {
+    var el = e.target.closest('#hours-breakdown, #tab-hours');
+    if (!el) return;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  });
+  document.addEventListener('touchend', function(e) {
+    var el = e.target.closest('#hours-breakdown, #tab-hours');
+    if (!el) return;
+    var dx = e.changedTouches[0].clientX - sx;
+    var dy = Math.abs(e.changedTouches[0].clientY - sy);
+    if (dy > 50) return; // vertical scroll, ignore
+    if (dx > 60) portalWeekNav(-1); // swipe right = previous week
+    else if (dx < -60) portalWeekNav(1); // swipe left = next week
+  });
+})();
 
 function renderPastWeeks() {
   var container = document.getElementById('hours-breakdown');
@@ -13942,12 +13992,19 @@ function syncSheets() {
 
   <!-- HOURS TAB -->
   <div id="tab-hours" class="section" style="display:none">
-    <div class="section-title" id="week-label">THIS WEEK</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <button onclick="portalWeekNav(-1)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">‹</button>
+      <div style="text-align:center">
+        <div class="section-title" id="week-label" style="margin:0">THIS WEEK</div>
+        <div id="portal-week-dates" style="font-size:11px;color:var(--muted)"></div>
+      </div>
+      <button onclick="portalWeekNav(1)" id="portal-week-fwd" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">›</button>
+    </div>
     <div class="hours-total">
       <div class="hours-total-val" id="total-hrs">0h</div>
       <div class="hours-total-label" id="total-label">Total hours this week</div>
     </div>
-    <div class="hours-card" id="hours-breakdown">
+    <div class="hours-card" id="hours-breakdown" style="touch-action:pan-y">
       <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px" id="hours-loading-text">Connect GPS to see hours</div>
     </div>
   </div>
