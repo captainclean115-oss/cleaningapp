@@ -4597,9 +4597,10 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<div style="display:flex;gap:12px;margin-bottom:14px">'
     +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Lunch (min)</div>'
     +'<input type="number" id="emp-hr-lunch" value="'+lunchVal+'" min="0" step="5" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;padding:10px 12px;outline:none;box-sizing:border-box"></div>'
-    +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:10px 12px;text-align:center">'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Team</div>'
-    +'<div style="font-size:22px;font-weight:700;color:'+(team_colors_map[team]||'var(--text)')+'">'+team+'</div></div>'
+    +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Team</div>'
+    +'<select id="emp-hr-team" onchange="onEmpTeamChange(\''+empId+'\',\''+dk+'\',this.value,'+dateMs+')" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:'+(team_colors_map[team]||'var(--text)')+';font-family:DM Sans,sans-serif;font-size:15px;font-weight:700;padding:10px 8px;outline:none;appearance:none;-webkit-appearance:none;text-align:center;box-sizing:border-box">'
+    +['B1','B3','B5','S1','S3','M1','M2','M3'].map(function(t){ return '<option value="'+t+'" style="color:'+(team_colors_map[t]||'#fff')+'"'+(t===team?' selected':'')+'>'+t+'</option>'; }).join('')
+    +'</select></div>'
     +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:10px 12px;text-align:center">'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Hours</div>'
     +'<div id="emp-hr-calc" style="font-size:22px;font-weight:700;color:var(--accent)">'+hrsVal.toFixed(1)+'</div></div></div>'
@@ -4687,12 +4688,57 @@ async function showEmpStops(team, dateMs) {
   }
 }
 
+function onEmpTeamChange(empId, dk, newTeam, dateMs) {
+  // Reassign employee to new team for this day
+  assignEmployee(empId, newTeam, dk);
+
+  // Update dropdown color
+  var sel = document.getElementById('emp-hr-team');
+  if (sel) sel.style.color = team_colors_map[newTeam] || 'var(--text)';
+
+  // Update hours from new team's GPS data
+  var newTeamData = weekHours[newTeam];
+  var dayIdx = getWeekDates(hoursWeekOffset).findIndex(function(d){ return dateKey(d) === dk; });
+  if (newTeamData && dayIdx >= 0) {
+    var h = newTeamData.days[dayIdx] || 0;
+    var s = newTeamData.starts && newTeamData.starts[dayIdx];
+    var e = newTeamData.ends && newTeamData.ends[dayIdx];
+    if (s) {
+      var sTime = typeof s === 'string' ? new Date(s) : s;
+      document.getElementById('emp-hr-start').value = String(sTime.getHours()).padStart(2,'0')+':'+String(sTime.getMinutes()).padStart(2,'0');
+    }
+    if (e) {
+      var eTime = typeof e === 'string' ? new Date(e) : e;
+      document.getElementById('emp-hr-end').value = String(eTime.getHours()).padStart(2,'0')+':'+String(eTime.getMinutes()).padStart(2,'0');
+    }
+    var lunch = newTeamData.lunch && newTeamData.lunch[dayIdx] ? newTeamData.lunch[dayIdx].duration : 0;
+    document.getElementById('emp-hr-lunch').value = lunch;
+
+    // Recalculate
+    var sv = document.getElementById('emp-hr-start').value;
+    var ev = document.getElementById('emp-hr-end').value;
+    var lv = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
+    var hrs = calcHoursFromTimes(sv, ev, lv);
+    document.getElementById('emp-hr-calc').textContent = hrs.toFixed(1);
+  }
+
+  // Reload stops for new team
+  showEmpStops(newTeam, dateMs);
+
+  // Log the change
+  var emp = EMPLOYEE_ROSTER.find(function(x){ return x.id === empId; });
+  if (emp) {
+    logPendingUpdate(emp.name + ' → ' + newTeam, new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}));
+  }
+}
+
 function saveEmpDayHours(empId, dk) {
   var s = document.getElementById('emp-hr-start').value;
   var e = document.getElementById('emp-hr-end').value;
   var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
+  var t = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
   var hrs = calcHoursFromTimes(s, e, l);
-  saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs });
+  saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs, team: t });
   document.getElementById('emp-hours-overlay').remove();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
 }
