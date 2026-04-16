@@ -5521,6 +5521,30 @@ function renderGPS() {
         });
       });
 
+      // Match stop addresses to client names
+      function matchClientName(addr) {
+        if (!addr) return '';
+        var a = addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+        // Check today's jobs for this team first
+        for (var ji = 0; ji < teamJobs.length; ji++) {
+          var j = teamJobs[ji];
+          var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
+          if (c && c.addr) {
+            var ca = c.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+            if (a.includes(ca) || ca.includes(a)) return (c.fn || '') + ' ' + (c.ln || '');
+          }
+        }
+        // Check all clients
+        for (var ci = 0; ci < CLIENTS.length; ci++) {
+          var cl = CLIENTS[ci];
+          if (cl.addr) {
+            var cla = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+            if (a.includes(cla) || cla.includes(a)) return (cl.fn || '') + ' ' + (cl.ln || '');
+          }
+        }
+        return '';
+      }
+
       rows = stopList.map((s, si) => {
         const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '—';
         const outStr = s.outTime ? s.outTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : (si === stopList.length-1 ? 'Now' : '—');
@@ -5528,11 +5552,13 @@ function renderGPS() {
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
         const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
+        const clientName = s.isDepot ? 'Depot' : matchClientName(s.addr);
 
         return `${si > 0 ? driveInfo : ''}
         <div class="tvc-stop-row" style="align-items:flex-start">
           <span class="tvc-stop-dot" style="background:${dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
+            ${clientName ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}</div>` : ''}
             <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
             <div style="display:flex;gap:12px;font-size:11px">
               ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
