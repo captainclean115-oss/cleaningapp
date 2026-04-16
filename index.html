@@ -10605,29 +10605,51 @@ function renderHoursData(data) {
   const today = new Date().getDay(); // 0=Sun,1=Mon...5=Fri
   const todayIdx = today >= 1 && today <= 5 ? today - 1 : -1;
 
+  // Load extra tasks for this employee
+  var portalDays = getPortalWeekDates();
+  var empTaskIcons = { office:'🏢', meeting:'📋', training:'📚', supply_run:'🛒', vehicle:'🚗', other:'⚡' };
+  var empTaskLabels = { office:'Office', meeting:'Meeting', training:'Training', supply_run:'Supply Run', vehicle:'Vehicle', other:'Other' };
+
   const breakdown = data.days.map((h, i) => {
-    totalHrs += h || 0;
+    const dk = portalDays[i] ? portalDays[i].toISOString().split('T')[0] : '';
     const s = data.starts && data.starts[i] ? new Date(data.starts[i]) : null;
     const e = data.ends && data.ends[i] ? new Date(data.ends[i]) : null;
     const sStr = s ? s.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
     const eStr = e ? e.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
-    // Lunch: if worked > 5hrs, show 30min deduction
-    const lunch = h && h > 5 ? 0.5 : 0;
-    const netHrs = h ? Math.max(0, h - lunch) : 0;
+    const netHrs = h || 0;
+    totalHrs += netHrs;
     const hh = Math.floor(netHrs);
     const mm = Math.round((netHrs - hh) * 60);
     const hStr = netHrs > 0 ? `${hh}h${mm > 0 ? ' ' + mm + 'm' : ''}` : '—';
     const isToday = i === todayIdx;
 
+    // Check for extra tasks
+    var tasksHtml = '';
+    if (dk && currentEmployee && currentEmployee.id) {
+      try {
+        var tasks = JSON.parse(localStorage.getItem('empTasks_' + currentEmployee.id + '_' + dk) || '[]');
+        tasks.forEach(function(t) {
+          var icon = empTaskIcons[t.type] || '⚡';
+          var label = empTaskLabels[t.type] || 'Task';
+          var tStart = t.start || '', tEnd = t.end || '';
+          if (tStart && tEnd) {
+            var sf = (function(x){ var p=x.split(':'),hh=parseInt(p[0]),m=parseInt(p[1]),a=hh>=12?'PM':'AM'; if(hh>12)hh-=12; if(hh===0)hh=12; return hh+':'+String(m).padStart(2,'0')+' '+a; })(tStart);
+            var ef = (function(x){ var p=x.split(':'),hh=parseInt(p[0]),m=parseInt(p[1]),a=hh>=12?'PM':'AM'; if(hh>12)hh-=12; if(hh===0)hh=12; return hh+':'+String(m).padStart(2,'0')+' '+a; })(tEnd);
+            tasksHtml += '<div class="hours-time" style="color:var(--accent)">'+icon+' '+label+': '+sf+' → '+ef+'</div>';
+          }
+        });
+      } catch(e2) {}
+    }
+
     return `<div class="hours-row" style="${isToday ? 'background:rgba(79,142,247,0.05);border-radius:8px;margin:0 -4px;padding:0 4px;' : ''}">
       <div style="flex:1">
         <div class="hours-day" style="${isToday ? 'color:var(--accent);font-weight:600' : ''}">${(daysFull[currentLang]||daysFull.en)[i]}${isToday ? ' •' : ''}</div>
         ${sStr && eStr ? `<div class="hours-time">${sStr} → ${eStr}</div>` : ''}
-        ${lunch > 0 ? `<div class="hours-time" style="color:var(--muted)">- 30m ${lunchLabel[currentLang]||'Lunch'}</div>` : ''}
+        ${tasksHtml}
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <div class="hours-val" style="color:${netHrs > 0 ? 'var(--accent)' : 'var(--muted)'}">${hStr}</div>
-        ${(sStr || eStr) ? `<button onclick="openHoursDispute(${i},'${sStr}','${eStr}',${lunch})" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap">?</button>` : ''}
+        ${(sStr || eStr) ? `<button onclick="openHoursDispute(${i},'${sStr}','${eStr}',0)" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap">?</button>` : ''}
       </div>
     </div>`;
   }).join('');
