@@ -5113,10 +5113,71 @@ function updateMapMarkers() {
     bounds.push([v.lat, v.lng]);
   });
 
-  // Fit map to show all vehicles
+  // Plot stop markers from each team's trips with client names
+  var todayKey = dateKey(new Date());
+  gpsVehicles.forEach(function(v) {
+    if (!v.trips || !v.trips.length) return;
+    var color = v.color || '#6b7280';
+    var teamJobs = jobs.filter(function(j){ return j.date === todayKey && j.team === v.team; });
+    var sortedTrips = v.trips.slice().sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
+
+    sortedTrips.forEach(function(t) {
+      if (!t.stopPoint) return;
+      var lat = t.stopPoint.y, lng = t.stopPoint.x;
+      var addr = t.stopAddress || t.stopLocation || '';
+      if (isDepotAddress(addr, v.team)) return; // skip depot
+
+      var clientName = matchStopToClient(addr, teamJobs);
+      var timeStr = t.stop ? new Date(t.stop).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+
+      var sm = L.circleMarker([lat, lng], {
+        radius: 7, fillColor: color, color: '#fff', weight: 1.5, opacity: 1, fillOpacity: 0.8
+      }).addTo(gpsMap);
+      sm.bindPopup('<strong>' + (clientName || 'Unknown') + '</strong><br>' + addr + (timeStr ? '<br><small>' + v.team + ' · ' + timeStr + '</small>' : ''));
+      gpsMarkers.push(sm);
+      bounds.push([lat, lng]);
+    });
+  });
+
+  // Fit map to show all vehicles and stops
   if (bounds.length > 0) {
     gpsMap.fitBounds(bounds, { padding: [40, 40] });
   }
+}
+
+// Shared function to match GPS address to client name
+function matchStopToClient(addr, teamJobs) {
+  if (!addr) return '';
+  var a = addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+  var aStreet = addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
+  // Check team jobs first
+  if (teamJobs) {
+    for (var ji = 0; ji < teamJobs.length; ji++) {
+      var j = teamJobs[ji];
+      var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
+      if (c && c.addr) {
+        var ca = c.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+        if (a.includes(ca) || ca.includes(a)) return (c.fn||'') + ' ' + (c.ln||'');
+        var cs = c.addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
+        if (aStreet && cs && aStreet.length > 3 && (aStreet.includes(cs) || cs.includes(aStreet))) return (c.fn||'') + ' ' + (c.ln||'');
+      }
+    }
+  }
+  // Check all clients
+  for (var ci = 0; ci < CLIENTS.length; ci++) {
+    var cl = CLIENTS[ci];
+    if (cl.addr) {
+      var ca2 = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+      if (a.includes(ca2) || ca2.includes(a)) return (cl.fn||'') + ' ' + (cl.ln||'');
+      var cs2 = cl.addr.toLowerCase().replace(/,.*$/,'').replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'').replace(/[^a-z ]/g,' ').replace(/\s+/g,' ').trim();
+      var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
+      var cCity = (cl.city||'').toLowerCase();
+      if (aStreet && cs2 && aStreet.length > 3 && (aStreet.includes(cs2) || cs2.includes(aStreet))) {
+        if (!aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity)) return (cl.fn||'') + ' ' + (cl.ln||'');
+      }
+    }
+  }
+  return '';
 }
 
 // Get selected date for GPS queries
@@ -5521,50 +5582,7 @@ function renderGPS() {
         });
       });
 
-      // Match stop addresses to client names — fuzzy by street name
-      function getStreetName(addr) {
-        if (!addr) return '';
-        // Strip numbers, unit/apt, city/state/zip — keep just the street name words
-        return addr.toLowerCase()
-          .replace(/,.*$/,'') // remove everything after comma (city, state)
-          .replace(/\b(apt|unit|suite|ste|#)\s*\S*/gi,'') // remove apt/unit
-          .replace(/[^a-z ]/g,' ') // remove numbers and special chars
-          .replace(/\s+/g,' ').trim();
-      }
-      function matchClientName(addr) {
-        if (!addr) return '';
-        var a = addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-        var aStreet = getStreetName(addr);
-        // Check today's jobs for this team first (most likely match)
-        for (var ji = 0; ji < teamJobs.length; ji++) {
-          var j = teamJobs[ji];
-          var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
-          if (c && c.addr) {
-            var ca = c.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-            // Exact match
-            if (a.includes(ca) || ca.includes(a)) return (c.fn || '') + ' ' + (c.ln || '');
-            // Street name match
-            var cStreet = getStreetName(c.addr);
-            if (aStreet && cStreet && aStreet.length > 3 && (aStreet.includes(cStreet) || cStreet.includes(aStreet))) return (c.fn || '') + ' ' + (c.ln || '');
-          }
-        }
-        // Check all clients — street name match
-        for (var ci = 0; ci < CLIENTS.length; ci++) {
-          var cl = CLIENTS[ci];
-          if (cl.addr) {
-            var ca2 = cl.addr.toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
-            if (a.includes(ca2) || ca2.includes(a)) return (cl.fn || '') + ' ' + (cl.ln || '');
-            var cStreet2 = getStreetName(cl.addr);
-            // Also check city match to avoid false positives on common street names
-            var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
-            var cCity = (cl.city||'').toLowerCase();
-            if (aStreet && cStreet2 && aStreet.length > 3 && (aStreet.includes(cStreet2) || cStreet2.includes(aStreet))) {
-              if (!aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity)) return (cl.fn || '') + ' ' + (cl.ln || '');
-            }
-          }
-        }
-        return '';
-      }
+      // Use shared matchStopToClient function
 
       rows = stopList.map((s, si) => {
         const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '—';
@@ -5573,7 +5591,7 @@ function renderGPS() {
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
         const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
-        const clientName = s.isDepot ? 'Depot' : matchClientName(s.addr);
+        const clientName = s.isDepot ? 'Depot' : matchStopToClient(s.addr, teamJobs);
 
         return `${si > 0 ? driveInfo : ''}
         <div class="tvc-stop-row" style="align-items:flex-start">
