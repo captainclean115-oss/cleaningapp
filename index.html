@@ -450,18 +450,28 @@ body {
 .unread-badge { background: var(--accent); color: #fff; border-radius: 10px;
   font-size: 10px; font-weight: 700; padding: 1px 7px; margin-left: 6px; }
 
-/* Conversation view */
+/* Conversation view — fullscreen overlay so only message list scrolls */
+#rc-conv-section {
+  position: fixed; inset: 0; z-index: 250;
+  background: var(--bg);
+  flex-direction: column;
+}
 .conv-header {
-  position: sticky; top: 0; z-index: 99;
+  flex: 0 0 auto;
   background: rgba(15,17,23,0.95); backdrop-filter: blur(20px);
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  padding: calc(var(--safe-top) + 12px) 16px 12px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 12px;
 }
 .conv-back { background: none; border: none; color: var(--accent);
   font-size: 22px; cursor: pointer; padding: 0 4px; }
 .conv-name { font-size: 16px; font-weight: 600; }
 .conv-number { font-size: 12px; color: var(--muted); }
-.conv-messages { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.conv-messages {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 12px 16px; display: flex; flex-direction: column; gap: 10px;
+}
 .conv-bubble-wrap { display: flex; flex-direction: column; }
 .conv-bubble-wrap.mine { align-items: flex-end; }
 .conv-bubble-wrap.theirs { align-items: flex-start; }
@@ -475,9 +485,9 @@ body {
 
 /* AI Draft */
 .draft-section {
-  position: sticky; bottom: 0;
+  flex: 0 0 auto;
   background: var(--surface); border-top: 1px solid var(--border);
-  padding: 12px 16px calc(var(--safe-bottom) + 70px);
+  padding: 12px 16px calc(var(--safe-bottom) + 12px);
 }
 .draft-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
   letter-spacing: .06em; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
@@ -1145,8 +1155,9 @@ select.field-input { appearance: none; }
       <div style="font-size:11px;color:var(--muted)">Tap 🎙 on your keyboard to speak · "Schedule Beth Ahern Friday 2pm B1"</div>
     </div>
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px">
       <div style="font-size:19px;font-weight:600;padding:4px 0 2px">Pending TMConnect Updates</div>
+      <button onclick="openFiles()" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:8px 14px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;flex-shrink:0">📁 Files</button>
     </div>
     <div style="font-size:13px;color:var(--muted)">Changes made on your phone that need to be updated in TMConnect</div>
   </div>
@@ -1155,12 +1166,37 @@ select.field-input { appearance: none; }
   <button class="add-task-btn" onclick="openAddTask()">+ Add reminder</button>
   <div id="manual-tasks-list"></div>
   <button class="clear-done-btn" onclick="clearDoneTasks()">Clear completed tasks</button>
-  <div style="margin:16px 12px 4px;display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border)">
+  <div style="margin:16px 12px 4px;display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border);gap:8px;flex-wrap:wrap">
     <div style="font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Activity Log</div>
-    <button onclick="clearActivityLog()" style="background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">Clear</button>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button onclick="promptSetActor()" id="actor-name-btn" style="background:none;border:1px solid var(--border);color:var(--teal);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer">Signed in as: …</button>
+      <button onclick="clearActivityLog()" style="background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">Clear</button>
+    </div>
   </div>
   <div id="activity-log-list" style="padding:0 12px 20px"></div>
   <div class="bottom-pad"></div>
+</div>
+
+<!-- FILES VIEW (Finder-style grid) -->
+<div id="files-view" style="display:none;position:fixed;inset:0;z-index:260;background:var(--bg);flex-direction:column">
+  <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+    <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
+    <div style="flex:1">
+      <div style="font-size:17px;font-weight:600">Files</div>
+      <div style="font-size:12px;color:var(--muted)">Reports & documents</div>
+    </div>
+  </div>
+  <div id="files-grid" style="flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:20px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:18px;align-content:start"></div>
+</div>
+
+<!-- FILE DETAIL MODAL -->
+<div id="file-detail-modal" style="display:none;position:fixed;inset:0;z-index:280;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;padding:24px" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;padding:24px;text-align:center">
+    <div id="file-detail-icon" style="font-size:48px;margin-bottom:8px"></div>
+    <div id="file-detail-title" style="font-size:18px;font-weight:600;margin-bottom:6px"></div>
+    <div id="file-detail-body" style="font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.5"></div>
+    <button onclick="document.getElementById('file-detail-modal').style.display='none'" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;padding:10px 22px;border-radius:10px;cursor:pointer">Close</button>
+  </div>
 </div>
 
 <!-- EMPLOYEE EDIT MODAL (main app) -->
@@ -2566,29 +2602,47 @@ function updateTaskBadge() {
   if (label) label.innerHTML = count > 0 ? 'Updates <span class="task-badge">' + count + '</span>' : 'Updates';
 }
 
-function logPendingUpdate(action, details) {
+function getCurrentActor() {
+  return localStorage.getItem('cleanco_actor_name') || 'Manager';
+}
+function setCurrentActor(name) {
+  if (!name) { localStorage.removeItem('cleanco_actor_name'); }
+  else { localStorage.setItem('cleanco_actor_name', name.trim()); }
+  renderActivityLog();
+}
+function promptSetActor() {
+  var current = getCurrentActor();
+  var who = prompt('Who is using the app right now? (e.g. Tom, Claire)', current === 'Manager' ? '' : current);
+  if (who === null) return;
+  setCurrentActor(who);
+}
+
+function logPendingUpdate(action, details, actor) {
   const now = new Date();
   const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  const who = actor || getCurrentActor();
   pendingUpdates.unshift({
     id: Date.now().toString(),
     action,
     details,
+    actor: who,
     time: timeStr,
     done: false
   });
   savePending();
   // Also log to permanent activity log
-  logActivity(action, details);
+  logActivity(action, details, who);
 }
 
 // ── PERMANENT ACTIVITY LOG ──
-function logActivity(action, details) {
+function logActivity(action, details, actor) {
   var now = new Date();
   var timestamp = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'});
+  var who = actor || getCurrentActor();
   var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  log.unshift({ action: action, details: details || '', time: timestamp, ts: now.getTime() });
+  log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime() });
   // Keep last 500 entries
   if (log.length > 500) log = log.slice(0, 500);
   localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
@@ -2596,6 +2650,8 @@ function logActivity(action, details) {
 }
 
 function renderActivityLog() {
+  var btn = document.getElementById('actor-name-btn');
+  if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
   var el = document.getElementById('activity-log-list');
   if (!el) return;
   var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
@@ -2620,11 +2676,14 @@ function renderActivityLog() {
     html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
     grouped[dateLabel].forEach(function(entry) {
       var timeOnly = new Date(entry.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      var actorLabel = entry.actor || 'Manager';
+      var actorColor = actorLabel === 'AI Chat' ? 'var(--accent2)' : 'var(--teal)';
       html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
         + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
         + '<div style="flex:1;min-width:0">'
         + '<div style="font-weight:500;color:var(--text)">' + (entry.action||'') + '</div>'
         + (entry.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + entry.details + '</div>' : '')
+        + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+actorLabel+'</div>'
         + '</div></div>';
     });
   });
@@ -2635,6 +2694,47 @@ function clearActivityLog() {
   if (!confirm('Clear the entire activity log?')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
+}
+
+// ── FILES (Finder-style grid) ──
+var FILES_LIST = [
+  { id: 'payroll',     name: 'Payroll',              icon: '💵', desc: 'Hours, pay periods, and payroll exports.' },
+  { id: 'performance', name: 'Performance',          icon: '📈', desc: 'Per-employee performance reports.' },
+  { id: 'revenue',     name: 'Revenue',              icon: '💰', desc: 'Revenue by week, month, and team.' },
+  { id: 'labor',       name: 'Labor Summary',        icon: '🧾', desc: 'Labor cost vs. revenue summary.' },
+  { id: 'login',       name: 'Login Tracker',        icon: '🔐', desc: 'Who signed in and when.' },
+  { id: 'ar',          name: 'Accounts Receivable',  icon: '📒', desc: 'Outstanding balances by client.' },
+  { id: 'pricing',     name: 'Pricing Review',       icon: '🏷️', desc: 'Per-client pricing review and recommendations.' }
+];
+
+function openFiles() {
+  renderFilesGrid();
+  document.getElementById('files-view').style.display = 'flex';
+}
+
+function closeFiles() {
+  document.getElementById('files-view').style.display = 'none';
+}
+
+function renderFilesGrid() {
+  var grid = document.getElementById('files-grid');
+  if (!grid) return;
+  grid.innerHTML = FILES_LIST.map(function(f){
+    return '<button onclick="openFileDetail(\''+f.id+'\')" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 4px;border-radius:10px;font-family:inherit" '
+      + 'ontouchstart="this.style.background=\'var(--surface2)\'" ontouchend="this.style.background=\'none\'">'
+      + '<div style="font-size:42px;line-height:1;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3))">'+f.icon+'</div>'
+      + '<div style="font-size:12px;font-weight:500;color:var(--text);text-align:center;line-height:1.2;max-width:96px">'+f.name+'</div>'
+      + '</button>';
+  }).join('');
+}
+
+function openFileDetail(id) {
+  var f = FILES_LIST.find(function(x){ return x.id === id; });
+  if (!f) return;
+  document.getElementById('file-detail-icon').textContent = f.icon;
+  document.getElementById('file-detail-title').textContent = f.name;
+  document.getElementById('file-detail-body').innerHTML = f.desc + '<br><br><span style="color:var(--amber);font-size:12px">Coming soon — report contents will live here.</span>';
+  document.getElementById('file-detail-modal').style.display = 'flex';
 }
 
 function togglePendingDone(id) {
@@ -2815,6 +2915,46 @@ function processVoiceCommand(text) {
     return;
   }
 
+  // ── MOVE EMPLOYEE TO TEAM ──
+  // e.g. "move Sarah to team B1", "put Maria on B3 tomorrow", "switch John to M2"
+  var teamCodeMatch = lower.match(/\b(b1|b3|b5|s1|s3|m1|m2|m3)\b/i);
+  var hasMoveVerb = /\b(move|put|switch|assign|send|transfer)\b/.test(lower)
+                 || /\bto\s+team\b/.test(lower)
+                 || /\bon\s+team\b/.test(lower);
+  if (teamCodeMatch && hasMoveVerb) {
+    var newTeam = teamCodeMatch[1].toUpperCase();
+    // Strip command words + team token so what's left is hopefully the name
+    var nameGuess = text.replace(/\b(move|put|switch|assign|send|transfer|to|on|team|today|tomorrow|for)\b/gi,'')
+                        .replace(/\b(b1|b3|b5|s1|s3|m1|m2|m3)\b/gi,'')
+                        .replace(/\s+/g,' ').trim();
+    var empMove = null, bestLen = 0;
+    EMPLOYEE_ROSTER.forEach(function(e){
+      var en = (e.name||'').toLowerCase();
+      if (!en) return;
+      var first = en.split(' ')[0];
+      if (nameGuess && nameGuess.toLowerCase().indexOf(en) !== -1 && en.length > bestLen) { empMove = e; bestLen = en.length; }
+      else if (nameGuess && nameGuess.toLowerCase().indexOf(first) !== -1 && first.length > 2 && first.length > bestLen) { empMove = e; bestLen = first.length; }
+    });
+    if (!empMove) {
+      status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that employee. Try their first name.</div>';
+      return;
+    }
+    // Pick date: today by default, tomorrow if mentioned
+    var moveDate = dateKey(new Date());
+    if (lower.includes('tomorrow')) {
+      var tm = new Date(); tm.setDate(tm.getDate()+1); moveDate = dateKey(tm);
+    }
+    dailyAssignments[moveDate + '_' + empMove.id] = newTeam;
+    localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+    var dayL = new Date(moveDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate(empMove.name + ' → Team ' + newTeam, dayL);
+    if (typeof renderTeamManager === 'function') renderTeamManager();
+    if (typeof renderCal === 'function') renderCal();
+    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+empMove.name+' → Team '+newTeam+'</div><div style="font-size:12px;color:var(--muted);margin-top:2px">'+dayL+'</div>';
+    setTimeout(function(){ status.style.display='none'; }, 3000);
+    return;
+  }
+
   // ── REMINDER ──
   if (lower.includes('remind') || lower.includes('remember') || lower.includes('note')) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
@@ -2829,7 +2969,221 @@ function processVoiceCommand(text) {
     }
   }
 
-  status.innerHTML = '<div style="color:var(--amber);font-size:13px">I didn\'t understand that. Try:<br>• "Schedule [name] [day] [time] team [team]"<br>• "Cancel [name] [day]"<br>• "[Name] day off"<br>• "Remind me to [task]"</div>';
+  // ── FALLBACK: ASK CLAUDE TO INTERPRET ──
+  status.innerHTML = '<div style="color:var(--muted);font-size:13px">🤔 Thinking...</div>';
+  aiInterpretAndExecute(text);
+}
+
+// ── AI COMMAND INTERPRETER ──
+function getAnthropicKey() {
+  var k = localStorage.getItem('anthropic_api_key');
+  if (k) return k;
+  k = prompt('Paste your Anthropic API key (starts with sk-ant-). Stored locally, used for natural-language commands.');
+  if (k && k.trim().startsWith('sk-')) {
+    localStorage.setItem('anthropic_api_key', k.trim());
+    return k.trim();
+  }
+  return null;
+}
+
+async function aiInterpretAndExecute(text) {
+  var status = document.getElementById('voice-cmd-status');
+  var apiKey = getAnthropicKey();
+  if (!apiKey) {
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">AI command needs an API key. Tap the input and try again.</div>';
+    return;
+  }
+
+  // Build context
+  var clientList = CLIENTS.map(function(c){
+    var nm = ((c.fn||'')+' '+(c.ln||'')).trim();
+    return nm;
+  }).filter(Boolean).slice(0, 300).join('; ');
+  var employeeList = EMPLOYEE_ROSTER.map(function(e){ return e.name; }).filter(Boolean).join(', ');
+  var today = new Date();
+  var todayStr = dateKey(today);
+  var dow = today.toLocaleDateString('en-US',{weekday:'long'});
+
+  var systemPrompt =
+    'You are the command parser for a cleaning business app.\n' +
+    'Today is ' + dow + ' ' + todayStr + '.\n' +
+    'Valid teams: B1, B3, B5, S1, S3, M1, M2, M3.\n' +
+    'Employees: ' + employeeList + '.\n' +
+    'Clients: ' + clientList + '.\n\n' +
+    'Parse the user\'s instruction into ONE JSON action. Reply with ONLY a JSON object, no prose, no code fences.\n' +
+    'Shapes:\n' +
+    '{"action":"schedule","clientName":"<match from Clients>","date":"YYYY-MM-DD","time":"HH:MM","team":"B1|B3|B5|S1|S3|M1|M2|M3"}\n' +
+    '{"action":"cancel","clientName":"<name>","date":"YYYY-MM-DD"}\n' +
+    '{"action":"move_employee","employeeName":"<name from Employees>","team":"<team>","date":"YYYY-MM-DD"}\n' +
+    '{"action":"day_off","employeeName":"<name>","date":"YYYY-MM-DD"}\n' +
+    '{"action":"reminder","text":"<reminder text>"}\n' +
+    '{"action":"unknown","reason":"<brief reason>"}\n\n' +
+    'Use 24-hour time. Default date = today, default time = 09:00 when unclear. Pick the closest name match from the provided lists.';
+
+  var action = null;
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: text }]
+      })
+    });
+    if (!resp.ok) {
+      var errBody = await resp.text();
+      if (resp.status === 401) localStorage.removeItem('anthropic_api_key');
+      status.innerHTML = '<div style="color:var(--amber);font-size:13px">AI error ('+resp.status+'). '+(resp.status===401?'Key removed — try again.':'')+'</div>';
+      return;
+    }
+    var data = await resp.json();
+    var raw = data && data.content && data.content[0] && data.content[0].text ? data.content[0].text.trim() : '';
+    var m = raw.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('no JSON');
+    action = JSON.parse(m[0]);
+  } catch(e) {
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not reach AI. ('+e.message+')</div>';
+    return;
+  }
+
+  executeAiAction(action, text);
+}
+
+function executeAiAction(action, originalText) {
+  var status = document.getElementById('voice-cmd-status');
+  if (!action || !action.action) {
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">I couldn\'t interpret that. Try rephrasing.</div>';
+    return;
+  }
+
+  if (action.action === 'unknown') {
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">'+(action.reason||'Not sure what you meant.')+'</div>';
+    return;
+  }
+
+  if (action.action === 'schedule') {
+    var c = findClientByName(action.clientName || '');
+    if (!c) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Client not found: '+(action.clientName||'?')+'</div>'; return; }
+    var hr = parseInt((action.time||'09:00').split(':')[0],10)||9;
+    var mn = parseInt((action.time||'09:00').split(':')[1],10)||0;
+    var timeDisplay = (hr%12||12)+':'+String(mn).padStart(2,'0')+' '+(hr>=12?'PM':'AM');
+    var team = (action.team||'B1').toUpperCase();
+    var dayLabel = new Date((action.date||dateKey(new Date()))+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    status.innerHTML = '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule Clean</div>'
+      +'<div style="font-size:13px;margin-bottom:4px"><strong>'+((c.ln||'')+', '+(c.fn||''))+'</strong></div>'
+      +'<div style="font-size:13px;margin-bottom:4px">'+dayLabel+' at '+timeDisplay+'</div>'
+      +'<div style="font-size:13px;margin-bottom:12px;color:'+(team_colors_map[team]||'var(--text)')+';font-weight:700">Team '+team+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Confirm</button>'
+      +'</div>';
+    window._pendingVoiceCmd = {
+      client: c,
+      clientName: (c.ln||'')+', '+(c.fn||''),
+      date: action.date || dateKey(new Date()),
+      time: String(hr).padStart(2,'0')+':'+String(mn).padStart(2,'0'),
+      timeDisplay: timeDisplay,
+      team: team,
+      viaAI: true
+    };
+    return;
+  }
+
+  if (action.action === 'cancel') {
+    var c2 = findClientByName(action.clientName || '');
+    var targetDate = action.date || dateKey(new Date());
+    if (!c2) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Client not found.</div>'; return; }
+    var job = jobs.find(function(j){ return j.clientId === c2.id && j.date === targetDate && !j.cancelled; });
+    if (!job) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">No job for that client on that day.</div>'; return; }
+    job.cancelled = true; saveJobs();
+    var dayL2 = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate('Cancelled: '+job.clientName, dayL2, 'AI Chat');
+    renderCal();
+    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Cancelled '+job.clientName+' on '+dayL2+'</div>';
+    setTimeout(function(){ status.style.display='none'; }, 3000);
+    return;
+  }
+
+  if (action.action === 'move_employee') {
+    var emp = findEmployeeByName(action.employeeName || '');
+    if (!emp) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Employee not found.</div>'; return; }
+    var team2 = (action.team||'').toUpperCase();
+    var valid = ['B1','B3','B5','S1','S3','M1','M2','M3'];
+    if (valid.indexOf(team2) === -1) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Invalid team: '+team2+'</div>'; return; }
+    var d = action.date || dateKey(new Date());
+    dailyAssignments[d + '_' + emp.id] = team2;
+    localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+    var dayL3 = new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate(emp.name+' → Team '+team2, dayL3, 'AI Chat');
+    if (typeof renderTeamManager === 'function') renderTeamManager();
+    if (typeof renderCal === 'function') renderCal();
+    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp.name+' → Team '+team2+'</div><div style="font-size:12px;color:var(--muted);margin-top:2px">'+dayL3+'</div>';
+    setTimeout(function(){ status.style.display='none'; }, 3000);
+    return;
+  }
+
+  if (action.action === 'day_off') {
+    var emp2 = findEmployeeByName(action.employeeName || '');
+    if (!emp2) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Employee not found.</div>'; return; }
+    var d2 = action.date || dateKey(new Date());
+    dailyAssignments[d2 + '_' + emp2.id] = 'OFF';
+    saveDailyAssignments();
+    var dayL4 = new Date(d2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate(emp2.name+' → Day Off', dayL4, 'AI Chat');
+    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp2.name+' marked Day Off</div>';
+    setTimeout(function(){ status.style.display='none'; }, 3000);
+    return;
+  }
+
+  if (action.action === 'reminder') {
+    var noteText = action.text || originalText;
+    var now = new Date();
+    var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
+    saveManualTasks(); renderTasks();
+    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Reminder added: "'+noteText+'"</div>';
+    setTimeout(function(){ status.style.display='none'; }, 3000);
+    return;
+  }
+
+  status.innerHTML = '<div style="color:var(--amber);font-size:13px">Unrecognized action: '+action.action+'</div>';
+}
+
+function findClientByName(name) {
+  if (!name) return null;
+  var n = name.toLowerCase().trim();
+  var best = null, bestLen = 0;
+  CLIENTS.forEach(function(c){
+    var fn = (c.fn||'').toLowerCase(), ln = (c.ln||'').toLowerCase();
+    var full = (fn+' '+ln).trim(), rev = (ln+' '+fn).trim();
+    if (n === full || n === rev) { if (full.length > bestLen) { best = c; bestLen = full.length + 100; } }
+    else if (full && (n.indexOf(full) !== -1 || full.indexOf(n) !== -1) && full.length > bestLen) { best = c; bestLen = full.length; }
+    else if (ln.length > 2 && n.indexOf(ln) !== -1 && ln.length > bestLen) { best = c; bestLen = ln.length; }
+  });
+  return best;
+}
+
+function findEmployeeByName(name) {
+  if (!name) return null;
+  var n = name.toLowerCase().trim();
+  var best = null, bestLen = 0;
+  EMPLOYEE_ROSTER.forEach(function(e){
+    var en = (e.name||'').toLowerCase();
+    if (!en) return;
+    var first = en.split(' ')[0];
+    if (n === en && en.length > bestLen) { best = e; bestLen = en.length + 100; }
+    else if (n.indexOf(en) !== -1 && en.length > bestLen) { best = e; bestLen = en.length; }
+    else if (en.indexOf(n) !== -1 && n.length > 2 && n.length > bestLen) { best = e; bestLen = n.length; }
+    else if (first.length > 2 && n.indexOf(first) !== -1 && first.length > bestLen) { best = e; bestLen = first.length; }
+  });
+  return best;
 }
 
 function cancelVoiceCmd() {
@@ -2867,7 +3221,7 @@ function executeScheduleCmd() {
   saveJobs();
 
   var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team);
+  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : undefined);
   renderCal();
 
   status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Scheduled!</div><div style="font-size:13px;color:var(--muted);margin-top:4px">'+cmd.clientName+' — '+dayLabel+' at '+cmd.timeDisplay+'</div>';
@@ -4204,7 +4558,7 @@ function openClientMessages(clientId, phone, name) {
   } else {
     // No existing conversation — pre-fill a new one
     setTimeout(() => {
-      document.getElementById('rc-conv-section').style.display = 'block';
+      document.getElementById('rc-conv-section').style.display = 'flex';
       document.getElementById('rc-inbox-section').style.display = 'none';
       document.getElementById('conv-name').textContent = name;
       document.getElementById('conv-number').textContent = phone;
@@ -8174,7 +8528,7 @@ async function openConversation(idx) {
   const client = matchClientByPhone(currentConv.phone);
   
   document.getElementById('rc-inbox-section').style.display = 'none';
-  document.getElementById('rc-conv-section').style.display = 'block';
+  document.getElementById('rc-conv-section').style.display = 'flex';
   document.getElementById('conv-name').textContent = client ? client.fn + ' ' + client.ln : (currentConv.name || currentConv.phone);
   document.getElementById('conv-number').textContent = currentConv.phone;
   // Show "Add as Client" button only for unknown numbers
@@ -8195,8 +8549,11 @@ async function openConversation(idx) {
     </div>`;
   }).join('');
   
-  // Scroll to bottom
-  setTimeout(() => convEl.scrollTop = convEl.scrollHeight, 100);
+  // Scroll to most recent — double rAF to wait until layout settles
+  requestAnimationFrame(function(){
+    convEl.scrollTop = convEl.scrollHeight;
+    requestAnimationFrame(function(){ convEl.scrollTop = convEl.scrollHeight; });
+  });
 
   // Mark as read
   if (currentConv.unread > 0) {
@@ -8268,15 +8625,23 @@ Instructions:
 Reply only with the SMS text, nothing else.`;
 
   try {
+    const apiKey = getAnthropicKey();
+    if (!apiKey) { draftEl.placeholder = 'AI draft needs an API key.'; return; }
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 150,
         messages: [{ role: 'user', content: prompt }]
       })
     });
+    if (resp.status === 401) { localStorage.removeItem('anthropic_api_key'); draftEl.placeholder = 'API key invalid — try again.'; return; }
     const data = await resp.json();
     const draft = data.content && data.content[0] ? data.content[0].text : '';
     draftEl.value = draft;
@@ -10861,15 +11226,23 @@ async function translateNote(text, lang, cacheKey) {
   // Try API translation
   const langNames = { es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole (Kriolu)' };
   try {
+    const apiKey = getAnthropicKey();
+    if (!apiKey) return text;
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 150,
         messages: [{ role: 'user', content: 'Translate this short cleaning job note to ' + (langNames[lang]||lang) + '. Return ONLY the translation, nothing else:\n' + text }]
       })
     });
+    if (resp.status === 401) { localStorage.removeItem('anthropic_api_key'); return text; }
     if (resp && resp.ok) {
       const data = await resp.json();
       const translated = data && data.content && data.content[0] && data.content[0].text
@@ -12719,11 +13092,13 @@ function jobDragMove(e) {
     _dragClone.style.left = (tx - _dragOffsetX) + 'px';
     _dragClone.style.top = (ty - _dragOffsetY) + 'px';
   }
-  // Calculate and show snapped time
+  // Calculate and show snapped time — use clone's LEFT edge, since jobs are
+  // positioned on the timeline by their left edge, not by the finger position.
   var tlScroll = document.getElementById('tl-main-scroll');
   if (tlScroll && _dragClone) {
     var scrollRect = tlScroll.getBoundingClientRect();
-    var xInTimeline = (tx - scrollRect.left) + tlScroll.scrollLeft;
+    var cloneLeft = tx - _dragOffsetX;
+    var xInTimeline = (cloneLeft - scrollRect.left) + tlScroll.scrollLeft;
     var TL_START = 7 * 60;
     var PX_PER_MIN = 1.5;
     var mins = Math.round(xInTimeline / PX_PER_MIN) + TL_START;
@@ -12773,7 +13148,8 @@ function jobDragEnd(e) {
     _dragJob.flexible = false;
   } else if (tlScroll) {
     var scrollRect = tlScroll.getBoundingClientRect();
-    var xInTimeline = (tx - scrollRect.left) + tlScroll.scrollLeft;
+    var cloneLeft = tx - _dragOffsetX;
+    var xInTimeline = (cloneLeft - scrollRect.left) + tlScroll.scrollLeft;
     var droppedMins = Math.round(xInTimeline / PX_PER_MIN) + TL_START;
     droppedMins = Math.round(droppedMins / 15) * 15;
     droppedMins = Math.max(TL_START, Math.min(TL_END - 15, droppedMins));
