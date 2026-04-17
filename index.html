@@ -1138,11 +1138,12 @@ select.field-input { appearance: none; }
 <div id="tasks-view">
   <div class="tasks-header">
     <div style="margin-bottom:12px">
+      <div style="font-size:15px;font-weight:700;color:var(--accent);margin-bottom:8px">✦ Claire</div>
       <div style="display:flex;gap:8px;margin-bottom:6px">
-        <input type="text" id="voice-cmd-input" placeholder="Type or 🎙 dictate a command..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:12px 14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()">
+        <input type="text" id="voice-cmd-input" placeholder="Ask Claire anything..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:12px 14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()">
         <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px 18px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
       </div>
-      <div style="font-size:11px;color:var(--muted)">Tap 🎙 on your keyboard to speak · "Schedule Beth Ahern Friday 2pm B1"</div>
+      <div style="font-size:11px;color:var(--muted)">Tap 🎙 on your keyboard to speak · "Claire, schedule Beth Ahern Friday 2pm B1"</div>
     </div>
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -2749,28 +2750,37 @@ function runVoiceCmd() {
   input.value = '';
 }
 
+function claireReply(msg) {
+  var status = document.getElementById('voice-cmd-status');
+  if (!status) return;
+  status.innerHTML += '<div style="margin-top:8px;padding:10px 12px;background:rgba(108,143,255,0.08);border:1px solid rgba(108,143,255,0.2);border-radius:10px;text-align:left;display:flex;gap:8px;align-items:flex-start">'
+    +'<div style="font-size:14px;flex-shrink:0">✦</div>'
+    +'<div style="font-size:13px;color:var(--text);line-height:1.4"><strong style="color:var(--accent)">Claire:</strong> '+msg+'</div></div>';
+}
+
 function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
-  var lower = text.toLowerCase();
+  // Strip "Claire" from the beginning
+  var lower = text.toLowerCase().replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
+  text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
+  if (!lower) lower = text.toLowerCase();
 
   // ── SCHEDULE COMMAND ──
   // "schedule [client name] [day/date] [time] [team]"
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
     var result = parseScheduleCommand(lower, text);
     if (result.error) {
-      status.innerHTML = '<div style="color:var(--amber);font-size:13px">'+result.error+'</div>';
+      claireReply(result.error);
       return;
     }
     // Confirm before executing
     var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     var timeLabel = result.timeDisplay;
-    status.innerHTML = '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule Clean</div>'
-      +'<div style="font-size:13px;margin-bottom:4px"><strong>'+result.clientName+'</strong></div>'
-      +'<div style="font-size:13px;margin-bottom:4px">'+dayLabel+' at '+timeLabel+'</div>'
-      +'<div style="font-size:13px;margin-bottom:12px;color:'+(team_colors_map[result.team]||'var(--text)')+';font-weight:700">Team '+result.team+'</div>'
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+timeLabel+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>. Sound good?</div>'
       +'<div style="display:flex;gap:8px">'
-      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
-      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Confirm</button>'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
       +'</div>';
     window._pendingVoiceCmd = result;
     return;
@@ -2789,12 +2799,11 @@ function processVoiceCommand(text) {
         var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
         logPendingUpdate('Cancelled: '+job.clientName, dayL);
         renderCal();
-        status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Cancelled '+job.clientName+' on '+dayL+'</div>';
-        setTimeout(function(){ status.style.display='none'; }, 3000);
+        claireReply('Done! I cancelled '+job.clientName+' for '+dayL+'. The schedule is updated.');
         return;
       }
     }
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that job to cancel. Try being more specific.</div>';
+    claireReply('I couldn\'t find that job to cancel. Try giving me the client\'s full name and the day.');
     return;
   }
 
@@ -2807,11 +2816,10 @@ function processVoiceCommand(text) {
       dailyAssignments[dk + '_' + emp.id] = 'OFF';
       saveDailyAssignments();
       logPendingUpdate(emp.name + ' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
-      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp.name+' marked Day Off</div>';
-      setTimeout(function(){ status.style.display='none'; }, 3000);
+      claireReply('Got it! '+emp.name+' is off today. I\'ve updated the team roster.');
       return;
     }
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that employee.</div>';
+    claireReply('I couldn\'t find that employee. Try their first name — like "Viviana day off".');
     return;
   }
 
@@ -2823,13 +2831,12 @@ function processVoiceCommand(text) {
       var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
       manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
       saveManualTasks(); renderTasks();
-      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Reminder added: "'+noteText+'"</div>';
-      setTimeout(function(){ status.style.display='none'; }, 3000);
+      claireReply('Noted! I added "'+noteText+'" to your reminders.');
       return;
     }
   }
 
-  status.innerHTML = '<div style="color:var(--amber);font-size:13px">I didn\'t understand that. Try:<br>• "Schedule [name] [day] [time] team [team]"<br>• "Cancel [name] [day]"<br>• "[Name] day off"<br>• "Remind me to [task]"</div>';
+  claireReply('Sorry, I didn\'t catch that! Try something like:<br>• "Schedule Beth Ahern Friday 2pm B1"<br>• "Cancel Beth Ahern Friday"<br>• "Viviana day off"<br>• "Remind me to order supplies"');
 }
 
 function cancelVoiceCmd() {
@@ -2870,7 +2877,7 @@ function executeScheduleCmd() {
   logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team);
   renderCal();
 
-  status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Scheduled!</div><div style="font-size:13px;color:var(--muted);margin-top:4px">'+cmd.clientName+' — '+dayLabel+' at '+cmd.timeDisplay+'</div>';
+  claireReply('All set! '+cmd.clientName+' is booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
   window._pendingVoiceCmd = null;
   setTimeout(function(){ status.style.display='none'; }, 3000);
 }
