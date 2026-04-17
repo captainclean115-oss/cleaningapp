@@ -2887,16 +2887,20 @@ function executeClaire(action, message) {
   } else if (action.action === 'cancel') {
     var lower2 = (action.client||'').toLowerCase();
     var client2 = CLIENTS.find(function(c){ return (c.fn+' '+c.ln).toLowerCase() === lower2 || lower2.includes(c.ln.toLowerCase()); });
-    if (!client2) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!client2) { claireReply(message || 'I couldn\'t find that client in your system.'); return; }
     var targetDate = action.date || dateKey(new Date());
     var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
     if (job) {
       job.cancelled = true; saveJobs();
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
-      claireReply(message || 'Done! I cancelled '+job.clientName+' for '+dayL+'.');
+      claireReply(message || 'Done! I cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
     } else {
-      claireReply(message || 'I couldn\'t find that job to cancel.');
+      // Find their next scheduled job to be helpful
+      var dateLabel = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && j.date > targetDate && !j.cancelled; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+      var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
+      claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean scheduled for '+dateLabel+'.'+hint);
     }
 
   } else if (action.action === 'dayoff') {
