@@ -2758,26 +2758,183 @@ function claireReply(msg) {
     +'<div style="font-size:13px;color:var(--text);line-height:1.4"><strong style="color:var(--accent)">Claire:</strong> '+msg+'</div></div>';
 }
 
-function processVoiceCommand(text) {
+async function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
   // Strip "Claire" from the beginning
-  var lower = text.toLowerCase().replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
   text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
-  if (!lower) lower = text.toLowerCase();
 
-  // ── SCHEDULE COMMAND ──
-  // "schedule [client name] [day/date] [time] [team]"
-  if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
-    var result = parseScheduleCommand(lower, text);
-    if (result.error) {
-      claireReply(result.error);
+  claireReply('Let me think...');
+
+  // Build context about the business for Claude
+  var today = new Date();
+  var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  var todayKey = dateKey(today);
+  var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
+  var teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
+  var empNames = EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
+
+  // Sample of client names for matching
+  var clientSample = CLIENTS.slice(0,50).map(function(c){ return c.fn+' '+c.ln; }).join(', ');
+
+  var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a cleaning company in Massachusetts. '
+    +'Today is '+todayStr+'. '
+    +'You help the owner Tom manage his cleaning business. Be brief and conversational — 1-2 sentences max.\n\n'
+    +'You can perform these actions by responding with JSON in a ```json block:\n'
+    +'1. Schedule a clean: {"action":"schedule","client":"first last","date":"YYYY-MM-DD","time":"HH:MM","team":"B1"}\n'
+    +'2. Cancel a clean: {"action":"cancel","client":"first last","date":"YYYY-MM-DD"}\n'
+    +'3. Day off: {"action":"dayoff","employee":"first name"}\n'
+    +'4. Move employee to team: {"action":"moveteam","employee":"first name","team":"B1","date":"YYYY-MM-DD"}\n'
+    +'5. Add reminder: {"action":"reminder","text":"the reminder text"}\n'
+    +'6. Just chat (no action needed): respond normally without JSON.\n\n'
+    +'ALWAYS include a short friendly message before or after the JSON block.\n'
+    +'Teams: '+teams.join(', ')+'\n'
+    +'Employees: '+empNames+'\n'
+    +'Some clients: '+clientSample+'\n'
+    +'Today has '+todayJobs.length+' jobs scheduled.\n'
+    +'If you need more info to complete an action, just ask Tom.';
+
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: text }]
+      })
+    });
+
+    if (!resp.ok) {
+      // API failed — fall back to local parsing
+      processVoiceCommandLocal(text);
       return;
     }
-    // Confirm before executing
+
+    var data = await resp.json();
+    var reply = data.content && data.content[0] ? data.content[0].text : '';
+
+    // Remove the "Let me think..." message
+    var thinkEl = status.querySelector('div:last-child');
+    if (thinkEl && thinkEl.textContent.includes('think')) thinkEl.remove();
+
+    // Extract JSON action if present
+    var jsonMatch = reply.match(/```json\s*([\s\S]*?)```/);
+    var messageText = reply.replace(/```json[\s\S]*?```/g, '').trim();
+
+    if (jsonMatch) {
+      try {
+        var action = JSON.parse(jsonMatch[1].trim());
+        executeClaire(action, messageText);
+      } catch(e) {
+        claireReply(messageText || reply);
+      }
+    } else {
+      claireReply(messageText || reply);
+    }
+  } catch(e) {
+    // API error — fall back to local
+    var thinkEl2 = status.querySelector('div:last-child');
+    if (thinkEl2 && thinkEl2.textContent.includes('think')) thinkEl2.remove();
+    processVoiceCommandLocal(text);
+  }
+}
+
+function executeClaire(action, message) {
+  var status = document.getElementById('voice-cmd-status');
+
+  if (action.action === 'schedule') {
+    // Find the client
+    var lower = (action.client||'').toLowerCase();
+    var client = null;
+    CLIENTS.forEach(function(c) {
+      var full = (c.fn+' '+c.ln).toLowerCase();
+      if (full === lower || lower.includes(c.ln.toLowerCase())) {
+        if (!client || full === lower) client = c;
+      }
+    });
+    if (!client) { claireReply(message || 'I couldn\'t find that client in your system.'); return; }
+
+    var result = {
+      client: client,
+      clientName: (client.ln||'')+', '+(client.fn||''),
+      date: action.date || dateKey(new Date()),
+      time: action.time || '09:00',
+      timeDisplay: '',
+      team: (action.team||'B1').toUpperCase()
+    };
+    var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
+    result.timeDisplay = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+
     var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    var timeLabel = result.timeDisplay;
     status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
-      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+timeLabel+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>. Sound good?</div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">'+(message || 'I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>.')+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
+      +'</div>';
+    window._pendingVoiceCmd = result;
+
+  } else if (action.action === 'cancel') {
+    var lower2 = (action.client||'').toLowerCase();
+    var client2 = CLIENTS.find(function(c){ return (c.fn+' '+c.ln).toLowerCase() === lower2 || lower2.includes(c.ln.toLowerCase()); });
+    if (!client2) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var targetDate = action.date || dateKey(new Date());
+    var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
+    if (job) {
+      job.cancelled = true; saveJobs();
+      var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      claireReply(message || 'Done! I cancelled '+job.clientName+' for '+dayL+'.');
+    } else {
+      claireReply(message || 'I couldn\'t find that job to cancel.');
+    }
+
+  } else if (action.action === 'dayoff') {
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    if (emp) {
+      var dk = action.date || dateKey(new Date());
+      dailyAssignments[dk + '_' + emp.id] = 'OFF'; saveDailyAssignments();
+      logPendingUpdate(emp.name + ' → Day Off', new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      claireReply(message || 'Got it! '+emp.name+' is off. Team roster updated.');
+    } else {
+      claireReply(message || 'I couldn\'t find that employee.');
+    }
+
+  } else if (action.action === 'moveteam') {
+    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    if (emp2 && action.team) {
+      var dk2 = action.date || dateKey(new Date());
+      assignEmployee(emp2.id, action.team.toUpperCase(), dk2);
+      logPendingUpdate(emp2.name + ' → ' + action.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      claireReply(message || 'Moved '+emp2.name+' to Team '+action.team.toUpperCase()+'.');
+    } else {
+      claireReply(message || 'I couldn\'t find that employee or team.');
+    }
+
+  } else if (action.action === 'reminder') {
+    var now = new Date();
+    var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    manualTasks.unshift({ id: Date.now().toString(), text: action.text, time: timeStr, done: false });
+    saveManualTasks(); renderTasks();
+    claireReply(message || 'Noted! I added that to your reminders.');
+
+  } else {
+    claireReply(message || 'I\'m not sure how to do that yet.');
+  }
+}
+
+// Fallback local parsing when API is unavailable
+function processVoiceCommandLocal(text) {
+  var lower = text.toLowerCase();
+
+  if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
+    var result = parseScheduleCommand(lower, text);
+    if (result.error) { claireReply(result.error); return; }
+    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var status = document.getElementById('voice-cmd-status');
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>. Sound good?</div>'
       +'<div style="display:flex;gap:8px">'
       +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
       +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
@@ -2785,58 +2942,27 @@ function processVoiceCommand(text) {
     window._pendingVoiceCmd = result;
     return;
   }
-
-  // ── CANCEL COMMAND ──
   if (lower.includes('cancel')) {
     var result2 = parseScheduleCommand(lower, text);
     if (result2.client) {
-      var todayKey = dateKey(new Date());
-      var targetDate = result2.date || todayKey;
+      var targetDate = result2.date || dateKey(new Date());
       var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
-      if (job) {
-        job.cancelled = true;
-        saveJobs();
-        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-        logPendingUpdate('Cancelled: '+job.clientName, dayL);
-        renderCal();
-        claireReply('Done! I cancelled '+job.clientName+' for '+dayL+'. The schedule is updated.');
-        return;
-      }
+      if (job) { job.cancelled = true; saveJobs(); var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.'); return; }
     }
-    claireReply('I couldn\'t find that job to cancel. Try giving me the client\'s full name and the day.');
+    claireReply('Couldn\'t find that job to cancel.');
     return;
   }
-
-  // ── DAY OFF COMMAND ──
-  if (lower.includes('day off') || lower.includes('off today') || lower.includes('out today') || lower.includes('out sick')) {
-    var empName = text.replace(/schedule|day off|off today|out today|out sick|for|put|mark|set/gi,'').trim();
-    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === empName.toLowerCase() || empName.toLowerCase().includes(e.name.toLowerCase()); });
-    if (emp) {
-      var dk = dateKey(new Date());
-      dailyAssignments[dk + '_' + emp.id] = 'OFF';
-      saveDailyAssignments();
-      logPendingUpdate(emp.name + ' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
-      claireReply('Got it! '+emp.name+' is off today. I\'ve updated the team roster.');
-      return;
-    }
-    claireReply('I couldn\'t find that employee. Try their first name — like "Viviana day off".');
-    return;
+  if (lower.includes('day off') || lower.includes('out sick') || lower.includes('off today')) {
+    var empName = text.replace(/day off|off today|out sick|for|put|mark|set/gi,'').trim();
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
+    if (emp) { var dk=dateKey(new Date()); dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments(); logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})); claireReply('Got it! '+emp.name+' is off today.'); return; }
+    claireReply('Couldn\'t find that employee.'); return;
   }
-
-  // ── REMINDER ──
   if (lower.includes('remind') || lower.includes('remember') || lower.includes('note')) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
-    if (noteText) {
-      var now = new Date();
-      var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
-      saveManualTasks(); renderTasks();
-      claireReply('Noted! I added "'+noteText+'" to your reminders.');
-      return;
-    }
+    if (noteText) { var now=new Date(); var ts=now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); manualTasks.unshift({id:Date.now().toString(),text:noteText,time:ts,done:false}); saveManualTasks(); renderTasks(); claireReply('Noted! Added "'+noteText+'" to your reminders.'); return; }
   }
-
-  claireReply('Sorry, I didn\'t catch that! Try something like:<br>• "Schedule Beth Ahern Friday 2pm B1"<br>• "Cancel Beth Ahern Friday"<br>• "Viviana day off"<br>• "Remind me to order supplies"');
+  claireReply('Sorry, I\'m having trouble connecting right now. Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
 }
 
 function cancelVoiceCmd() {
