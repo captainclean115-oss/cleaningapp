@@ -12876,6 +12876,7 @@ function calcTeamDriveTimes(teamJobs, callback) {
 
 // After moving/dropping a job, recalculate start times for subsequent jobs on that team
 function recalcTeamTimes(team, dateStr, movedJobId) {
+  // Re-sort all team jobs by current time after the move
   var teamJobs = jobs.filter(function(j) {
     return j.date === dateStr && j.team === team && !j.cancelled && !j.flexible && j.time;
   }).sort(function(a,b) {
@@ -12883,8 +12884,17 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
   });
   if (teamJobs.length < 2) return;
 
+  // Find the moved job's index — only adjust jobs AFTER it
+  var startIdx = 0;
+  if (movedJobId) {
+    for (var si = 0; si < teamJobs.length; si++) {
+      if (teamJobs[si].id === movedJobId) { startIdx = si; break; }
+    }
+  }
+
   // First pass: immediately adjust using cached drive times or default 15 min
-  for (var k = 0; k < teamJobs.length - 1; k++) {
+  // Always set the time — push forward OR pull back to fit correctly
+  for (var k = startIdx; k < teamJobs.length - 1; k++) {
     var curr = teamJobs[k];
     var next = teamJobs[k + 1];
     var currEnd = (jobStartMins(curr) || 0) + getJobDurationMins(curr);
@@ -12895,24 +12905,21 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
       if (_driveTimeCache[cacheKey] !== undefined) drive = _driveTimeCache[cacheKey];
     }
     var newStart = currEnd + drive;
-    // Only push forward, never pull back earlier than current time
-    if (newStart > (jobStartMins(next) || 0)) {
-      next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
-    }
+    next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
   }
   saveJobs();
   renderCal();
 
   // Second pass: async fetch real drive times for any uncached routes, then re-adjust
   var needsAsync = false;
-  for (var m = 0; m < teamJobs.length - 1; m++) {
+  for (var m = startIdx; m < teamJobs.length - 1; m++) {
     var a1b = getClientAddrForJob(teamJobs[m]), a2b = getClientAddrForJob(teamJobs[m+1]);
     if (a1b && a2b && _driveTimeCache[getDriveTimeCacheKey(a1b, a2b)] === undefined) {
       needsAsync = true; break;
     }
   }
   if (needsAsync) {
-    var idx = 0;
+    var idx = startIdx;
     function asyncPass() {
       if (idx >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
       var c = teamJobs[idx], n = teamJobs[idx + 1];
