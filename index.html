@@ -2244,6 +2244,7 @@ function renderCal() {
           var endLabel = endM ? (function(m){ var hh=Math.floor(m/60)%24,mm=m%60,ap=hh>=12?'p':'a'; if(hh>12)hh-=12; if(hh===0)hh=12; return hh+(mm?':'+String(mm).padStart(2,'0'):'')+ap; })(endM) : '';
 
           bodyHtml += '<div id="sqjob_'+safeId+'" data-jid="'+safeId+'" data-team="'+team+'" data-time="'+(j.time||'')+'"'
+            +' ontouchstart="jobDragStart(event,this)" ontouchmove="jobDragMove(event)" ontouchend="jobDragEnd(event)"'
             +' onclick="jobSquareTap(event,this)"'
             +' style="position:absolute;left:'+blockL+'px;top:4px;width:'+blockW+'px;height:64px;'
             +'background:'+(isCancelled?'rgba(248,113,113,0.08)':'var(--surface)')+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
@@ -12666,35 +12667,41 @@ function jobDragStart(e, el) {
   _dragJob = null;
   _dragEl = el;
   _dragActive = false;
-  // Long press threshold: 400ms
+  // Long press threshold: 250ms (shorter for quicker pickup)
   _dragTimer = setTimeout(function() {
     _dragActive = true;
     _dragMoved = true;
     var jobId = el.getAttribute('data-jid');
     _dragJob = jobs.find(function(j){ return j.id === jobId; });
     if (!_dragJob) return;
-    // Create floating clone
+    // Disable page scroll while dragging
+    document.body.style.overflow = 'hidden';
+    // Create floating clone with time label
     var rect = el.getBoundingClientRect();
-    _dragClone = el.cloneNode(true);
+    _dragClone = document.createElement('div');
     _dragClone.id = 'drag-clone';
-    _dragClone.style.cssText = 'position:fixed;width:'+rect.width+'px;height:'+rect.height+'px;'
-      +'top:'+rect.top+'px;left:'+rect.left+'px;z-index:9999;pointer-events:none;'
-      +'opacity:0.9;transform:scale(1.08);box-shadow:0 8px 30px rgba(0,0,0,0.4);'
-      +'border-radius:10px;transition:transform 0.1s;background:var(--surface);'
-      +'display:flex;flex-direction:column;gap:4px;padding:10px 8px;border:2px solid var(--accent)';
+    _dragClone.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;'
+      +'top:'+(rect.top-30)+'px;left:'+rect.left+'px;';
+    _dragClone.innerHTML = '<div id="drag-time-label" style="background:var(--accent);color:#fff;font-size:13px;font-weight:700;padding:4px 10px;border-radius:6px;text-align:center;margin-bottom:4px;font-family:DM Sans,sans-serif;white-space:nowrap">'+((_dragJob.time||'?'))+'</div>'
+      +'<div style="width:'+rect.width+'px;height:'+rect.height+'px;opacity:0.85;transform:scale(1.05);box-shadow:0 8px 30px rgba(0,0,0,0.5);border-radius:10px;background:var(--surface);border:2px solid var(--accent);overflow:hidden">'+el.innerHTML+'</div>';
     document.body.appendChild(_dragClone);
-    el.style.opacity = '0.3';
-    // Haptic if available
+    el.style.opacity = '0.2';
     if (navigator.vibrate) navigator.vibrate(40);
-  }, 400);
+  }, 250);
 }
 
 function jobDragMove(e) {
   if (!_dragTimer && !_dragActive) return;
   var dx = Math.abs(e.touches[0].clientX - _dragStartX);
   var dy = Math.abs(e.touches[0].clientY - _dragStartY);
-  // Cancel timer if moved before long press fires — let browser scroll normally
-  if (!_dragActive && (dx > 5 || dy > 5)) {
+  // Cancel if moved vertically before hold fires — let browser scroll
+  if (!_dragActive && dy > 10) {
+    clearTimeout(_dragTimer);
+    _dragTimer = null;
+    return;
+  }
+  // Allow small horizontal movement during hold (finger isn't perfectly still)
+  if (!_dragActive && dx > 15) {
     clearTimeout(_dragTimer);
     _dragTimer = null;
     return;
@@ -12704,20 +12711,35 @@ function jobDragMove(e) {
   var tx = e.touches[0].clientX;
   var ty = e.touches[0].clientY;
   if (_dragClone) {
-    var rect = _dragEl.getBoundingClientRect();
-    _dragClone.style.left = (tx - rect.width/2) + 'px';
-    _dragClone.style.top = (ty - rect.height/2) + 'px';
+    _dragClone.style.left = (tx - 40) + 'px';
+    _dragClone.style.top = (ty - 60) + 'px';
+  }
+  // Calculate and show snapped time
+  var tlScroll = document.getElementById('tl-main-scroll');
+  if (tlScroll && _dragClone) {
+    var scrollRect = tlScroll.getBoundingClientRect();
+    var xInTimeline = (tx - scrollRect.left) + tlScroll.scrollLeft;
+    var TL_START = 7 * 60;
+    var PX_PER_MIN = 1.5;
+    var mins = Math.round(xInTimeline / PX_PER_MIN) + TL_START;
+    mins = Math.round(mins / 15) * 15; // snap to 15 min
+    mins = Math.max(TL_START, Math.min(20*60+45, mins));
+    var hr = Math.floor(mins/60), mn = mins%60;
+    var label = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+    var tl = document.getElementById('drag-time-label');
+    if (tl) tl.textContent = label;
   }
   // Highlight drop target team row
   document.querySelectorAll('[data-drag-team]').forEach(function(r){ r.style.background = 'var(--surface2)'; });
-  var el = document.elementFromPoint(tx, ty);
-  while (el && !el.getAttribute('data-drag-team')) el = el.parentElement;
-  if (el) el.style.background = 'rgba(108,143,255,0.12)';
+  var el2 = document.elementFromPoint(tx, ty);
+  while (el2 && el2 !== document.body && !(el2.getAttribute && el2.getAttribute('data-drag-team'))) el2 = el2.parentElement;
+  if (el2 && el2.getAttribute && el2.getAttribute('data-drag-team')) el2.style.background = 'rgba(108,143,255,0.12)';
 }
 
 function jobDragEnd(e) {
   clearTimeout(_dragTimer);
   _dragTimer = null;
+  document.body.style.overflow = '';
   if (!_dragActive || !_dragJob) {
     _dragActive = false;
     if (_dragEl) _dragEl.style.opacity = '';
