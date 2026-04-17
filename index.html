@@ -12775,6 +12775,35 @@ function closeCalJobCard() {
   if (o) o.remove();
 }
 
+function nudgeJobTime(jobId, deltaMins) {
+  var j = jobs.find(function(x){ return x.id === jobId; });
+  if (!j || !j.time) return;
+  var startM = jobStartMins(j);
+  if (startM === null) return;
+  var newM = startM + deltaMins;
+  if (newM < 0) newM = 0;
+  if (newM > 23*60+45) newM = 23*60+45;
+  j.time = String(Math.floor(newM/60)).padStart(2,'0') + ':' + String(newM%60).padStart(2,'0');
+  j.flexible = false;
+  saveJobs();
+
+  // Update time display in the popup
+  var hr = Math.floor(newM/60), mn = newM%60;
+  var timeStr = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+  var durM = getJobDurationMins(j);
+  var endM = newM + durM;
+  var endHr = Math.floor(endM/60)%24, endMn = endM%60;
+  var endStr = ' – '+(endHr%12||12)+':'+(endMn<10?'0':'')+endMn+' '+(endHr>=12?'PM':'AM');
+  var disp = document.getElementById('cjc-time-display');
+  if (disp) disp.textContent = timeStr + endStr;
+
+  // Haptic feedback
+  if (navigator.vibrate) navigator.vibrate(15);
+
+  // Recalc subsequent jobs with drive times
+  recalcTeamTimes(j.team, j.date, j.id);
+}
+
 function openCalJobCard(el) {
   var jobId = el.getAttribute('data-jid');
   var j = jobs.find(function(x){ return x.id === jobId; });
@@ -12830,7 +12859,7 @@ function openCalJobCard(el) {
     +'</div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'
-    +(timeStr?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;grid-column:span 2"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">⏱ Time</div><div style="font-size:16px;font-weight:700">'+timeStr+endTimeStr+'</div></div>':'')
+    +(timeStr?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;grid-column:span 2"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">⏱ Time</div><div style="display:flex;align-items:center;justify-content:space-between"><button onclick="nudgeJobTime(\''+jobId+'\',-15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">◄ 15m</button><div style="font-size:16px;font-weight:700" id="cjc-time-display">'+timeStr+endTimeStr+'</div><button onclick="nudgeJobTime(\''+jobId+'\',15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">15m ►</button></div></div>':'')
     +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Key</div><div style="font-size:18px;font-weight:700">'+keyStr+'</div></div>'
     +(price?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Price</div><div style="font-size:18px;font-weight:700;color:var(--green)">'+price+'</div></div>':'<div></div>')
     +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Next Clean</div><div style="font-size:14px;font-weight:600">'+nextClean+'</div></div>'
