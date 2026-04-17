@@ -2738,6 +2738,7 @@ let currentConv = null;
 
 // ── CLAIRE API KEY (stored in localStorage, never in code) ──
 var _claireApiKey = localStorage.getItem('claire_api_key') || '';
+var _claireHistory = []; // conversation history for context
 function setClaireApiKey() {
   var key = prompt('Enter your Anthropic API key (starts with sk-ant-):');
   if (key && key.startsWith('sk-')) {
@@ -2842,7 +2843,7 @@ async function processVoiceCommand(text) {
         max_tokens: 500,
         system: systemPrompt,
         tools: CLAIRE_TOOLS,
-        messages: [{ role: 'user', content: text }]
+        messages: _claireHistory.concat([{ role: 'user', content: text }])
       })
     });
 
@@ -2862,6 +2863,18 @@ async function processVoiceCommand(text) {
         if (block.type === 'tool_use') toolCall = block;
       });
     }
+
+    // Save to conversation history
+    _claireHistory.push({ role: 'user', content: text });
+    // Build assistant reply for history — include both text and tool use
+    var assistantContent = [];
+    if (textReply) assistantContent.push({ type: 'text', text: textReply });
+    if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
+    if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
+    // If tool was used, add a tool_result so the conversation is valid
+    if (toolCall) _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: 'Done.' }] });
+    // Keep last 10 exchanges (20 messages) so we don't blow up the context
+    if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
 
     if (toolCall) {
       executeClaireToolCall(toolCall, textReply);
