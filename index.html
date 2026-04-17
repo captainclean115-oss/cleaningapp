@@ -2783,7 +2783,14 @@ var CLAIRE_TOOLS = [
   { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } },
   { name: 'change_frequency', description: 'Change a client cleaning frequency (weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly). This updates their schedule, regenerates all future cleans, and drafts a message to the client.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, new_frequency:{type:'string',description:'One of: weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly, one-time'} }, required:['client','new_frequency'] } },
   { name: 'update_client_notes', description: 'Add or update notes/special instructions on a client profile', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, notes:{type:'string',description:'The note text to add'} }, required:['client','notes'] } },
-  { name: 'send_message', description: 'Draft an SMS message to a client. Copies to clipboard and opens SMS.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, message:{type:'string',description:'The message text to send'} }, required:['client','message'] } }
+  { name: 'send_message', description: 'Draft an SMS message to a client. Copies to clipboard and opens SMS.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, message:{type:'string',description:'The message text to send'} }, required:['client','message'] } },
+  { name: 'edit_client', description: 'Edit any field on a client profile: phone, email, address, city, zip, package, notes, or any other field', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, field:{type:'string',description:'Field to edit: ph, em, addr, city, zip, pkg, notes, fn, ln'}, value:{type:'string',description:'New value'} }, required:['client','field','value'] } },
+  { name: 'change_price', description: 'Change a client cleaning price for all their future scheduled jobs', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, price:{type:'string',description:'New price amount (just the number)'} }, required:['client','price'] } },
+  { name: 'record_payment', description: 'Record a payment received from a client. Reduces their balance.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, amount:{type:'string',description:'Payment amount'}, method:{type:'string',description:'Payment method: cash, check, credit card, venmo, zelle'} }, required:['client','amount'] } },
+  { name: 'generate_quote', description: 'Generate a cleaning quote for an address. Looks up square footage and bathrooms to calculate price.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'Desired frequency: weekly, biweekly, monthly, one-time'} }, required:['address'] } },
+  { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
+  { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
+  { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } }
 ];
 
 async function processVoiceCommand(text) {
@@ -3103,6 +3110,128 @@ function executeClaireToolCall(toolCall, message) {
       +'<button onclick="claireSendSms(\''+fClient.id+'\',\''+smsText.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Message</button>'
       +'</div>';
 
+  // ── EDIT CLIENT PROFILE ──
+  } else if (name === 'edit_client') {
+    var ecClient = findClient(input.client);
+    if (!ecClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var fieldMap = {ph:'Phone',em:'Email',addr:'Address',city:'City',zip:'Zip',pkg:'Package',notes:'Notes',fn:'First Name',ln:'Last Name'};
+    var fieldName = fieldMap[input.field] || input.field;
+    var oldVal = ecClient[input.field] || '(empty)';
+    ecClient[input.field] = input.value;
+    logPendingUpdate('Updated '+ecClient.fn+' '+ecClient.ln, fieldName+': '+oldVal+' → '+input.value);
+    claireReply(message || 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' to "'+input.value+'".');
+
+  // ── CHANGE PRICE ──
+  } else if (name === 'change_price') {
+    var cpClient = findClient(input.client);
+    if (!cpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var newPrice = input.price.replace(/[$,]/g,'');
+    var todayK = dateKey(new Date());
+    var updated = 0;
+    jobs.forEach(function(j) {
+      if (j.clientId === cpClient.id && j.date >= todayK && !j.cancelled) {
+        j.price = newPrice;
+        updated++;
+      }
+    });
+    saveJobs(); renderCal();
+    logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)');
+    claireReply(message || 'Changed '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+'. Updated '+updated+' future cleans.');
+
+  // ── RECORD PAYMENT ──
+  } else if (name === 'record_payment') {
+    var rpClient = findClient(input.client);
+    if (!rpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var payAmt = parseFloat(input.amount.replace(/[$,]/g,'')) || 0;
+    var oldBal = rpClient.bal || 0;
+    rpClient.bal = Math.max(0, oldBal - payAmt);
+    var method = input.method || 'unknown';
+    var now2 = new Date();
+    var ts2 = now2.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    var pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
+    pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method });
+    localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+    logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method);
+    claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
+
+  // ── GENERATE QUOTE ──
+  } else if (name === 'generate_quote') {
+    claireReply('Looking up property info for '+input.address+'...');
+    generateClaireQuote(input.address, input.frequency || 'biweekly', message);
+    return;
+
+  // ── EDIT EMPLOYEE HOURS ──
+  } else if (name === 'edit_employee_hours') {
+    var ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!ehEmp) { claireReply(message || 'Couldn\'t find that employee.'); return; }
+    var ehDate = input.date || dateKey(new Date());
+    var existing = getEmpHours(ehEmp.id, ehDate) || {};
+    if (input.start) existing.start = input.start;
+    if (input.end) existing.end = input.end;
+    if (input.lunch) existing.lunch = parseInt(input.lunch) || 0;
+    if (existing.start && existing.end) {
+      existing.hours = calcHoursFromTimes(existing.start, existing.end, existing.lunch || 0);
+    }
+    saveEmpHours(ehEmp.id, ehDate, existing);
+    var dayL3 = new Date(ehDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var changes = [];
+    if (input.start) changes.push('start: '+input.start);
+    if (input.end) changes.push('end: '+input.end);
+    if (input.lunch) changes.push('lunch: '+input.lunch+'min');
+    logPendingUpdate('Hours edited: '+ehEmp.name, dayL3+' — '+changes.join(', '));
+    claireReply(message || 'Updated '+ehEmp.name+'\'s hours for '+dayL3+'. '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : ''));
+
+  // ── LOCATE TEAM ──
+  } else if (name === 'locate_team') {
+    var ltTeam = (input.team||'').toUpperCase();
+    var vehicle = gpsVehicles ? gpsVehicles.find(function(v){ return v.team === ltTeam; }) : null;
+    if (!vehicle) { claireReply(message || 'I don\'t have GPS data for Team '+ltTeam+' right now. Make sure the Live tab is connected.'); return; }
+    var addr3 = vehicle.address || 'Unknown location';
+    var clientMatch3 = matchStopToClient(addr3, jobs.filter(function(j){ return j.date === dateKey(new Date()) && j.team === ltTeam; }));
+    var statusText = vehicle.isMoving ? 'driving ('+vehicle.speed+' mph)' : 'stopped';
+
+    // Calculate expected finish if at a client
+    var etaText = '';
+    if (!vehicle.isMoving && clientMatch3) {
+      var todayJobs2 = jobs.filter(function(j){ return j.date === dateKey(new Date()) && j.team === ltTeam && !j.cancelled; }).sort(function(a,b){ return (jobStartMins(a)||0)-(jobStartMins(b)||0); });
+      var currentJob = todayJobs2.find(function(j){ var c=CLIENTS.find(function(x){return x.id===j.clientId;}); return c && clientMatch3.includes(c.fn) && clientMatch3.includes(c.ln); });
+      if (currentJob) {
+        var startM = jobStartMins(currentJob);
+        var durM = getJobDurationMins(currentJob);
+        if (startM !== null) {
+          var endM = startM + durM;
+          var endHr = Math.floor(endM/60)%24, endMn = endM%60;
+          etaText = ' Expected to finish around '+(endHr%12||12)+':'+(endMn<10?'0':'')+endMn+' '+(endHr>=12?'PM':'AM')+'.';
+        }
+        // Find arrival time from trips
+        if (vehicle.trips && vehicle.trips.length) {
+          var lastTrip = vehicle.trips.sort(function(a,b){return new Date(b.stop||b.start)-new Date(a.stop||a.start);})[0];
+          if (lastTrip && lastTrip.stop) {
+            var arrTime = new Date(lastTrip.stop);
+            etaText = ' Arrived at '+arrTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+'.'+etaText;
+          }
+        }
+      }
+    }
+
+    claireReply(message || 'Team '+ltTeam+' is currently '+statusText+' at '+addr3+'.'+(clientMatch3 ? ' That\'s '+clientMatch3+'\'s house.' : '')+etaText);
+
+  // ── SEND INVOICE ──
+  } else if (name === 'send_invoice') {
+    var invClient = findClient(input.client);
+    if (!invClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (invClient.bal <= 0) { claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
+    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from Manna Maids that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions! — Tom';
+    var status4 = document.getElementById('voice-cmd-status');
+    status4.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||invClient.fn+' '+invClient.ln+' owes $'+Math.round(invClient.bal)+'. Here\'s the invoice message:')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--text);line-height:1.5">'+invMsg+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
+      +'<button onclick="claireSendSms(\''+invClient.id+'\',\''+invMsg.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Invoice</button>'
+      +'</div>';
+    return;
+
   // ── UPDATE CLIENT NOTES ──
   } else if (name === 'update_client_notes') {
     var nClient = findClient(input.client);
@@ -3220,6 +3349,58 @@ function _executeClaire_legacy(action, message) {
 
   } else {
     claireReply(message || 'I\'m not sure how to do that yet.');
+  }
+}
+
+async function generateClaireQuote(address, frequency, aiMessage) {
+  try {
+    // Geocode the address
+    var coords = null;
+    await new Promise(function(resolve) {
+      geocodeAddress(address, function(c) { coords = c; resolve(); });
+    });
+    if (!coords) { claireReply('I couldn\'t find that address. Try including the city and state.'); return; }
+
+    // Try to get square footage from MassGIS
+    var sqft = 0, baths = 0;
+    try {
+      var url = 'https://gis.massgis.state.ma.us/ArcGIS/rest/services/massgis_cache/L3Parcels_and_Assess/MapServer/1/query'
+        + '?geometry=' + encodeURIComponent('{"x":'+coords.lng+',"y":'+coords.lat+',"spatialReference":{"wkid":4326}}')
+        + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelWithin'
+        + '&outFields=LIVING_AREA,NUM_BATHS,BLDG_AREA,GROSS_AREA&returnGeometry=false&f=json';
+      var r = await fetch(url);
+      var d = await r.json();
+      if (d.features && d.features.length > 0) {
+        var a = d.features[0].attributes;
+        sqft = parseFloat(a.LIVING_AREA || a.BLDG_AREA || a.GROSS_AREA || 0);
+        baths = parseFloat(a.NUM_BATHS || 0);
+      }
+    } catch(e) {}
+
+    if (!sqft) { claireReply('I found the address but couldn\'t get the square footage from public records. You may need to ask the homeowner.'); return; }
+
+    // Calculate quote based on sqft and frequency
+    // Base rate: ~$0.10-0.12/sqft for biweekly, adjusted by frequency
+    var baseRate = 0.11;
+    var freqMultiplier = { 'weekly':0.85, 'biweekly':1.0, 'every 2 weeks':1.0, 'monthly':1.15, 'one-time':1.35 };
+    var mult = freqMultiplier[(frequency||'biweekly').toLowerCase()] || 1.0;
+    var basePrice = Math.round(sqft * baseRate * mult);
+    // Add per-bathroom charge
+    basePrice += Math.round(baths * 15);
+    // Round to nearest $5
+    basePrice = Math.round(basePrice / 5) * 5;
+    // Clamp to reasonable range
+    if (basePrice < 150) basePrice = 150;
+    if (basePrice > 800) basePrice = 800;
+
+    var freqLabel = frequency || 'biweekly';
+    claireReply('Here\'s the quote for <strong>'+address+'</strong>:<br><br>'
+      +'🏠 <strong>'+Math.round(sqft).toLocaleString()+' sq ft</strong> · '+Math.round(baths)+' bath'+(baths!==1?'s':'')+'<br>'
+      +'📋 Frequency: <strong>'+freqLabel+'</strong><br>'
+      +'💰 Estimated price: <strong>$'+basePrice+'</strong> per clean<br><br>'
+      +'<span style="font-size:11px;color:var(--muted)">Based on property records + standard pricing. Adjust as needed for condition, extras, etc.</span>');
+  } catch(e) {
+    claireReply('Had trouble looking up that property. Try giving me the full address with city and state.');
   }
 }
 
