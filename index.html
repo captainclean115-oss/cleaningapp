@@ -1138,9 +1138,9 @@ select.field-input { appearance: none; }
 <div id="tasks-view">
   <div class="tasks-header">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div style="font-size:15px;font-weight:700">Outstanding Balances</div>
-      <button onclick="openBalanceFollowup()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">💰 Follow Up</button>
+      <button onclick="startVoiceCommand()" id="voice-cmd-btn" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">🎙 Voice Command</button>
     </div>
+    <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
       <div style="font-size:19px;font-weight:600;padding:4px 0 2px">Pending TMConnect Updates</div>
     </div>
@@ -2668,6 +2668,274 @@ const RC_API = 'https://platform.ringcentral.com/restapi/v1.0';
 let rcToken = null;
 let rcConversations = [];
 let currentConv = null;
+
+// ── VOICE COMMANDS ──
+var _voiceRecognition = null;
+
+function startVoiceCommand() {
+  var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) { alert('Speech recognition not supported on this browser. Try Safari.'); return; }
+
+  var status = document.getElementById('voice-cmd-status');
+  var btn = document.getElementById('voice-cmd-btn');
+  status.style.display = 'block';
+  status.innerHTML = '<div style="font-size:24px;margin-bottom:8px">🔴</div><div style="font-size:14px;color:var(--text)">Listening...</div><div style="font-size:12px;color:var(--muted);margin-top:4px">Say a command like "Schedule Beth Ahern Friday 2pm team B1"</div>';
+  btn.style.background = 'var(--red)';
+  btn.textContent = '⬛ Stop';
+  btn.onclick = function() { if (_voiceRecognition) _voiceRecognition.stop(); };
+
+  var rec = new SpeechRec();
+  rec.lang = 'en-US';
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  _voiceRecognition = rec;
+
+  rec.onresult = function(e) {
+    var text = e.results[0][0].transcript;
+    status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:8px">"'+text+'"</div><div style="font-size:12px;color:var(--muted)">Processing...</div>';
+    processVoiceCommand(text);
+  };
+  rec.onerror = function(e) {
+    status.innerHTML = '<div style="color:var(--red);font-size:13px">Could not hear you. Try again.</div>';
+    resetVoiceBtn();
+  };
+  rec.onend = function() { resetVoiceBtn(); };
+  rec.start();
+}
+
+function resetVoiceBtn() {
+  var btn = document.getElementById('voice-cmd-btn');
+  if (btn) {
+    btn.style.background = 'var(--accent)';
+    btn.innerHTML = '🎙 Voice Command';
+    btn.onclick = function(){ startVoiceCommand(); };
+  }
+}
+
+function processVoiceCommand(text) {
+  var status = document.getElementById('voice-cmd-status');
+  var lower = text.toLowerCase();
+
+  // ── SCHEDULE COMMAND ──
+  // "schedule [client name] [day/date] [time] [team]"
+  if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
+    var result = parseScheduleCommand(lower, text);
+    if (result.error) {
+      status.innerHTML = '<div style="color:var(--amber);font-size:13px">'+result.error+'</div>';
+      return;
+    }
+    // Confirm before executing
+    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var timeLabel = result.timeDisplay;
+    status.innerHTML = '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule Clean</div>'
+      +'<div style="font-size:13px;margin-bottom:4px"><strong>'+result.clientName+'</strong></div>'
+      +'<div style="font-size:13px;margin-bottom:4px">'+dayLabel+' at '+timeLabel+'</div>'
+      +'<div style="font-size:13px;margin-bottom:12px;color:'+(team_colors_map[result.team]||'var(--text)')+';font-weight:700">Team '+result.team+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Confirm</button>'
+      +'</div>';
+    window._pendingVoiceCmd = result;
+    return;
+  }
+
+  // ── CANCEL COMMAND ──
+  if (lower.includes('cancel')) {
+    var result2 = parseScheduleCommand(lower, text);
+    if (result2.client) {
+      var todayKey = dateKey(new Date());
+      var targetDate = result2.date || todayKey;
+      var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
+      if (job) {
+        job.cancelled = true;
+        saveJobs();
+        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+        logPendingUpdate('Cancelled: '+job.clientName, dayL);
+        renderCal();
+        status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Cancelled '+job.clientName+' on '+dayL+'</div>';
+        setTimeout(function(){ status.style.display='none'; }, 3000);
+        return;
+      }
+    }
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that job to cancel. Try being more specific.</div>';
+    return;
+  }
+
+  // ── DAY OFF COMMAND ──
+  if (lower.includes('day off') || lower.includes('off today') || lower.includes('out today') || lower.includes('out sick')) {
+    var empName = text.replace(/schedule|day off|off today|out today|out sick|for|put|mark|set/gi,'').trim();
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === empName.toLowerCase() || empName.toLowerCase().includes(e.name.toLowerCase()); });
+    if (emp) {
+      var dk = dateKey(new Date());
+      dailyAssignments[dk + '_' + emp.id] = 'OFF';
+      saveDailyAssignments();
+      logPendingUpdate(emp.name + ' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp.name+' marked Day Off</div>';
+      setTimeout(function(){ status.style.display='none'; }, 3000);
+      return;
+    }
+    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that employee.</div>';
+    return;
+  }
+
+  // ── REMINDER ──
+  if (lower.includes('remind') || lower.includes('remember') || lower.includes('note')) {
+    var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
+    if (noteText) {
+      var now = new Date();
+      var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
+      saveManualTasks(); renderTasks();
+      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Reminder added: "'+noteText+'"</div>';
+      setTimeout(function(){ status.style.display='none'; }, 3000);
+      return;
+    }
+  }
+
+  status.innerHTML = '<div style="color:var(--amber);font-size:13px">I didn\'t understand that. Try:<br>• "Schedule [name] [day] [time] team [team]"<br>• "Cancel [name] [day]"<br>• "[Name] day off"<br>• "Remind me to [task]"</div>';
+}
+
+function cancelVoiceCmd() {
+  window._pendingVoiceCmd = null;
+  var status = document.getElementById('voice-cmd-status');
+  if (status) status.style.display = 'none';
+}
+
+function executeScheduleCmd() {
+  var cmd = window._pendingVoiceCmd;
+  if (!cmd) return;
+  var status = document.getElementById('voice-cmd-status');
+
+  // Create the job
+  var price = '';
+  if (cmd.client) {
+    var cp = CLIENT_PRICES[cmd.client.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim()];
+    if (cp) price = cp.replace('$','');
+  }
+  jobs.push({
+    id: Date.now().toString(),
+    clientName: cmd.clientName,
+    clientId: cmd.client ? cmd.client.id : '',
+    addr: cmd.client ? cmd.client.addr+', '+(cmd.client.city||'') : '',
+    date: cmd.date,
+    flexible: false,
+    time: cmd.time,
+    notes: '',
+    done: false,
+    team: cmd.team,
+    color: team_colors_map[cmd.team] || '#6b7280',
+    price: price,
+    quotedMin: cmd.client ? (parseInt((getClientExtras(cmd.client.id)||{}).quotedMin) || 120) : 120
+  });
+  saveJobs();
+
+  var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team);
+  renderCal();
+
+  status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Scheduled!</div><div style="font-size:13px;color:var(--muted);margin-top:4px">'+cmd.clientName+' — '+dayLabel+' at '+cmd.timeDisplay+'</div>';
+  window._pendingVoiceCmd = null;
+  setTimeout(function(){ status.style.display='none'; }, 3000);
+}
+
+function parseScheduleCommand(lower, original) {
+  // Find client name
+  var client = null;
+  var clientName = '';
+  // Try matching against all clients — find best match
+  var bestMatch = null, bestLen = 0;
+  CLIENTS.forEach(function(c) {
+    var fn = (c.fn||'').toLowerCase(), ln = (c.ln||'').toLowerCase();
+    var full = fn + ' ' + ln;
+    if (lower.includes(full) && full.length > bestLen) { bestMatch = c; bestLen = full.length; }
+    else if (lower.includes(ln + ' ' + fn) && (ln+' '+fn).length > bestLen) { bestMatch = c; bestLen = (ln+' '+fn).length; }
+    else if (lower.includes(fn) && lower.includes(ln) && (fn.length+ln.length) > bestLen) { bestMatch = c; bestLen = fn.length+ln.length; }
+    else if (ln.length > 3 && lower.includes(ln) && ln.length > bestLen) { bestMatch = c; bestLen = ln.length; }
+  });
+  if (bestMatch) {
+    client = bestMatch;
+    clientName = (bestMatch.ln||'')+', '+(bestMatch.fn||'');
+  } else {
+    return { error: 'Could not find that client. Try saying their full name.' };
+  }
+
+  // Find date
+  var date = '';
+  var today = new Date(); today.setHours(0,0,0,0);
+  var dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  var shortDays = ['sun','mon','tue','wed','thu','fri','sat'];
+
+  if (lower.includes('today')) {
+    date = dateKey(today);
+  } else if (lower.includes('tomorrow')) {
+    var tom = new Date(today); tom.setDate(tom.getDate()+1);
+    date = dateKey(tom);
+  } else {
+    // Check day names
+    for (var di = 0; di < dayNames.length; di++) {
+      if (lower.includes(dayNames[di]) || lower.includes(shortDays[di])) {
+        var target = new Date(today);
+        var diff = di - today.getDay();
+        if (diff <= 0) diff += 7; // next occurrence
+        target.setDate(today.getDate() + diff);
+        date = dateKey(target);
+        break;
+      }
+    }
+  }
+  // Check for explicit date like "april 18" or "4/18"
+  if (!date) {
+    var dateMatch = lower.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})/i);
+    if (dateMatch) {
+      var months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+      var mi = months.indexOf(dateMatch[1].toLowerCase());
+      var yr = today.getFullYear();
+      var d = new Date(yr, mi, parseInt(dateMatch[2]));
+      if (d < today) d.setFullYear(yr+1);
+      date = dateKey(d);
+    }
+    if (!date) {
+      var slashMatch = lower.match(/(\d{1,2})\/(\d{1,2})/);
+      if (slashMatch) {
+        var d2 = new Date(today.getFullYear(), parseInt(slashMatch[1])-1, parseInt(slashMatch[2]));
+        if (d2 < today) d2.setFullYear(today.getFullYear()+1);
+        date = dateKey(d2);
+      }
+    }
+  }
+  if (!date) date = dateKey(today); // default to today
+
+  // Find time
+  var time = '', timeDisplay = '';
+  var timeMatch = lower.match(/(\d{1,2})\s*:\s*(\d{2})\s*(am|pm|a|p)?/i) || lower.match(/(\d{1,2})\s*(am|pm|a\.m|p\.m)/i);
+  if (timeMatch) {
+    var hr = parseInt(timeMatch[1]);
+    var mn = timeMatch[2] && timeMatch[2].match(/\d/) ? parseInt(timeMatch[2]) : 0;
+    var ampm = (timeMatch[3] || timeMatch[2] || '').toLowerCase().replace('.','');
+    if (ampm.startsWith('p') && hr < 12) hr += 12;
+    if (ampm.startsWith('a') && hr === 12) hr = 0;
+    time = String(hr).padStart(2,'0')+':'+String(mn).padStart(2,'0');
+    timeDisplay = (hr%12||12)+':'+String(mn).padStart(2,'0')+' '+(hr>=12?'PM':'AM');
+  }
+  if (!time) {
+    // Try "at noon"
+    if (lower.includes('noon')) { time = '12:00'; timeDisplay = '12:00 PM'; }
+    else { time = '09:00'; timeDisplay = '9:00 AM'; } // default
+  }
+
+  // Find team
+  var team = '';
+  var teamMatch = lower.match(/team\s*(b1|b3|b5|s1|s3|m1|m2|m3)/i) || lower.match(/(b1|b3|b5|s1|s3|m1|m2|m3)/i);
+  if (teamMatch) {
+    team = teamMatch[1].toUpperCase();
+  }
+  if (!team) {
+    // Default to client's usual team if we can figure it out
+    team = 'B1'; // fallback
+  }
+
+  return { client: client, clientName: clientName, date: date, time: time, timeDisplay: timeDisplay, team: team };
+}
 
 // Main app init deferred until PIN unlock (see appUnlockManager)
 // updateTaskBadge/rcInit/initSheets called after PIN entry
