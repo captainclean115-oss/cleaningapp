@@ -2767,40 +2767,45 @@ function claireReply(msg) {
     +'<div style="font-size:13px;color:var(--text);line-height:1.4"><strong style="color:var(--accent)">Claire:</strong> '+msg+'</div></div>';
 }
 
+// Claire's tools — everything she can do in the app
+var CLAIRE_TOOLS = [
+  { name: 'schedule_clean', description: 'Schedule a cleaning job for a client on a specific date/time with a team', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name (first last)'}, date:{type:'string',description:'Date in YYYY-MM-DD format'}, time:{type:'string',description:'Time in HH:MM 24hr format'}, team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['client'] } },
+  { name: 'cancel_clean', description: 'Cancel/remove a scheduled cleaning job for a client on a specific date', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, date:{type:'string',description:'Date in YYYY-MM-DD'} }, required:['client'] } },
+  { name: 'move_clean', description: 'Move/reschedule a cleaning job to a different date, time, or team', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, from_date:{type:'string',description:'Current date YYYY-MM-DD'}, to_date:{type:'string',description:'New date YYYY-MM-DD'}, time:{type:'string',description:'New time HH:MM'}, team:{type:'string',description:'New team code'} }, required:['client'] } },
+  { name: 'employee_day_off', description: 'Mark an employee as having the day off', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'} }, required:['employee'] } },
+  { name: 'move_employee', description: 'Move/reassign an employee to a different team for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, team:{type:'string',description:'New team code'}, date:{type:'string',description:'Date YYYY-MM-DD'} }, required:['employee','team'] } },
+  { name: 'add_reminder', description: 'Add a reminder/note/to-do for Tom to remember', input_schema: { type:'object', properties: { text:{type:'string',description:'The reminder text'} }, required:['text'] } },
+  { name: 'lookup_client', description: 'Look up client info — address, phone, balance, frequency, next clean date, notes', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name to search for'} }, required:['client'] } },
+  { name: 'lookup_schedule', description: 'Look up what jobs are scheduled for a specific date, team, or client', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'}, client:{type:'string',description:'Client name (optional)'} } } },
+  { name: 'lookup_balance', description: 'Look up outstanding balances — all clients or a specific client', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name (optional, omit for all balances)'} } } },
+  { name: 'lookup_employee', description: 'Look up employee info — what team they are on, their role', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name'} }, required:['employee'] } },
+  { name: 'count_jobs', description: 'Count how many jobs/cleans are scheduled for a date or date range', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'} } } },
+  { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } }
+];
+
 async function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
-  // Strip "Claire" from the beginning
   text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
 
   claireReply('Let me think...');
 
-  // Build context about the business for Claude
   var today = new Date();
   var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   var todayKey = dateKey(today);
   var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
-  var teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
   var empNames = EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
 
-  // Sample of client names for matching
-  var clientSample = CLIENTS.slice(0,50).map(function(c){ return c.fn+' '+c.ln; }).join(', ');
-
-  var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a cleaning company in Massachusetts. '
-    +'Today is '+todayStr+'. '
-    +'You help the owner Tom manage his cleaning business. Be brief and conversational — 1-2 sentences max.\n\n'
-    +'You can perform these actions by responding with JSON in a ```json block:\n'
-    +'1. Schedule a clean: {"action":"schedule","client":"first last","date":"YYYY-MM-DD","time":"HH:MM","team":"B1"}\n'
-    +'2. Cancel a clean: {"action":"cancel","client":"first last","date":"YYYY-MM-DD"}\n'
-    +'3. Day off: {"action":"dayoff","employee":"first name"}\n'
-    +'4. Move employee to team: {"action":"moveteam","employee":"first name","team":"B1","date":"YYYY-MM-DD"}\n'
-    +'5. Add reminder: {"action":"reminder","text":"the reminder text"}\n'
-    +'6. Just chat (no action needed): respond normally without JSON.\n\n'
-    +'ALWAYS include a short friendly message before or after the JSON block.\n'
-    +'Teams: '+teams.join(', ')+'\n'
+  var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a residential cleaning company in Massachusetts. '
+    +'Today is '+todayStr+' ('+todayKey+'). '
+    +'You help the owner Tom manage scheduling, employees, and clients. '
+    +'Be brief, warm, and conversational — like a real office manager. 1-2 sentences.\n\n'
+    +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
-    +'Some clients: '+clientSample+'\n'
-    +'Today has '+todayJobs.length+' jobs scheduled.\n'
-    +'If you need more info to complete an action, just ask Tom.';
+    +'Total clients: '+CLIENTS.length+'\n'
+    +'Today\'s jobs: '+todayJobs.length+'\n\n'
+    +'Use the tools provided to take actions or look up information. '
+    +'If you need to clarify something, just ask Tom — don\'t guess. '
+    +'If no tool is needed (just chatting), respond directly without using a tool.';
 
   try {
     var resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -2808,48 +2813,215 @@ async function processVoiceCommand(text) {
       headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
+        max_tokens: 500,
         system: systemPrompt,
+        tools: CLAIRE_TOOLS,
         messages: [{ role: 'user', content: text }]
       })
     });
 
-    if (!resp.ok) {
-      // API failed — fall back to local parsing
-      processVoiceCommandLocal(text);
-      return;
-    }
-
+    if (!resp.ok) { processVoiceCommandLocal(text); return; }
     var data = await resp.json();
-    var reply = data.content && data.content[0] ? data.content[0].text : '';
 
-    // Remove the "Let me think..." message
+    // Remove "Let me think..."
     var thinkEl = status.querySelector('div:last-child');
     if (thinkEl && thinkEl.textContent.includes('think')) thinkEl.remove();
 
-    // Extract JSON action if present
-    var jsonMatch = reply.match(/```json\s*([\s\S]*?)```/);
-    var messageText = reply.replace(/```json[\s\S]*?```/g, '').trim();
+    // Process response — could be text, tool_use, or both
+    var textReply = '';
+    var toolCall = null;
+    if (data.content) {
+      data.content.forEach(function(block) {
+        if (block.type === 'text') textReply += block.text;
+        if (block.type === 'tool_use') toolCall = block;
+      });
+    }
 
-    if (jsonMatch) {
-      try {
-        var action = JSON.parse(jsonMatch[1].trim());
-        executeClaire(action, messageText);
-      } catch(e) {
-        claireReply(messageText || reply);
-      }
+    if (toolCall) {
+      executeClaireToolCall(toolCall, textReply);
     } else {
-      claireReply(messageText || reply);
+      claireReply(textReply || 'I\'m not sure what you need — can you say that differently?');
     }
   } catch(e) {
-    // API error — fall back to local
     var thinkEl2 = status.querySelector('div:last-child');
     if (thinkEl2 && thinkEl2.textContent.includes('think')) thinkEl2.remove();
     processVoiceCommandLocal(text);
   }
 }
 
+function findClient(name) {
+  if (!name) return null;
+  var lower = name.toLowerCase();
+  var best = null, bestScore = 0;
+  CLIENTS.forEach(function(c) {
+    var full = (c.fn+' '+c.ln).toLowerCase();
+    var rev = (c.ln+' '+c.fn).toLowerCase();
+    if (full === lower || rev === lower) { best = c; bestScore = 100; }
+    else if (bestScore < 90 && lower.includes(c.ln.toLowerCase()) && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 90; }
+    else if (bestScore < 80 && c.ln.length > 3 && lower.includes(c.ln.toLowerCase())) { best = c; bestScore = 80; }
+    else if (bestScore < 70 && c.fn.length > 3 && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 70; }
+  });
+  return best;
+}
+
+function executeClaireToolCall(toolCall, message) {
+  var input = toolCall.input || {};
+  var name = toolCall.name;
+
+  // ── SCHEDULE ──
+  if (name === 'schedule_clean') {
+    var client = findClient(input.client);
+    if (!client) { claireReply(message || 'I couldn\'t find that client. Can you give me their full name?'); return; }
+    var result = {
+      client: client,
+      clientName: (client.ln||'')+', '+(client.fn||''),
+      date: input.date || dateKey(new Date()),
+      time: input.time || '09:00',
+      timeDisplay: '',
+      team: (input.team||'B1').toUpperCase()
+    };
+    var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
+    result.timeDisplay = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var status = document.getElementById('voice-cmd-status');
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">'+(message || 'I\'ll schedule <strong>'+client.fn+' '+client.ln+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>.')+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
+      +'</div>';
+    window._pendingVoiceCmd = result;
+
+  // ── CANCEL ──
+  } else if (name === 'cancel_clean') {
+    var client2 = findClient(input.client);
+    if (!client2) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var targetDate = input.date || dateKey(new Date());
+    var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
+    if (job) {
+      job.cancelled = true; saveJobs();
+      var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
+    } else {
+      var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && !j.cancelled && j.date > targetDate; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+      var dateL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
+      claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean on '+dateL+'.'+hint);
+    }
+
+  // ── MOVE CLEAN ──
+  } else if (name === 'move_clean') {
+    var client3 = findClient(input.client);
+    if (!client3) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var fromDate = input.from_date || dateKey(new Date());
+    var job2 = jobs.find(function(j){ return j.clientId === client3.id && j.date === fromDate && !j.cancelled; });
+    if (!job2) { claireReply(message || client3.fn+' '+client3.ln+' doesn\'t have a clean on that date.'); return; }
+    if (input.to_date) job2.date = input.to_date;
+    if (input.time) { job2.time = input.time; job2.flexible = false; }
+    if (input.team) job2.team = input.team.toUpperCase();
+    saveJobs(); renderCal();
+    var newDayL = new Date(job2.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate('Moved: '+job2.clientName, newDayL);
+    recalcTeamTimes(job2.team, job2.date, job2.id);
+    claireReply(message || 'Moved '+client3.fn+' '+client3.ln+' to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.');
+
+  // ── DAY OFF ──
+  } else if (name === 'employee_day_off') {
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!emp) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    var dk = input.date || dateKey(new Date());
+    dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
+    var dayStr = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate(emp.name+' → Day Off', dayStr);
+    claireReply(message || 'Got it! '+emp.name+' is off for '+dayStr+'. Team roster updated.');
+
+  // ── MOVE EMPLOYEE ──
+  } else if (name === 'move_employee') {
+    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!emp2) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    var dk2 = input.date || dateKey(new Date());
+    assignEmployee(emp2.id, input.team.toUpperCase(), dk2);
+    logPendingUpdate(emp2.name+' → '+input.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+    claireReply(message || 'Moved '+emp2.name+' to Team '+input.team.toUpperCase()+'.');
+
+  // ── REMINDER ──
+  } else if (name === 'add_reminder') {
+    var now = new Date();
+    var ts = now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    manualTasks.unshift({id:Date.now().toString(),text:input.text,time:ts,done:false});
+    saveManualTasks(); renderTasks();
+    claireReply(message || 'Noted! Added "'+input.text+'" to your reminders.');
+
+  // ── LOOKUP CLIENT ──
+  } else if (name === 'lookup_client') {
+    var cl = findClient(input.client);
+    if (!cl) { claireReply('I couldn\'t find a client named "'+input.client+'".'); return; }
+    var info = cl.fn+' '+cl.ln+' — '+cl.addr+', '+cl.city+'. '
+      +(cl.ph?'Phone: '+cl.ph+'. ':'')
+      +'Frequency: '+cl.freq+'. '
+      +(cl.bal>0?'Balance: $'+Math.round(cl.bal)+'. ':'No balance. ')
+      +'Next clean: '+(cl.next||'not set')+'. '
+      +(cl.notes?'Notes: '+cl.notes:'');
+    claireReply(message || info);
+
+  // ── LOOKUP SCHEDULE ──
+  } else if (name === 'lookup_schedule') {
+    var sDate = input.date || dateKey(new Date());
+    var sJobs = jobs.filter(function(j){ return j.date === sDate && !j.cancelled; });
+    if (input.team) sJobs = sJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
+    if (input.client) { var sc=findClient(input.client); if(sc) sJobs=sJobs.filter(function(j){return j.clientId===sc.id;}); }
+    var sDayL = new Date(sDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    if (!sJobs.length) { claireReply('No jobs scheduled for '+sDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.'); return; }
+    var summary = sJobs.length+' job'+(sJobs.length>1?'s':'')+' on '+sDayL+(input.team?' for Team '+input.team.toUpperCase():'')+': '
+      +sJobs.slice(0,8).map(function(j){ return j.clientName+(j.time?' at '+j.time:''); }).join(', ')
+      +(sJobs.length>8?' + '+(sJobs.length-8)+' more':'');
+    claireReply(message || summary);
+
+  // ── LOOKUP BALANCE ──
+  } else if (name === 'lookup_balance') {
+    if (input.client) {
+      var bc=findClient(input.client);
+      if (!bc) { claireReply('Couldn\'t find that client.'); return; }
+      claireReply(message || bc.fn+' '+bc.ln+(bc.bal>0?' has a balance of $'+Math.round(bc.bal)+'.':' has no outstanding balance.'));
+    } else {
+      var owing = CLIENTS.filter(function(c){return c.bal>0;});
+      var total = owing.reduce(function(s,c){return s+c.bal;},0);
+      claireReply(message || owing.length+' clients have outstanding balances totaling $'+Math.round(total).toLocaleString()+'.');
+    }
+
+  // ── LOOKUP EMPLOYEE ──
+  } else if (name === 'lookup_employee') {
+    var le = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!le) { claireReply('Couldn\'t find that employee.'); return; }
+    var leTeam = getEmployeeTeam(le.id, dateKey(new Date()));
+    claireReply(message || le.name+' is on '+(leTeam?'Team '+leTeam:'no team (Day Off)')+'. Role: '+(le.role.length?le.role.join(', '):'Cleaner')+'. Depot: '+le.depot+'.');
+
+  // ── COUNT JOBS ──
+  } else if (name === 'count_jobs') {
+    var cDate = input.date || dateKey(new Date());
+    var cJobs = jobs.filter(function(j){ return j.date === cDate && !j.cancelled; });
+    if (input.team) cJobs = cJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
+    var cDayL = new Date(cDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    claireReply(message || cJobs.length+' job'+(cJobs.length!==1?'s':'')+' scheduled for '+cDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.');
+
+  // ── REVENUE ──
+  } else if (name === 'get_revenue') {
+    var rDate = input.date || dateKey(new Date());
+    var rev = getDayRevenue(rDate);
+    var rDayL = new Date(rDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    claireReply(message || 'Revenue for '+rDayL+': $'+Math.round(rev).toLocaleString()+'.');
+
+  } else {
+    claireReply(message || 'I\'m not sure how to do that yet, but I\'m learning!');
+  }
+}
+
+// (legacy — replaced by executeClaireToolCall)
 function executeClaire(action, message) {
+  executeClaireToolCall({name:action.action,input:action}, message);
+}
+function _executeClaire_legacy(action, message) {
   var status = document.getElementById('voice-cmd-status');
 
   if (action.action === 'schedule') {
