@@ -4406,23 +4406,31 @@ async function loadWeekHours() {
           weekHours[team].total += totalHrs;
 
           // Detect likely lunch break
-          // Look for stops between 11am-2pm lasting 15-45 min
-          // that are NOT at the depot or a client address
-          const elevenAM = new Date(day); elevenAM.setHours(11,0,0,0);
+          // Criteria: stop is NOT at office, NOT a scheduled client,
+          // lasted under 60 min, between 10am-4pm
+          const tenAM = new Date(day); tenAM.setHours(10,0,0,0);
           const fourPM = new Date(day); fourPM.setHours(16,0,0,0);
+          const todayKey = dateKey(day);
+          const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team; });
 
           const lunchCandidates = dayTrips.filter(t => {
             if (!t.stop) return false;
             const stopTime = new Date(t.stop);
-            if (stopTime < elevenAM || stopTime > fourPM) return false;
-            // Duration of NEXT trip start minus this trip stop = stop duration
+            if (stopTime < tenAM || stopTime > fourPM) return false;
             const nextTrip = dayTrips.find(t2 => new Date(t2.start) > stopTime);
             if (!nextTrip) return false;
             const stopDurMin = (new Date(nextTrip.start) - stopTime) / 60000;
-            if (stopDurMin < 15 || stopDurMin > 45) return false;
-            // Not at depot
+            if (stopDurMin < 5 || stopDurMin >= 60) return false;
+            // Not at office
             const stopAddr = t.stopAddress || t.stopLocation || '';
             if (isDepotAddress(stopAddr, team)) return false;
+            // Not a scheduled client for today
+            const clientMatch = matchStopToClient(stopAddr, todayTeamJobs);
+            const isScheduled = clientMatch && todayTeamJobs.some(function(tj) {
+              var c = CLIENTS.find(function(x){ return x.id === tj.clientId; });
+              return c && clientMatch.includes(c.fn) && clientMatch.includes(c.ln);
+            });
+            if (isScheduled) return false;
             return true;
           });
 
@@ -5629,12 +5637,20 @@ function renderGPS() {
         const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
         const clientName = s.isDepot ? 'Office' : matchStopToClient(s.addr, teamJobs);
 
+        // Flag potential lunch: not office, not a scheduled client, AND (under 60 min or no client match at all)
+        const isScheduledClient = !s.isDepot && clientName && teamJobs.some(function(tj) {
+          var c = CLIENTS.find(function(x){ return x.id === tj.clientId; });
+          return c && clientName.includes(c.fn) && clientName.includes(c.ln);
+        });
+        const maybeLunch = !s.isDepot && !isScheduledClient && dur !== null && dur > 0 && dur < 60;
+
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${si > 0 ? driveInfo : ''}
-        <div class="tvc-stop-row" style="align-items:flex-start">
-          <span class="tvc-stop-dot" style="background:${dotColor};margin-top:4px"></span>
+        <div class="tvc-stop-row" style="align-items:flex-start${maybeLunch ? ';background:rgba(251,191,36,0.06);border-radius:6px;margin:0 -4px;padding:4px' : ''}">
+          <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
-            ${clientName ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}</div>` : ''}
+            ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
+            ${clientName && !maybeLunch ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}</div>` : ''}
             <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
             <div style="display:flex;gap:12px;font-size:11px;align-items:center">
               ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
