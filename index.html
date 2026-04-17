@@ -4023,6 +4023,7 @@ async function showDayHistory(team, dateMs) {
             ${s.inTime ? `<span style="font-size:12px;color:var(--green)">▶ In: ${inStr}</span>` : `<span style="font-size:12px;color:var(--green)">▶ Out: ${outStr}</span>`}
             ${s.inTime && s.outTime ? `<span style="font-size:12px;color:var(--red)">◀ Out: ${outStr}</span>` : ''}
             ${durStr ? `<span style="font-size:12px;color:var(--muted)">${durStr}</span>` : ''}
+            ${s.addr ? `<a href="https://maps.google.com/?q=${encodeURIComponent(s.addr)}" target="_blank" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>` : ''}
           </div>
         </div>
       </div>`;
@@ -4713,6 +4714,7 @@ async function showEmpStops(team, dateMs) {
         +(s.inTime&&s.outTime?'<span style="font-size:11px;color:var(--red)">Out: '+outStr+'</span>':'')
         +(durStr?'<span style="font-size:11px;color:var(--muted)">'+durStr+'</span>':'')
         +(isLunch?'<span style="font-size:11px;color:var(--amber);font-weight:600">LUNCH</span>':'')
+        +(s.addr?'<a href="https://maps.google.com/?q='+encodeURIComponent(s.addr)+'" target="_blank" onclick="event.stopPropagation()" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>':'')
         +'</div></div>'
         +(isLunch?'<button onclick="event.stopPropagation();clearLunchStop()" style="background:none;border:none;color:var(--red);font-size:16px;cursor:pointer;padding:4px;flex-shrink:0">×</button>':'')
         +'</div>';
@@ -5617,18 +5619,20 @@ function renderGPS() {
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
         const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
-        const clientName = s.isDepot ? 'Depot' : matchStopToClient(s.addr, teamJobs);
+        const clientName = s.isDepot ? 'Office' : matchStopToClient(s.addr, teamJobs);
 
+        const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${si > 0 ? driveInfo : ''}
         <div class="tvc-stop-row" style="align-items:flex-start">
           <span class="tvc-stop-dot" style="background:${dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
             ${clientName ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}</div>` : ''}
             <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
-            <div style="display:flex;gap:12px;font-size:11px">
+            <div style="display:flex;gap:12px;font-size:11px;align-items:center">
               ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
               ${s.inTime && s.outTime ? `<span style="color:var(--red)">◀ Out: ${outStr}</span>` : ''}
               ${durStr ? `<span style="color:var(--muted)">${durStr}</span>` : ''}
+              ${mapsLink ? `<a href="${mapsLink}" target="_blank" onclick="event.stopPropagation()" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>` : ''}
             </div>
           </div>
         </div>`;
