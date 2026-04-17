@@ -2673,6 +2673,14 @@ let currentConv = null;
 var _voiceRecognition = null;
 
 function startVoiceCommand() {
+  // If already listening, stop
+  if (_voiceRecognition) {
+    try { _voiceRecognition.stop(); } catch(e) {}
+    _voiceRecognition = null;
+    resetVoiceBtn();
+    return;
+  }
+
   var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) { alert('Speech recognition not supported on this browser. Try Safari.'); return; }
 
@@ -2681,34 +2689,60 @@ function startVoiceCommand() {
   status.style.display = 'block';
   status.innerHTML = '<div style="font-size:24px;margin-bottom:8px">🔴</div><div style="font-size:14px;color:var(--text)">Listening...</div><div style="font-size:12px;color:var(--muted);margin-top:4px">Say a command like "Schedule Beth Ahern Friday 2pm team B1"</div>';
   btn.style.background = 'var(--red)';
-  btn.textContent = '⬛ Stop';
-  btn.onclick = function() { if (_voiceRecognition) _voiceRecognition.stop(); };
+  btn.innerHTML = '⬛ Tap to Stop';
 
   var rec = new SpeechRec();
   rec.lang = 'en-US';
   rec.interimResults = false;
   rec.maxAlternatives = 1;
+  rec.continuous = false;
   _voiceRecognition = rec;
 
+  // Auto-timeout after 10 seconds
+  var timeout = setTimeout(function() {
+    if (_voiceRecognition) {
+      try { _voiceRecognition.stop(); } catch(e) {}
+      _voiceRecognition = null;
+      status.innerHTML = '<div style="color:var(--amber);font-size:13px">Didn\'t hear anything. Tap the button and try again.</div>';
+      resetVoiceBtn();
+    }
+  }, 10000);
+
   rec.onresult = function(e) {
+    clearTimeout(timeout);
+    _voiceRecognition = null;
     var text = e.results[0][0].transcript;
     status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:8px">"'+text+'"</div><div style="font-size:12px;color:var(--muted)">Processing...</div>';
+    resetVoiceBtn();
     processVoiceCommand(text);
   };
   rec.onerror = function(e) {
-    status.innerHTML = '<div style="color:var(--red);font-size:13px">Could not hear you. Try again.</div>';
+    clearTimeout(timeout);
+    _voiceRecognition = null;
+    status.innerHTML = '<div style="color:var(--red);font-size:13px">Could not hear you. Tap the button and try again.</div>';
     resetVoiceBtn();
   };
-  rec.onend = function() { resetVoiceBtn(); };
-  rec.start();
+  rec.onend = function() {
+    clearTimeout(timeout);
+    _voiceRecognition = null;
+    resetVoiceBtn();
+  };
+
+  try {
+    rec.start();
+  } catch(e) {
+    _voiceRecognition = null;
+    status.innerHTML = '<div style="color:var(--red);font-size:13px">Microphone access denied. Check your settings.</div>';
+    resetVoiceBtn();
+  }
 }
 
 function resetVoiceBtn() {
+  _voiceRecognition = null;
   var btn = document.getElementById('voice-cmd-btn');
   if (btn) {
     btn.style.background = 'var(--accent)';
     btn.innerHTML = '🎙 Voice Command';
-    btn.onclick = function(){ startVoiceCommand(); };
   }
 }
 
