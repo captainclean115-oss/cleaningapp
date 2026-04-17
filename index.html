@@ -12655,6 +12655,8 @@ var _dragTimer = null;
 var _dragActive = false;
 var _dragMoved = false;
 var _dragSnappedMins = null;
+var _dragOffsetX = 0;
+var _dragOffsetY = 0;
 
 function jobSquareTap(e, el) {
   if (_dragMoved) { _dragMoved = false; return; }
@@ -12679,6 +12681,8 @@ function jobDragStart(e, el) {
     document.body.style.overflow = 'hidden';
     // Create floating clone with time label
     var rect = el.getBoundingClientRect();
+    _dragOffsetX = _dragStartX - rect.left;
+    _dragOffsetY = _dragStartY - (rect.top - 30);
     _dragClone = document.createElement('div');
     _dragClone.id = 'drag-clone';
     _dragClone.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;'
@@ -12712,8 +12716,8 @@ function jobDragMove(e) {
   var tx = e.touches[0].clientX;
   var ty = e.touches[0].clientY;
   if (_dragClone) {
-    _dragClone.style.left = (tx - 40) + 'px';
-    _dragClone.style.top = (ty - 60) + 'px';
+    _dragClone.style.left = (tx - _dragOffsetX) + 'px';
+    _dragClone.style.top = (ty - _dragOffsetY) + 'px';
   }
   // Calculate and show snapped time
   var tlScroll = document.getElementById('tl-main-scroll');
