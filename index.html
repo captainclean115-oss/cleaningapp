@@ -12654,6 +12654,7 @@ var _dragStartY = 0;
 var _dragTimer = null;
 var _dragActive = false;
 var _dragMoved = false;
+var _dragSnappedMins = null;
 
 function jobSquareTap(e, el) {
   if (_dragMoved) { _dragMoved = false; return; }
@@ -12728,6 +12729,7 @@ function jobDragMove(e) {
     var label = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
     var tl = document.getElementById('drag-time-label');
     if (tl) tl.textContent = label;
+    _dragSnappedMins = mins;
   }
   // Highlight drop target team row
   document.querySelectorAll('[data-drag-team]').forEach(function(r){ r.style.background = 'var(--surface2)'; });
@@ -12758,20 +12760,22 @@ function jobDragEnd(e) {
   // Walk up to find a timeline row (position:relative div inside tl-main-scroll)
   var tlScroll = document.getElementById('tl-main-scroll');
 
-  // Calculate new time from X position relative to the scroll container
-  if (tlScroll) {
-    var scrollRect = tlScroll.getBoundingClientRect();
-    // X relative to timeline start (accounting for scroll offset)
-    var xInTimeline = (tx - scrollRect.left) + tlScroll.scrollLeft;
-    var droppedMins = Math.round(xInTimeline / PX_PER_MIN) + TL_START;
-    // Snap to nearest 15 minutes
-    droppedMins = Math.round(droppedMins / 15) * 15;
-    // Clamp to timeline bounds
-    droppedMins = Math.max(TL_START, Math.min(TL_END - 15, droppedMins));
-    var newHr = Math.floor(droppedMins / 60);
-    var newMn = droppedMins % 60;
+  // Use the snapped time from the drag move (matches what the label showed)
+  if (_dragSnappedMins !== null) {
+    var newHr = Math.floor(_dragSnappedMins / 60);
+    var newMn = _dragSnappedMins % 60;
     var newTime = String(newHr).padStart(2,'0') + ':' + String(newMn).padStart(2,'0');
     _dragJob.time = newTime;
+    _dragJob.flexible = false;
+  } else if (tlScroll) {
+    var scrollRect = tlScroll.getBoundingClientRect();
+    var xInTimeline = (tx - scrollRect.left) + tlScroll.scrollLeft;
+    var droppedMins = Math.round(xInTimeline / PX_PER_MIN) + TL_START;
+    droppedMins = Math.round(droppedMins / 15) * 15;
+    droppedMins = Math.max(TL_START, Math.min(TL_END - 15, droppedMins));
+    var newHr2 = Math.floor(droppedMins / 60);
+    var newMn2 = droppedMins % 60;
+    _dragJob.time = String(newHr2).padStart(2,'0') + ':' + String(newMn2).padStart(2,'0');
     _dragJob.flexible = false;
   }
 
@@ -12802,6 +12806,7 @@ function jobDragEnd(e) {
   _dragActive = false;
   _dragJob = null;
   _dragEl = null;
+  _dragSnappedMins = null;
   renderCal();
 
   // Recalculate subsequent job times based on drive time
