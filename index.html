@@ -5173,31 +5173,40 @@ function normalizeStreet(s) {
 function matchStopToClient(addr, teamJobs) {
   if (!addr) return '';
   var aNorm = normalizeStreet(addr);
-  // Check team jobs first
+  var aNum = (aNorm.match(/^(\d+)/) || [])[1] || ''; // house number from GPS
+  var aStreetOnly = aNorm.replace(/^\d+\s*/,''); // street without house number
+
+  // STEP 1: Check today's scheduled jobs for this team — allow fuzzy street match
+  // These are the clients we EXPECT the team to visit
   if (teamJobs) {
     for (var ji = 0; ji < teamJobs.length; ji++) {
       var j = teamJobs[ji];
       var c = CLIENTS.find(function(x){ return x.id === j.clientId; });
       if (c && c.addr) {
         var cNorm = normalizeStreet(c.addr);
+        // Exact or contains match (best)
         if (aNorm.includes(cNorm) || cNorm.includes(aNorm)) return (c.fn||'') + ' ' + (c.ln||'');
-        // Street name only (drop house number)
-        var aWords = aNorm.replace(/^\d+\s*/,'');
-        var cWords = cNorm.replace(/^\d+\s*/,'');
-        if (aWords.length > 3 && cWords.length > 3 && (aWords.includes(cWords) || cWords.includes(aWords))) return (c.fn||'') + ' ' + (c.ln||'');
+        // Street name match (OK for scheduled clients — we expect them to be there)
+        var cStreetOnly = cNorm.replace(/^\d+\s*/,'');
+        if (aStreetOnly.length > 3 && cStreetOnly.length > 3 && (aStreetOnly.includes(cStreetOnly) || cStreetOnly.includes(aStreetOnly))) return (c.fn||'') + ' ' + (c.ln||'');
       }
     }
   }
-  // Check all clients
+
+  // STEP 2: Check all clients — require house number match to avoid false positives
+  // A stop on "123 Main St" should NOT match a client at "456 Main St" unless scheduled
+  if (!aNum) return ''; // no house number from GPS = can't reliably match
   for (var ci = 0; ci < CLIENTS.length; ci++) {
     var cl = CLIENTS[ci];
     if (cl.addr) {
       var cNorm2 = normalizeStreet(cl.addr);
-      if (aNorm.includes(cNorm2) || cNorm2.includes(aNorm)) return (cl.fn||'') + ' ' + (cl.ln||'');
-      var aWords2 = aNorm.replace(/^\d+\s*/,'');
-      var cWords2 = cNorm2.replace(/^\d+\s*/,'');
-      if (aWords2.length > 3 && cWords2.length > 3 && (aWords2.includes(cWords2) || cWords2.includes(aWords2))) {
-        // Also check city to avoid false positives
+      var cNum = (cNorm2.match(/^(\d+)/) || [])[1] || '';
+      // Must have matching house number
+      if (!cNum || cNum !== aNum) continue;
+      // Then check street name
+      var cStreet2 = cNorm2.replace(/^\d+\s*/,'');
+      if (aStreetOnly.length > 3 && cStreet2.length > 3 && (aStreetOnly.includes(cStreet2) || cStreet2.includes(aStreetOnly))) {
+        // Also check city
         var aCity = (addr.split(',')[1]||'').trim().toLowerCase();
         var cCity = (cl.city||'').toLowerCase();
         if (!aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity)) return (cl.fn||'') + ' ' + (cl.ln||'');
