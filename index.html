@@ -1155,6 +1155,11 @@ select.field-input { appearance: none; }
   <button class="add-task-btn" onclick="openAddTask()">+ Add reminder</button>
   <div id="manual-tasks-list"></div>
   <button class="clear-done-btn" onclick="clearDoneTasks()">Clear completed tasks</button>
+  <div style="margin:16px 12px 4px;display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border)">
+    <div style="font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Activity Log</div>
+    <button onclick="clearActivityLog()" style="background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">Clear</button>
+  </div>
+  <div id="activity-log-list" style="padding:0 12px 20px"></div>
   <div class="bottom-pad"></div>
 </div>
 
@@ -1989,7 +1994,7 @@ function showTab(tab) {
   if (tab === 'cal') renderCal();
   if (tab === 'tasks') {
     pendingUpdates = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-    renderTasks(); renderMainEmployees();
+    renderTasks(); renderMainEmployees(); renderActivityLog();
   }
   if (tab === 'gps') gpsInit();
   if (tab === 'messages') {
@@ -2572,6 +2577,63 @@ function logPendingUpdate(action, details) {
     done: false
   });
   savePending();
+  // Also log to permanent activity log
+  logActivity(action, details);
+}
+
+// ── PERMANENT ACTIVITY LOG ──
+function logActivity(action, details) {
+  var now = new Date();
+  var timestamp = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' ' +
+    now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'});
+  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
+  log.unshift({ action: action, details: details || '', time: timestamp, ts: now.getTime() });
+  // Keep last 500 entries
+  if (log.length > 500) log = log.slice(0, 500);
+  localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
+  renderActivityLog();
+}
+
+function renderActivityLog() {
+  var el = document.getElementById('activity-log-list');
+  if (!el) return;
+  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
+  if (log.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
+    return;
+  }
+
+  // Group by date
+  var grouped = {};
+  log.forEach(function(entry) {
+    var d = new Date(entry.ts);
+    var dateKey2 = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    if (!grouped[dateKey2]) grouped[dateKey2] = [];
+    grouped[dateKey2].push(entry);
+  });
+
+  var html = '';
+  var dates = Object.keys(grouped);
+  dates.forEach(function(dateLabel, di) {
+    if (di > 7) return; // show last 7 days max
+    html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
+    grouped[dateLabel].forEach(function(entry) {
+      var timeOnly = new Date(entry.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
+        + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-weight:500;color:var(--text)">' + (entry.action||'') + '</div>'
+        + (entry.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + entry.details + '</div>' : '')
+        + '</div></div>';
+    });
+  });
+  el.innerHTML = html;
+}
+
+function clearActivityLog() {
+  if (!confirm('Clear the entire activity log?')) return;
+  localStorage.removeItem('cleanco_activity_log');
+  renderActivityLog();
 }
 
 function togglePendingDone(id) {
