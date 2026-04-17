@@ -2736,6 +2736,17 @@ let rcToken = null;
 let rcConversations = [];
 let currentConv = null;
 
+// ── CLAIRE API KEY (stored in localStorage, never in code) ──
+var _claireApiKey = localStorage.getItem('claire_api_key') || '';
+function setClaireApiKey() {
+  var key = prompt('Enter your Anthropic API key (starts with sk-ant-):');
+  if (key && key.startsWith('sk-')) {
+    localStorage.setItem('claire_api_key', key);
+    _claireApiKey = key;
+    claireReply('API key saved! I\'m ready to help.');
+  }
+}
+
 // ── VOICE/TEXT COMMANDS ──
 var _claireRec = null;
 
@@ -2797,6 +2808,11 @@ async function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
   text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
 
+  if (!_claireApiKey) {
+    setClaireApiKey();
+    if (!_claireApiKey) { var s=document.getElementById('voice-cmd-status'); s.style.display='block'; claireReply('I need an API key to work. Try your command again.'); return; }
+  }
+
   claireReply('Let me think...');
 
   var today = new Date();
@@ -2820,7 +2836,7 @@ async function processVoiceCommand(text) {
   try {
     var resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
@@ -8902,7 +8918,7 @@ Reply only with the SMS text, nothing else.`;
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 150,
@@ -11495,7 +11511,7 @@ async function translateNote(text, lang, cacheKey) {
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 150,
