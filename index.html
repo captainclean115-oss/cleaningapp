@@ -1138,7 +1138,11 @@ select.field-input { appearance: none; }
 <div id="tasks-view">
   <div class="tasks-header">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <button onclick="startVoiceCommand()" id="voice-cmd-btn" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">🎙 Voice Command</button>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="voice-cmd-input" placeholder="Type or 🎙 dictate a command..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:12px 14px;outline:none" onkeydown="if(event.key==='Enter')runVoiceCmd()">
+        <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px 18px;border-radius:12px;cursor:pointer;white-space:nowrap">Go</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Tap 🎙 on your keyboard to speak · "Schedule Beth Ahern Friday 2pm B1"</div>
     </div>
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -2669,81 +2673,17 @@ let rcToken = null;
 let rcConversations = [];
 let currentConv = null;
 
-// ── VOICE COMMANDS ──
-var _voiceRecognition = null;
-
-function startVoiceCommand() {
-  // If already listening, stop
-  if (_voiceRecognition) {
-    try { _voiceRecognition.stop(); } catch(e) {}
-    _voiceRecognition = null;
-    resetVoiceBtn();
-    return;
-  }
-
-  var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRec) { alert('Speech recognition not supported on this browser. Try Safari.'); return; }
-
+// ── VOICE/TEXT COMMANDS ──
+function runVoiceCmd() {
+  var input = document.getElementById('voice-cmd-input');
+  if (!input) return;
+  var text = input.value.trim();
+  if (!text) return;
   var status = document.getElementById('voice-cmd-status');
-  var btn = document.getElementById('voice-cmd-btn');
   status.style.display = 'block';
-  status.innerHTML = '<div style="font-size:24px;margin-bottom:8px">🔴</div><div style="font-size:14px;color:var(--text)">Listening...</div><div style="font-size:12px;color:var(--muted);margin-top:4px">Say a command like "Schedule Beth Ahern Friday 2pm team B1"</div>';
-  btn.style.background = 'var(--red)';
-  btn.innerHTML = '⬛ Tap to Stop';
-
-  var rec = new SpeechRec();
-  rec.lang = 'en-US';
-  rec.interimResults = false;
-  rec.maxAlternatives = 1;
-  rec.continuous = false;
-  _voiceRecognition = rec;
-
-  // Auto-timeout after 10 seconds
-  var timeout = setTimeout(function() {
-    if (_voiceRecognition) {
-      try { _voiceRecognition.stop(); } catch(e) {}
-      _voiceRecognition = null;
-      status.innerHTML = '<div style="color:var(--amber);font-size:13px">Didn\'t hear anything. Tap the button and try again.</div>';
-      resetVoiceBtn();
-    }
-  }, 10000);
-
-  rec.onresult = function(e) {
-    clearTimeout(timeout);
-    _voiceRecognition = null;
-    var text = e.results[0][0].transcript;
-    status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:8px">"'+text+'"</div><div style="font-size:12px;color:var(--muted)">Processing...</div>';
-    resetVoiceBtn();
-    processVoiceCommand(text);
-  };
-  rec.onerror = function(e) {
-    clearTimeout(timeout);
-    _voiceRecognition = null;
-    status.innerHTML = '<div style="color:var(--red);font-size:13px">Could not hear you. Tap the button and try again.</div>';
-    resetVoiceBtn();
-  };
-  rec.onend = function() {
-    clearTimeout(timeout);
-    _voiceRecognition = null;
-    resetVoiceBtn();
-  };
-
-  try {
-    rec.start();
-  } catch(e) {
-    _voiceRecognition = null;
-    status.innerHTML = '<div style="color:var(--red);font-size:13px">Microphone access denied. Check your settings.</div>';
-    resetVoiceBtn();
-  }
-}
-
-function resetVoiceBtn() {
-  _voiceRecognition = null;
-  var btn = document.getElementById('voice-cmd-btn');
-  if (btn) {
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Voice Command';
-  }
+  status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:4px">"'+text+'"</div>';
+  processVoiceCommand(text);
+  input.value = '';
 }
 
 function processVoiceCommand(text) {
