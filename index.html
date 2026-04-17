@@ -1139,10 +1139,9 @@ select.field-input { appearance: none; }
   <div class="tasks-header">
     <div style="margin-bottom:12px">
       <div style="font-size:15px;font-weight:700;color:var(--accent);margin-bottom:10px">✦ Claire</div>
-      <button onclick="startClaireMic()" id="claire-mic-btn" style="width:100%;padding:16px;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:16px;font-weight:700;border-radius:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px">🎙 Tap to Talk to Claire</button>
       <div style="display:flex;gap:8px">
-        <input type="text" id="voice-cmd-input" placeholder="Or type here..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()">
-        <button onclick="runVoiceCmd()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 14px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
+        <input type="text" id="voice-cmd-input" placeholder="Talk to Claire..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()" onfocus="this.setAttribute('placeholder','Tap 🎙 on keyboard to speak...');" onblur="this.setAttribute('placeholder','Talk to Claire...');">
+        <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:14px 18px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
       </div>
     </div>
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
@@ -2741,79 +2740,11 @@ let currentConv = null;
 var _claireRec = null;
 
 function startClaireMic() {
-  var btn = document.getElementById('claire-mic-btn');
-  var status = document.getElementById('voice-cmd-status');
-
-  // If already listening, stop
-  if (_claireRec) {
-    try { _claireRec.stop(); } catch(e) {}
-    _claireRec = null;
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Tap to Talk to Claire';
-    return;
-  }
-
-  var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRec) {
-    // No speech API — focus the text input instead
-    document.getElementById('voice-cmd-input').focus();
-    return;
-  }
-
-  // Show listening state
-  btn.style.background = 'var(--red)';
-  btn.innerHTML = '🔴 Listening... tap to stop';
-  status.style.display = 'block';
-  status.innerHTML = '<div style="font-size:20px;margin-bottom:6px">🔴</div><div style="font-size:14px;color:var(--text)">Listening...</div>';
-
-  var rec = new SpeechRec();
-  rec.lang = 'en-US';
-  rec.interimResults = false;
-  rec.maxAlternatives = 1;
-  rec.continuous = false;
-  _claireRec = rec;
-
-  var timeout = setTimeout(function() {
-    if (_claireRec) {
-      try { _claireRec.stop(); } catch(e) {}
-      _claireRec = null;
-      btn.style.background = 'var(--accent)';
-      btn.innerHTML = '🎙 Tap to Talk to Claire';
-      status.innerHTML = '<div style="font-size:13px;color:var(--muted)">Didn\'t hear anything — tap and try again</div>';
-    }
-  }, 8000);
-
-  rec.onresult = function(e) {
-    clearTimeout(timeout);
-    _claireRec = null;
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Tap to Talk to Claire';
-    var text = e.results[0][0].transcript;
-    status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:4px">"'+text+'"</div>';
-    processVoiceCommand(text);
-  };
-
-  rec.onerror = function() {
-    clearTimeout(timeout);
-    _claireRec = null;
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Tap to Talk to Claire';
-    status.innerHTML = '<div style="font-size:13px;color:var(--muted)">Couldn\'t hear — tap and try again</div>';
-  };
-
-  rec.onend = function() {
-    clearTimeout(timeout);
-    _claireRec = null;
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Tap to Talk to Claire';
-  };
-
-  try { rec.start(); } catch(e) {
-    _claireRec = null;
-    btn.style.background = 'var(--accent)';
-    btn.innerHTML = '🎙 Tap to Talk to Claire';
-    document.getElementById('voice-cmd-input').focus();
-  }
+  // Focus the input and show hint — iOS keyboard mic is the reliable way
+  var input = document.getElementById('voice-cmd-input');
+  input.focus();
+  input.setAttribute('placeholder', 'Tap 🎙 on keyboard, speak, then hit Go');
+  setTimeout(function(){ input.setAttribute('placeholder', 'Talk to Claire...'); }, 5000);
 }
 
 function runVoiceCmd() {
