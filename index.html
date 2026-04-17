@@ -2780,7 +2780,10 @@ var CLAIRE_TOOLS = [
   { name: 'lookup_balance', description: 'Look up outstanding balances — all clients or a specific client', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name (optional, omit for all balances)'} } } },
   { name: 'lookup_employee', description: 'Look up employee info — what team they are on, their role', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name'} }, required:['employee'] } },
   { name: 'count_jobs', description: 'Count how many jobs/cleans are scheduled for a date or date range', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'} } } },
-  { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } }
+  { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } },
+  { name: 'change_frequency', description: 'Change a client cleaning frequency (weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly). This updates their schedule, regenerates all future cleans, and drafts a message to the client.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, new_frequency:{type:'string',description:'One of: weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly, one-time'} }, required:['client','new_frequency'] } },
+  { name: 'update_client_notes', description: 'Add or update notes/special instructions on a client profile', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, notes:{type:'string',description:'The note text to add'} }, required:['client','notes'] } },
+  { name: 'send_message', description: 'Draft an SMS message to a client. Copies to clipboard and opens SMS.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, message:{type:'string',description:'The message text to send'} }, required:['client','message'] } }
 ];
 
 async function processVoiceCommand(text) {
@@ -3012,6 +3015,117 @@ function executeClaireToolCall(toolCall, message) {
     var rDayL = new Date(rDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     claireReply(message || 'Revenue for '+rDayL+': $'+Math.round(rev).toLocaleString()+'.');
 
+  // ── CHANGE FREQUENCY ──
+  } else if (name === 'change_frequency') {
+    var fClient = findClient(input.client);
+    if (!fClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+
+    // Map frequency words to codes and intervals
+    var freqMap = {
+      'weekly': { fc:'RMS - WEK', freq:'Weekly', days:7 },
+      'every 2 weeks': { fc:'RMS - EOW', freq:'Every 2 weeks', days:14 },
+      'biweekly': { fc:'RMS - EOW', freq:'Every 2 weeks', days:14 },
+      'every 3 weeks': { fc:'RMS - ETW', freq:'Every 3 weeks', days:21 },
+      'every 4 weeks': { fc:'RMS - EFW', freq:'Every 4 weeks', days:28 },
+      'monthly': { fc:'RMS - MON', freq:'Monthly', days:28 },
+      'one-time': { fc:'OMS', freq:'One-time', days:0 }
+    };
+    var newFreq = freqMap[(input.new_frequency||'').toLowerCase()];
+    if (!newFreq) { claireReply('I don\'t recognize that frequency. Try: weekly, every 2 weeks, every 3 weeks, every 4 weeks, or monthly.'); return; }
+
+    var oldFreq = fClient.freq || 'unknown';
+
+    // Update client record
+    fClient.fc = newFreq.fc;
+    fClient.freq = newFreq.freq;
+
+    // Remove all future jobs for this client and regenerate
+    var todayKey2 = dateKey(new Date());
+    var removedCount = 0;
+    jobs = jobs.filter(function(j) {
+      if (j.clientId === fClient.id && j.date >= todayKey2) { removedCount++; return false; }
+      return true;
+    });
+
+    // Find their team and time from the most recent removed job or existing data
+    var lastJob = jobs.filter(function(j){ return j.clientId === fClient.id; }).sort(function(a,b){ return b.date.localeCompare(a.date); })[0];
+    var team = lastJob ? lastJob.team : 'B1';
+    var time = lastJob ? lastJob.time : '09:00';
+    var price = lastJob ? lastJob.price : '';
+
+    // Generate new future cleans (6 months out)
+    if (newFreq.days > 0) {
+      var nextDate = fClient.next ? (function(s){ var p=s.split('/'); return new Date(+p[2],+p[0]-1,+p[1]); })(fClient.next) : new Date();
+      if (nextDate < new Date()) nextDate = new Date();
+      var endDate = new Date(); endDate.setMonth(endDate.getMonth() + 6);
+      var genCount = 0;
+      while (nextDate <= endDate) {
+        var dk3 = dateKey(nextDate);
+        if (dk3 >= todayKey2) {
+          jobs.push({
+            id: 'freq_'+Date.now()+'_'+genCount,
+            clientName: (fClient.ln||'')+', '+(fClient.fn||''),
+            clientId: fClient.id,
+            addr: (fClient.addr||'')+', '+(fClient.city||''),
+            date: dk3,
+            flexible: false,
+            time: time,
+            team: team,
+            color: team_colors_map[team]||'#6b7280',
+            price: price,
+            quotedMin: parseInt((getClientExtras(fClient.id)||{}).quotedMin)||120,
+            done: false,
+            autoGenerated: true
+          });
+          genCount++;
+        }
+        nextDate.setDate(nextDate.getDate() + newFreq.days);
+      }
+    }
+
+    saveJobs();
+    renderCal();
+    logPendingUpdate('Frequency change: '+fClient.fn+' '+fClient.ln, oldFreq+' → '+newFreq.freq);
+
+    // Find their next upcoming clean
+    var nextClean = jobs.filter(function(j){ return j.clientId === fClient.id && j.date >= todayKey2 && !j.cancelled; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+    var nextCleanLabel = nextClean ? new Date(nextClean.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) : 'TBD';
+
+    // Draft the SMS message
+    var smsText = 'Hi '+fClient.fn+'! This is Tom from Manna Maids. I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions! — Tom';
+
+    var status2 = document.getElementById('voice-cmd-status');
+    status2.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px;line-height:1.4">'+(message||'Done! I changed <strong>'+fClient.fn+' '+fClient.ln+'</strong> from '+oldFreq+' to <strong>'+newFreq.freq+'</strong>. Generated '+((jobs.filter(function(j){return j.clientId===fClient.id&&j.date>=todayKey2;}).length))+' future cleans. Next clean: <strong>'+nextCleanLabel+'</strong>.')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--muted);line-height:1.5">'+smsText+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Done</button>'
+      +'<button onclick="claireSendSms(\''+fClient.id+'\',\''+smsText.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Message</button>'
+      +'</div>';
+
+  // ── UPDATE CLIENT NOTES ──
+  } else if (name === 'update_client_notes') {
+    var nClient = findClient(input.client);
+    if (!nClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var oldNotes = nClient.notes || '';
+    nClient.notes = oldNotes ? oldNotes + ' | ' + input.notes : input.notes;
+    logPendingUpdate('Notes updated: '+nClient.fn+' '+nClient.ln, input.notes);
+    claireReply(message || 'Updated notes for '+nClient.fn+' '+nClient.ln+': "'+input.notes+'"');
+
+  // ── SEND MESSAGE ──
+  } else if (name === 'send_message') {
+    var mClient = findClient(input.client);
+    if (!mClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var ph = (mClient.ph||'').replace(/\D/g,'');
+    var status3 = document.getElementById('voice-cmd-status');
+    status3.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||'Here\'s the message for '+mClient.fn+' '+mClient.ln+':')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--text);line-height:1.5">'+input.message+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
+      +'<button onclick="claireSendSms(\''+mClient.id+'\',\''+input.message.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send</button>'
+      +'</div>';
+
   } else {
     claireReply(message || 'I\'m not sure how to do that yet, but I\'m learning!');
   }
@@ -3107,6 +3221,25 @@ function _executeClaire_legacy(action, message) {
   } else {
     claireReply(message || 'I\'m not sure how to do that yet.');
   }
+}
+
+function claireSendSms(clientId, msgText) {
+  var c = CLIENTS.find(function(x){ return x.id === clientId; });
+  if (!c) return;
+  var ph = (c.ph||'').replace(/\D/g,'');
+  navigator.clipboard.writeText(msgText).then(function() {
+    if (ph) {
+      window.location.href = 'rcmobile://sms?number=' + (ph.length === 10 ? '1' : '') + ph;
+    } else {
+      alert('Message copied to clipboard! No phone number on file — paste it manually.');
+    }
+    claireReply('Message copied and SMS opened for '+c.fn+' '+c.ln+'!');
+  }).catch(function() {
+    if (ph) {
+      window.location.href = 'sms:' + ph;
+    }
+    alert('Message:\n\n' + msgText);
+  });
 }
 
 // Fallback local parsing when API is unavailable
