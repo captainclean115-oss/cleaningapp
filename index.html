@@ -1039,6 +1039,15 @@ body {
   transition: transform 0.25s ease-out;
 }
 .claire-big-avatar.has-photo span { display: none; }
+.claire-big-avatar video {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; border-radius: 50%;
+  display: none;
+  background: #000;
+}
+.claire-big-avatar.lipsync video { display: block; }
+.claire-big-avatar.lipsync .claire-avatar-edit,
+.claire-big-avatar.lipsync span { display: none; }
 .claire-big-avatar.speaking {
   animation: claire-breathe 1.2s ease-in-out infinite;
   box-shadow: 0 10px 30px rgba(108,143,255,0.5), 0 0 0 6px rgba(52,211,153,0.25);
@@ -1600,6 +1609,18 @@ select.field-input { appearance: none; }
       <input id="claire-photo-file" type="file" accept="image/*" style="display:none" onchange="_claireHandleFile(event)">
     </div>
     <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:14px">💡 Tip: get a free AI-generated portrait from <strong>thispersondoesnotexist.com</strong>, save the image, then upload it here.</div>
+
+    <!-- D-ID (real lip-sync) -->
+    <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:12px;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:.05em">✨ Lip-sync (D-ID)</div>
+        <div id="claire-did-status" style="font-size:10px;color:var(--muted)"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">Paste your D-ID API key to make Claire actually talk with matching lip movement. Get one free at <strong>d-id.com</strong>.</div>
+      <input id="claire-did-key" type="password" placeholder="D-ID API key (paste here)" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:10px 12px;outline:none;margin-bottom:8px">
+      <button onclick="claireSaveDidKey()" style="width:100%;background:var(--surface2);border:1px solid var(--accent2);color:var(--accent2);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;padding:9px;border-radius:8px;cursor:pointer">Save Key & Enable Lip-Sync</button>
+    </div>
+
     <div style="display:flex;gap:8px">
       <button onclick="claireClearPhoto()" style="flex:0.5;background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Remove</button>
       <button onclick="claireSavePhotoFromUrl()" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save from URL</button>
@@ -1782,6 +1803,7 @@ select.field-input { appearance: none; }
     <div class="claire-big-avatar" id="claire-big-avatar" onclick="openClairePhotoPicker()" title="Tap to change photo">
       <span id="claire-avatar-letter">C</span>
       <div class="claire-avatar-edit">✎</div>
+      <video id="claire-video" playsinline></video>
     </div>
     <div class="claire-identity" style="text-align:center;margin-top:14px">
       <div class="claire-name" style="font-size:20px;font-weight:700">Claire</div>
@@ -4244,12 +4266,24 @@ function _pickClaireVoice() {
 }
 
 function claireSpeak(text) {
-  if (!('speechSynthesis' in window)) return;
   if (!text) return;
-  // Strip HTML tags for speech
   var plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   if (!plain) return;
-  // Cancel any ongoing speech
+  // Prefer lip-sync via D-ID if configured
+  var didKey = localStorage.getItem('claire_did_key');
+  var didImg = localStorage.getItem('claire_did_image_url');
+  if (didKey && didImg) {
+    claireLipsyncSpeak(plain, didKey, didImg).catch(function(err){
+      console.warn('D-ID lip-sync failed, falling back to browser TTS:', err && err.message);
+      _claireBrowserSpeak(plain);
+    });
+    return;
+  }
+  _claireBrowserSpeak(plain);
+}
+
+function _claireBrowserSpeak(plain) {
+  if (!('speechSynthesis' in window)) return;
   try { window.speechSynthesis.cancel(); } catch(e) {}
   var u = new SpeechSynthesisUtterance(plain);
   if (!_claireVoice) _claireVoice = _pickClaireVoice();
@@ -4259,6 +4293,91 @@ function claireSpeak(text) {
   u.onend = function(){ _claireSetSpeakingUI(false); };
   u.onerror = function(){ _claireSetSpeakingUI(false); };
   try { window.speechSynthesis.speak(u); } catch(e) { _claireSetSpeakingUI(false); }
+}
+
+// ── Claire Tier 2: D-ID lip-sync video ──
+async function claireLipsyncSpeak(text, apiKey, imageUrl) {
+  var av = document.getElementById('claire-big-avatar');
+  var video = document.getElementById('claire-video');
+  if (!video) throw new Error('No video element');
+  _claireSetSpeakingUI(true);
+  var st = document.getElementById('claire-status-text');
+  if (st) st.textContent = 'Thinking…';
+
+  var authHeader = 'Basic ' + apiKey.replace(/^Basic\s+/i, '');
+  var createResp = await fetch('https://api.d-id.com/talks', {
+    method: 'POST',
+    headers: { 'Authorization': authHeader, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      source_url: imageUrl,
+      script: {
+        type: 'text',
+        input: text,
+        provider: { type: 'microsoft', voice_id: 'en-US-JennyNeural' }
+      },
+      config: { fluent: true, pad_audio: 0.0 }
+    })
+  });
+  if (!createResp.ok) {
+    var errText = await createResp.text();
+    _claireSetSpeakingUI(false);
+    throw new Error('D-ID create failed: ' + createResp.status + ' ' + errText.slice(0, 200));
+  }
+  var createData = await createResp.json();
+  var talkId = createData.id;
+  if (!talkId) { _claireSetSpeakingUI(false); throw new Error('No talk id returned'); }
+
+  // Poll until ready
+  var resultUrl = null;
+  for (var attempt = 0; attempt < 40; attempt++) {
+    await new Promise(function(r){ setTimeout(r, 700); });
+    var pollResp = await fetch('https://api.d-id.com/talks/' + talkId, {
+      headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
+    });
+    if (!pollResp.ok) continue;
+    var pollData = await pollResp.json();
+    if (pollData.status === 'done' && pollData.result_url) { resultUrl = pollData.result_url; break; }
+    if (pollData.status === 'error') { _claireSetSpeakingUI(false); throw new Error('D-ID rendering error: ' + (pollData.error && pollData.error.description || 'unknown')); }
+  }
+  if (!resultUrl) { _claireSetSpeakingUI(false); throw new Error('Timed out waiting for lip-sync video'); }
+
+  if (st) st.textContent = 'Speaking…';
+  video.src = resultUrl;
+  if (av) av.classList.add('lipsync');
+  video.onended = function() {
+    if (av) av.classList.remove('lipsync');
+    _claireSetSpeakingUI(false);
+    video.removeAttribute('src');
+  };
+  try {
+    await video.play();
+  } catch(e) {
+    // Autoplay may be blocked — ask user to tap to start
+    if (av) av.classList.remove('lipsync');
+    _claireSetSpeakingUI(false);
+    throw e;
+  }
+}
+
+// Persist D-ID key
+function claireSaveDidKey() {
+  var el = document.getElementById('claire-did-key');
+  var key = (el.value || '').trim();
+  if (!key) { alert('Paste your D-ID API key first.'); return; }
+  localStorage.setItem('claire_did_key', key);
+  el.value = '';
+  _claireRefreshDidStatus();
+  alert('D-ID key saved. Claire will now lip-sync her replies (uses ~$0.10 per message).');
+}
+
+function _claireRefreshDidStatus() {
+  var st = document.getElementById('claire-did-status');
+  if (!st) return;
+  var has = !!localStorage.getItem('claire_did_key');
+  var img = localStorage.getItem('claire_did_image_url');
+  if (has && img) { st.textContent = '✓ Enabled'; st.style.color = 'var(--green)'; }
+  else if (has) { st.textContent = 'Key saved · set image URL to enable'; st.style.color = 'var(--amber)'; }
+  else { st.textContent = 'Off'; st.style.color = 'var(--muted)'; }
 }
 
 function _claireSetSpeakingUI(on) {
@@ -4294,7 +4413,10 @@ function openClairePhotoPicker() {
     if (photo) { prev.style.backgroundImage = 'url('+photo+')'; prev.textContent = ''; }
     else { prev.style.backgroundImage = 'linear-gradient(135deg,#6c8fff,#a78bfa)'; prev.textContent = 'C'; }
   }
-  document.getElementById('claire-photo-url').value = '';
+  // Pre-fill URL field if one is saved (useful for D-ID)
+  var savedUrl = localStorage.getItem('claire_did_image_url') || '';
+  document.getElementById('claire-photo-url').value = savedUrl;
+  _claireRefreshDidStatus();
   document.getElementById('claire-photo-modal').style.display = 'flex';
 }
 
@@ -4321,7 +4443,11 @@ function claireSavePhoto(dataUrlOrUrl) {
 function claireSavePhotoFromUrl() {
   var url = (document.getElementById('claire-photo-url').value || '').trim();
   if (!url) { alert('Paste an image URL first.'); return; }
+  if (!/^https?:\/\//i.test(url)) { alert('URL must start with http:// or https://'); return; }
+  // URLs are usable by D-ID (unlike data URLs), so save for both display + lip-sync
+  localStorage.setItem('claire_did_image_url', url);
   claireSavePhoto(url);
+  _claireRefreshDidStatus();
 }
 
 function _claireHandleFile(ev) {
@@ -4353,9 +4479,11 @@ function _claireHandleFile(ev) {
 
 function claireClearPhoto() {
   localStorage.removeItem('claire_photo');
+  localStorage.removeItem('claire_did_image_url');
   applyClairePhoto();
   var prev = document.getElementById('claire-photo-preview');
   if (prev) { prev.style.backgroundImage = 'linear-gradient(135deg,#6c8fff,#a78bfa)'; prev.textContent = 'C'; }
+  _claireRefreshDidStatus();
 }
 
 // Apply photo whenever a new bubble is rendered
@@ -4553,17 +4681,49 @@ function _executeClaireToolCallInner(toolCall, message) {
   } else if (name === 'move_clean') {
     var client3 = findClient(input.client);
     if (!client3) { claireReply(message || 'I couldn\'t find that client.'); return; }
-    var fromDate = input.from_date || dateKey(new Date());
-    var job2 = jobs.find(function(j){ return j.clientId === client3.id && j.date === fromDate && !j.cancelled; });
-    if (!job2) { claireReply(message || client3.fn+' '+client3.ln+' doesn\'t have a clean on that date.'); return; }
+    // Normalize a job's date to YYYY-MM-DD regardless of stored format
+    function _normDate(d){
+      if (!d) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+      var p = d.split(/[\/\-]/);
+      if (p.length === 3 && p[0].length <= 2) return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0');
+      return d;
+    }
+    var todayKey = dateKey(new Date());
+    var clientJobs = jobs.filter(function(j){ return j.clientId === client3.id && !j.cancelled; })
+      .map(function(j){ return Object.assign(j, { _d: _normDate(j.date) }); });
+    var job2 = null;
+    if (input.from_date) {
+      var wanted = _normDate(input.from_date);
+      job2 = clientJobs.find(function(j){ return j._d === wanted; });
+      // If no exact match, try the closest job within ±3 days
+      if (!job2) {
+        var closest = clientJobs.slice().sort(function(a,b){
+          return Math.abs(new Date(a._d) - new Date(wanted)) - Math.abs(new Date(b._d) - new Date(wanted));
+        })[0];
+        if (closest && Math.abs(new Date(closest._d) - new Date(wanted)) <= 3*86400000) job2 = closest;
+      }
+    }
+    if (!job2) {
+      // Fall back to the next upcoming clean for this client
+      job2 = clientJobs.filter(function(j){ return j._d >= todayKey; }).sort(function(a,b){ return a._d.localeCompare(b._d); })[0];
+    }
+    if (!job2) {
+      var past = clientJobs.sort(function(a,b){ return b._d.localeCompare(a._d); })[0];
+      claireReply((message ? message + ' ' : '') + 'I couldn\'t find an upcoming clean for '+client3.fn+' '+client3.ln+'.'+(past?' The last one I see is '+new Date(past._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.':''));
+      return;
+    }
+    // Confirm WHICH clean we're moving (by the found date) in the reply
+    var foundDayL = new Date(job2._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     if (input.to_date) job2.date = input.to_date;
     if (input.time) { job2.time = input.time; job2.flexible = false; }
     if (input.team) job2.team = input.team.toUpperCase();
     saveJobs(); renderCal();
-    var newDayL = new Date(job2.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate('Moved: '+job2.clientName, newDayL);
+    var newDayL = new Date(_normDate(job2.date)+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL);
     recalcTeamTimes(job2.team, job2.date, job2.id);
-    claireReply(message || 'Moved '+client3.fn+' '+client3.ln+' to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.');
+    var moveMsg = 'Moved '+client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.';
+    claireReply(message || moveMsg);
 
   // ── DAY OFF ──
   } else if (name === 'employee_day_off') {
