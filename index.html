@@ -4339,7 +4339,7 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
           voice_config: { style: 'Chat', rate: '+7%' }
         }
       },
-      config: { fluent: true, pad_audio: 0.0 }
+      config: { fluent: true, pad_audio: 0.0, stitch: true, driver_expressions: { expressions: [{ expression: 'neutral', start_frame: 0, intensity: 1 }] } }
     })
   });
   if (!createResp.ok) {
@@ -4352,17 +4352,24 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
   var talkId = createData.id;
   if (!talkId) { _claireSetSpeakingUI(false); throw new Error('No talk id returned: ' + JSON.stringify(createData).slice(0,200)); }
 
-  // Poll until ready
+  // Poll until ready. Tight early (D-ID often returns in 2-4s on upgraded
+  // plans), then back off to 600ms. Total budget ~45s so longer renders
+  // don't bogus-timeout before they're actually done.
   var resultUrl = null;
-  for (var attempt = 0; attempt < 40; attempt++) {
-    await new Promise(function(r){ setTimeout(r, 400); });
-    var pollResp = await fetch(base + '/talks/' + encodeURIComponent(talkId), { headers: { 'Accept': 'application/json' } });
+  var pollDelays = [250, 250, 300, 300, 400, 400, 500, 500]; // fast start
+  for (var attempt = 0; attempt < 80; attempt++) {
+    var delay = pollDelays[attempt] || 600;
+    await new Promise(function(r){ setTimeout(r, delay); });
+    var pollResp;
+    try {
+      pollResp = await fetch(base + '/talks/' + encodeURIComponent(talkId), { headers: { 'Accept': 'application/json' } });
+    } catch(e) { continue; }
     if (!pollResp || !pollResp.ok) continue;
     var pollData = await pollResp.json();
     if (pollData.status === 'done' && pollData.result_url) { resultUrl = pollData.result_url; break; }
     if (pollData.status === 'error' || pollData.status === 'rejected') { _claireSetSpeakingUI(false); throw new Error('D-ID render error: ' + JSON.stringify(pollData.error || pollData).slice(0, 200)); }
   }
-  if (!resultUrl) { _claireSetSpeakingUI(false); throw new Error('Timed out waiting for lip-sync video'); }
+  if (!resultUrl) { _claireSetSpeakingUI(false); throw new Error('Timed out waiting for lip-sync video (>45s). D-ID may be slow right now — try again.'); }
 
   if (st) st.textContent = 'Speaking…';
   video.src = resultUrl;
