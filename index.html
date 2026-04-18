@@ -4611,8 +4611,8 @@ async function processVoiceCommand(text) {
     +'- Cut filler: no "let me check", no "I\'ll look into that", no "sure thing!". Just answer or act.\n'
     +'- Warm but brisk — think sharp office manager who respects Tom\'s time.\n'
     +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
-    +'- Do not enumerate multiple items in one reply. Handle one thing at a time; if Tom asks about multiple people, tackle the first and ask about the next.\n'
-    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n\n'
+    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n'
+    +'- If Tom asks for MULTIPLE things in one message (e.g. "cancel A, move B, change C"), do them ALL — call each tool in turn. After each tool runs you get the result and can call the next one. End with a brief one-sentence wrap-up.\n\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
     +'Total clients: '+CLIENTS.length+'\n'
@@ -4621,90 +4621,78 @@ async function processVoiceCommand(text) {
     +'If you need to clarify something, just ask Tom — don\'t guess. '
     +'If no tool is needed (just chatting), respond directly without using a tool.';
 
+  _claireHistory.push({ role: 'user', content: text });
+
+  // Tool-use loop. Claude may need several rounds to handle a message
+  // that asks for multiple actions (e.g. "cancel A, move B, change C").
+  // Each round: call the API, execute any tool it requests, feed the
+  // result back, go again. Exit when Claude stops calling tools (pure
+  // text reply) or we hit the safety cap.
+  var MAX_TOOL_ROUNDS = 6;
+  var didAnyToolCall = false;
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 400,
-        system: systemPrompt,
-        tools: CLAIRE_TOOLS,
-        messages: _claireHistory.concat([{ role: 'user', content: text }])
-      })
-    });
+    for (var round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      if (round > 0) claireShowTyping(); // between tool steps, show she's thinking again
+      var resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 400,
+          system: systemPrompt,
+          tools: CLAIRE_TOOLS,
+          messages: _claireHistory
+        })
+      });
+      if (!resp.ok) {
+        claireHideTyping();
+        if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
+        claireReply('I had trouble finishing that — want me to try again?');
+        return;
+      }
+      var data = await resp.json();
 
-    if (!resp.ok) { processVoiceCommandLocal(text); return; }
-    var data = await resp.json();
+      // Hide typing dots now that a response is in hand.
+      claireHideTyping();
 
-    // Process response — could be text, tool_use, or both
-    var textReply = '';
-    var toolCall = null;
-    if (data.content) {
-      data.content.forEach(function(block) {
+      var textReply = '';
+      var toolCall = null;
+      (data.content||[]).forEach(function(block) {
         if (block.type === 'text') textReply += block.text;
         if (block.type === 'tool_use') toolCall = block;
       });
-    }
 
-    // Save user turn + Claire's first response (text + any tool_use) to history
-    _claireHistory.push({ role: 'user', content: text });
-    var assistantContent = [];
-    if (textReply) assistantContent.push({ type: 'text', text: textReply });
-    if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
-    if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
+      // Record assistant turn in history (text + tool_use if any).
+      var assistantContent = [];
+      if (textReply) assistantContent.push({ type: 'text', text: textReply });
+      if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
+      if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
 
-    if (toolCall) {
-      // Run the tool. executeClaireToolCall returns the factual outcome (for
-      // memory), and for action tools also calls claireReply to show the user.
-      var toolResult = executeClaireToolCall(toolCall, textReply);
-      _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] });
-      if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
-
-      // For query tools, Claire doesn't know the answer yet — she only saw the
-      // tool_result just now. Make a follow-up call so she can answer Tom
-      // using the real data.
-      if (CLAIRE_QUERY_TOOLS[toolCall.name]) {
-        try {
-          var fuResp = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-            body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 400,
-              system: systemPrompt,
-              tools: CLAIRE_TOOLS,
-              messages: _claireHistory
-            })
-          });
-          if (fuResp.ok) {
-            var fuData = await fuResp.json();
-            var fuText = '';
-            (fuData.content||[]).forEach(function(b){ if (b.type === 'text') fuText += b.text; });
-            fuText = fuText.trim();
-            if (fuText) {
-              _claireHistory.push({ role: 'assistant', content: [{ type: 'text', text: fuText }] });
-              claireReply(fuText);
-            } else {
-              claireReply(toolResult);
-            }
-          } else {
-            claireReply(toolResult);
-          }
-        } catch(e) {
-          claireReply(toolResult);
-        }
+      if (toolCall) {
+        didAnyToolCall = true;
+        // Execute. Action tools render their own claireReply; query tools
+        // just collect data and we continue the loop so Claire can answer
+        // using it on the next round.
+        var toolResult = executeClaireToolCall(toolCall, textReply);
+        _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] });
+        if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
+        continue;
       }
-      // Action tools: executeClaireToolCall already called claireReply with the
-      // outcome; nothing more to do here.
-    } else {
-      if (textReply) _claireHistory.push({ role: 'assistant', content: [{ type: 'text', text: textReply }] });
-      if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
-      claireReply(textReply || 'I\'m not sure what you need — can you say that differently?');
+
+      // No tool call this round — Claire is wrapping up with a final reply.
+      if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
+      if (textReply) {
+        claireReply(textReply);
+      } else if (!didAnyToolCall) {
+        claireReply('I\'m not sure what you need — can you say that differently?');
+      }
+      return;
     }
+    // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
+    claireHideTyping();
+    claireReply('That was a lot — anything still left to handle?');
   } catch(e) {
-    var thinkEl2 = status.querySelector('div:last-child');
-    if (thinkEl2 && thinkEl2.textContent.includes('think')) thinkEl2.remove();
+    claireHideTyping();
     processVoiceCommandLocal(text);
   }
 }
