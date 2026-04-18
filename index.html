@@ -957,6 +957,122 @@ body {
 .field-group { margin-bottom: 16px; }
 .field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
 
+/* ── CLAIRE CHAT — human-feeling assistant UI ── */
+.claire-box {
+  background: linear-gradient(180deg, rgba(108,143,255,0.06), rgba(167,139,250,0.04));
+  border: 1px solid var(--border2);
+  border-radius: 18px;
+  padding: 14px 14px 12px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+}
+.claire-header {
+  display: flex; align-items: center; gap: 12px;
+  padding-bottom: 12px; margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.claire-avatar {
+  position: relative;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: linear-gradient(135deg, #6c8fff, #a78bfa);
+  color: #fff; font-family: 'DM Sans', sans-serif;
+  font-size: 20px; font-weight: 700; letter-spacing: -0.5px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(108,143,255,0.35);
+}
+.claire-pulse {
+  position: absolute; bottom: -1px; right: -1px;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #34d399; border: 2px solid var(--bg);
+}
+.claire-pulse::before {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: #34d399; animation: claire-pulse-ring 2s ease-out infinite;
+}
+@keyframes claire-pulse-ring {
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+.claire-identity { flex: 1; min-width: 0; }
+.claire-name { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
+.claire-status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; margin-top: 1px; }
+.claire-online-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.6); }
+.claire-messages {
+  max-height: 340px; min-height: 120px;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 4px 2px 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  scrollbar-width: thin;
+}
+.claire-messages::-webkit-scrollbar { width: 4px; }
+.claire-messages::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+.claire-msg-row { display: flex; gap: 8px; align-items: flex-end; animation: claire-slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes claire-slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.claire-msg-row.user { flex-direction: row-reverse; }
+.claire-mini-avatar {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: linear-gradient(135deg, #6c8fff, #a78bfa);
+  color: #fff; font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.claire-bubble-claire {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px 16px 16px 4px;
+  padding: 9px 13px;
+  font-size: 14px; line-height: 1.45; color: var(--text);
+  max-width: 82%; word-wrap: break-word;
+}
+.claire-bubble-user {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+  border-radius: 16px 16px 4px 16px;
+  padding: 9px 13px;
+  font-size: 14px; line-height: 1.45;
+  max-width: 82%; word-wrap: break-word;
+}
+.claire-bubble-time { font-size: 10px; color: var(--muted); margin-top: 2px; padding: 0 4px; }
+.claire-typing {
+  display: inline-flex; gap: 4px; padding: 11px 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px 16px 16px 4px;
+}
+.claire-typing span {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  animation: claire-typing-bounce 1.2s infinite ease-in-out both;
+}
+.claire-typing span:nth-child(1) { animation-delay: -0.32s; }
+.claire-typing span:nth-child(2) { animation-delay: -0.16s; }
+@keyframes claire-typing-bounce {
+  0%, 80%, 100% { transform: scale(0.65); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+.claire-input-row { display: flex; gap: 8px; align-items: center; }
+.claire-input {
+  flex: 1; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 22px; color: var(--text); font-family: 'DM Sans', sans-serif;
+  font-size: 14px; padding: 11px 16px; outline: none; min-width: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+.claire-input:focus { border-color: var(--accent); background: var(--surface); }
+.claire-send {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border: none; color: #fff; width: 40px; height: 40px; border-radius: 50%;
+  cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 10px rgba(108,143,255,0.4);
+  transition: transform 0.1s;
+}
+.claire-send:active { transform: scale(0.92); }
+.claire-empty-hint {
+  text-align: center; color: var(--muted); font-size: 12px;
+  padding: 20px 10px; line-height: 1.5;
+}
+
 /* ── JOB APPLICATION — friendlier, bigger ── */
 #application-screen { padding: 0 !important; max-width: 560px !important; }
 .app-hero {
@@ -1312,13 +1428,26 @@ select.field-input { appearance: none; }
 <!-- TASKS VIEW -->
 <div id="tasks-view">
   <div class="tasks-header">
-    <div style="margin-bottom:12px">
-      <div style="font-size:15px;font-weight:700;color:var(--accent);margin-bottom:10px">✦ Claire</div>
-      <div style="display:flex;gap:8px">
-        <input type="text" id="voice-cmd-input" placeholder="Talk to Claire..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()" onfocus="this.setAttribute('placeholder','Tap 🎙 on keyboard to speak...');" onblur="this.setAttribute('placeholder','Talk to Claire...');">
-        <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:14px 18px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
+    <div class="claire-box">
+      <div class="claire-header">
+        <div class="claire-avatar">
+          <span>C</span>
+          <div class="claire-pulse"></div>
+        </div>
+        <div class="claire-identity">
+          <div class="claire-name">Claire</div>
+          <div class="claire-status"><span class="claire-online-dot"></span>Online · Your AI assistant</div>
+        </div>
+      </div>
+      <div id="claire-messages" class="claire-messages"></div>
+      <div class="claire-input-row">
+        <input type="text" id="voice-cmd-input" class="claire-input" placeholder="Message Claire…" onkeydown="if(event.key==='Enter')runVoiceCmd()" onfocus="this.setAttribute('placeholder','Tap 🎙 on keyboard to speak...');" onblur="this.setAttribute('placeholder','Message Claire…');">
+        <button onclick="runVoiceCmd()" class="claire-send" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
       </div>
     </div>
+    <!-- kept for back-compat with code paths that still render into this div (e.g. schedule confirm) -->
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px">
       <div style="font-size:19px;font-weight:600;padding:4px 0 2px">Pending TMConnect Updates</div>
@@ -2245,6 +2374,7 @@ function showTab(tab) {
   if (tab === 'tasks') {
     pendingUpdates = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
     renderTasks(); renderMainEmployees(); renderActivityLog();
+    if (typeof claireEnsureIntro === 'function') setTimeout(claireEnsureIntro, 250);
   }
   if (tab === 'gps') gpsInit();
   if (tab === 'messages') {
@@ -3853,19 +3983,70 @@ function runVoiceCmd() {
   if (!input) return;
   var text = input.value.trim();
   if (!text) return;
-  var status = document.getElementById('voice-cmd-status');
-  status.style.display = 'block';
-  status.innerHTML = '<div style="font-size:13px;color:var(--text);margin-bottom:4px">"'+text+'"</div>';
-  processVoiceCommand(text);
+  claireEnsureIntro();
+  claireAddUserMsg(text);
   input.value = '';
+  claireShowTyping();
+  // Tiny delay so the typing indicator is visible for realism even on local/fast paths
+  setTimeout(function(){ processVoiceCommand(text); }, 180);
+}
+
+// ── Claire chat UI helpers ──
+function _claireMsgsEl() { return document.getElementById('claire-messages'); }
+function _claireTimeNow() { return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+
+function claireEnsureIntro() {
+  var box = _claireMsgsEl();
+  if (!box || box.dataset.inited === '1') return;
+  box.dataset.inited = '1';
+  var hr = new Date().getHours();
+  var greet = hr < 12 ? 'Morning' : hr < 17 ? 'Afternoon' : 'Evening';
+  var actor = (typeof getCurrentActor === 'function') ? getCurrentActor() : '';
+  var name = (actor && actor !== 'Manager') ? ', ' + actor : '';
+  _claireRenderBubble('claire', greet + name + '! I\'m Claire — your AI assistant. Ask me anything: schedules, clients, revenue, or just tell me what to do.');
+}
+
+function claireAddUserMsg(text) {
+  claireHideTyping();
+  _claireRenderBubble('user', text);
+}
+
+function claireShowTyping() {
+  claireHideTyping();
+  var box = _claireMsgsEl();
+  if (!box) return;
+  var row = document.createElement('div');
+  row.className = 'claire-msg-row';
+  row.id = 'claire-typing-row';
+  row.innerHTML = '<div class="claire-mini-avatar">C</div><div class="claire-typing"><span></span><span></span><span></span></div>';
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+
+function claireHideTyping() {
+  var t = document.getElementById('claire-typing-row');
+  if (t) t.remove();
+}
+
+function _claireRenderBubble(who, html) {
+  var box = _claireMsgsEl();
+  if (!box) return;
+  var row = document.createElement('div');
+  row.className = 'claire-msg-row ' + (who === 'user' ? 'user' : '');
+  var avatar = who === 'claire' ? '<div class="claire-mini-avatar">C</div>' : '';
+  var bubbleCls = who === 'claire' ? 'claire-bubble-claire' : 'claire-bubble-user';
+  row.innerHTML = avatar
+    + '<div style="display:flex;flex-direction:column;align-items:'+(who==='user'?'flex-end':'flex-start')+';min-width:0">'
+    + '<div class="'+bubbleCls+'">'+html+'</div>'
+    + '<div class="claire-bubble-time">'+_claireTimeNow()+'</div>'
+    + '</div>';
+  box.appendChild(row);
+  requestAnimationFrame(function(){ box.scrollTop = box.scrollHeight; });
 }
 
 function claireReply(msg) {
-  var status = document.getElementById('voice-cmd-status');
-  if (!status) return;
-  status.innerHTML += '<div style="margin-top:8px;padding:10px 12px;background:rgba(108,143,255,0.08);border:1px solid rgba(108,143,255,0.2);border-radius:10px;text-align:left;display:flex;gap:8px;align-items:flex-start">'
-    +'<div style="font-size:14px;flex-shrink:0">✦</div>'
-    +'<div style="font-size:13px;color:var(--text);line-height:1.4"><strong style="color:var(--accent)">Claire:</strong> '+msg+'</div></div>';
+  claireHideTyping();
+  _claireRenderBubble('claire', msg);
 }
 
 // Claire's tools — everything she can do in the app
