@@ -971,6 +971,62 @@ body {
   padding-bottom: 12px; margin-bottom: 10px;
   border-bottom: 1px solid var(--border);
 }
+.claire-stage {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 10px 0 16px; border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.claire-big-avatar {
+  position: relative;
+  width: 140px; height: 140px; border-radius: 50%;
+  background: linear-gradient(135deg, #6c8fff, #a78bfa);
+  color: #fff; font-family: 'DM Sans', sans-serif;
+  font-size: 58px; font-weight: 700; letter-spacing: -1px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  background-size: cover; background-position: center;
+  box-shadow: 0 10px 30px rgba(108,143,255,0.35), 0 0 0 4px rgba(108,143,255,0.12);
+  overflow: hidden;
+  transition: transform 0.25s ease-out;
+}
+.claire-big-avatar.has-photo span { display: none; }
+.claire-big-avatar.speaking {
+  animation: claire-breathe 1.2s ease-in-out infinite;
+  box-shadow: 0 10px 30px rgba(108,143,255,0.5), 0 0 0 6px rgba(52,211,153,0.25);
+}
+@keyframes claire-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+.claire-big-avatar .claire-avatar-edit {
+  position: absolute; bottom: 6px; right: 6px;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--surface); color: var(--text);
+  border: 2px solid var(--bg);
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+  opacity: 0.9;
+}
+.claire-waveform {
+  display: none; gap: 4px; align-items: flex-end;
+  height: 28px; margin-top: 12px;
+}
+.claire-waveform.active { display: flex; }
+.claire-waveform span {
+  display: block; width: 4px; height: 100%;
+  background: linear-gradient(180deg, var(--accent), var(--accent2));
+  border-radius: 4px;
+  animation: claire-wave 0.9s ease-in-out infinite;
+  transform-origin: bottom;
+}
+.claire-waveform span:nth-child(1) { animation-delay: 0.00s; }
+.claire-waveform span:nth-child(2) { animation-delay: 0.15s; }
+.claire-waveform span:nth-child(3) { animation-delay: 0.30s; }
+.claire-waveform span:nth-child(4) { animation-delay: 0.20s; }
+.claire-waveform span:nth-child(5) { animation-delay: 0.05s; }
+@keyframes claire-wave {
+  0%, 100% { transform: scaleY(0.25); opacity: 0.6; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
 .claire-avatar {
   position: relative;
   width: 48px; height: 48px; border-radius: 50%;
@@ -1443,15 +1499,17 @@ select.field-input { appearance: none; }
 <div id="tasks-view">
   <div class="tasks-header">
     <div class="claire-box">
-      <div class="claire-header">
-        <div class="claire-avatar" onclick="openClairePhotoPicker()" title="Tap to change photo">
+      <div class="claire-stage">
+        <div class="claire-big-avatar" id="claire-big-avatar" onclick="openClairePhotoPicker()" title="Tap to change photo">
           <span id="claire-avatar-letter">C</span>
-          <div class="claire-pulse"></div>
           <div class="claire-avatar-edit">✎</div>
         </div>
-        <div class="claire-identity">
-          <div class="claire-name">Claire</div>
-          <div class="claire-status"><span class="claire-online-dot"></span>Online · Your AI assistant</div>
+        <div class="claire-identity" style="text-align:center;margin-top:12px">
+          <div class="claire-name" style="font-size:18px">Claire</div>
+          <div class="claire-status" style="justify-content:center"><span class="claire-online-dot"></span><span id="claire-status-text">Online · Your AI assistant</span></div>
+        </div>
+        <div id="claire-waveform" class="claire-waveform">
+          <span></span><span></span><span></span><span></span><span></span>
         </div>
       </div>
       <div id="claire-messages" class="claire-messages"></div>
@@ -4086,6 +4144,57 @@ function _claireRenderBubble(who, html) {
 function claireReply(msg) {
   claireHideTyping();
   _claireRenderBubble('claire', msg);
+  claireSpeak(msg);
+}
+
+// ── Claire voice (Tier 1: browser speechSynthesis) ──
+var _claireVoice = null;
+function _pickClaireVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  var voices = window.speechSynthesis.getVoices();
+  if (!voices || !voices.length) return null;
+  // Prefer a natural-sounding female English voice
+  var prefs = [
+    /Samantha/i, /Ava/i, /Allison/i, /Nicky/i, /Karen/i, /Moira/i, /Tessa/i,
+    /Google US English/i, /Microsoft Jenny/i, /Microsoft Aria/i, /female/i
+  ];
+  for (var i = 0; i < prefs.length; i++) {
+    var v = voices.find(function(x){ return prefs[i].test(x.name) && /en/i.test(x.lang); });
+    if (v) return v;
+  }
+  return voices.find(function(v){ return /^en[-_]/i.test(v.lang); }) || voices[0];
+}
+
+function claireSpeak(text) {
+  if (!('speechSynthesis' in window)) return;
+  if (!text) return;
+  // Strip HTML tags for speech
+  var plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!plain) return;
+  // Cancel any ongoing speech
+  try { window.speechSynthesis.cancel(); } catch(e) {}
+  var u = new SpeechSynthesisUtterance(plain);
+  if (!_claireVoice) _claireVoice = _pickClaireVoice();
+  if (_claireVoice) u.voice = _claireVoice;
+  u.rate = 1.0; u.pitch = 1.05; u.volume = 1.0;
+  u.onstart = function(){ _claireSetSpeakingUI(true); };
+  u.onend = function(){ _claireSetSpeakingUI(false); };
+  u.onerror = function(){ _claireSetSpeakingUI(false); };
+  try { window.speechSynthesis.speak(u); } catch(e) { _claireSetSpeakingUI(false); }
+}
+
+function _claireSetSpeakingUI(on) {
+  var av = document.getElementById('claire-big-avatar');
+  var wf = document.getElementById('claire-waveform');
+  var st = document.getElementById('claire-status-text');
+  if (av) av.classList.toggle('speaking', !!on);
+  if (wf) wf.classList.toggle('active', !!on);
+  if (st) st.textContent = on ? 'Speaking…' : 'Online · Your AI assistant';
+}
+
+// Some browsers populate voices asynchronously — refresh our cached pick when they do
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = function(){ _claireVoice = _pickClaireVoice(); };
 }
 
 // ── Claire photo customization ──
@@ -4093,17 +4202,11 @@ function getClairePhoto() { return localStorage.getItem('claire_photo') || ''; }
 
 function applyClairePhoto() {
   var photo = getClairePhoto();
-  // Big avatar
-  document.querySelectorAll('.claire-avatar').forEach(function(el){
+  var sel = '.claire-avatar, .claire-big-avatar, .claire-mini-avatar';
+  document.querySelectorAll(sel).forEach(function(el){
     if (photo) { el.style.backgroundImage = 'url('+photo+')'; el.classList.add('has-photo'); }
     else { el.style.backgroundImage = ''; el.classList.remove('has-photo'); }
   });
-  // Mini avatars in existing bubbles + any future ones (they pick up via class)
-  document.querySelectorAll('.claire-mini-avatar').forEach(function(el){
-    if (photo) { el.style.backgroundImage = 'url('+photo+')'; el.classList.add('has-photo'); }
-    else { el.style.backgroundImage = ''; el.classList.remove('has-photo'); }
-  });
-  // Keep future-rendered bubbles in sync: patch _claireRenderBubble to apply on new avatars
 }
 
 function openClairePhotoPicker() {
