@@ -8,6 +8,22 @@
 <meta name="apple-mobile-web-app-title" content="My Clients">
 <meta name="theme-color" content="#0f1117">
 <title>My Clients</title>
+<script>
+// Suppress PIN-screen flash on pull-to-refresh: if user already unlocked this
+// session, hide the lock screen synchronously before it ever paints.
+(function(){
+  try {
+    var s = sessionStorage.getItem('cc_unlocked');
+    var lo = sessionStorage.getItem('cc_logged_out');
+    if (s && !lo) {
+      var st = document.createElement('style');
+      st.id = 'pin-flash-suppress';
+      st.textContent = '#app-pin-screen{display:none!important}';
+      document.documentElement.appendChild(st);
+    }
+  } catch(e){}
+})();
+</script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -940,6 +956,152 @@ body {
 /* ── FORM FIELDS ── */
 .field-group { margin-bottom: 16px; }
 .field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+
+/* ── JOB APPLICATION — friendlier, bigger ── */
+#application-screen { padding: 0 !important; max-width: 560px !important; }
+.app-hero {
+  background: linear-gradient(135deg, rgba(108,143,255,0.18), rgba(167,139,250,0.18));
+  border-bottom: 1px solid var(--border);
+  padding: calc(var(--safe-top) + 18px) 24px 22px;
+  position: relative;
+  margin-bottom: 6px;
+}
+.app-hero-back {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  width: 40px; height: 40px; border-radius: 50%; font-size: 19px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  position: absolute; top: calc(var(--safe-top) + 14px); left: 18px;
+}
+.app-hero-brand { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; margin-top: 36px; }
+.app-hero-brand span { color: var(--accent); }
+.app-hero-sub { font-size: 15px; color: var(--muted); margin-top: 4px; }
+.app-lang-row {
+  display: flex; gap: 8px; padding: 14px 24px 0;
+  margin-top: -4px; flex-wrap: wrap;
+}
+#application-screen .portal-lang-btn {
+  flex: 1; min-width: 60px; background: var(--surface2); border: 1px solid var(--border);
+  color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 700;
+  padding: 10px 0; border-radius: 10px; cursor: pointer; letter-spacing: 0.04em;
+}
+#application-screen .portal-lang-btn.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}
+
+#app-form, #app-success { padding: 18px 22px 36px; }
+
+#application-screen [id^="app-section-"] {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent) !important;
+  margin: 24px 0 14px !important;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent);
+}
+#application-screen [id^="app-section-"]:first-child { margin-top: 8px !important; }
+
+#application-screen .field-group { margin-bottom: 18px; }
+#application-screen .field-label {
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+#application-screen .field-input {
+  font-size: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+}
+#application-screen .field-input:focus {
+  border-color: var(--accent);
+  background: var(--surface2);
+  box-shadow: 0 0 0 3px rgba(108,143,255,0.15);
+}
+#application-screen textarea.field-input { min-height: 96px; }
+
+/* Day chips */
+#app-days-grid label {
+  font-size: 14px !important;
+  padding: 12px 4px !important;
+  border-radius: 10px !important;
+  transition: all .15s;
+  font-weight: 600;
+}
+#app-days-grid label:has(input:checked) {
+  background: rgba(108,143,255,0.14) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent);
+}
+
+/* Language checkboxes */
+#application-screen [style*="grid-template-columns:1fr 1fr"] label {
+  font-size: 14px !important;
+  padding: 14px !important;
+  border-radius: 10px !important;
+  transition: all .15s;
+}
+#application-screen [style*="grid-template-columns:1fr 1fr"] label:has(input:checked) {
+  background: rgba(108,143,255,0.14) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Photo upload tiles */
+#application-screen label[for^="app-license-"],
+#application-screen label[for="app-passport"],
+#application-screen label[for="app-ssn"] {
+  background: var(--surface) !important;
+  border: 1.5px dashed var(--border2) !important;
+  border-radius: 12px !important;
+  padding: 18px 16px !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  flex-direction: column;
+  gap: 6px !important;
+  text-align: center;
+  transition: all .15s;
+}
+#application-screen label[for^="app-license-"] span:first-child,
+#application-screen label[for="app-passport"] span:first-child,
+#application-screen label[for="app-ssn"] span:first-child {
+  font-size: 30px !important;
+}
+#application-screen label[for^="app-license-"]:active,
+#application-screen label[for="app-passport"]:active,
+#application-screen label[for="app-ssn"]:active {
+  border-color: var(--accent) !important;
+  background: rgba(108,143,255,0.06) !important;
+}
+
+/* Section dividers — slimmer, subtler */
+#application-screen [style*="height:1px"][style*="background:var(--border)"] {
+  display: none;
+}
+
+/* Consent block */
+#app-consent-text { font-size: 14px !important; line-height: 1.6 !important; color: var(--muted); }
+
+/* Submit button */
+#application-screen .submit-btn {
+  font-size: 17px;
+  font-weight: 700;
+  padding: 17px;
+  border-radius: 14px;
+  margin-top: 18px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 6px 20px rgba(108,143,255,0.3);
+}
+
+/* Success */
+#app-success { padding: 60px 24px 40px !important; }
+#app-success > div:first-child { font-size: 64px !important; }
+#app-success-title { font-size: 26px !important; }
+#app-success-msg { font-size: 15px !important; line-height: 1.6 !important; }
+
+
 .field-input {
   width: 100%; background: var(--surface2); border: 1px solid var(--border);
   border-radius: var(--radius-sm); color: var(--text); font-family: 'DM Sans', sans-serif;
@@ -1189,6 +1351,21 @@ select.field-input { appearance: none; }
   <div id="files-grid" style="flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:20px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:18px;align-content:start"></div>
 </div>
 
+<!-- JOB ISSUE SHEET (employee taps "Report Issue" on a job) -->
+<div id="job-issue-sheet" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.7);align-items:flex-end" onclick="if(event.target===this)closeJobIssueSheet()">
+  <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);padding:20px 16px calc(var(--safe-bottom) + 20px)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:17px;font-weight:600" id="job-issue-title">What's going on?</div>
+      <button onclick="closeJobIssueSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px" id="job-issue-sub"></div>
+    <div id="job-issue-options" style="display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+</div>
+
+<!-- ISSUE CONFIRMATION TOAST -->
+<div id="issue-toast" style="display:none;position:fixed;top:calc(var(--safe-top) + 60px);left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:12px 20px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.4);max-width:90%"></div>
+
 <!-- FILE DETAIL MODAL -->
 <div id="file-detail-modal" style="display:none;position:fixed;inset:0;z-index:280;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;padding:24px" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;padding:24px;text-align:center">
@@ -1272,10 +1449,41 @@ select.field-input { appearance: none; }
 <div id="messages-view">
   <div class="inbox-header">
     <div class="inbox-title">Messages</div>
-    <div class="inbox-sub" id="rc-status">Connect to RingCentral to see your SMS inbox</div>
+    <div style="display:flex;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:4px;margin-top:10px">
+      <button id="msgs-toggle-clients" onclick="showMessagesSubTab('clients')" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">📱 Clients</button>
+      <button id="msgs-toggle-staff" onclick="showMessagesSubTab('staff')" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">👥 Staff <span id="staff-unread-pill" style="display:none;background:var(--accent);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:700"></span></button>
+    </div>
+    <div class="inbox-sub" id="rc-status" style="margin-top:8px">Connect to RingCentral to see your SMS inbox</div>
   </div>
   <div id="rc-auth-section">
     <button class="rc-connect-btn" onclick="rcConnect()">🔗 Connect RingCentral</button>
+  </div>
+
+  <!-- ── STAFF CHAT SECTIONS (admin side) ── -->
+  <div id="staff-inbox-section" style="display:none">
+    <div style="padding:8px 16px 4px;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:12px;color:var(--muted)">Demo mode · messages stored locally</div>
+      <button onclick="openAdminLangSetting()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;cursor:pointer;font-family:'DM Sans',sans-serif">Lang: <span id="admin-lang-label">EN</span></button>
+    </div>
+    <div id="staff-inbox-list" style="padding:6px 12px 16px"></div>
+  </div>
+
+  <div id="staff-conv-section" style="display:none;flex-direction:column;position:fixed;inset:0;z-index:250;background:var(--bg)">
+    <div class="conv-header">
+      <button class="conv-back" onclick="closeStaffChat()">‹</button>
+      <div style="flex:1;min-width:0">
+        <div class="conv-name" id="staff-conv-name"></div>
+        <div class="conv-number" id="staff-conv-meta"></div>
+      </div>
+    </div>
+    <div class="conv-messages" id="staff-conv-messages"></div>
+    <div class="draft-section">
+      <div class="draft-label">Reply (in <span id="admin-reply-lang">English</span>)</div>
+      <textarea class="draft-textarea" id="staff-draft-text" placeholder="Type your reply…"></textarea>
+      <div class="draft-actions">
+        <button class="draft-btn send" onclick="sendStaffReplyAdmin()">Send ↗</button>
+      </div>
+    </div>
   </div>
   <div id="rc-inbox-section" style="display:none">
     <div style="padding:10px 16px 6px;position:sticky;top:0;background:var(--bg);z-index:10">
@@ -1781,6 +1989,9 @@ if (searchEl) ['input','keyup','change','paste','compositionend'].forEach(evt =>
 
 // All init deferred to DOMContentLoaded so full JS is parsed first
 window.addEventListener('DOMContentLoaded', function() {
+  // Remove the early flash-suppress style — JS now controls the pin screen
+  var fs = document.getElementById('pin-flash-suppress');
+  if (fs) fs.remove();
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
     var routeBtn = document.getElementById('route-optimizer-btn');
@@ -2051,6 +2262,13 @@ function showTab(tab) {
         });
       }
     }
+    // Initialize staff sub-tab state and badge
+    seedStaffChatsIfEmpty();
+    var pill = document.getElementById('staff-unread-pill');
+    if (pill) {
+      var n = totalAdminUnread();
+      if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+    }
   }
   var routeBtn = document.getElementById('route-optimizer-btn');
   if (routeBtn) routeBtn.style.display = (tab === 'cal') ? '' : 'none';
@@ -2144,7 +2362,7 @@ function renderCal() {
       var TL_END = 21 * 60;
       var PX_PER_MIN = 1.5;
       var TL_WIDTH = (TL_END - TL_START) * PX_PER_MIN;
-      var LABEL_W = 46; // px width of fixed team label column
+      var LABEL_W = 70; // px width of fixed team label column
 
       // Collect all team data first
       var teamRows = [];
@@ -2184,12 +2402,23 @@ function renderCal() {
       // Outer wrapper: flex row
       bodyHtml += '<div style="display:flex;align-items:flex-start;margin-bottom:8px">';
 
-      // LEFT: fixed label column
-      bodyHtml += '<div style="flex-shrink:0;width:'+LABEL_W+'px;padding-top:22px">'; // 22px = time header height
+      // LEFT: fixed label column — slot height matches timeline row exactly
+      bodyHtml += '<div style="flex-shrink:0;width:'+LABEL_W+'px;padding-top:26px">'; // 26px = time header (22px) + 4px gap
+      var calDateKey = dateKey(calDate);
       teamRows.forEach(function(row) {
-        bodyHtml += '<div style="height:90px;display:flex;flex-direction:column;justify-content:center;padding-right:4px;margin-bottom:8px">'
-          + '<span style="font-size:12px;font-weight:700;color:'+row.tc+'">'+row.team+'</span>'
-          + (row.rev > 0 ? '<span style="font-size:9px;color:var(--green)">$'+row.rev.toLocaleString('en-US',{maximumFractionDigits:0})+'</span>' : '')
+        var liveJobs = row.jobs.filter(function(j){ return !j.cancelled; });
+        var houseCount = liveJobs.length;
+        var totalMins = liveJobs.reduce(function(s,j){ return s + getJobDurationMins(j); }, 0);
+        var hours = totalMins / 60;
+        var hoursLabel = hours >= 10 ? Math.round(hours)+'h' : hours.toFixed(1)+'h';
+        var empCount = (typeof getTeamEmployees === 'function' ? getTeamEmployees(row.team, calDateKey).length : 0);
+        bodyHtml += '<div style="height:82px;display:flex;flex-direction:column;justify-content:center;gap:2px;padding-right:6px;margin-bottom:8px">'
+          + '<div style="display:flex;align-items:baseline;gap:5px">'
+          + '<span style="font-size:15px;font-weight:700;color:'+row.tc+';line-height:1">'+row.team+'</span>'
+          + (empCount > 0 ? '<span style="font-size:10px;color:var(--muted);font-weight:600">'+empCount+'👤</span>' : '')
+          + '</div>'
+          + (row.rev > 0 ? '<span style="font-size:11px;color:var(--green);font-weight:600;line-height:1">$'+row.rev.toLocaleString('en-US',{maximumFractionDigits:0})+'</span>' : '')
+          + '<span style="font-size:10px;color:var(--muted);line-height:1.1">'+houseCount+(houseCount===1?' house':' houses')+'<br>'+hoursLabel+'</span>'
           + '</div>';
       });
       bodyHtml += '</div>';
@@ -2735,6 +2964,714 @@ function openFileDetail(id) {
   document.getElementById('file-detail-title').textContent = f.name;
   document.getElementById('file-detail-body').innerHTML = f.desc + '<br><br><span style="color:var(--amber);font-size:12px">Coming soon — report contents will live here.</span>';
   document.getElementById('file-detail-modal').style.display = 'flex';
+}
+
+// ─────────────────────────────────────────
+// STAFF CHAT (DEMO — localStorage transport)
+// ─────────────────────────────────────────
+var LANG_NAMES = { en: 'English', es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole' };
+var LANG_CODE_LABEL = { en: 'EN', es: 'ES', pt: 'PT', cv: 'CV' };
+
+function getAdminChatLang() { return localStorage.getItem('admin_chat_lang') || 'en'; }
+function setAdminChatLang(l) { localStorage.setItem('admin_chat_lang', l); refreshAdminLangLabel(); }
+
+function loadStaffChats() {
+  try { return JSON.parse(localStorage.getItem('cleanco_staff_chats') || '{}'); }
+  catch(e) { return {}; }
+}
+function saveStaffChats(chats) {
+  localStorage.setItem('cleanco_staff_chats', JSON.stringify(chats));
+}
+
+function seedStaffChatsIfEmpty() {
+  var chats = loadStaffChats();
+  if (Object.keys(chats).length > 0) return;
+  var now = Date.now();
+  var H = 3600000;
+  chats = {
+    'e6': { // Maria Vieira (PT)
+      empLang: 'pt',
+      msgs: [
+        { id: 'm1', from: 'staff', lang: 'pt', text: 'Bom dia! Posso sair mais cedo amanhã? Tenho consulta médica às 3 da tarde.', tx: { en: 'Good morning! Can I leave early tomorrow? I have a doctor appointment at 3pm.' }, ts: now - 4*H, read: false },
+      ],
+      lastReadAdmin: 0
+    },
+    'e17': { // Yennifer (ES)
+      empLang: 'es',
+      msgs: [
+        { id: 'm2', from: 'staff', lang: 'es', text: 'Hola, no tenemos más Windex en la van. ¿Puedes traer mañana?', tx: { en: 'Hi, we are out of Windex in the van. Can you bring some tomorrow?' }, ts: now - 26*H, read: true },
+        { id: 'm3', from: 'admin', lang: 'en', text: "Yes I'll restock tonight. Anything else low?", tx: { es: 'Sí, voy a reponer esta noche. ¿Algo más bajo?' }, ts: now - 25*H, read: true },
+        { id: 'm4', from: 'staff', lang: 'es', text: 'También necesitamos toallas de microfibra y bolsas de basura grandes.', tx: { en: 'We also need microfiber towels and large trash bags.' }, ts: now - 24*H, read: false },
+      ],
+      lastReadAdmin: now - 25*H - 1
+    },
+    'e1': { // Viviana (ES) — TL
+      empLang: 'es',
+      msgs: [
+        { id: 'm5', from: 'staff', lang: 'es', text: 'Estoy enferma hoy, no puedo trabajar. Lo siento mucho.', tx: { en: "I'm sick today, can't come in. I'm so sorry." }, ts: now - 2*H, read: false },
+      ],
+      lastReadAdmin: 0
+    },
+    'e7': { // Ines (PT) — TL
+      empLang: 'pt',
+      msgs: [
+        { id: 'm6', from: 'staff', lang: 'pt', text: 'A casa dos Sullivan estava trancada. Podes ligar ao cliente?', tx: { en: 'The Sullivan house was locked. Can you call the client?' }, ts: now - 48*H, read: true },
+        { id: 'm7', from: 'admin', lang: 'en', text: 'Calling now — try the side door, code 4422.', tx: { pt: 'A ligar agora — tenta a porta lateral, código 4422.' }, ts: now - 48*H + 5*60000, read: true },
+        { id: 'm8', from: 'staff', lang: 'pt', text: 'Funcionou, obrigada! Estamos a começar.', tx: { en: 'It worked, thanks! We are starting now.' }, ts: now - 48*H + 12*60000, read: true },
+      ],
+      lastReadAdmin: now - 48*H + 12*60000 + 1
+    }
+  };
+  saveStaffChats(chats);
+}
+
+function refreshAdminLangLabel() {
+  var l = getAdminChatLang();
+  var lbl = document.getElementById('admin-lang-label');
+  if (lbl) lbl.textContent = LANG_CODE_LABEL[l] || 'EN';
+  var rl = document.getElementById('admin-reply-lang');
+  if (rl) rl.textContent = LANG_NAMES[l] || 'English';
+}
+
+function openAdminLangSetting() {
+  var current = getAdminChatLang();
+  var choice = prompt('Set your reading/reply language for staff chat.\nOptions: en, es, pt, cv', current);
+  if (!choice) return;
+  choice = choice.toLowerCase().trim();
+  if (!LANG_NAMES[choice]) { alert('Unknown language code.'); return; }
+  setAdminChatLang(choice);
+  renderStaffInbox();
+}
+
+function showMessagesSubTab(tab) {
+  var clientsBtn = document.getElementById('msgs-toggle-clients');
+  var staffBtn = document.getElementById('msgs-toggle-staff');
+  if (tab === 'clients') {
+    clientsBtn.style.background = 'var(--accent)'; clientsBtn.style.color = '#fff';
+    staffBtn.style.background = 'none'; staffBtn.style.color = 'var(--muted)';
+    document.getElementById('rc-auth-section').style.display = (typeof rcToken !== 'undefined' && rcToken) ? 'none' : '';
+    document.getElementById('rc-inbox-section').style.display = (typeof rcToken !== 'undefined' && rcToken) ? 'block' : 'none';
+    document.getElementById('staff-inbox-section').style.display = 'none';
+    var rcStatus = document.getElementById('rc-status'); if (rcStatus) rcStatus.style.display = '';
+  } else {
+    staffBtn.style.background = 'var(--accent)'; staffBtn.style.color = '#fff';
+    clientsBtn.style.background = 'none'; clientsBtn.style.color = 'var(--muted)';
+    document.getElementById('rc-auth-section').style.display = 'none';
+    document.getElementById('rc-inbox-section').style.display = 'none';
+    document.getElementById('staff-inbox-section').style.display = 'block';
+    var rcStatus2 = document.getElementById('rc-status'); if (rcStatus2) rcStatus2.style.display = 'none';
+    seedStaffChatsIfEmpty();
+    refreshAdminLangLabel();
+    renderStaffInbox();
+  }
+}
+
+function getEmployeeById(id) {
+  var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
+  return roster.find(function(e){ return e.id === id; });
+}
+
+function staffUnreadForAdmin(thread) {
+  if (!thread || !thread.msgs) return 0;
+  var lastRead = thread.lastReadAdmin || 0;
+  return thread.msgs.filter(function(m){ return m.from === 'staff' && m.ts > lastRead; }).length;
+}
+
+function hasUrgentUnread(thread) {
+  if (!thread || !thread.msgs) return false;
+  var lastRead = thread.lastReadAdmin || 0;
+  return thread.msgs.some(function(m){ return m.urgent && m.from === 'staff' && m.ts > lastRead; });
+}
+
+function totalAdminUnread() {
+  var chats = loadStaffChats();
+  var n = 0;
+  Object.keys(chats).forEach(function(id){ n += staffUnreadForAdmin(chats[id]); });
+  return n;
+}
+
+function renderStaffInbox() {
+  var list = document.getElementById('staff-inbox-list');
+  if (!list) return;
+  var chats = loadStaffChats();
+  var ids = Object.keys(chats);
+  ids.sort(function(a,b){
+    var ma = chats[a].msgs[chats[a].msgs.length-1];
+    var mb = chats[b].msgs[chats[b].msgs.length-1];
+    return (mb ? mb.ts : 0) - (ma ? ma.ts : 0);
+  });
+  if (!ids.length) {
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">No staff messages yet.</div>';
+    return;
+  }
+  var adminLang = getAdminChatLang();
+  // Sort: urgent first, then by recency
+  ids.sort(function(a,b){
+    var ua = hasUrgentUnread(chats[a]) ? 1 : 0;
+    var ub = hasUrgentUnread(chats[b]) ? 1 : 0;
+    if (ua !== ub) return ub - ua;
+    var ma = chats[a].msgs[chats[a].msgs.length-1];
+    var mb = chats[b].msgs[chats[b].msgs.length-1];
+    return (mb ? mb.ts : 0) - (ma ? ma.ts : 0);
+  });
+  var html = ids.map(function(id){
+    var emp = getEmployeeById(id);
+    var name = emp ? emp.name : id;
+    var team = emp ? (emp.defaultTeam || '—') : '—';
+    var thread = chats[id];
+    var last = thread.msgs[thread.msgs.length-1];
+    var unread = staffUnreadForAdmin(thread);
+    var urgent = hasUrgentUnread(thread);
+    var preview = last ? (last.from === 'staff' ? translatedText(last, adminLang) : 'You: ' + last.text) : '';
+    var when = last ? formatRelativeTime(last.ts) : '';
+    var initial = (name||'?').trim().charAt(0).toUpperCase();
+    var color = teamColorFor(team);
+    var borderColor = urgent ? 'var(--red)' : (unread>0 ? 'var(--accent)' : 'var(--border)');
+    var bgColor = urgent ? 'rgba(248,113,113,0.06)' : 'var(--surface)';
+    return '<div onclick="openStaffChat(\''+id+'\')" style="display:flex;gap:12px;padding:12px;background:'+bgColor+';border:1px solid '+borderColor+';border-radius:12px;margin-bottom:8px;cursor:pointer;'+(urgent?'box-shadow:0 0 0 1px rgba(248,113,113,0.3)':'')+'">'
+      + '<div style="width:40px;height:40px;border-radius:50%;background:'+color+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0">'+initial+'</div>'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div style="font-size:14px;font-weight:600;color:var(--text)">'+name+' <span style="font-size:11px;color:var(--muted);font-weight:500">· '+team+(thread.empLang&&thread.empLang!=='en'?' · '+(LANG_CODE_LABEL[thread.empLang]||thread.empLang):'')+'</span>'+(urgent?' <span style="font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:6px;margin-left:4px;font-weight:700;letter-spacing:.04em">URGENT</span>':'')+'</div><div style="font-size:11px;color:var(--muted);white-space:nowrap">'+when+'</div></div>'
+      + '<div style="font-size:13px;color:'+(unread>0?'var(--text)':'var(--muted)')+';margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(unread>0?'font-weight:600':'')+'">'+escapeHtml(preview)+'</div>'
+      + '</div>'
+      + (unread>0 ? '<div style="background:'+(urgent?'var(--red)':'var(--accent)')+';color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;align-self:center">'+unread+'</div>' : '')
+      + '</div>';
+  }).join('');
+  list.innerHTML = html;
+  // Update header pill
+  var pill = document.getElementById('staff-unread-pill');
+  if (pill) {
+    var n = totalAdminUnread();
+    if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+  }
+}
+
+function teamColorFor(team) {
+  if (typeof team_colors_map !== 'undefined' && team_colors_map[team]) return team_colors_map[team];
+  return 'var(--accent)';
+}
+
+function escapeHtml(s) { return String(s||'').replace(/[<>&"']/g, function(c){ return ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'})[c]; }); }
+
+function formatRelativeTime(ts) {
+  var diff = (Date.now() - ts) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60)+'m';
+  if (diff < 86400) return Math.floor(diff/3600)+'h';
+  if (diff < 7*86400) return Math.floor(diff/86400)+'d';
+  return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+}
+
+function translatedText(msg, targetLang) {
+  if (!msg) return '';
+  if (msg.lang === targetLang) return msg.text;
+  if (msg.tx && msg.tx[targetLang]) return msg.tx[targetLang];
+  return msg.text; // fall back to original until live translation lands
+}
+
+var _currentStaffChatId = null;
+
+function openStaffChat(empId) {
+  _currentStaffChatId = empId;
+  var emp = getEmployeeById(empId);
+  var chats = loadStaffChats();
+  var thread = chats[empId];
+  if (!thread) return;
+  document.getElementById('staff-conv-name').textContent = emp ? emp.name : empId;
+  document.getElementById('staff-conv-meta').textContent = (emp ? (emp.defaultTeam||'—') : '') + ' · speaks ' + (LANG_NAMES[thread.empLang] || thread.empLang);
+  refreshAdminLangLabel();
+  renderStaffChatMessages();
+  // Mark all staff messages read by admin
+  thread.lastReadAdmin = Date.now();
+  saveStaffChats(chats);
+  document.getElementById('staff-conv-section').style.display = 'flex';
+  setTimeout(function(){
+    var c = document.getElementById('staff-conv-messages');
+    if (c) { c.scrollTop = c.scrollHeight; }
+  }, 50);
+}
+
+function renderStaffChatMessages() {
+  var chats = loadStaffChats();
+  var thread = chats[_currentStaffChatId];
+  if (!thread) return;
+  var adminLang = getAdminChatLang();
+  var c = document.getElementById('staff-conv-messages');
+  if (!c) return;
+  c.innerHTML = thread.msgs.map(function(m){
+    var mine = m.from === 'admin';
+    var displayText = translatedText(m, mine ? m.lang : adminLang);
+    var showOriginal = !mine && m.lang !== adminLang;
+    var time = new Date(m.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    return '<div class="conv-bubble-wrap '+(mine?'mine':'theirs')+'">'
+      + '<div class="conv-bubble '+(mine?'mine':'theirs')+'" onclick="this.querySelector(\'.orig\').style.display=this.querySelector(\'.orig\').style.display===\'none\'?\'block\':\'none\'">'
+      + escapeHtml(displayText)
+      + (showOriginal ? '<div class="orig" style="display:none;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.2);font-size:12px;opacity:0.85;font-style:italic">'+escapeHtml(m.text)+' <span style="font-size:10px;opacity:0.7">('+(LANG_CODE_LABEL[m.lang]||m.lang)+')</span></div>' : '')
+      + '</div>'
+      + '<div class="conv-bubble-time">'+time+(showOriginal?' · tap to see original':'')+'</div>'
+      + '</div>';
+  }).join('');
+  requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
+}
+
+function closeStaffChat() {
+  document.getElementById('staff-conv-section').style.display = 'none';
+  _currentStaffChatId = null;
+  renderStaffInbox();
+}
+
+async function sendStaffReplyAdmin() {
+  if (!_currentStaffChatId) return;
+  var input = document.getElementById('staff-draft-text');
+  var text = (input.value || '').trim();
+  if (!text) return;
+  input.value = '';
+  var adminLang = getAdminChatLang();
+  var chats = loadStaffChats();
+  var thread = chats[_currentStaffChatId];
+  if (!thread) return;
+  var msg = { id: 'a' + Date.now(), from: 'admin', lang: adminLang, text: text, tx: {}, ts: Date.now(), read: false };
+  // Translate to staff language if different
+  if (thread.empLang !== adminLang) {
+    msg.tx[thread.empLang] = await translateChatMessage(text, adminLang, thread.empLang);
+  }
+  thread.msgs.push(msg);
+  thread.lastReadAdmin = Date.now();
+  saveStaffChats(chats);
+  renderStaffChatMessages();
+}
+
+async function translateChatMessage(text, fromLang, toLang) {
+  if (fromLang === toLang) return text;
+  var apiKey = (typeof getAnthropicKey === 'function') ? localStorage.getItem('anthropic_api_key') : null;
+  if (!apiKey) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text; // demo fallback marker
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001', max_tokens: 200,
+        messages: [{ role: 'user', content: 'Translate this short workplace chat message from '+(LANG_NAMES[fromLang]||fromLang)+' to '+(LANG_NAMES[toLang]||toLang)+'. Reply with ONLY the translation, no quotes.\n\n'+text }]
+      })
+    });
+    if (!resp.ok) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+    var data = await resp.json();
+    return (data.content && data.content[0] && data.content[0].text || text).trim();
+  } catch(e) { return '[' + LANG_CODE_LABEL[toLang] + '] ' + text; }
+}
+
+// ── EMPLOYEE-SIDE CHAT ──
+function getEmpChatThread() {
+  if (!currentEmployee) return null;
+  var chats = loadStaffChats();
+  if (!chats[currentEmployee.id]) {
+    chats[currentEmployee.id] = { empLang: currentEmployee.lang || currentLang || 'en', msgs: [], lastReadAdmin: 0 };
+    saveStaffChats(chats);
+  } else if (!chats[currentEmployee.id].empLang) {
+    chats[currentEmployee.id].empLang = currentEmployee.lang || currentLang || 'en';
+    saveStaffChats(chats);
+  }
+  return chats[currentEmployee.id];
+}
+
+function renderEmpChat() {
+  var thread = getEmpChatThread();
+  if (!thread) return;
+  var empLang = thread.empLang || 'en';
+  var c = document.getElementById('emp-chat-messages');
+  if (!c) return;
+  if (!thread.msgs.length) {
+    c.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">No messages yet. Send a message to your manager, or tap 🤖 Ask AI for an instant answer.</div>';
+    return;
+  }
+  c.innerHTML = thread.msgs.map(function(m){
+    var mine = m.from === 'staff';
+    var isAi = m.from === 'ai';
+    var display = isAi ? m.text : translatedText(m, mine ? m.lang : empLang);
+    var time = new Date(m.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    var actionHtml = '';
+    if (isAi && m.action && m.action.openForm) {
+      var formId = m.action.openForm;
+      actionHtml = '<button onclick="openForm(\''+formId+'\')" style="margin-top:8px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;width:100%">'+(m.action.buttonLabel||'Open form')+' →</button>';
+    }
+    var bubbleClass = isAi ? 'theirs' : (mine ? 'mine' : 'theirs');
+    var bubbleStyle = isAi ? 'background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.3);color:var(--text)' : '';
+    var label = isAi ? '<div style="font-size:10px;font-weight:700;color:var(--accent2);margin-bottom:4px;letter-spacing:.04em">🤖 AI ASSISTANT</div>' : '';
+    return '<div class="conv-bubble-wrap '+bubbleClass+'">'
+      + '<div class="conv-bubble '+bubbleClass+'" style="'+bubbleStyle+'">'
+      + label
+      + escapeHtml(display)
+      + actionHtml
+      + '</div>'
+      + '<div class="conv-bubble-time">'+time+'</div>'
+      + '</div>';
+  }).join('');
+  requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
+  updateEmpChatBadge();
+}
+
+// ── AI ASSISTANT (employee side) ──
+// ── JOB ISSUE REPORTING (employee → admin, optionally → client) ──
+// Configurable per-business: in real version this lives in admin onboarding.
+// For demo: hardcoded list. Each option says who it notifies and what client SMS to send.
+var JOB_ISSUE_OPTIONS = [
+  {
+    id: 'locked_out',
+    icon: '🔒',
+    titles: { en: 'Locked out', es: 'No podemos entrar', pt: 'Não conseguimos entrar', cv: 'No ka konsigi entra' },
+    notifyAdmin: true,
+    notifyClient: true,
+    urgent: true,
+    adminMsg: { en: '🔒 LOCKED OUT at {client}', es: '🔒 BLOQUEADAS afuera de {client}', pt: '🔒 BLOQUEADAS fora de {client}', cv: '🔒 Bloqueadu fora di {client}' },
+    clientSms: 'Hi! This is your cleaning team — we just arrived but we can\'t get in. Could you let us know how to access? Thanks!'
+  },
+  {
+    id: 'forgot_key',
+    icon: '🗝',
+    titles: { en: 'Forgot the key', es: 'Olvidé la llave', pt: 'Esqueci a chave', cv: 'N skesi ku txabi' },
+    notifyAdmin: true,
+    notifyClient: false,
+    urgent: true,
+    adminMsg: { en: '🗝 Forgot the key for {client}', es: '🗝 Olvidé la llave de {client}', pt: '🗝 Esqueci a chave de {client}', cv: '🗝 N skesi ku txabi di {client}' }
+  },
+  {
+    id: 'no_one_home',
+    icon: '🏠',
+    titles: { en: 'No one is home', es: 'No hay nadie en casa', pt: 'Não está ninguém em casa', cv: 'Nada di alguen na kasa' },
+    notifyAdmin: true,
+    notifyClient: true,
+    urgent: true,
+    adminMsg: { en: '🏠 No one home at {client}', es: '🏠 Nadie en casa en {client}', pt: '🏠 Ninguém em casa em {client}', cv: '🏠 Nada di alguen na {client}' },
+    clientSms: 'Hi! Your cleaning team is at your door but no one is home. Please call us back so we can plan next steps.'
+  },
+  {
+    id: 'cant_find',
+    icon: '🗺',
+    titles: { en: 'Can\'t find the house', es: 'No encuentro la casa', pt: 'Não encontro a casa', cv: 'N ka ta atxa kasa' },
+    notifyAdmin: true,
+    notifyClient: false,
+    urgent: false,
+    adminMsg: { en: '🗺 Can\'t find {client}\'s house', es: '🗺 No encuentro la casa de {client}', pt: '🗺 Não encontro a casa de {client}', cv: '🗺 N ka ta atxa kasa di {client}' }
+  },
+  {
+    id: 'running_late',
+    icon: '⏰',
+    titles: { en: 'Running late', es: 'Vamos a llegar tarde', pt: 'Vamos chegar atrasadas', cv: 'Nu ta txiga atrazadu' },
+    notifyAdmin: true,
+    notifyClient: true,
+    urgent: false,
+    adminMsg: { en: '⏰ Running late to {client}', es: '⏰ Llegando tarde a {client}', pt: '⏰ Atrasadas para {client}', cv: '⏰ Atrazadu pa {client}' },
+    clientSms: 'Hi! Your cleaning team is running a few minutes late. We\'ll be there soon — sorry for the delay!'
+  }
+];
+
+var _currentIssueJobId = null;
+var _currentIssueClient = null;
+var _currentIssueClientId = null;
+
+function openJobIssueSheet(jobId, clientName, clientId) {
+  _currentIssueJobId = jobId;
+  _currentIssueClient = clientName;
+  _currentIssueClientId = clientId;
+  var lang = (currentEmployee && currentEmployee.lang) || currentLang || 'en';
+  document.getElementById('job-issue-sub').textContent = (clientName || '');
+  var opts = document.getElementById('job-issue-options');
+  opts.innerHTML = JOB_ISSUE_OPTIONS.map(function(o){
+    var title = (o.titles[lang]) || o.titles.en;
+    var who = [];
+    if (o.notifyAdmin) who.push(lang === 'en' ? 'Notifies Manager' : lang === 'es' ? 'Notifica al gerente' : lang === 'pt' ? 'Notifica o gerente' : 'Notifika gerenti');
+    if (o.notifyClient) who.push(lang === 'en' ? 'Texts client' : lang === 'es' ? 'Mensaje al cliente' : lang === 'pt' ? 'Mensagem ao cliente' : 'Mensaji pa kliente');
+    return '<button onclick="reportJobIssue(\''+o.id+'\')" style="background:var(--surface2);border:1px solid '+(o.urgent?'rgba(248,113,113,0.4)':'var(--border)')+';border-radius:12px;padding:14px;text-align:left;cursor:pointer;font-family:\'DM Sans\',sans-serif;display:flex;align-items:center;gap:14px">'
+      + '<div style="font-size:26px">'+o.icon+'</div>'
+      + '<div style="flex:1">'
+      +   '<div style="font-size:15px;font-weight:600;color:var(--text)">'+escapeHtml(title)+(o.urgent?' <span style="font-size:10px;background:var(--red);color:#fff;padding:1px 6px;border-radius:6px;margin-left:4px;font-weight:700">URGENT</span>':'')+'</div>'
+      +   '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+who.join(' · ')+'</div>'
+      + '</div>'
+      + '<div style="font-size:18px;color:var(--muted)">›</div>'
+      + '</button>';
+  }).join('');
+  document.getElementById('job-issue-sheet').style.display = 'flex';
+}
+
+function closeJobIssueSheet() {
+  document.getElementById('job-issue-sheet').style.display = 'none';
+}
+
+function showIssueToast(text) {
+  var toast = document.getElementById('issue-toast');
+  if (!toast) return;
+  toast.textContent = text;
+  toast.style.display = 'block';
+  setTimeout(function(){ toast.style.display = 'none'; }, 3500);
+}
+
+function reportJobIssue(optionId) {
+  var opt = JOB_ISSUE_OPTIONS.find(function(o){ return o.id === optionId; });
+  if (!opt || !currentEmployee) return;
+  var lang = (currentEmployee.lang) || currentLang || 'en';
+  var clientName = _currentIssueClient || 'client';
+  var adminMsgLang = (opt.adminMsg[lang] || opt.adminMsg.en).replace('{client}', clientName);
+  var adminMsgEn = opt.adminMsg.en.replace('{client}', clientName);
+
+  if (opt.notifyAdmin) {
+    // Post to staff chat as urgent
+    var thread = getEmpChatThread();
+    if (!thread) return;
+    var msg = {
+      id: 'iss'+Date.now(),
+      from: 'staff',
+      lang: lang,
+      text: adminMsgLang,
+      tx: { en: adminMsgEn },
+      ts: Date.now(),
+      read: false,
+      issue: opt.id,
+      urgent: !!opt.urgent
+    };
+    thread.msgs.push(msg);
+    if (opt.urgent) thread.urgent = true;
+    var allChats = loadStaffChats();
+    allChats[currentEmployee.id] = thread;
+    saveStaffChats(allChats);
+    renderEmpChat();
+  }
+
+  if (opt.notifyClient) {
+    // Demo: simulate sending SMS to client. In production this routes through RingCentral/Twilio.
+    var sentLabels = { en: '✓ Sent to client', es: '✓ Enviado al cliente', pt: '✓ Enviado ao cliente', cv: '✓ Mandadu pa kliente' };
+    showIssueToast(sentLabels[lang] || sentLabels.en);
+  } else {
+    var notifLabels = { en: '✓ Manager notified', es: '✓ Gerente notificado', pt: '✓ Gerente notificado', cv: '✓ Gerenti notifikadu' };
+    showIssueToast(notifLabels[lang] || notifLabels.en);
+  }
+
+  closeJobIssueSheet();
+}
+
+async function askEmpAI() {
+  if (!currentEmployee) return;
+  var input = document.getElementById('emp-chat-input');
+  var text = (input.value || '').trim();
+  if (!text) return;
+  input.value = '';
+  var thread = getEmpChatThread();
+  if (!thread) return;
+  var empLang = thread.empLang || 'en';
+  // Push the user's question
+  var qMsg = { id: 'q'+Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: true, askedAi: true };
+  thread.msgs.push(qMsg);
+  var allChats = loadStaffChats();
+  allChats[currentEmployee.id] = thread;
+  saveStaffChats(allChats);
+  renderEmpChat();
+  // Show thinking placeholder
+  var thinking = { id: 'think'+Date.now(), from: 'ai', text: '🤔 …', ts: Date.now(), pending: true };
+  thread.msgs.push(thinking);
+  saveStaffChats(allChats);
+  renderEmpChat();
+  // Get AI response
+  var aiResult = await getAiAnswer(text, empLang);
+  // Replace thinking with real response
+  var idx = thread.msgs.findIndex(function(m){ return m.id === thinking.id; });
+  if (idx >= 0) thread.msgs.splice(idx, 1);
+  thread.msgs.push({
+    id: 'ai'+Date.now(),
+    from: 'ai',
+    text: aiResult.reply,
+    action: aiResult.action || null,
+    ts: Date.now()
+  });
+  allChats[currentEmployee.id] = thread;
+  saveStaffChats(allChats);
+  renderEmpChat();
+}
+
+async function getAiAnswer(question, empLang) {
+  // Build context
+  var emp = currentEmployee;
+  var today = new Date();
+  var todayStr = dateKey(today);
+  var dow = today.toLocaleDateString('en-US',{weekday:'long'});
+  // Employee's team for today
+  var assignedTeam = '';
+  try {
+    var key = todayStr + '_' + emp.id;
+    if (typeof dailyAssignments !== 'undefined' && dailyAssignments[key]) {
+      assignedTeam = dailyAssignments[key] === 'OFF' ? 'OFF' : dailyAssignments[key];
+    } else {
+      assignedTeam = emp.team || emp.defaultTeam || '';
+    }
+  } catch(e) { assignedTeam = emp.team || ''; }
+  // Today's job count for that team
+  var teamJobsToday = 0;
+  try {
+    teamJobsToday = (typeof jobs !== 'undefined' ? jobs : []).filter(function(j){
+      return j.date === todayStr && j.team === assignedTeam && !j.cancelled;
+    }).length;
+  } catch(e) {}
+
+  var apiKey = localStorage.getItem('anthropic_api_key');
+  if (!apiKey) {
+    // Demo fallback — keyword-based responses
+    return cannedAiAnswer(question, empLang, { name: emp.name, team: assignedTeam, dow: dow, jobs: teamJobsToday });
+  }
+
+  var systemPrompt =
+    'You are an AI assistant for a cleaning company employee chat. Reply in '+(LANG_NAMES[empLang]||'English')+'.\n' +
+    'Employee: '+emp.name+'\n' +
+    'Their team today: '+(assignedTeam || 'unassigned')+'\n' +
+    'Today: '+dow+' '+todayStr+'\n' +
+    'Their team has '+teamJobsToday+' jobs scheduled today.\n\n' +
+    'Available forms (use the form ID exactly): timeoff, callout, supplies, incident, equipment, vehicle.\n' +
+    'When the employee asks for time off → action openForm: timeoff.\n' +
+    'When they say they are sick / can\'t come in → action openForm: callout.\n' +
+    'When they need supplies → action openForm: supplies.\n' +
+    'When they report an injury or incident → action openForm: incident.\n' +
+    'When equipment broken (vacuum, etc.) → action openForm: equipment.\n' +
+    'When vehicle issue → action openForm: vehicle.\n\n' +
+    'Reply ONLY with valid JSON, no prose, no code fences:\n' +
+    '{"reply": "<your short helpful reply in '+(LANG_NAMES[empLang]||'English')+'>", "action": null OR {"openForm":"<formId>","buttonLabel":"<button text in '+(LANG_NAMES[empLang]||'English')+'>"}}';
+
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001', max_tokens: 350,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: question }]
+      })
+    });
+    if (!resp.ok) throw new Error('api '+resp.status);
+    var data = await resp.json();
+    var raw = (data.content && data.content[0] && data.content[0].text || '').trim();
+    var m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return { reply: raw || cannedAiAnswer(question, empLang, {name: emp.name, team: assignedTeam, dow: dow, jobs: teamJobsToday}).reply };
+    var parsed = JSON.parse(m[0]);
+    return { reply: parsed.reply || '…', action: parsed.action };
+  } catch(e) {
+    return cannedAiAnswer(question, empLang, { name: emp.name, team: assignedTeam, dow: dow, jobs: teamJobsToday });
+  }
+}
+
+function cannedAiAnswer(q, lang, ctx) {
+  var ql = q.toLowerCase();
+  var L = {
+    en: { team: 'You\'re on team '+ctx.team+' today ('+ctx.dow+'). You have '+ctx.jobs+' jobs scheduled.',
+          timeoff: 'I can help you request time off — open the form below.',
+          timeoffBtn: 'Open Time Off Form',
+          sick: 'Sorry you\'re not feeling well. Use the Call Out form so the manager knows right away.',
+          sickBtn: 'Open Call Out Form',
+          supplies: 'Need supplies? Submit a request and the manager will restock.',
+          suppliesBtn: 'Open Supply Request',
+          incident: 'For incidents or injuries, please file a report so we can follow up.',
+          incidentBtn: 'Open Incident Report',
+          equipment: 'Equipment issue? Let\'s file it so we can get it fixed.',
+          equipmentBtn: 'Open Equipment Form',
+          vehicle: 'Vehicle problem? File a report so we can address it.',
+          vehicleBtn: 'Open Vehicle Form',
+          fallback: 'Hi '+ctx.name+'! I can help with schedule, time off, supplies, callouts, or equipment issues. What do you need?' },
+    es: { team: 'Hoy estás en el equipo '+ctx.team+' ('+ctx.dow+'). Tienes '+ctx.jobs+' trabajos programados.',
+          timeoff: 'Puedo ayudarte a solicitar tiempo libre — abre el formulario abajo.',
+          timeoffBtn: 'Abrir formulario de tiempo libre',
+          sick: 'Lamento que no te sientas bien. Usa el formulario Call Out para que el gerente lo sepa enseguida.',
+          sickBtn: 'Abrir formulario Call Out',
+          supplies: '¿Necesitas suministros? Envía una solicitud y el gerente repondrá.',
+          suppliesBtn: 'Abrir solicitud de suministros',
+          incident: 'Para incidentes o lesiones, presenta un reporte por favor.',
+          incidentBtn: 'Abrir reporte de incidente',
+          equipment: '¿Problema con el equipo? Vamos a reportarlo.',
+          equipmentBtn: 'Abrir formulario de equipo',
+          vehicle: '¿Problema con el vehículo? Presenta un reporte.',
+          vehicleBtn: 'Abrir formulario de vehículo',
+          fallback: '¡Hola '+ctx.name+'! Puedo ayudar con horario, tiempo libre, suministros, ausencias o problemas con equipo. ¿Qué necesitas?' },
+    pt: { team: 'Hoje estás na equipa '+ctx.team+' ('+ctx.dow+'). Tens '+ctx.jobs+' trabalhos agendados.',
+          timeoff: 'Posso ajudar-te a pedir tempo livre — abre o formulário abaixo.',
+          timeoffBtn: 'Abrir formulário de tempo livre',
+          sick: 'Lamento que não te sintas bem. Usa o formulário Call Out para o gerente saber.',
+          sickBtn: 'Abrir formulário Call Out',
+          supplies: 'Precisas de produtos? Envia um pedido e o gerente vai repor.',
+          suppliesBtn: 'Abrir pedido de produtos',
+          incident: 'Para incidentes ou lesões, preenche um relatório.',
+          incidentBtn: 'Abrir relatório de incidente',
+          equipment: 'Problema com equipamento? Vamos reportar.',
+          equipmentBtn: 'Abrir formulário de equipamento',
+          vehicle: 'Problema com o veículo? Preenche um relatório.',
+          vehicleBtn: 'Abrir formulário de veículo',
+          fallback: 'Olá '+ctx.name+'! Posso ajudar com horário, tempo livre, produtos, faltas ou problemas com equipamento. O que precisas?' },
+    cv: { team: 'Oji bu sta na ekipa '+ctx.team+' ('+ctx.dow+'). Bu ten '+ctx.jobs+' trabadju.',
+          timeoff: 'N podi djuda-u pedi tempu livri — abri formulariu.',
+          timeoffBtn: 'Abri Formulariu di Tempu Livri',
+          sick: 'N sinti pena ki bu ka sta dretu. Uza formulariu Call Out.',
+          sickBtn: 'Abri Formulariu Call Out',
+          supplies: 'Bu meste produtus? Manda pedidu.',
+          suppliesBtn: 'Abri Pedidu di Produtus',
+          incident: 'Pa insidenti ô lesonu, preenchi relatoriu.',
+          incidentBtn: 'Abri Relatoriu',
+          equipment: 'Problema ku ekipamentu? Reporta.',
+          equipmentBtn: 'Abri Formulariu',
+          vehicle: 'Problema ku veikulu? Reporta.',
+          vehicleBtn: 'Abri Formulariu',
+          fallback: 'Ola '+ctx.name+'! N podi djuda ku orariu, tempu livri, produtus, ô problemas. Kuze ki bu meste?' }
+  };
+  var dict = L[lang] || L.en;
+  // Intent matching
+  if (/team|equipo|equipa|ekipa|today|hoy|hoje|oji|schedule|horario|horário|orariu/.test(ql)) {
+    return { reply: dict.team };
+  }
+  if (/time off|day off|vacation|tiempo libre|vacaciones|tempo livre|férias|ferias/.test(ql)) {
+    return { reply: dict.timeoff, action: { openForm: 'timeoff', buttonLabel: dict.timeoffBtn } };
+  }
+  if (/sick|enferm|doente|malu|can't come|no puedo|não posso|callout|call out/.test(ql)) {
+    return { reply: dict.sick, action: { openForm: 'callout', buttonLabel: dict.sickBtn } };
+  }
+  if (/supplies|product|cleaner|windex|toallas|toalhas|trapos|productos|produtos/.test(ql)) {
+    return { reply: dict.supplies, action: { openForm: 'supplies', buttonLabel: dict.suppliesBtn } };
+  }
+  if (/injur|hurt|accident|fell|incidente|herida|ferid|magoa/.test(ql)) {
+    return { reply: dict.incident, action: { openForm: 'incident', buttonLabel: dict.incidentBtn } };
+  }
+  if (/vacuum|aspirador|equipment|equipo|equipamento|broken|roto|partido/.test(ql)) {
+    return { reply: dict.equipment, action: { openForm: 'equipment', buttonLabel: dict.equipmentBtn } };
+  }
+  if (/car|van|vehicle|vehiculo|veículo|veikulu|tire|llanta|pneu/.test(ql)) {
+    return { reply: dict.vehicle, action: { openForm: 'vehicle', buttonLabel: dict.vehicleBtn } };
+  }
+  return { reply: dict.fallback };
+}
+
+function updateEmpChatBadge() {
+  if (!currentEmployee) return;
+  var chats = loadStaffChats();
+  var t = chats[currentEmployee.id];
+  if (!t) return;
+  var lastRead = parseInt(localStorage.getItem('emp_chat_lastread_'+currentEmployee.id) || '0');
+  var unread = t.msgs.filter(function(m){ return m.from === 'admin' && m.ts > lastRead; }).length;
+  var badge = document.getElementById('ptab-chat-badge');
+  if (badge) {
+    if (unread > 0) { badge.textContent = unread; badge.style.display = ''; }
+    else { badge.style.display = 'none'; }
+  }
+}
+
+async function sendStaffReplyEmp() {
+  if (!currentEmployee) return;
+  var input = document.getElementById('emp-chat-input');
+  var text = (input.value || '').trim();
+  if (!text) return;
+  input.value = '';
+  var thread = getEmpChatThread();
+  if (!thread) return;
+  var empLang = thread.empLang || 'en';
+  var msg = { id: 's' + Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: false };
+  if (empLang !== 'en') {
+    msg.tx.en = await translateChatMessage(text, empLang, 'en');
+  }
+  thread.msgs.push(msg);
+  var allChats = loadStaffChats();
+  allChats[currentEmployee.id] = thread;
+  saveStaffChats(allChats);
+  renderEmpChat();
 }
 
 function togglePendingDone(id) {
@@ -6768,9 +7705,46 @@ function openClientEdit(clientId) {
       ...s,
       time: (ov2.cleanTimes && ov2.cleanTimes[i]) || '',
       team: (ov2.cleanTeams && ov2.cleanTeams[i]) || c.team || '',
-      price: (ov2.cleanPrices && ov2.cleanPrices[i]) || ''
+      price: (ov2.cleanPrices && ov2.cleanPrices[i]) || '',
+      note: (ov2.cleanNotes && ov2.cleanNotes[i]) || ''
     };
   });
+
+  // Pull all jobs for this client and split into one-off future + past
+  function _ceJobDate(j) {
+    if (!j.date) return null;
+    if (j.date.includes('-')) { const p=j.date.split('-'); return new Date(+p[0], +p[1]-1, +p[2]); }
+    if (j.date.includes('/')) { const p=j.date.split('/'); return new Date(+p[2], +p[0]-1, +p[1]); }
+    return null;
+  }
+  function _ceFmtMmddyyyy(j) {
+    if (!j.date) return '';
+    if (j.date.includes('/')) return j.date;
+    const p = j.date.split('-');
+    if (p.length === 3) return p[1]+'/'+p[2]+'/'+p[0];
+    return j.date;
+  }
+  const _allClientJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(j => j.clientId === c.id);
+  const _todayMid = (function(){ const d=new Date(); d.setHours(0,0,0,0); return d; })();
+  const _recurringDates = new Set(sched.map(s => s.date));
+  const oneOffFuture = _allClientJobs
+    .filter(j => {
+      const dt = _ceJobDate(j); if (!dt) return false;
+      if (dt < _todayMid) return false;
+      if (j.cancelled) return false;
+      if (_recurringDates.has(_ceFmtMmddyyyy(j))) return false;
+      // Skip the synthetic ones generated by client-edit save (they map to recurring slots)
+      if (j.fromClientEdit) return false;
+      return true;
+    })
+    .sort((a,b) => _ceJobDate(a) - _ceJobDate(b));
+  const pastJobs = _allClientJobs
+    .filter(j => {
+      const dt = _ceJobDate(j); if (!dt) return false;
+      return dt < _todayMid || j.done;
+    })
+    .sort((a,b) => _ceJobDate(b) - _ceJobDate(a))
+    .slice(0, 50);
 
   document.getElementById('client-edit-title').textContent = c.fn + ' ' + c.ln;
 
@@ -6795,13 +7769,20 @@ function openClientEdit(clientId) {
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Last Name</div>
         <input id="ce-ln" class="field-input" value="${c.ln}" style="width:100%">
       </div>
-      <div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Phone</div>
-        <input id="ce-ph" class="field-input" value="${c.ph}" style="width:100%" type="tel">
+      <div style="grid-column:span 2">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="font-size:13px;color:var(--muted);font-weight:500">Phone Numbers</div>
+          <button type="button" onclick="cePhoneAdd()" style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer">+ Add another</button>
+        </div>
+        <div id="ce-phones-list"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">⭐ Primary number receives reminders & SMS</div>
       </div>
-      <div>
+      <div style="grid-column:span 2">
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Email</div>
-        <input id="ce-em" class="field-input" value="${c.em||''}" style="width:100%" type="email">
+        <div style="display:flex;gap:6px">
+          <input id="ce-em" class="field-input" value="${c.em||''}" style="flex:1;min-width:0" type="email" placeholder="email@example.com">
+          <button type="button" onclick="ceSendEmail('${c.id}')" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:0 14px;border-radius:10px;cursor:pointer;white-space:nowrap;flex-shrink:0">📧 Email</button>
+        </div>
       </div>
       <div style="grid-column:span 2">
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Address</div>
@@ -6834,6 +7815,10 @@ function openClientEdit(clientId) {
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Package</div>
         <input id="ce-pkg" class="field-input" value="${c.pkg||''}" style="width:100%">
       </div>
+      <div style="grid-column:span 2">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">🔑 Key / Entry Code</div>
+        <input id="ce-keycode" class="field-input" value="${(ex.keyCode||'').replace(/"/g,'&quot;')}" style="width:100%" placeholder="e.g. 4422, garage 0607, key under mat">
+      </div>
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Team</div>
         <select id="ce-team" class="field-input" style="width:100%">
@@ -6859,7 +7844,7 @@ function openClientEdit(clientId) {
     </div>
 
     <!-- SECTION: Upcoming Cleans (tap to edit) -->
-    ${sched.length > 0 ? `
+    ${(sched.length > 0 || oneOffFuture.length > 0) ? `
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Upcoming Cleans</div>
     <div style="margin-bottom:20px;background:var(--surface2);border-radius:12px;overflow:hidden">
       ${sched.map((s,i) => `
@@ -6886,8 +7871,49 @@ function openClientEdit(clientId) {
           <input type="hidden" id="ce-clean-price-val-${i}" value="${s.price||''}">
           <input type="hidden" id="ce-clean-time-val-${i}" value="${s.time||''}">
           <input type="hidden" id="ce-clean-team-val-${i}" value="${s.team||c.team||''}">
+          <input id="ce-clean-note-${i}" class="field-input" value="${(s.note||'').replace(/"/g,'&quot;')}" placeholder="📝 Note for this clean only…" style="width:100%;margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text);font-family:'DM Sans',sans-serif">
         </div>
       `).join('')}
+      ${oneOffFuture.map(j => {
+        const dtStr = _ceFmtMmddyyyy(j);
+        const timeLabel = j.time ? (function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(j.time) : (j.flexible ? 'Flexible' : 'No time');
+        return `<div style="padding:12px 14px;border-top:2px solid var(--accent);background:rgba(108,143,255,0.06)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px">
+            <div style="font-size:13px;font-weight:600">${dtStr} <span style="font-size:10px;background:var(--accent);color:#fff;padding:1px 6px;border-radius:4px;font-weight:700;margin-left:4px">ONE-OFF</span></div>
+            <button onclick="closeClientEdit();openJobModal('${j.id}')" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;color:var(--accent);cursor:pointer;font-family:'DM Sans',sans-serif">Edit</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px">
+            <span>⏰ ${timeLabel}</span>
+            <span>👥 ${j.team || '—'}</span>
+            ${j.price ? `<span>💵 $${j.price}</span>` : ''}
+          </div>
+          ${(j.notes||'').trim() ? `<div style="font-size:12px;color:#fbbf24;margin-top:4px">📝 ${(j.notes||'').replace(/</g,'&lt;')}</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>` : ''}
+
+    ${pastJobs.length > 0 ? `
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+      <span>Past Cleans <span style="color:var(--text);font-weight:600">(${pastJobs.length})</span></span>
+      <button onclick="(function(b){var p=document.getElementById('past-cleans-list');var open=p.style.display!=='none';p.style.display=open?'none':'block';b.textContent=open?'Show':'Hide';})(this)" style="background:none;border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;cursor:pointer">Show</button>
+    </div>
+    <div id="past-cleans-list" style="display:none;margin-bottom:20px;background:var(--surface2);border-radius:12px;overflow:hidden">
+      ${pastJobs.map(j => {
+        const dtStr = _ceFmtMmddyyyy(j);
+        const timeLabel = j.time ? (function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(j.time) : '';
+        const status = j.cancelled ? '<span style="font-size:10px;background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-weight:700">CANCELLED</span>' : (j.done ? '<span style="font-size:10px;background:var(--green);color:#000;padding:1px 6px;border-radius:4px;font-weight:700">DONE</span>' : '<span style="font-size:10px;background:var(--surface);color:var(--muted);padding:1px 6px;border-radius:4px;font-weight:700;border:1px solid var(--border)">PAST</span>');
+        return `<div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px">
+            <div style="font-weight:600;color:var(--text)">${dtStr} ${status}</div>
+            ${j.price ? `<div style="color:var(--green);font-weight:600">$${j.price}</div>` : ''}
+          </div>
+          <div style="color:var(--muted);display:flex;flex-wrap:wrap;gap:10px">
+            ${timeLabel ? `<span>⏰ ${timeLabel}</span>` : ''}
+            <span>👥 ${j.team || '—'}</span>
+          </div>
+          ${(j.notes||'').trim() ? `<div style="color:#fbbf24;margin-top:3px;font-size:11px">📝 ${(j.notes||'').replace(/</g,'&lt;')}</div>` : ''}
+        </div>`;
+      }).join('')}
     </div>` : ''}
 
     <!-- Date/Price picker sheet -->
@@ -6910,6 +7936,73 @@ function openClientEdit(clientId) {
   `;
 
   document.getElementById('client-edit-modal').style.display = 'flex';
+  // Initialize the dynamic phones list — must happen after innerHTML render
+  cePhonesInit(c, ov);
+}
+
+// ── DYNAMIC PHONE LIST ──
+var _cePhones = []; // working copy; persisted to ov.phones on save
+
+function cePhonesInit(c, ov) {
+  // Migrate from existing data: ov.phones (preferred), else c.ph + extras.extraPhone
+  var ex = getClientExtras(c.id);
+  if (ov && Array.isArray(ov.phones) && ov.phones.length) {
+    _cePhones = ov.phones.map(function(p){ return { name: p.name||'', number: p.number||'', primary: !!p.primary }; });
+  } else {
+    _cePhones = [];
+    if (c.ph) _cePhones.push({ name: '', number: c.ph, primary: true });
+    if (ex && ex.extraPhone) _cePhones.push({ name: '', number: ex.extraPhone, primary: false });
+    if (!_cePhones.length) _cePhones.push({ name: '', number: '', primary: true });
+  }
+  // Ensure at least one primary
+  if (!_cePhones.some(function(p){ return p.primary; })) _cePhones[0].primary = true;
+  cePhonesRender();
+}
+
+function cePhonesRender() {
+  var list = document.getElementById('ce-phones-list');
+  if (!list) return;
+  list.innerHTML = _cePhones.map(function(p, i){
+    return '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">'
+      + '<button type="button" onclick="cePhoneSetPrimary('+i+')" title="Set as primary" style="background:'+(p.primary?'rgba(251,191,36,0.18)':'var(--surface2)')+';border:1px solid '+(p.primary?'var(--amber)':'var(--border)')+';color:'+(p.primary?'var(--amber)':'var(--muted)')+';width:34px;height:38px;border-radius:8px;cursor:pointer;font-size:16px;flex-shrink:0">'+(p.primary?'⭐':'☆')+'</button>'
+      + '<input type="text" placeholder="Label (e.g. Spouse)" value="'+(p.name||'').replace(/"/g,'&quot;')+'" oninput="cePhoneUpdate('+i+',\'name\',this.value)" style="flex:0 0 110px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;padding:9px 10px;outline:none;min-width:0">'
+      + '<input type="tel" placeholder="Phone number" value="'+(p.number||'').replace(/"/g,'&quot;')+'" oninput="cePhoneUpdate('+i+',\'number\',this.value)" style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:9px 12px;outline:none;min-width:0">'
+      + (_cePhones.length > 1 ? '<button type="button" onclick="cePhoneRemove('+i+')" style="background:none;border:1px solid var(--border);color:var(--red);width:32px;height:38px;border-radius:8px;cursor:pointer;font-size:16px;flex-shrink:0">×</button>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function cePhoneAdd() {
+  _cePhones.push({ name: '', number: '', primary: false });
+  cePhonesRender();
+}
+
+function cePhoneRemove(i) {
+  var wasPrimary = _cePhones[i].primary;
+  _cePhones.splice(i, 1);
+  if (wasPrimary && _cePhones.length) _cePhones[0].primary = true;
+  cePhonesRender();
+}
+
+function cePhoneSetPrimary(i) {
+  _cePhones.forEach(function(p, idx){ p.primary = (idx === i); });
+  cePhonesRender();
+}
+
+function cePhoneUpdate(i, field, val) {
+  if (_cePhones[i]) _cePhones[i][field] = val;
+}
+
+function ceSendEmail(clientId) {
+  var em = (document.getElementById('ce-em').value || '').trim();
+  if (!em) { alert('Add an email address first.'); return; }
+  var c = CLIENTS.find(function(x){ return x.id === clientId; });
+  var name = c ? (c.fn + ' ' + c.ln).trim() : '';
+  // mailto: opens whatever default mail client they have configured.
+  // When their themaids.com Gmail is set as default, From: will use it automatically.
+  var subject = encodeURIComponent('Manna Maids');
+  var body = encodeURIComponent('Hi ' + (c ? c.fn : '') + ',\n\n');
+  window.location.href = 'mailto:' + encodeURIComponent(em) + '?subject=' + subject + '&body=' + body;
 }
 
 function syncNextDateFromField(val) {
@@ -7084,7 +8177,13 @@ function saveClientEdit(clientId) {
   // Contact info
   c.fn = document.getElementById('ce-fn').value.trim();
   c.ln = document.getElementById('ce-ln').value.trim();
-  c.ph = document.getElementById('ce-ph').value.trim();
+  // Phone numbers — pull from dynamic list
+  var cleanPhones = (_cePhones || []).map(function(p){
+    return { name: (p.name||'').trim(), number: (p.number||'').trim(), primary: !!p.primary };
+  }).filter(function(p){ return p.number; });
+  if (!cleanPhones.some(function(p){ return p.primary; }) && cleanPhones.length) cleanPhones[0].primary = true;
+  var primaryPhone = (cleanPhones.find(function(p){ return p.primary; }) || cleanPhones[0] || {}).number || '';
+  c.ph = primaryPhone;
   c.em = document.getElementById('ce-em').value.trim();
   c.addr = document.getElementById('ce-addr').value.trim();
   c.city = document.getElementById('ce-city').value.trim();
@@ -7151,13 +8250,14 @@ function saveClientEdit(clientId) {
       const jobDate = parts[2] + '-' + parts[0].padStart(2,'0') + '-' + parts[1].padStart(2,'0');
       // Remove old jobs for this client+slot then add fresh
       const filteredJobs = storedJobs.filter(j => !(j.fromClientEdit && j.clientId === clientId && j.slotIdx === i));
+      const perCleanNote = (ov3.cleanNotes && ov3.cleanNotes[i]) || '';
       const jobEntry = {
         id: 'cedit_' + clientId + '_' + i,
         clientId, clientName: c.fn + ' ' + c.ln,
         addr: c.addr + (c.city ? ', ' + c.city : ''),
         date: jobDate, team, time: timeOverride,
         color: '', flexible: !timeOverride,
-        notes: c.notes || '', done: false,
+        notes: perCleanNote, done: false,
         phone: c.ph, fromClientEdit: true, slotIdx: i
       };
       filteredJobs.push(jobEntry);
@@ -7188,7 +8288,24 @@ function saveClientEdit(clientId) {
   if (discount) ov.oneTimeDiscount = discount; else delete ov.oneTimeDiscount;
   const newPrice = document.getElementById('ce-price').value.trim();
   if (newPrice) ov.priceOverride = newPrice; else delete ov.priceOverride;
+  // Persist full phone list
+  ov.phones = cleanPhones;
   saveClientOverrides(clientId, ov);
+
+  // Key code → client extras
+  try {
+    var ceKey = document.getElementById('ce-keycode');
+    if (ceKey) {
+      var keyVal = ceKey.value.trim();
+      if (!clientExtras[clientId]) clientExtras[clientId] = {};
+      if (keyVal) clientExtras[clientId].keyCode = keyVal;
+      else delete clientExtras[clientId].keyCode;
+      // Also sync extraPhone for legacy display: take 2nd phone if any
+      var second = cleanPhones.filter(function(p){ return !p.primary; })[0];
+      clientExtras[clientId].extraPhone = second ? second.number : '';
+      localStorage.setItem('client_extras', JSON.stringify(clientExtras));
+    }
+  } catch(e) {}
 
   // Rescheduled individual cleans - read from hidden inputs
   const sched2 = buildSchedule(c);
@@ -7216,6 +8333,10 @@ function saveClientEdit(clientId) {
       if (timeEl && timeEl.value) ov.cleanTimes[i] = timeEl.value;
       if (!ov.cleanTeams) ov.cleanTeams = {};
       if (teamEl && teamEl.value) ov.cleanTeams[i] = teamEl.value;
+      const noteEl = document.getElementById('ce-clean-note-' + i);
+      if (!ov.cleanNotes) ov.cleanNotes = {};
+      if (noteEl && noteEl.value.trim()) ov.cleanNotes[i] = noteEl.value.trim();
+      else delete ov.cleanNotes[i];
     });
     saveClientOverrides(clientId, ov);
   }
@@ -10779,12 +11900,75 @@ function renderSchedule() {
     const stored = localStorage.getItem('cleanco_jobs');
     if (stored) {
       const allJobs = JSON.parse(stored);
-      jobs = allJobs.filter(j => j.date === todayStr && 
-        (j.team === team || 
+      jobs = allJobs.filter(j => j.date === todayStr &&
+        (j.team === team ||
          (j.team||'').trim().toUpperCase() === (team||'').trim().toUpperCase() ||
          (j.fromClientEdit && !j.team)));  // show client-edit jobs with no team assigned
     }
   } catch(e) {}
+
+  // Compute summary line: house count + estimated arrival back at depot
+  (function() {
+    var sumEl = document.getElementById('today-summary');
+    if (!sumEl) return;
+    if (!jobs.length) { sumEl.textContent = ''; return; }
+    var lang = currentLang || 'en';
+    var housesLabel = { en: 'houses', es: 'casas', pt: 'casas', cv: 'kasas' }[lang] || 'houses';
+    var houseSingular = { en: 'house', es: 'casa', pt: 'casa', cv: 'kasa' }[lang] || 'house';
+    var backLabel = { en: 'back', es: 'regreso', pt: 'volta', cv: 'volta' }[lang] || 'back';
+    var calcLabel = { en: 'calculating…', es: 'calculando…', pt: 'a calcular…', cv: 'ta kalkula…' }[lang] || 'calculating…';
+    function toMins(s) { if (!s) return null; var p=s.split(':'); return parseInt(p[0])*60 + parseInt(p[1]||0); }
+    function fmtTime(mins) {
+      var hr = Math.floor(mins/60) % 24, mn = mins % 60;
+      var ap = hr >= 12 ? 'PM' : 'AM', hr12 = hr % 12 || 12;
+      return hr12 + ':' + String(mn).padStart(2,'0') + ' ' + ap;
+    }
+    var count = jobs.length;
+    var housesPart = count + ' ' + (count === 1 ? houseSingular : housesLabel);
+    sumEl.textContent = housesPart + ' · ' + backLabel + ' ~' + calcLabel;
+
+    var sortedByTime = jobs.slice().filter(function(j){ return j.time && !j.flexible; })
+      .sort(function(a,b){ return toMins(a.time) - toMins(b.time); });
+    var startMins = sortedByTime.length ? toMins(sortedByTime[0].time) : 9*60;
+    var totalOnsite = jobs.reduce(function(s,j){
+      var d = 0;
+      try { d = (typeof getJobDurationMins === 'function') ? getJobDurationMins(j) : (parseInt(j.quotedMin)||120)/2; } catch(e) { d = 90; }
+      return s + d;
+    }, 0);
+
+    var depot = null;
+    try {
+      if (typeof DEPOT_MARLBOROUGH !== 'undefined' && DEPOT_MARLBOROUGH.teams.indexOf(team) !== -1) depot = DEPOT_MARLBOROUGH;
+      else if (typeof DEPOT_ABINGTON !== 'undefined') depot = DEPOT_ABINGTON;
+    } catch(e) {}
+
+    function finish(driveSum, backMins) {
+      var endMins = startMins + totalOnsite + (driveSum||0) + (backMins||0);
+      sumEl.textContent = housesPart + ' · ' + backLabel + ' ~' + fmtTime(endMins);
+    }
+
+    // Inter-job drive (uses cached OSRM results when available)
+    var jobsForDrive = sortedByTime.length >= 2 ? sortedByTime : [];
+    var lastJob = sortedByTime[sortedByTime.length - 1];
+    var lastAddr = lastJob ? (typeof getClientAddrForJob === 'function' ? getClientAddrForJob(lastJob) : (lastJob.addr||'')) : '';
+
+    function getBackDrive(driveSum) {
+      if (depot && lastAddr && typeof fetchDriveTime === 'function') {
+        fetchDriveTime(lastAddr, depot.addr, function(mins) { finish(driveSum, mins != null ? mins : 20); });
+      } else {
+        finish(driveSum, 20);
+      }
+    }
+
+    if (jobsForDrive.length >= 2 && typeof calcTeamDriveTimes === 'function') {
+      calcTeamDriveTimes(jobsForDrive, function(results){
+        var driveSum = (results||[]).reduce(function(s,r){ return s + (r && r.mins != null ? r.mins : 12); }, 0);
+        getBackDrive(driveSum);
+      });
+    } else {
+      getBackDrive(0);
+    }
+  })();
 
   // Also try clientExtras for team assignment
   let extras = {};
@@ -10813,6 +11997,27 @@ function renderSchedule() {
     return;
   }
 
+  // Build a set of clientIds that have a previously-completed clean — used to mark "first time" jobs.
+  const _allStoredJobs = (function(){ try { return JSON.parse(localStorage.getItem('cleanco_jobs') || '[]'); } catch(e){ return []; } })();
+  const _firstCleanCutoff = todayStr; // anything strictly before today counts as a prior clean
+  const _hadPriorClean = new Set();
+  _allStoredJobs.forEach(function(jj){
+    if (!jj.clientId) return;
+    if (jj.cancelled) return;
+    if (jj.date && jj.date < _firstCleanCutoff && (jj.done || true)) {
+      _hadPriorClean.add(jj.clientId);
+    }
+  });
+  const FREQ_SHORT = { 'RMS - WEK':'WEK', 'RMS - EOW':'EOW', 'RMS - ETW':'ETW', 'RMS - EFW':'EFW', 'RMS - MON':'MON' };
+  function frequencyBadge(clientObj) {
+    if (!clientObj) return '';
+    if (clientObj.occasional === true) return 'OCC';
+    if (clientObj.fc === 'OMS' || !clientObj.fc) return 'OMS';
+    var short = FREQ_SHORT[clientObj.fc] || clientObj.fc;
+    var firstTime = !_hadPriorClean.has(clientObj.id);
+    return firstTime ? ('OMS/' + short) : short;
+  }
+
   list.innerHTML = jobs.map((j, i) => {
     const ex = extras[j.clientId] || {};
     const isDone = completedJobs[j.id];
@@ -10821,6 +12026,9 @@ function renderSchedule() {
 
     // Get client notes from CLIENTS array too
     const clientObj = (typeof CLIENTS !== 'undefined') ? CLIENTS.find(c => c.id === j.clientId) : null;
+    const freqLabel = frequencyBadge(clientObj);
+    const freqColor = freqLabel === 'OCC' ? 'var(--amber)' : (freqLabel === 'OMS' || freqLabel.startsWith('OMS/') ? 'var(--accent2)' : 'var(--accent)');
+    const freqBg = freqLabel === 'OCC' ? 'rgba(251,191,36,0.12)' : (freqLabel === 'OMS' || freqLabel.startsWith('OMS/') ? 'rgba(167,139,250,0.14)' : 'rgba(108,143,255,0.12)');
     // Separate per-clean note (j.notes set by manager for this job) from permanent client notes
     const perCleanNote = (j.notes || '').trim();
     const permanentNotes = [clientObj && clientObj.notes, ex.notes].filter(Boolean).join('\n').trim();
@@ -10836,7 +12044,10 @@ function renderSchedule() {
           ${perCleanNote ? `<div style="margin-top:5px;font-size:12px;color:#fbbf24;font-weight:600;line-height:1.4;white-space:pre-wrap;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);border-radius:6px;padding:5px 8px">⚠ <span id="pcn-top-${j.id}">${perCleanNote}</span></div>` : ''}
           ${permanentNotes ? `<div style="margin-top:4px;font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap" id="pn-top-${j.id}">${permanentNotes}</div>` : ''}
         </div>
-        ${isDone ? '<span style="background:var(--green);color:#000;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;flex-shrink:0;margin-top:4px">✓ Done</span>' : ''}
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;margin-top:4px">
+          ${freqLabel ? `<span style="background:${freqBg};color:${freqColor};font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.04em;font-family:'DM Mono',monospace;border:1px solid ${freqColor}33">${freqLabel}</span>` : ''}
+          ${isDone ? '<span style="background:var(--green);color:#000;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px">✓ Done</span>' : ''}
+        </div>
       </div>
 
       <div class="job-meta" style="margin-top:6px">
@@ -10902,8 +12113,8 @@ function renderSchedule() {
           </a>
 
         </div>
-        <button class="job-btn job-btn-done${isDone?' completed':''}" onclick="toggleDone('${j.id}',this)" style="width:100%;padding:12px;border-radius:10px;font-size:14px;font-weight:700">
-          ${isDone ? t('doneBtn') : t('markDoneBtn')}
+        <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="width:100%;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
+          ⚠ Report Issue
         </button>
       </div>
       <div style="display:flex;gap:8px;margin-top:8px">
@@ -12519,13 +13730,21 @@ function signHandbook() {
 // TABS
 // ─────────────────────────────────────────
 function showPortalTab(tab) {
-  ['schedule','hours','forms','handbook','rate'].forEach(t => {
+  ['schedule','hours','forms','handbook','rate','chat'].forEach(t => {
     var el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
     var pt = document.getElementById('ptab-' + t);
     if (pt) pt.classList.toggle('active', t === tab);
   });
   currentTab = tab;
+  if (tab === 'chat') {
+    seedStaffChatsIfEmpty();
+    renderEmpChat();
+    if (currentEmployee) {
+      localStorage.setItem('emp_chat_lastread_'+currentEmployee.id, String(Date.now()));
+      updateEmpChatBadge();
+    }
+  }
   if (tab === 'rate') {
     renderRateWeek();
   }
@@ -14583,15 +15802,13 @@ function syncSheets() {
 
 
 <!-- APPLICATION SCREEN -->
-<div id="application-screen" style="display:none;padding:24px 20px 40px;max-width:500px;margin:0 auto">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-    <button onclick="hideApplication()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">←</button>
-    <div>
-      <div style="font-size:20px;font-weight:700">Manna <span style="color:var(--accent)">Maids</span></div>
-      <div style="font-size:13px;color:var(--muted)" id="app-subtitle">Join Our Team</div>
-    </div>
+<div id="application-screen" style="display:none;margin:0 auto">
+  <div class="app-hero">
+    <button class="app-hero-back" onclick="hideApplication()">←</button>
+    <div class="app-hero-brand">Manna <span>Maids</span></div>
+    <div class="app-hero-sub" id="app-subtitle">Join Our Team — apply in 5 minutes</div>
   </div>
-  <div style="display:flex;gap:6px;margin-bottom:20px">
+  <div class="app-lang-row">
     <button class="portal-lang-btn" onclick="setAppLang('en')">EN</button>
     <button class="portal-lang-btn" onclick="setAppLang('es')">ES</button>
     <button class="portal-lang-btn" onclick="setAppLang('pt')">PT</button>
@@ -14844,13 +16061,17 @@ function syncSheets() {
   <div class="portal-tabs">
     <div class="ptab active" id="ptab-schedule" onclick="showPortalTab('schedule')" id-text="tab-schedule">📅 Schedule</div>
     <div class="ptab" id="ptab-hours" onclick="showPortalTab('hours')" id-text="tab-hours">⏱ Hours</div>
+    <div class="ptab" id="ptab-chat" onclick="showPortalTab('chat')" style="position:relative">💬 Chat<span id="ptab-chat-badge" style="display:none;position:absolute;top:6px;right:8px;background:var(--accent);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:9px;min-width:14px;text-align:center"></span></div>
     <div class="ptab" id="ptab-forms" onclick="showPortalTab('forms')" id-text="tab-forms">📋 Forms</div>
     <div class="ptab" id="ptab-rate" onclick="showPortalTab('rate')">⭐ Rate</div>
   </div>
 
   <!-- SCHEDULE TAB -->
   <div id="tab-schedule" class="section">
-    <div class="section-title" id="today-label">TODAY'S JOBS</div>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div class="section-title" id="today-label" style="margin:0">TODAY'S JOBS</div>
+      <div id="today-summary" style="font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.04em"></div>
+    </div>
     <div id="schedule-list">
       <div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:14px" id="no-jobs-text">No jobs scheduled for today</div>
     </div>
@@ -14903,6 +16124,24 @@ function syncSheets() {
     <div class="section-title">RATE YOUR WEEK</div>
     <div id="rate-week-content"></div>
     <div id="past-ratings"></div>
+  </div>
+
+  <!-- CHAT TAB (employee → admin) -->
+  <div id="tab-chat" class="section" style="display:none;padding:0">
+    <div style="display:flex;flex-direction:column;height:calc(100vh - 200px);min-height:400px">
+      <div style="padding:14px 16px 10px;border-bottom:1px solid var(--border)">
+        <div style="font-size:15px;font-weight:600" id="emp-chat-title">Chat with Manager</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px" id="emp-chat-sub">Messages auto-translate</div>
+      </div>
+      <div id="emp-chat-messages" style="flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px;display:flex;flex-direction:column;gap:10px"></div>
+      <div style="flex:0 0 auto;padding:10px 14px calc(var(--safe-bottom) + 10px);border-top:1px solid var(--border);background:var(--surface)">
+        <input id="emp-chat-input" type="text" placeholder="Type your message or question…" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;outline:none;margin-bottom:8px" onkeydown="if(event.key==='Enter')sendStaffReplyEmp()">
+        <div style="display:flex;gap:8px">
+          <button onclick="askEmpAI()" style="flex:1;background:var(--surface2);border:1px solid var(--border2);color:var(--accent2);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px;border-radius:10px;cursor:pointer">🤖 Ask AI</button>
+          <button onclick="sendStaffReplyEmp()" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px;border-radius:10px;cursor:pointer">💬 Send to Manager</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Hidden handbook tab (content moved to forms) -->
