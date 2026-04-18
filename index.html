@@ -4264,9 +4264,29 @@ function _pickClaireVoice() {
   return voices.find(function(v){ return /^en[-_]/i.test(v.lang); }) || voices[0];
 }
 
+function _claireStripForSpeech(text) {
+  // Voice output (TTS + D-ID) shouldn't read markdown punctuation literally.
+  // Strip HTML, **bold**, *italic*, `code`, [link text](url), headings, list
+  // bullets, and collapse whitespace. D-ID in particular renders "*" as
+  // "asterisk" in audio, so this is load-bearing for voice quality.
+  return String(text)
+    .replace(/<[^>]*>/g, ' ')                       // HTML tags
+    .replace(/```[\s\S]*?```/g, ' ')                // fenced code blocks
+    .replace(/`([^`]+)`/g, '$1')                    // inline code
+    .replace(/\*\*([^*]+)\*\*/g, '$1')              // **bold**
+    .replace(/__([^_]+)__/g, '$1')                  // __bold__
+    .replace(/(^|\s)\*([^*\s][^*]*?)\*(?=\s|$|[.,!?;:])/g, '$1$2') // *italic*
+    .replace(/(^|\s)_([^_\s][^_]*?)_(?=\s|$|[.,!?;:])/g, '$1$2')   // _italic_
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')        // [text](url) -> text
+    .replace(/^#{1,6}\s+/gm, '')                    // # headings
+    .replace(/^\s*[-*+]\s+/gm, '')                  // list bullets
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function claireSpeak(text) {
   if (!text) return;
-  var plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  var plain = _claireStripForSpeech(text);
   if (!plain) return;
   // Prefer lip-sync via D-ID if configured. Only attempt when the stored proxy
   // value looks like an https URL — otherwise fall straight through to TTS
@@ -4572,8 +4592,12 @@ async function processVoiceCommand(text) {
 
   var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a residential cleaning company in Massachusetts. '
     +'Today is '+todayStr+' ('+todayKey+'). '
-    +'You help the owner Tom manage scheduling, employees, and clients. '
-    +'Be brief, warm, and conversational — like a real office manager. 1-2 sentences.\n\n'
+    +'You help the owner Tom manage scheduling, employees, and clients.\n\n'
+    +'VOICE STYLE (critical — your replies are spoken aloud with lip-sync):\n'
+    +'- Keep every reply to 1-2 short spoken sentences. No exceptions.\n'
+    +'- Write plain conversational English. NEVER use markdown — no **bold**, no bullets, no numbered lists, no headings, no asterisks, no backticks.\n'
+    +'- Do not enumerate multiple items in one reply. Handle one thing at a time; if Tom asks about multiple people, tackle the first and ask about the next.\n'
+    +'- Sound like a real office manager on the phone, not a chatbot writing a memo.\n\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
     +'Total clients: '+CLIENTS.length+'\n'
