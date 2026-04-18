@@ -5263,6 +5263,17 @@ function contentUpdateQueueBadge() {
 // Initialize badge on load
 document.addEventListener('DOMContentLoaded', contentUpdateQueueBadge);
 
+// Entry point from the employee portal's own header button.
+// Pulls the currently-logged-in employee from currentEmployee and hands
+// off to the same submission flow used by the admin-side Share button.
+function portalShareContent() {
+  if (typeof currentEmployee === 'undefined' || !currentEmployee) {
+    alert('Please log in first.');
+    return;
+  }
+  openContentViewAsEmployee(currentEmployee.id || currentEmployee.name, currentEmployee.name);
+}
+
 // Claire's tools — everything she can do in the app
 var CLAIRE_TOOLS = [
   { name: 'schedule_clean', description: 'Schedule a cleaning job for a client on a specific date/time with a team', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name (first last)'}, date:{type:'string',description:'Date in YYYY-MM-DD format'}, time:{type:'string',description:'Time in HH:MM 24hr format'}, team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['client'] } },
@@ -13078,6 +13089,8 @@ function updatePortalText() {
   const firstName = (currentEmployee.name || 'Employee').split(' ')[0];
   document.getElementById('portal-greeting').textContent = greeting + ', ' + firstName + '!';
   document.getElementById('logout-text').textContent = t('logout');
+  var shareEl = document.getElementById('portal-share-text');
+  if (shareEl) shareEl.textContent = currentLang === 'es' ? 'Compartir' : currentLang === 'pt' ? 'Partilhar' : currentLang === 'cv' ? 'Partilha' : 'Share';
   document.getElementById('ptab-schedule').textContent = '📅 ' + (currentLang === 'en' ? 'Schedule' : currentLang === 'es' ? 'Horario' : currentLang === 'pt' ? 'Horário' : 'Orario');
   document.getElementById('ptab-hours').textContent = '⏱ ' + (currentLang === 'en' ? 'Hours' : currentLang === 'es' ? 'Horas' : currentLang === 'pt' ? 'Horas' : 'Oras');
   document.getElementById('ptab-forms').textContent = '📋 ' + (currentLang === 'en' ? 'Forms' : currentLang === 'es' ? 'Formularios' : currentLang === 'pt' ? 'Formulários' : 'Formularius');
@@ -18088,8 +18101,8 @@ function syncSheets() {
           <span id="portal-date"></span>
         </div>
       </div>
-      <div style="display:flex;gap:6px;align-items:center">
-
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+        <button onclick="portalShareContent()" style="background:linear-gradient(135deg,#6c8fff,#a78bfa);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">📸 <span id="portal-share-text">Share</span></button>
         <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">
           <span id="logout-text">Log out</span>
         </button>
