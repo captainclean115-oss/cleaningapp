@@ -4300,7 +4300,7 @@ function _claireBrowserSpeak(plain) {
   var u = new SpeechSynthesisUtterance(plain);
   if (!_claireVoice) _claireVoice = _pickClaireVoice();
   if (_claireVoice) u.voice = _claireVoice;
-  u.rate = 1.15; u.pitch = 1.05; u.volume = 1.0;
+  u.rate = 1.07; u.pitch = 1.05; u.volume = 1.0;
   u.onstart = function(){ _claireSetSpeakingUI(true); };
   u.onend = function(){ _claireSetSpeakingUI(false); };
   u.onerror = function(){ _claireSetSpeakingUI(false); };
@@ -4336,7 +4336,7 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
           voice_id: 'en-US-JennyNeural',
           // Bump speaking rate ~15% above neutral so Claire sounds brisk
           // without going chipmunk. Jenny stays warm at this speed.
-          voice_config: { style: 'Chat', rate: '+15%' }
+          voice_config: { style: 'Chat', rate: '+7%' }
         }
       },
       config: { fluent: true, pad_audio: 0.0 }
@@ -4434,7 +4434,16 @@ if ('speechSynthesis' in window) {
 }
 
 // ── Claire photo customization ──
-function getClairePhoto() { return localStorage.getItem('claire_photo') || ''; }
+function getClairePhoto() {
+  // Priority: explicit display photo -> D-ID source URL (same image usually) -> nothing.
+  // The D-ID fallback is handy because on iOS, a site added to Home Screen runs with
+  // ISOLATED localStorage from the Safari tab — so if Tom set her photo in Safari,
+  // that value is invisible in the home-screen app. Chaining means that once he sets
+  // her D-ID image URL (needed for lip-sync anyway), her face shows up too.
+  return localStorage.getItem('claire_photo')
+      || localStorage.getItem('claire_did_image_url')
+      || '';
+}
 
 function applyClairePhoto() {
   var photo = getClairePhoto();
