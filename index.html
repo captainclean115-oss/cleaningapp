@@ -11747,6 +11747,7 @@ function renderApplications() {
         <span>🌐 ${(app.languages||[]).join(', ')}</span>
         <span>${app.hasLicense==='yes'?'🚗 Has license':'❌ No license'}</span>
         <span>${app.workAuth||''}</span>
+        ${app.submitLang && app.submitLang !== 'en' ? `<span style="background:rgba(167,139,250,0.14);color:var(--accent2);padding:1px 6px;border-radius:4px;font-weight:700">📝 ${app.submitLang.toUpperCase()} → EN</span>` : ''}
       </div>
       <!-- Full details expandable -->
       <div id="app-detail-${realIdx}" style="display:none;border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
@@ -11756,7 +11757,7 @@ function renderApplications() {
           <div><span style="color:var(--muted)">Heard from:</span> ${app.heardFrom||'—'}</div>
           <div><span style="color:var(--muted)">Work auth:</span> ${app.workAuth||'—'}</div>
         </div>
-        ${app.expNotes ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><span style="color:var(--text)">Experience notes:</span> ${app.expNotes}</div>` : ''}
+        ${app.expNotes ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><span style="color:var(--text)">Experience notes:</span> ${app.expNotes}${app.expNotesOriginal ? `<div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border);font-style:italic;font-size:11px;color:var(--muted)">Original (${(app.submitLang||'').toUpperCase()}): ${app.expNotesOriginal}</div>` : ''}</div>` : ''}
         <div style="font-size:12px;margin-bottom:8px">
           <span style="color:var(--muted)">Emergency contact:</span> ${app.emergencyName||'—'} · ${app.emergencyPhone||'—'} ${app.emergencyRel?'('+app.emergencyRel+')':''}
         </div>
@@ -12088,6 +12089,32 @@ const APP_T = {
   }
 };
 
+// Day + language chip labels (merged into APP_T above for each locale)
+(function(){
+  var dayNames = {
+    en: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
+    es: ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'],
+    pt: ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'],
+    cv: ['Sig','Ter','Kar','Kin','Ses','Sab','Dum']
+  };
+  var spoken = {
+    en: ['English','Spanish','Portuguese','Kriolu'],
+    es: ['Inglés','Español','Portugués','Kriolu'],
+    pt: ['Inglês','Espanhol','Português','Kriolu'],
+    cv: ['Inglês','Spanhol','Purtuges','Kriolu']
+  };
+  ['en','es','pt','cv'].forEach(function(l){
+    var d = dayNames[l], s = spoken[l];
+    APP_T[l].dayMon = d[0]; APP_T[l].dayTue = d[1]; APP_T[l].dayWed = d[2];
+    APP_T[l].dayThu = d[3]; APP_T[l].dayFri = d[4]; APP_T[l].daySat = d[5]; APP_T[l].daySun = d[6];
+    APP_T[l].spokenEn = s[0]; APP_T[l].spokenEs = s[1]; APP_T[l].spokenPt = s[2]; APP_T[l].spokenCv = s[3];
+  });
+})();
+
+// (no-op placeholder to keep old closing brace balanced — do not remove)
+var _APP_T_EXTENSIONS_DONE = {
+};
+
 let appLang = 'en';
 
 function setAppLang(lang) {
@@ -12157,6 +12184,12 @@ function renderAppTranslations() {
   }
   set('app-success-title', at.successTitle);
   set('app-success-msg', at.successMsg);
+
+  // Day + language chips
+  set('app-day-mon', at.dayMon); set('app-day-tue', at.dayTue); set('app-day-wed', at.dayWed);
+  set('app-day-thu', at.dayThu); set('app-day-fri', at.dayFri); set('app-day-sat', at.daySat); set('app-day-sun', at.daySun);
+  set('app-spoken-english', at.spokenEn); set('app-spoken-spanish', at.spokenEs);
+  set('app-spoken-portuguese', at.spokenPt); set('app-spoken-kriolu', at.spokenCv);
 
   // Update select options
   const authSel = document.getElementById('app-auth');
@@ -14465,11 +14498,44 @@ async function submitApplication() {
   })));
 
   const now = new Date();
+  const expNotesRaw = document.getElementById('app-expnotes').value.trim();
+  const emRelRaw = document.getElementById('app-emrel').value.trim();
+
+  // If filled out in a non-English language, translate free-text fields to English so admin reads everything in EN.
+  let expNotesEn = expNotesRaw;
+  let emRelEn = emRelRaw;
+  const submitLang = (typeof appLang !== 'undefined') ? appLang : 'en';
+  if (submitLang !== 'en' && (expNotesRaw || emRelRaw)) {
+    const apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    if (apiKey) {
+      const fromLang = { es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole' }[submitLang] || submitLang;
+      async function tr(text) {
+        if (!text) return text;
+        try {
+          const resp = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+            body: JSON.stringify({
+              model: 'claude-haiku-4-5-20251001', max_tokens: 400,
+              messages: [{ role: 'user', content: 'Translate this job-application text from '+fromLang+' to English. Reply with ONLY the translation, no quotes:\n\n'+text }]
+            })
+          });
+          if (!resp.ok) return text;
+          const data = await resp.json();
+          return (data.content && data.content[0] && data.content[0].text || text).trim();
+        } catch(e) { return text; }
+      }
+      if (expNotesRaw) expNotesEn = await tr(expNotesRaw);
+      if (emRelRaw) emRelEn = await tr(emRelRaw);
+    }
+  }
+
   const app = {
     id: Date.now().toString(),
     status: 'pending',
     submittedAt: now.toISOString(),
     submittedStr: now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}),
+    submitLang: submitLang,
     firstName: document.getElementById('app-firstname').value.trim(),
     lastName: document.getElementById('app-lastname').value.trim(),
     phone: document.getElementById('app-phone').value.trim(),
@@ -14479,14 +14545,16 @@ async function submitApplication() {
     workAuth: document.getElementById('app-auth').value,
     hasLicense: document.getElementById('app-license').value,
     experience: document.getElementById('app-exp').value,
-    expNotes: document.getElementById('app-expnotes').value.trim(),
+    expNotes: expNotesEn,
+    expNotesOriginal: (submitLang !== 'en' && expNotesRaw) ? expNotesRaw : '',
     availDays: days,
     prefHours: document.getElementById('app-hours').value,
     languages: langs,
     heardFrom: document.getElementById('app-hear').value,
     emergencyName: document.getElementById('app-emname').value.trim(),
     emergencyPhone: document.getElementById('app-emphone').value.trim(),
-    emergencyRel: document.getElementById('app-emrel').value.trim(),
+    emergencyRel: emRelEn,
+    emergencyRelOriginal: (submitLang !== 'en' && emRelRaw) ? emRelRaw : '',
     signature: document.getElementById('app-signature').value.trim(),
     docs: docPhotos
   };
@@ -16301,27 +16369,13 @@ function syncSheets() {
     <div class="field-group">
       <div class="field-label" id="app-days-label">Available days *</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px" id="app-days-grid">
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Mon" style="accent-color:var(--accent)"> Mon
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Tue" style="accent-color:var(--accent)"> Tue
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Wed" style="accent-color:var(--accent)"> Wed
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Thu" style="accent-color:var(--accent)"> Thu
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Fri" style="accent-color:var(--accent)"> Fri
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Sat" style="accent-color:var(--accent)"> Sat
-        </label>
-        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px">
-          <input type="checkbox" value="Sun" style="accent-color:var(--accent)"> Sun
-        </label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Mon" style="accent-color:var(--accent)"> <span id="app-day-mon">Mon</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Tue" style="accent-color:var(--accent)"> <span id="app-day-tue">Tue</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Wed" style="accent-color:var(--accent)"> <span id="app-day-wed">Wed</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Thu" style="accent-color:var(--accent)"> <span id="app-day-thu">Thu</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Fri" style="accent-color:var(--accent)"> <span id="app-day-fri">Fri</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sat" style="accent-color:var(--accent)"> <span id="app-day-sat">Sat</span></label>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sun" style="accent-color:var(--accent)"> <span id="app-day-sun">Sun</span></label>
       </div>
     </div>
     <div class="field-group">
@@ -16339,18 +16393,10 @@ function syncSheets() {
     <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px" id="app-section-lang">Languages Spoken</div>
     
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
-        <input type="checkbox" value="English" style="accent-color:var(--accent)"> English
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
-        <input type="checkbox" value="Spanish" style="accent-color:var(--accent)"> Spanish
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
-        <input type="checkbox" value="Portuguese" style="accent-color:var(--accent)"> Portuguese
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px">
-        <input type="checkbox" value="Kriolu" style="accent-color:var(--accent)"> Kriolu
-      </label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="English" style="accent-color:var(--accent)"> <span id="app-spoken-english">English</span></label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Spanish" style="accent-color:var(--accent)"> <span id="app-spoken-spanish">Spanish</span></label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Portuguese" style="accent-color:var(--accent)"> <span id="app-spoken-portuguese">Portuguese</span></label>
+      <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Kriolu" style="accent-color:var(--accent)"> <span id="app-spoken-kriolu">Kriolu</span></label>
     </div>
 
     <div style="height:1px;background:var(--border);margin:20px 0"></div>
