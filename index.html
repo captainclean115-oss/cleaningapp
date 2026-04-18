@@ -5154,10 +5154,74 @@ function _contentQueueCard(c) {
     + '<div style="font-size:13px;font-weight:700">'+c.authorName+authorBadge+'</div>'
     + '<div style="font-size:11px;color:var(--muted)">'+when+'</div>'
     + '</div>'
-    + '<div style="font-size:14px;line-height:1.45;margin-bottom:10px;white-space:pre-wrap">'+(c.caption||'<span style="color:var(--muted)">(no caption)</span>')+'</div>'
-    + (platBadges ? '<div style="display:flex;gap:6px;flex-wrap:wrap">'+platBadges+'</div>' : '')
+    + _contentCaptionBlock(c)
+    + (platBadges ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+platBadges+'</div>' : '')
     + statusHtml
     + '</div></div>';
+}
+
+// Pending items get an editable textarea + ✨ regenerate button so Tom can
+// polish (or fully rewrite) the employee's caption before approving — same
+// control surface as the Create tab. Non-pending items just show text.
+function _contentCaptionBlock(c) {
+  if (c.status === 'pending') {
+    var initial = (c.caption || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">'
+      + '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Caption (editable)</div>'
+      + '<button onclick="contentRegenCaption(\''+c.id+'\')" id="regen-btn-'+c.id+'" style="background:linear-gradient(135deg,rgba(108,143,255,0.2),rgba(167,139,250,0.25));border:1px solid rgba(167,139,250,0.4);color:var(--accent2);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:700;padding:4px 10px;border-radius:16px;cursor:pointer">✨ Regenerate</button>'
+      + '</div>'
+      + '<textarea id="cap-edit-'+c.id+'" class="content-caption" rows="3" style="min-height:70px;margin-bottom:4px" placeholder="Write a caption or tap Regenerate…">'+initial+'</textarea>';
+  }
+  return '<div style="font-size:14px;line-height:1.45;margin-bottom:10px;white-space:pre-wrap">'+(c.caption||'<span style="color:var(--muted)">(no caption)</span>')+'</div>';
+}
+
+async function contentRegenCaption(id) {
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var item = queue.find(function(c){ return c.id === id; });
+  if (!item) return;
+  var ta = document.getElementById('cap-edit-'+id);
+  var btn = document.getElementById('regen-btn-'+id);
+  if (!ta) return;
+  var orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.innerHTML = 'Writing…'; btn.disabled = true; }
+  try {
+    var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    if (!key) {
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      return;
+    }
+    var prompt = 'Write a short, authentic Instagram-style caption for a Manna Maids social post. '
+      + 'Manna Maids is a residential cleaning company in Massachusetts. '
+      + '15–25 words max, proud of the work but not corporate, 2–3 relevant hashtags at the end. '
+      + 'Match what you see in the attached ' + item.mediaType + '. '
+      + 'Do NOT use quotation marks. Output caption text only.';
+    var body = { model: 'claude-haiku-4-5-20251001', max_tokens: 200 };
+    if (item.mediaType === 'photo' && item.mediaData) {
+      var parts = item.mediaData.split(',');
+      var mime = (parts[0].match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
+      body.messages = [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mime, data: parts[1] } },
+        { type: 'text', text: prompt }
+      ]}];
+    } else {
+      body.messages = [{ role: 'user', content: prompt + '\n\n(Note: this is a video from the field.)' }];
+    }
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error('API '+resp.status);
+    var data = await resp.json();
+    var cap = '';
+    (data.content||[]).forEach(function(b){ if (b.type === 'text') cap += b.text; });
+    cap = cap.trim().replace(/^["']|["']$/g, '');
+    if (cap) ta.value = cap;
+  } catch(e) {
+    alert('Couldn\'t regenerate caption: ' + e.message);
+  } finally {
+    if (btn) { btn.innerHTML = orig; btn.disabled = false; }
+  }
 }
 
 function contentApprove(id) {
@@ -5168,6 +5232,17 @@ function contentApprove(id) {
   var linked = JSON.parse(localStorage.getItem('content_socials') || '{}');
   var platforms = CONTENT_SOCIALS.filter(function(s){ return linked[s.id]; }).map(function(s){ return s.id; });
   if (!platforms.length) { alert('No platforms are linked. Toggle at least one on in the Create tab first.'); return; }
+  // Honor any edits Tom made to the caption in the queue card textarea.
+  var ta = document.getElementById('cap-edit-'+id);
+  if (ta) {
+    var edited = ta.value.trim();
+    var prev = item.caption || '';
+    if (edited !== prev) {
+      // Preserve the employee's original text for audit/back-reference
+      if (!item.originalCaption && item.authorType === 'employee') item.originalCaption = prev;
+      item.caption = edited;
+    }
+  }
   item.status = 'approved';
   item.platforms = platforms;
   item.postedAt = Date.now();
