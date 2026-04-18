@@ -13347,6 +13347,13 @@ function renderSchedule() {
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;margin-top:4px">
           ${freqLabel ? `<span style="background:${freqBg};color:${freqColor};font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.04em;font-family:'DM Mono',monospace;border:1px solid ${freqColor}33">${freqLabel}</span>` : ''}
+          ${(() => {
+            const kc = ex.keyCode || j.keyCode || '';
+            if (kc) {
+              return `<span style="background:rgba(251,191,36,0.14);color:#fbbf24;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.04em;font-family:'DM Mono',monospace;border:1px solid rgba(251,191,36,0.35);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔑 ${kc}</span>`;
+            }
+            return `<span style="background:var(--surface2);color:var(--muted);font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.04em;font-family:'DM Mono',monospace;border:1px solid var(--border)">🔑 No key</span>`;
+          })()}
           ${isDone ? '<span style="background:var(--green);color:#000;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px">✓ Done</span>' : ''}
         </div>
       </div>
@@ -13356,7 +13363,6 @@ function renderSchedule() {
         ${pkg ? `<span class="job-tag">${pkg}</span>` : ''}
         ${ex.prefTime ? `<span class="job-tag">⏰ ${ex.prefTime}</span>` : ''}
         ${ex.payment ? `<span class="job-tag">💳 ${ex.payment}</span>` : ''}
-        ${ex.keyCode || j.keyCode ? `<span class="job-tag">🔑 ${ex.keyCode || j.keyCode}</span>` : ''}
       </div>
 
       <!-- Expandable client details -->
