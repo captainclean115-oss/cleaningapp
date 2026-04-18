@@ -1009,6 +1009,198 @@ body {
   background: var(--surface);
 }
 
+/* ── CONTENT HUB (demo) ── */
+#content-view {
+  display: none;
+  position: fixed; inset: 0;
+  background: var(--bg);
+  z-index: 260;
+  flex-direction: column;
+  overflow: hidden;
+}
+#content-view.active { display: flex; }
+.content-topbar {
+  flex: 0 0 auto;
+  padding: calc(var(--safe-top) + 12px) 14px 0;
+  background: linear-gradient(180deg, rgba(108,143,255,0.08), transparent);
+}
+.content-topbar-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.content-back {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  width: 36px; height: 36px; border-radius: 50%; font-size: 22px; line-height: 1;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.content-title-big {
+  font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+}
+.content-tabs-row {
+  display: flex; gap: 6px; border-bottom: 1px solid var(--border);
+}
+.content-tab {
+  background: none; border: none; color: var(--muted);
+  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600;
+  padding: 10px 14px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.content-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.content-queue-badge {
+  display: inline-block; background: var(--red); color: #fff;
+  border-radius: 10px; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; margin-left: 4px; min-width: 16px;
+}
+.content-pane {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(var(--safe-bottom) + 24px);
+}
+.content-capture {
+  background: var(--surface2);
+  border: 2px dashed var(--border2);
+  border-radius: 16px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.content-capture:active { background: var(--surface); border-color: var(--accent); }
+.content-capture-icon { font-size: 48px; margin-bottom: 8px; }
+.content-capture-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+.content-capture-sub { font-size: 13px; color: var(--muted); }
+.content-preview-wrap {
+  position: relative;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 16px;
+  max-height: 400px;
+}
+.content-preview-wrap img, .content-preview-wrap video {
+  width: 100%; max-height: 400px; object-fit: contain; display: block;
+}
+.content-preview-retry {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(0,0,0,0.65); color: #fff; border: none;
+  padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  cursor: pointer; backdrop-filter: blur(10px);
+}
+.content-section-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin: 14px 0 8px;
+}
+.content-caption-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 14px 0 8px;
+}
+.content-ai-btn {
+  background: linear-gradient(135deg, rgba(108,143,255,0.2), rgba(167,139,250,0.25));
+  border: 1px solid rgba(167,139,250,0.4);
+  color: var(--accent2);
+  font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700;
+  padding: 6px 12px; border-radius: 20px; cursor: pointer;
+}
+.content-ai-btn:disabled { opacity: 0.5; cursor: default; }
+.content-caption {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif; font-size: 14px; line-height: 1.5;
+  padding: 12px; outline: none; resize: vertical;
+  min-height: 90px;
+}
+.content-socials {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.social-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+  padding: 8px 14px; border-radius: 24px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.social-pill.on {
+  background: var(--pcol, var(--accent));
+  border-color: var(--pcol, var(--accent));
+  color: #fff;
+}
+.social-pill-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: rgba(255,255,255,0.2); font-size: 11px; font-weight: 700;
+}
+.social-pill.on .social-pill-check { background: rgba(255,255,255,0.3); }
+.content-post-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #6c8fff, #a78bfa);
+  border: none;
+  color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 16px; font-weight: 700;
+  padding: 14px; border-radius: 12px;
+  cursor: pointer;
+  margin-top: 20px;
+  box-shadow: 0 4px 20px rgba(108,143,255,0.3);
+}
+.content-post-btn:active { transform: scale(0.98); }
+.content-queue-section-label {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 10px;
+}
+.content-queue-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+.content-queue-empty {
+  text-align: center; color: var(--muted); font-size: 14px; padding: 40px 20px;
+}
+.content-toast-wrap {
+  position: fixed; inset: 0; z-index: 400;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.7);
+  transition: opacity 0.3s;
+}
+.content-toast {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 24px 32px;
+  border-radius: 16px;
+  text-align: center;
+  animation: content-toast-pop 0.4s cubic-bezier(0.3,1.5,0.5,1);
+}
+@keyframes content-toast-pop {
+  from { transform: scale(0.8); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Schedule-tab Content button */
+.cal-content-btn-row {
+  display: flex; justify-content: center; margin: 10px 0 6px;
+}
+.cal-content-btn {
+  position: relative;
+  background: linear-gradient(135deg, #6c8fff, #a78bfa);
+  border: none; color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  padding: 9px 22px; border-radius: 22px;
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(108,143,255,0.35);
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.cal-content-btn-badge {
+  position: absolute; top: -4px; right: -4px;
+  background: var(--red); color: #fff;
+  border-radius: 10px; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; min-width: 16px; text-align: center;
+}
+
 /* ── CLAIRE CHAT — human-feeling assistant UI ── */
 .claire-box {
   background: linear-gradient(180deg, rgba(108,143,255,0.06), rgba(167,139,250,0.04));
@@ -1548,6 +1740,13 @@ select.field-input { appearance: none; }
 
       <button onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
     </div>
+    <div class="cal-content-btn-row">
+      <button class="cal-content-btn" onclick="openContentView()">
+        <span>📸</span>
+        <span>Content</span>
+        <span id="content-main-badge" class="cal-content-btn-badge" style="display:none">0</span>
+      </button>
+    </div>
   </div>
   <div id="cal-body"></div>
   <div class="bottom-pad"></div>
@@ -1584,6 +1783,58 @@ select.field-input { appearance: none; }
 </div>
 
 <!-- FILES VIEW (Finder-style grid) -->
+<!-- CONTENT HUB (demo — social posting workflow) -->
+<div id="content-view">
+  <div class="content-topbar">
+    <div class="content-topbar-row">
+      <button class="content-back" onclick="closeContentView()">‹</button>
+      <div class="content-title-big" id="content-title">Content</div>
+      <div style="margin-left:auto;font-size:12px;color:var(--muted)" id="content-author-hint"></div>
+    </div>
+    <div class="content-tabs-row">
+      <button class="content-tab active" id="ctab-create" onclick="contentSwitchTab('create')">Create</button>
+      <button class="content-tab" id="ctab-queue" onclick="contentSwitchTab('queue')">Queue <span id="content-queue-badge" class="content-queue-badge" style="display:none">0</span></button>
+      <button class="content-tab" id="ctab-rewards" onclick="contentSwitchTab('rewards')">Rewards</button>
+    </div>
+  </div>
+
+  <div class="content-pane" id="content-pane-create">
+    <div id="content-capture" class="content-capture" onclick="contentTriggerCapture()">
+      <div class="content-capture-icon">📸</div>
+      <div class="content-capture-title">Tap to add a photo or video</div>
+      <div class="content-capture-sub">Camera or library</div>
+    </div>
+    <input type="file" id="content-file-input" accept="image/*,video/*" style="display:none" onchange="contentHandleFile(this)">
+
+    <div id="content-editor" style="display:none">
+      <div class="content-preview-wrap">
+        <img id="content-preview-img" style="display:none">
+        <video id="content-preview-video" controls playsinline style="display:none"></video>
+        <button class="content-preview-retry" onclick="contentReset()">Retake</button>
+      </div>
+
+      <div class="content-caption-row">
+        <div class="content-section-label" style="margin:0">Caption</div>
+        <button class="content-ai-btn" id="content-ai-btn" onclick="contentGenerateCaption()">✨ Generate with AI</button>
+      </div>
+      <textarea id="content-caption" class="content-caption" placeholder="Write a caption or tap Generate with AI..." rows="4"></textarea>
+
+      <div class="content-section-label">Post to</div>
+      <div class="content-socials" id="content-socials"></div>
+
+      <button class="content-post-btn" id="content-post-btn" onclick="contentPost()">Post now</button>
+    </div>
+  </div>
+
+  <div class="content-pane" id="content-pane-queue" style="display:none">
+    <div id="content-queue-list"></div>
+  </div>
+
+  <div class="content-pane" id="content-pane-rewards" style="display:none">
+    <div id="content-rewards-list"></div>
+  </div>
+</div>
+
 <div id="files-view" style="display:none;position:fixed;inset:0;z-index:260;background:var(--bg);flex-direction:column">
   <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
@@ -4567,6 +4818,450 @@ _claireRenderBubble = function(who, html) {
 
 // Apply on startup
 document.addEventListener('DOMContentLoaded', applyClairePhoto);
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONTENT HUB (demo — social posting workflow)
+// Data model (all localStorage):
+//   content_queue   — [{id, ts, authorType, authorName, authorId, mediaType, mediaData, caption, platforms, status}]
+//   content_socials — {instagram:true, facebook:true, ...} — mocked "linked" state
+//   content_points  — {[employeeId]: number} — reward points per employee
+// ═══════════════════════════════════════════════════════════════════════
+var CONTENT_SOCIALS = [
+  { id: 'instagram', name: 'Instagram', icon: '📷', color: '#E1306C' },
+  { id: 'facebook',  name: 'Facebook',  icon: '👍', color: '#1877F2' },
+  { id: 'tiktok',    name: 'TikTok',    icon: '🎵', color: '#111827' },
+  { id: 'x',         name: 'X',         icon: '𝕏',  color: '#111827' },
+  { id: 'linkedin',  name: 'LinkedIn',  icon: '💼', color: '#0077B5' },
+];
+var _currentContent = null; // {mediaData, mediaType, fileName, authorType, authorId, authorName, isEmployeeSubmit}
+
+function openContentView() {
+  _currentContent = { mediaData: null, mediaType: null, fileName: null, authorType: 'admin', isEmployeeSubmit: false };
+  document.getElementById('content-title').textContent = 'Content';
+  document.getElementById('content-author-hint').textContent = '';
+  var btn = document.getElementById('content-post-btn');
+  if (btn) { btn.textContent = 'Post now'; btn.onclick = contentPost; }
+  document.getElementById('content-view').classList.add('active');
+  contentSwitchTab('create');
+  contentReset();
+  contentRenderSocials();
+}
+
+function openContentViewAsEmployee(empId, empName) {
+  _currentContent = { mediaData: null, mediaType: null, fileName: null, authorType: 'employee', authorId: empId, authorName: empName, isEmployeeSubmit: true };
+  document.getElementById('content-title').textContent = 'Share Content';
+  document.getElementById('content-author-hint').textContent = 'as ' + empName;
+  var btn = document.getElementById('content-post-btn');
+  if (btn) { btn.textContent = '📤 Submit for approval'; btn.onclick = contentEmployeeSubmit; }
+  document.getElementById('content-view').classList.add('active');
+  contentSwitchTab('create');
+  contentReset();
+  // Employees don't pick platforms — admin does on approval
+  var socEl = document.getElementById('content-socials');
+  if (socEl) socEl.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 2px">Your manager picks platforms when approving.</div>';
+}
+
+function closeContentView() {
+  document.getElementById('content-view').classList.remove('active');
+  contentReset();
+}
+
+function contentSwitchTab(which) {
+  ['create','queue','rewards'].forEach(function(t) {
+    document.getElementById('content-pane-'+t).style.display = (t === which) ? '' : 'none';
+    document.getElementById('ctab-'+t).classList.toggle('active', t === which);
+  });
+  if (which === 'queue') contentRenderQueue();
+  if (which === 'rewards') contentRenderRewards();
+}
+
+function contentTriggerCapture() {
+  document.getElementById('content-file-input').click();
+}
+
+function contentHandleFile(input) {
+  var f = input.files && input.files[0];
+  if (!f) return;
+  var isVideo = (f.type || '').indexOf('video') === 0;
+  // Downscale images to stay under localStorage quota. Video stored as-is
+  // but demo video files should be short.
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    if (!isVideo) {
+      // Downscale to max 1200px, JPEG 0.82
+      var img = new Image();
+      img.onload = function() {
+        var max = 1200;
+        var w = img.width, h = img.height;
+        if (w > max || h > max) {
+          var r = Math.min(max/w, max/h);
+          w = Math.round(w*r); h = Math.round(h*r);
+        }
+        var c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        _currentContent.mediaData = c.toDataURL('image/jpeg', 0.82);
+        _currentContent.mediaType = 'photo';
+        _currentContent.fileName = f.name;
+        contentShowEditor();
+      };
+      img.src = e.target.result;
+    } else {
+      _currentContent.mediaData = e.target.result;
+      _currentContent.mediaType = 'video';
+      _currentContent.fileName = f.name;
+      contentShowEditor();
+    }
+  };
+  reader.readAsDataURL(f);
+}
+
+function contentShowEditor() {
+  document.getElementById('content-capture').style.display = 'none';
+  document.getElementById('content-editor').style.display = 'block';
+  var img = document.getElementById('content-preview-img');
+  var vid = document.getElementById('content-preview-video');
+  if (_currentContent.mediaType === 'video') {
+    img.style.display = 'none'; img.src = '';
+    vid.style.display = 'block'; vid.src = _currentContent.mediaData;
+  } else {
+    vid.style.display = 'none'; vid.src = '';
+    img.style.display = 'block'; img.src = _currentContent.mediaData;
+  }
+}
+
+function contentReset() {
+  if (_currentContent) {
+    _currentContent.mediaData = null;
+    _currentContent.mediaType = null;
+    _currentContent.fileName = null;
+  }
+  var cap = document.getElementById('content-capture');
+  var ed = document.getElementById('content-editor');
+  if (cap) cap.style.display = '';
+  if (ed) ed.style.display = 'none';
+  var ta = document.getElementById('content-caption');
+  if (ta) ta.value = '';
+  var fi = document.getElementById('content-file-input');
+  if (fi) fi.value = '';
+  var img = document.getElementById('content-preview-img');
+  var vid = document.getElementById('content-preview-video');
+  if (img) img.src = '';
+  if (vid) vid.src = '';
+}
+
+function contentRenderSocials() {
+  if (_currentContent && _currentContent.isEmployeeSubmit) return;
+  var el = document.getElementById('content-socials');
+  if (!el) return;
+  var linked = JSON.parse(localStorage.getItem('content_socials') || '{}');
+  el.innerHTML = CONTENT_SOCIALS.map(function(s) {
+    var on = !!linked[s.id];
+    return '<button class="social-pill'+(on?' on':'')+'" onclick="contentToggleSocial(\''+s.id+'\')" style="--pcol:'+s.color+'">'
+      + '<span style="font-size:16px;line-height:1">'+s.icon+'</span>'
+      + '<span>'+s.name+'</span>'
+      + '<span class="social-pill-check">'+(on?'✓':'+')+'</span>'
+      + '</button>';
+  }).join('');
+}
+
+function contentToggleSocial(id) {
+  var linked = JSON.parse(localStorage.getItem('content_socials') || '{}');
+  linked[id] = !linked[id];
+  localStorage.setItem('content_socials', JSON.stringify(linked));
+  contentRenderSocials();
+}
+
+async function contentGenerateCaption() {
+  var btn = document.getElementById('content-ai-btn');
+  var ta = document.getElementById('content-caption');
+  if (!_currentContent || !_currentContent.mediaData) { alert('Add a photo or video first.'); return; }
+  var orig = btn.innerHTML;
+  btn.innerHTML = 'Writing…'; btn.disabled = true;
+  try {
+    var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    if (!key) {
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      return;
+    }
+    var prompt = 'Write a short, authentic Instagram-style caption for a Manna Maids social post. '
+      + 'Manna Maids is a residential cleaning company in Massachusetts. '
+      + 'The caption should: sound proud of the work but not corporate, be 15–25 words max, include 2–3 relevant hashtags at the end, '
+      + 'and match what you see in the attached ' + _currentContent.mediaType + '. '
+      + 'Do NOT use quotation marks around the caption. Output the caption text only, nothing else.';
+    var body = { model: 'claude-haiku-4-5-20251001', max_tokens: 200 };
+    if (_currentContent.mediaType === 'photo') {
+      var parts = _currentContent.mediaData.split(',');
+      var mime = (parts[0].match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
+      body.messages = [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mime, data: parts[1] } },
+        { type: 'text', text: prompt }
+      ]}];
+    } else {
+      // Can't send video to vision API; use text-only prompt
+      body.messages = [{ role: 'user', content: prompt + '\n\n(Note: this is a video from the field — write something lively.)' }];
+    }
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error('API '+resp.status);
+    var data = await resp.json();
+    var cap = '';
+    (data.content||[]).forEach(function(b) { if (b.type === 'text') cap += b.text; });
+    cap = cap.trim().replace(/^["']|["']$/g, '');
+    ta.value = cap || 'Another happy home! ✨ #MannaMaids';
+  } catch(e) {
+    ta.value = 'Another happy home! ✨ #CleanHouseHappyHome #MannaMaids';
+  } finally {
+    btn.innerHTML = orig; btn.disabled = false;
+  }
+}
+
+function contentPost() {
+  if (!_currentContent || !_currentContent.mediaData) { alert('Add a photo or video first.'); return; }
+  var caption = document.getElementById('content-caption').value.trim();
+  if (!caption) { alert('Add a caption (or tap Generate with AI).'); return; }
+  var linked = JSON.parse(localStorage.getItem('content_socials') || '{}');
+  var selected = CONTENT_SOCIALS.filter(function(s) { return linked[s.id]; });
+  if (!selected.length) { alert('Toggle on at least one platform to post to.'); return; }
+
+  var item = {
+    id: 'c_' + Date.now(),
+    ts: Date.now(),
+    authorType: _currentContent.authorType,
+    authorName: _currentContent.authorName || (typeof getCurrentActor === 'function' ? getCurrentActor() : 'Admin'),
+    authorId: _currentContent.authorId || null,
+    mediaType: _currentContent.mediaType,
+    mediaData: _currentContent.mediaData,
+    caption: caption,
+    platforms: selected.map(function(s){ return s.id; }),
+    status: 'posted',
+    postedAt: Date.now()
+  };
+  try { _contentSaveItem(item); }
+  catch(e) { alert('Storage full — clear some old posts from the Queue tab.'); return; }
+
+  if (typeof logPendingUpdate === 'function') {
+    logPendingUpdate('Posted content', selected.map(function(s){return s.name;}).join(', ') + ' — "' + caption.slice(0,60) + (caption.length>60?'…':'') + '"');
+  }
+  _contentShowToast(selected, 'Posted!');
+  setTimeout(function() {
+    contentReset();
+    contentUpdateQueueBadge();
+  }, 1600);
+}
+
+function contentEmployeeSubmit() {
+  if (!_currentContent || !_currentContent.mediaData) { alert('Add a photo or video first.'); return; }
+  var caption = document.getElementById('content-caption').value.trim();
+  var item = {
+    id: 'c_' + Date.now(),
+    ts: Date.now(),
+    authorType: 'employee',
+    authorName: _currentContent.authorName,
+    authorId: _currentContent.authorId,
+    mediaType: _currentContent.mediaType,
+    mediaData: _currentContent.mediaData,
+    caption: caption,
+    platforms: [],
+    status: 'pending'
+  };
+  try { _contentSaveItem(item); }
+  catch(e) { alert('Storage full — ask your manager to clear some old content.'); return; }
+
+  if (typeof logPendingUpdate === 'function') {
+    logPendingUpdate('New content submitted', _currentContent.authorName + ' — "' + (caption.slice(0,60) || '(no caption)') + '"', 'Staff');
+  }
+  _contentShowToast([], 'Submitted for approval!');
+  setTimeout(function() {
+    closeContentView();
+    contentUpdateQueueBadge();
+  }, 1600);
+}
+
+function _contentSaveItem(item) {
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  queue.unshift(item);
+  // Cap at 50 items to protect localStorage
+  if (queue.length > 50) queue = queue.slice(0, 50);
+  localStorage.setItem('content_queue', JSON.stringify(queue));
+}
+
+function _contentShowToast(platforms, title) {
+  var wrap = document.createElement('div');
+  wrap.className = 'content-toast-wrap';
+  var platHtml = platforms.length ? '<div style="font-size:13px;color:var(--muted);margin-top:6px">' + platforms.map(function(p){return p.icon+' '+p.name;}).join(' · ') + '</div>' : '';
+  wrap.innerHTML = '<div class="content-toast">'
+    + '<div style="font-size:44px;margin-bottom:8px">✅</div>'
+    + '<div style="font-size:18px;font-weight:700">'+title+'</div>'
+    + platHtml
+    + '</div>';
+  document.body.appendChild(wrap);
+  setTimeout(function() { wrap.style.opacity = '0'; setTimeout(function(){ wrap.remove(); }, 300); }, 1400);
+}
+
+function contentRenderQueue() {
+  var el = document.getElementById('content-queue-list');
+  if (!el) return;
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var pending = queue.filter(function(c){ return c.status === 'pending'; });
+  var history = queue.filter(function(c){ return c.status !== 'pending'; }).slice(0, 30);
+  if (!queue.length) {
+    el.innerHTML = '<div class="content-queue-empty">Nothing yet. Posts from you or your team will appear here.</div>';
+    return;
+  }
+  var html = '';
+  if (pending.length) {
+    html += '<div class="content-queue-section-label" style="color:var(--amber)">Pending your approval (' + pending.length + ')</div>';
+    html += pending.map(_contentQueueCard).join('');
+  }
+  if (history.length) {
+    html += '<div class="content-queue-section-label" style="margin-top:20px">Recent</div>';
+    html += history.map(_contentQueueCard).join('');
+  }
+  el.innerHTML = html;
+}
+
+function _contentQueueCard(c) {
+  var when = new Date(c.ts).toLocaleDateString('en-US', {month:'short', day:'numeric'}) + ' · ' + new Date(c.ts).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+  var media = c.mediaType === 'video'
+    ? '<video src="'+c.mediaData+'" controls playsinline style="width:100%;max-height:260px;object-fit:cover;border-radius:10px;background:#000"></video>'
+    : '<img src="'+c.mediaData+'" style="width:100%;max-height:260px;object-fit:cover;border-radius:10px;background:#000">';
+  var platBadges = (c.platforms||[]).map(function(pid) {
+    var p = CONTENT_SOCIALS.find(function(s){return s.id === pid;});
+    return p ? '<span style="background:'+p.color+'22;color:'+p.color+';padding:3px 9px;border-radius:12px;font-size:11px;font-weight:600">'+p.icon+' '+p.name+'</span>' : '';
+  }).join('');
+  var authorBadge = c.authorType === 'employee'
+    ? '<span style="background:rgba(108,143,255,0.15);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;margin-left:6px">STAFF</span>'
+    : '';
+  var statusHtml;
+  if (c.status === 'pending') {
+    statusHtml = '<div style="display:flex;gap:8px;margin-top:12px">'
+      + '<button onclick="contentApprove(\''+c.id+'\')" style="flex:1;background:var(--green);border:none;color:#000;padding:11px;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer">✓ Approve & post</button>'
+      + '<button onclick="contentReject(\''+c.id+'\')" style="flex:0 0 auto;background:var(--surface);border:1px solid var(--border);color:var(--muted);padding:11px 16px;border-radius:10px;font-weight:600;font-size:14px;cursor:pointer">Deny</button>'
+      + '</div>';
+  } else if (c.status === 'posted' || c.status === 'approved') {
+    statusHtml = '<div style="margin-top:8px;font-size:12px;color:var(--green);font-weight:600">✓ '+(c.status==='approved'?'Approved & posted':'Posted')+'</div>';
+  } else {
+    statusHtml = '<div style="margin-top:8px;font-size:12px;color:var(--muted)">✕ Denied</div>';
+  }
+  return '<div class="content-queue-card">'
+    + media
+    + '<div style="padding:10px 4px 2px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+    + '<div style="font-size:13px;font-weight:700">'+c.authorName+authorBadge+'</div>'
+    + '<div style="font-size:11px;color:var(--muted)">'+when+'</div>'
+    + '</div>'
+    + '<div style="font-size:14px;line-height:1.45;margin-bottom:10px;white-space:pre-wrap">'+(c.caption||'<span style="color:var(--muted)">(no caption)</span>')+'</div>'
+    + (platBadges ? '<div style="display:flex;gap:6px;flex-wrap:wrap">'+platBadges+'</div>' : '')
+    + statusHtml
+    + '</div></div>';
+}
+
+function contentApprove(id) {
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var item = queue.find(function(c){ return c.id === id; });
+  if (!item) return;
+  // Use the admin's currently-linked socials for the submitted content
+  var linked = JSON.parse(localStorage.getItem('content_socials') || '{}');
+  var platforms = CONTENT_SOCIALS.filter(function(s){ return linked[s.id]; }).map(function(s){ return s.id; });
+  if (!platforms.length) { alert('No platforms are linked. Toggle at least one on in the Create tab first.'); return; }
+  item.status = 'approved';
+  item.platforms = platforms;
+  item.postedAt = Date.now();
+  localStorage.setItem('content_queue', JSON.stringify(queue));
+
+  // Reward the employee
+  if (item.authorType === 'employee' && item.authorId) {
+    var pts = JSON.parse(localStorage.getItem('content_points') || '{}');
+    pts[item.authorId] = (pts[item.authorId] || 0) + 10;
+    localStorage.setItem('content_points', JSON.stringify(pts));
+  }
+  if (typeof logPendingUpdate === 'function') {
+    logPendingUpdate('Approved post', item.authorName + ' earned 10 pts · posted to ' + platforms.length + ' platform' + (platforms.length===1?'':'s'));
+  }
+  _contentShowToast(CONTENT_SOCIALS.filter(function(s){ return platforms.indexOf(s.id) !== -1; }), 'Approved & posted!');
+  contentRenderQueue();
+  contentUpdateQueueBadge();
+}
+
+function contentReject(id) {
+  if (!confirm('Deny this post?')) return;
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var item = queue.find(function(c){ return c.id === id; });
+  if (!item) return;
+  item.status = 'rejected';
+  localStorage.setItem('content_queue', JSON.stringify(queue));
+  if (typeof logPendingUpdate === 'function') {
+    logPendingUpdate('Denied post', item.authorName + ' — "' + (item.caption||'').slice(0,60) + '"');
+  }
+  contentRenderQueue();
+  contentUpdateQueueBadge();
+}
+
+function contentRenderRewards() {
+  var el = document.getElementById('content-rewards-list');
+  if (!el) return;
+  var pts = JSON.parse(localStorage.getItem('content_points') || '{}');
+  var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
+  // Also pull any author IDs from queue that might not be in roster
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var byId = {};
+  roster.forEach(function(e){ byId[e.id] = { id: e.id, name: e.name, points: pts[e.id] || 0 }; });
+  queue.forEach(function(c) {
+    if (c.authorType === 'employee' && c.authorId && !byId[c.authorId]) {
+      byId[c.authorId] = { id: c.authorId, name: c.authorName, points: pts[c.authorId] || 0 };
+    }
+  });
+  var list = Object.values(byId).filter(function(e){ return e.points > 0 || roster.some(function(r){ return r.id === e.id; }); });
+  list.sort(function(a,b){ return b.points - a.points; });
+
+  function tierFor(p) {
+    if (p >= 100) return { label: '⭐ Legend', color: '#FCD34D' };
+    if (p >= 50)  return { label: '🏆 Star',   color: '#A78BFA' };
+    if (p >= 20)  return { label: '🔥 Active', color: '#F87171' };
+    if (p >= 10)  return { label: '🌱 Rising', color: '#34D399' };
+    return { label: '—', color: 'var(--muted)' };
+  }
+
+  var html = '<div style="background:linear-gradient(135deg,rgba(108,143,255,0.12),rgba(167,139,250,0.08));border:1px solid rgba(167,139,250,0.25);border-radius:14px;padding:14px;margin-bottom:16px">'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:600;letter-spacing:.05em;text-transform:uppercase">How it works</div>'
+    + '<div style="font-size:13px;line-height:1.5">+10 points per approved post. Points unlock tiers. Build a reward system around this later — gift cards, shirts, whatever.</div>'
+    + '</div>';
+
+  if (!list.length) {
+    html += '<div class="content-queue-empty">No employee points yet. When you approve a submission, they\'ll earn 10.</div>';
+  } else {
+    html += '<div class="content-queue-section-label">Leaderboard</div>';
+    html += list.map(function(e, i) {
+      var t = tierFor(e.points);
+      var medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '&nbsp;&nbsp;&nbsp;';
+      return '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;margin-bottom:8px">'
+        + '<div style="font-size:20px;min-width:28px;text-align:center">'+medal+'</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:14px;font-weight:700">'+e.name+'</div>'
+        + '<div style="font-size:11px;color:'+t.color+';font-weight:700;margin-top:2px">'+t.label+'</div>'
+        + '</div>'
+        + '<div style="font-size:20px;font-weight:700;color:var(--accent2)">'+e.points+'<span style="font-size:11px;color:var(--muted);font-weight:600;margin-left:3px">pts</span></div>'
+        + '</div>';
+    }).join('');
+  }
+  el.innerHTML = html;
+}
+
+function contentUpdateQueueBadge() {
+  var queue = JSON.parse(localStorage.getItem('content_queue') || '[]');
+  var pending = queue.filter(function(c){ return c.status === 'pending'; }).length;
+  var b1 = document.getElementById('content-queue-badge');
+  if (b1) { b1.textContent = pending; b1.style.display = pending ? '' : 'none'; }
+  var b2 = document.getElementById('content-main-badge');
+  if (b2) { b2.textContent = pending; b2.style.display = pending ? '' : 'none'; }
+}
+
+// Initialize badge on load
+document.addEventListener('DOMContentLoaded', contentUpdateQueueBadge);
 
 // Claire's tools — everything she can do in the app
 var CLAIRE_TOOLS = [
@@ -11695,7 +12390,10 @@ function renderStaffView() {
           <span style="font-size:12px;font-weight:600;padding:2px 10px;border-radius:20px;background:${statusColor}22;color:${statusColor}">${emp.status||'active'}</span>
         </div>
       </div>
-      <button onclick="showStaffTab('edit')" style="margin-left:auto;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">✏ Edit</button>
+      <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+        <button onclick="openContentViewAsEmployee('${emp.id||emp.name}', '${(emp.name||'').replace(/'/g,'&#39;')}')" style="background:linear-gradient(135deg,#6c8fff,#a78bfa);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">📸 Share</button>
+        <button onclick="showStaffTab('edit')" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">✏ Edit</button>
+      </div>
     </div>
 
     ${section('Personal Info', [
