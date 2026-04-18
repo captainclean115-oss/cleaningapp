@@ -3162,7 +3162,7 @@ function updateTaskBadge() {
 }
 
 function getCurrentActor() {
-  return localStorage.getItem('cleanco_actor_name') || 'Manager';
+  return localStorage.getItem('cleanco_actor_name') || 'Admin';
 }
 function setCurrentActor(name) {
   if (!name) { localStorage.removeItem('cleanco_actor_name'); }
@@ -4869,6 +4869,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     var ts = now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     manualTasks.unshift({id:Date.now().toString(),text:input.text,time:ts,done:false});
     saveManualTasks(); renderTasks();
+    logPendingUpdate('Reminder added', input.text);
     _claireLastToolResult = 'Reminder added: "'+input.text+'". Done.';
     claireReply(message || 'Noted! Added "'+input.text+'" to your reminders.');
 
@@ -5326,6 +5327,10 @@ function claireSendSms(clientId, msgText) {
   var c = CLIENTS.find(function(x){ return x.id === clientId; });
   if (!c) return;
   var ph = (c.ph||'').replace(/\D/g,'');
+  // Log the send under Claire's name (she drafted it and queued the send).
+  // Include first ~60 chars of the message so the audit trail shows what went out.
+  var preview = msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText;
+  logPendingUpdate('SMS sent to '+c.fn+' '+c.ln, preview, 'Claire');
   if (typeof _claireAmendLastToolResult === 'function') {
     _claireAmendLastToolResult('Tom sent the SMS to '+c.fn+' '+c.ln+'.');
   }
