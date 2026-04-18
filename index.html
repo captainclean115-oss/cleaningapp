@@ -1310,11 +1310,11 @@ select.field-input { appearance: none; }
 <div id="tasks-view">
   <div class="tasks-header">
     <div style="margin-bottom:12px">
-      <div style="display:flex;gap:8px;margin-bottom:6px">
-        <input type="text" id="voice-cmd-input" placeholder="Type or 🎙 dictate a command..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:12px 14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()">
-        <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px 18px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
+      <div style="font-size:15px;font-weight:700;color:var(--accent);margin-bottom:10px">✦ Claire</div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="voice-cmd-input" placeholder="Talk to Claire..." style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:14px;outline:none;min-width:0" onkeydown="if(event.key==='Enter')runVoiceCmd()" onfocus="this.setAttribute('placeholder','Tap 🎙 on keyboard to speak...');" onblur="this.setAttribute('placeholder','Talk to Claire...');">
+        <button onclick="runVoiceCmd()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:14px 18px;border-radius:12px;cursor:pointer;white-space:nowrap;flex-shrink:0">Go</button>
       </div>
-      <div style="font-size:11px;color:var(--muted)">Tap 🎙 on your keyboard to speak · "Schedule Beth Ahern Friday 2pm B1"</div>
     </div>
     <div id="voice-cmd-status" style="display:none;margin:0 0 12px;padding:12px;background:var(--surface2);border-radius:10px;text-align:center"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px">
@@ -3243,7 +3243,7 @@ async function sendStaffReplyAdmin() {
 
 async function translateChatMessage(text, fromLang, toLang) {
   if (fromLang === toLang) return text;
-  var apiKey = (typeof getAnthropicKey === 'function') ? localStorage.getItem('anthropic_api_key') : null;
+  var apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
   if (!apiKey) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text; // demo fallback marker
   try {
     var resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -3773,7 +3773,37 @@ let rcToken = null;
 let rcConversations = [];
 let currentConv = null;
 
+// ── CLAIRE API KEY (stored in localStorage, never in code) ──
+var _claireApiKey = localStorage.getItem('claire_api_key') || localStorage.getItem('anthropic_api_key') || '';
+var _claireHistory = []; // conversation history for context
+function setClaireApiKey() {
+  var key = prompt('Enter your Anthropic API key (starts with sk-ant-):');
+  if (key && key.startsWith('sk-')) {
+    localStorage.setItem('claire_api_key', key);
+    _claireApiKey = key;
+    claireReply('API key saved! I\'m ready to help.');
+  }
+}
+
+// Shared helper so SMS draft, note translation, and staff-chat AI all reuse Claire's key.
+function getAnthropicKey() {
+  if (_claireApiKey) return _claireApiKey;
+  var legacy = localStorage.getItem('anthropic_api_key');
+  if (legacy) { _claireApiKey = legacy; return legacy; }
+  return null;
+}
+
 // ── VOICE/TEXT COMMANDS ──
+var _claireRec = null;
+
+function startClaireMic() {
+  // Focus the input and show hint — iOS keyboard mic is the reliable way
+  var input = document.getElementById('voice-cmd-input');
+  input.focus();
+  input.setAttribute('placeholder', 'Tap 🎙 on keyboard, speak, then hit Go');
+  setTimeout(function(){ input.setAttribute('placeholder', 'Talk to Claire...'); }, 5000);
+}
+
 function runVoiceCmd() {
   var input = document.getElementById('voice-cmd-input');
   if (!input) return;
@@ -3786,341 +3816,727 @@ function runVoiceCmd() {
   input.value = '';
 }
 
-function processVoiceCommand(text) {
+function claireReply(msg) {
   var status = document.getElementById('voice-cmd-status');
+  if (!status) return;
+  status.innerHTML += '<div style="margin-top:8px;padding:10px 12px;background:rgba(108,143,255,0.08);border:1px solid rgba(108,143,255,0.2);border-radius:10px;text-align:left;display:flex;gap:8px;align-items:flex-start">'
+    +'<div style="font-size:14px;flex-shrink:0">✦</div>'
+    +'<div style="font-size:13px;color:var(--text);line-height:1.4"><strong style="color:var(--accent)">Claire:</strong> '+msg+'</div></div>';
+}
+
+// Claire's tools — everything she can do in the app
+var CLAIRE_TOOLS = [
+  { name: 'schedule_clean', description: 'Schedule a cleaning job for a client on a specific date/time with a team', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name (first last)'}, date:{type:'string',description:'Date in YYYY-MM-DD format'}, time:{type:'string',description:'Time in HH:MM 24hr format'}, team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['client'] } },
+  { name: 'cancel_clean', description: 'Cancel/remove a scheduled cleaning job for a client on a specific date', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, date:{type:'string',description:'Date in YYYY-MM-DD'} }, required:['client'] } },
+  { name: 'move_clean', description: 'Move/reschedule a cleaning job to a different date, time, or team', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, from_date:{type:'string',description:'Current date YYYY-MM-DD'}, to_date:{type:'string',description:'New date YYYY-MM-DD'}, time:{type:'string',description:'New time HH:MM'}, team:{type:'string',description:'New team code'} }, required:['client'] } },
+  { name: 'employee_day_off', description: 'Mark an employee as having the day off', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'} }, required:['employee'] } },
+  { name: 'move_employee', description: 'Move/reassign an employee to a different team for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, team:{type:'string',description:'New team code'}, date:{type:'string',description:'Date YYYY-MM-DD'} }, required:['employee','team'] } },
+  { name: 'add_reminder', description: 'Add a reminder/note/to-do for Tom to remember', input_schema: { type:'object', properties: { text:{type:'string',description:'The reminder text'} }, required:['text'] } },
+  { name: 'lookup_client', description: 'Look up client info — address, phone, balance, frequency, next clean date, notes', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name to search for'} }, required:['client'] } },
+  { name: 'lookup_schedule', description: 'Look up what jobs are scheduled for a specific date, team, or client', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'}, client:{type:'string',description:'Client name (optional)'} } } },
+  { name: 'lookup_balance', description: 'Look up outstanding balances — all clients or a specific client', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name (optional, omit for all balances)'} } } },
+  { name: 'lookup_employee', description: 'Look up employee info — what team they are on, their role', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name'} }, required:['employee'] } },
+  { name: 'count_jobs', description: 'Count how many jobs/cleans are scheduled for a date or date range', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'} } } },
+  { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } },
+  { name: 'change_frequency', description: 'Change a client cleaning frequency (weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly). This updates their schedule, regenerates all future cleans, and drafts a message to the client.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, new_frequency:{type:'string',description:'One of: weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly, one-time'} }, required:['client','new_frequency'] } },
+  { name: 'update_client_notes', description: 'Add or update notes/special instructions on a client profile', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, notes:{type:'string',description:'The note text to add'} }, required:['client','notes'] } },
+  { name: 'send_message', description: 'Draft an SMS message to a client. Copies to clipboard and opens SMS.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, message:{type:'string',description:'The message text to send'} }, required:['client','message'] } },
+  { name: 'edit_client', description: 'Edit any field on a client profile: phone, email, address, city, zip, package, notes, or any other field', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, field:{type:'string',description:'Field to edit: ph, em, addr, city, zip, pkg, notes, fn, ln'}, value:{type:'string',description:'New value'} }, required:['client','field','value'] } },
+  { name: 'change_price', description: 'Change a client cleaning price for all their future scheduled jobs', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, price:{type:'string',description:'New price amount (just the number)'} }, required:['client','price'] } },
+  { name: 'record_payment', description: 'Record a payment received from a client. Reduces their balance.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, amount:{type:'string',description:'Payment amount'}, method:{type:'string',description:'Payment method: cash, check, credit card, venmo, zelle'} }, required:['client','amount'] } },
+  { name: 'generate_quote', description: 'Generate a cleaning quote for an address. Looks up square footage and bathrooms to calculate price.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'Desired frequency: weekly, biweekly, monthly, one-time'} }, required:['address'] } },
+  { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
+  { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
+  { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } }
+];
+
+async function processVoiceCommand(text) {
+  var status = document.getElementById('voice-cmd-status');
+  text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
+
+  if (!_claireApiKey) {
+    setClaireApiKey();
+    if (!_claireApiKey) { var s=document.getElementById('voice-cmd-status'); s.style.display='block'; claireReply('I need an API key to work. Try your command again.'); return; }
+  }
+
+  claireReply('Let me think...');
+
+  var today = new Date();
+  var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  var todayKey = dateKey(today);
+  var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
+  var empNames = EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
+
+  var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a residential cleaning company in Massachusetts. '
+    +'Today is '+todayStr+' ('+todayKey+'). '
+    +'You help the owner Tom manage scheduling, employees, and clients. '
+    +'Be brief, warm, and conversational — like a real office manager. 1-2 sentences.\n\n'
+    +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
+    +'Employees: '+empNames+'\n'
+    +'Total clients: '+CLIENTS.length+'\n'
+    +'Today\'s jobs: '+todayJobs.length+'\n\n'
+    +'Use the tools provided to take actions or look up information. '
+    +'If you need to clarify something, just ask Tom — don\'t guess. '
+    +'If no tool is needed (just chatting), respond directly without using a tool.';
+
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        system: systemPrompt,
+        tools: CLAIRE_TOOLS,
+        messages: _claireHistory.concat([{ role: 'user', content: text }])
+      })
+    });
+
+    if (!resp.ok) { processVoiceCommandLocal(text); return; }
+    var data = await resp.json();
+
+    // Remove "Let me think..."
+    var thinkEl = status.querySelector('div:last-child');
+    if (thinkEl && thinkEl.textContent.includes('think')) thinkEl.remove();
+
+    // Process response — could be text, tool_use, or both
+    var textReply = '';
+    var toolCall = null;
+    if (data.content) {
+      data.content.forEach(function(block) {
+        if (block.type === 'text') textReply += block.text;
+        if (block.type === 'tool_use') toolCall = block;
+      });
+    }
+
+    // Save to conversation history
+    _claireHistory.push({ role: 'user', content: text });
+    // Build assistant reply for history — include both text and tool use
+    var assistantContent = [];
+    if (textReply) assistantContent.push({ type: 'text', text: textReply });
+    if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
+    if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
+    // If tool was used, add a tool_result so the conversation is valid
+    if (toolCall) _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: 'Done.' }] });
+    // Keep last 10 exchanges (20 messages) so we don't blow up the context
+    if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
+
+    if (toolCall) {
+      executeClaireToolCall(toolCall, textReply);
+    } else {
+      claireReply(textReply || 'I\'m not sure what you need — can you say that differently?');
+    }
+  } catch(e) {
+    var thinkEl2 = status.querySelector('div:last-child');
+    if (thinkEl2 && thinkEl2.textContent.includes('think')) thinkEl2.remove();
+    processVoiceCommandLocal(text);
+  }
+}
+
+function findClient(name) {
+  if (!name) return null;
+  var lower = name.toLowerCase();
+  var best = null, bestScore = 0;
+  CLIENTS.forEach(function(c) {
+    var full = (c.fn+' '+c.ln).toLowerCase();
+    var rev = (c.ln+' '+c.fn).toLowerCase();
+    if (full === lower || rev === lower) { best = c; bestScore = 100; }
+    else if (bestScore < 90 && lower.includes(c.ln.toLowerCase()) && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 90; }
+    else if (bestScore < 80 && c.ln.length > 3 && lower.includes(c.ln.toLowerCase())) { best = c; bestScore = 80; }
+    else if (bestScore < 70 && c.fn.length > 3 && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 70; }
+  });
+  return best;
+}
+
+function executeClaireToolCall(toolCall, message) {
+  var input = toolCall.input || {};
+  var name = toolCall.name;
+
+  // ── SCHEDULE ──
+  if (name === 'schedule_clean') {
+    var client = findClient(input.client);
+    if (!client) { claireReply(message || 'I couldn\'t find that client. Can you give me their full name?'); return; }
+    var result = {
+      client: client,
+      clientName: (client.ln||'')+', '+(client.fn||''),
+      date: input.date || dateKey(new Date()),
+      time: input.time || '09:00',
+      timeDisplay: '',
+      team: (input.team||'B1').toUpperCase()
+    };
+    var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
+    result.timeDisplay = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var status = document.getElementById('voice-cmd-status');
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">'+(message || 'I\'ll schedule <strong>'+client.fn+' '+client.ln+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>.')+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
+      +'</div>';
+    window._pendingVoiceCmd = result;
+
+  // ── CANCEL ──
+  } else if (name === 'cancel_clean') {
+    var client2 = findClient(input.client);
+    if (!client2) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var targetDate = input.date || dateKey(new Date());
+    var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
+    if (job) {
+      job.cancelled = true; saveJobs();
+      var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
+    } else {
+      var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && !j.cancelled && j.date > targetDate; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+      var dateL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
+      claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean on '+dateL+'.'+hint);
+    }
+
+  // ── MOVE CLEAN ──
+  } else if (name === 'move_clean') {
+    var client3 = findClient(input.client);
+    if (!client3) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var fromDate = input.from_date || dateKey(new Date());
+    var job2 = jobs.find(function(j){ return j.clientId === client3.id && j.date === fromDate && !j.cancelled; });
+    if (!job2) { claireReply(message || client3.fn+' '+client3.ln+' doesn\'t have a clean on that date.'); return; }
+    if (input.to_date) job2.date = input.to_date;
+    if (input.time) { job2.time = input.time; job2.flexible = false; }
+    if (input.team) job2.team = input.team.toUpperCase();
+    saveJobs(); renderCal();
+    var newDayL = new Date(job2.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate('Moved: '+job2.clientName, newDayL);
+    recalcTeamTimes(job2.team, job2.date, job2.id);
+    claireReply(message || 'Moved '+client3.fn+' '+client3.ln+' to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.');
+
+  // ── DAY OFF ──
+  } else if (name === 'employee_day_off') {
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!emp) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    var dk = input.date || dateKey(new Date());
+    dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
+    var dayStr = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate(emp.name+' → Day Off', dayStr);
+    claireReply(message || 'Got it! '+emp.name+' is off for '+dayStr+'. Team roster updated.');
+
+  // ── MOVE EMPLOYEE ──
+  } else if (name === 'move_employee') {
+    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!emp2) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    var dk2 = input.date || dateKey(new Date());
+    assignEmployee(emp2.id, input.team.toUpperCase(), dk2);
+    logPendingUpdate(emp2.name+' → '+input.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+    claireReply(message || 'Moved '+emp2.name+' to Team '+input.team.toUpperCase()+'.');
+
+  // ── REMINDER ──
+  } else if (name === 'add_reminder') {
+    var now = new Date();
+    var ts = now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    manualTasks.unshift({id:Date.now().toString(),text:input.text,time:ts,done:false});
+    saveManualTasks(); renderTasks();
+    claireReply(message || 'Noted! Added "'+input.text+'" to your reminders.');
+
+  // ── LOOKUP CLIENT ──
+  } else if (name === 'lookup_client') {
+    var cl = findClient(input.client);
+    if (!cl) { claireReply('I couldn\'t find a client named "'+input.client+'".'); return; }
+    var info = cl.fn+' '+cl.ln+' — '+cl.addr+', '+cl.city+'. '
+      +(cl.ph?'Phone: '+cl.ph+'. ':'')
+      +'Frequency: '+cl.freq+'. '
+      +(cl.bal>0?'Balance: $'+Math.round(cl.bal)+'. ':'No balance. ')
+      +'Next clean: '+(cl.next||'not set')+'. '
+      +(cl.notes?'Notes: '+cl.notes:'');
+    claireReply(message || info);
+
+  // ── LOOKUP SCHEDULE ──
+  } else if (name === 'lookup_schedule') {
+    var sDate = input.date || dateKey(new Date());
+    var sJobs = jobs.filter(function(j){ return j.date === sDate && !j.cancelled; });
+    if (input.team) sJobs = sJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
+    if (input.client) { var sc=findClient(input.client); if(sc) sJobs=sJobs.filter(function(j){return j.clientId===sc.id;}); }
+    var sDayL = new Date(sDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    if (!sJobs.length) { claireReply('No jobs scheduled for '+sDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.'); return; }
+    var summary = sJobs.length+' job'+(sJobs.length>1?'s':'')+' on '+sDayL+(input.team?' for Team '+input.team.toUpperCase():'')+': '
+      +sJobs.slice(0,8).map(function(j){ return j.clientName+(j.time?' at '+j.time:''); }).join(', ')
+      +(sJobs.length>8?' + '+(sJobs.length-8)+' more':'');
+    claireReply(message || summary);
+
+  // ── LOOKUP BALANCE ──
+  } else if (name === 'lookup_balance') {
+    if (input.client) {
+      var bc=findClient(input.client);
+      if (!bc) { claireReply('Couldn\'t find that client.'); return; }
+      claireReply(message || bc.fn+' '+bc.ln+(bc.bal>0?' has a balance of $'+Math.round(bc.bal)+'.':' has no outstanding balance.'));
+    } else {
+      var owing = CLIENTS.filter(function(c){return c.bal>0;});
+      var total = owing.reduce(function(s,c){return s+c.bal;},0);
+      claireReply(message || owing.length+' clients have outstanding balances totaling $'+Math.round(total).toLocaleString()+'.');
+    }
+
+  // ── LOOKUP EMPLOYEE ──
+  } else if (name === 'lookup_employee') {
+    var le = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!le) { claireReply('Couldn\'t find that employee.'); return; }
+    var leTeam = getEmployeeTeam(le.id, dateKey(new Date()));
+    claireReply(message || le.name+' is on '+(leTeam?'Team '+leTeam:'no team (Day Off)')+'. Role: '+(le.role.length?le.role.join(', '):'Cleaner')+'. Depot: '+le.depot+'.');
+
+  // ── COUNT JOBS ──
+  } else if (name === 'count_jobs') {
+    var cDate = input.date || dateKey(new Date());
+    var cJobs = jobs.filter(function(j){ return j.date === cDate && !j.cancelled; });
+    if (input.team) cJobs = cJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
+    var cDayL = new Date(cDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    claireReply(message || cJobs.length+' job'+(cJobs.length!==1?'s':'')+' scheduled for '+cDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.');
+
+  // ── REVENUE ──
+  } else if (name === 'get_revenue') {
+    var rDate = input.date || dateKey(new Date());
+    var rev = getDayRevenue(rDate);
+    var rDayL = new Date(rDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    claireReply(message || 'Revenue for '+rDayL+': $'+Math.round(rev).toLocaleString()+'.');
+
+  // ── CHANGE FREQUENCY ──
+  } else if (name === 'change_frequency') {
+    var fClient = findClient(input.client);
+    if (!fClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+
+    // Map frequency words to codes and intervals
+    var freqMap = {
+      'weekly': { fc:'RMS - WEK', freq:'Weekly', days:7 },
+      'every 2 weeks': { fc:'RMS - EOW', freq:'Every 2 weeks', days:14 },
+      'biweekly': { fc:'RMS - EOW', freq:'Every 2 weeks', days:14 },
+      'every 3 weeks': { fc:'RMS - ETW', freq:'Every 3 weeks', days:21 },
+      'every 4 weeks': { fc:'RMS - EFW', freq:'Every 4 weeks', days:28 },
+      'monthly': { fc:'RMS - MON', freq:'Monthly', days:28 },
+      'one-time': { fc:'OMS', freq:'One-time', days:0 }
+    };
+    var newFreq = freqMap[(input.new_frequency||'').toLowerCase()];
+    if (!newFreq) { claireReply('I don\'t recognize that frequency. Try: weekly, every 2 weeks, every 3 weeks, every 4 weeks, or monthly.'); return; }
+
+    var oldFreq = fClient.freq || 'unknown';
+
+    // Update client record
+    fClient.fc = newFreq.fc;
+    fClient.freq = newFreq.freq;
+
+    // Remove all future jobs for this client and regenerate
+    var todayKey2 = dateKey(new Date());
+    var removedCount = 0;
+    jobs = jobs.filter(function(j) {
+      if (j.clientId === fClient.id && j.date >= todayKey2) { removedCount++; return false; }
+      return true;
+    });
+
+    // Find their team and time from the most recent removed job or existing data
+    var lastJob = jobs.filter(function(j){ return j.clientId === fClient.id; }).sort(function(a,b){ return b.date.localeCompare(a.date); })[0];
+    var team = lastJob ? lastJob.team : 'B1';
+    var time = lastJob ? lastJob.time : '09:00';
+    var price = lastJob ? lastJob.price : '';
+
+    // Generate new future cleans (6 months out)
+    if (newFreq.days > 0) {
+      var nextDate = fClient.next ? (function(s){ var p=s.split('/'); return new Date(+p[2],+p[0]-1,+p[1]); })(fClient.next) : new Date();
+      if (nextDate < new Date()) nextDate = new Date();
+      var endDate = new Date(); endDate.setMonth(endDate.getMonth() + 6);
+      var genCount = 0;
+      while (nextDate <= endDate) {
+        var dk3 = dateKey(nextDate);
+        if (dk3 >= todayKey2) {
+          jobs.push({
+            id: 'freq_'+Date.now()+'_'+genCount,
+            clientName: (fClient.ln||'')+', '+(fClient.fn||''),
+            clientId: fClient.id,
+            addr: (fClient.addr||'')+', '+(fClient.city||''),
+            date: dk3,
+            flexible: false,
+            time: time,
+            team: team,
+            color: team_colors_map[team]||'#6b7280',
+            price: price,
+            quotedMin: parseInt((getClientExtras(fClient.id)||{}).quotedMin)||120,
+            done: false,
+            autoGenerated: true
+          });
+          genCount++;
+        }
+        nextDate.setDate(nextDate.getDate() + newFreq.days);
+      }
+    }
+
+    saveJobs();
+    renderCal();
+    logPendingUpdate('Frequency change: '+fClient.fn+' '+fClient.ln, oldFreq+' → '+newFreq.freq);
+
+    // Find their next upcoming clean
+    var nextClean = jobs.filter(function(j){ return j.clientId === fClient.id && j.date >= todayKey2 && !j.cancelled; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+    var nextCleanLabel = nextClean ? new Date(nextClean.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) : 'TBD';
+
+    // Draft the SMS message
+    var smsText = 'Hi '+fClient.fn+'! This is Tom from Manna Maids. I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions! — Tom';
+
+    var status2 = document.getElementById('voice-cmd-status');
+    status2.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px;line-height:1.4">'+(message||'Done! I changed <strong>'+fClient.fn+' '+fClient.ln+'</strong> from '+oldFreq+' to <strong>'+newFreq.freq+'</strong>. Generated '+((jobs.filter(function(j){return j.clientId===fClient.id&&j.date>=todayKey2;}).length))+' future cleans. Next clean: <strong>'+nextCleanLabel+'</strong>.')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--muted);line-height:1.5">'+smsText+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Done</button>'
+      +'<button onclick="claireSendSms(\''+fClient.id+'\',\''+smsText.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Message</button>'
+      +'</div>';
+
+  // ── EDIT CLIENT PROFILE ──
+  } else if (name === 'edit_client') {
+    var ecClient = findClient(input.client);
+    if (!ecClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var fieldMap = {ph:'Phone',em:'Email',addr:'Address',city:'City',zip:'Zip',pkg:'Package',notes:'Notes',fn:'First Name',ln:'Last Name'};
+    var fieldName = fieldMap[input.field] || input.field;
+    var oldVal = ecClient[input.field] || '(empty)';
+    ecClient[input.field] = input.value;
+    logPendingUpdate('Updated '+ecClient.fn+' '+ecClient.ln, fieldName+': '+oldVal+' → '+input.value);
+    claireReply(message || 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' to "'+input.value+'".');
+
+  // ── CHANGE PRICE ──
+  } else if (name === 'change_price') {
+    var cpClient = findClient(input.client);
+    if (!cpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var newPrice = input.price.replace(/[$,]/g,'');
+    var todayK = dateKey(new Date());
+    var updated = 0;
+    jobs.forEach(function(j) {
+      if (j.clientId === cpClient.id && j.date >= todayK && !j.cancelled) {
+        j.price = newPrice;
+        updated++;
+      }
+    });
+    saveJobs(); renderCal();
+    logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)');
+    claireReply(message || 'Changed '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+'. Updated '+updated+' future cleans.');
+
+  // ── RECORD PAYMENT ──
+  } else if (name === 'record_payment') {
+    var rpClient = findClient(input.client);
+    if (!rpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    var payAmt = parseFloat(input.amount.replace(/[$,]/g,'')) || 0;
+    var oldBal = rpClient.bal || 0;
+    rpClient.bal = Math.max(0, oldBal - payAmt);
+    var method = input.method || 'unknown';
+    var now2 = new Date();
+    var ts2 = now2.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    var pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
+    pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method });
+    localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+    logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method);
+    claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
+
+  // ── GENERATE QUOTE ──
+  } else if (name === 'generate_quote') {
+    claireReply('Looking up property info for '+input.address+'...');
+    generateClaireQuote(input.address, input.frequency || 'biweekly', message);
+    return;
+
+  // ── EDIT EMPLOYEE HOURS ──
+  } else if (name === 'edit_employee_hours') {
+    var ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (!ehEmp) { claireReply(message || 'Couldn\'t find that employee.'); return; }
+    var ehDate = input.date || dateKey(new Date());
+    var existing = getEmpHours(ehEmp.id, ehDate) || {};
+    if (input.start) existing.start = input.start;
+    if (input.end) existing.end = input.end;
+    if (input.lunch) existing.lunch = parseInt(input.lunch) || 0;
+    if (existing.start && existing.end) {
+      existing.hours = calcHoursFromTimes(existing.start, existing.end, existing.lunch || 0);
+    }
+    saveEmpHours(ehEmp.id, ehDate, existing);
+    var dayL3 = new Date(ehDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    var changes = [];
+    if (input.start) changes.push('start: '+input.start);
+    if (input.end) changes.push('end: '+input.end);
+    if (input.lunch) changes.push('lunch: '+input.lunch+'min');
+    logPendingUpdate('Hours edited: '+ehEmp.name, dayL3+' — '+changes.join(', '));
+    claireReply(message || 'Updated '+ehEmp.name+'\'s hours for '+dayL3+'. '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : ''));
+
+  // ── LOCATE TEAM ──
+  } else if (name === 'locate_team') {
+    var ltTeam = (input.team||'').toUpperCase();
+    var vehicle = gpsVehicles ? gpsVehicles.find(function(v){ return v.team === ltTeam; }) : null;
+    if (!vehicle) { claireReply(message || 'I don\'t have GPS data for Team '+ltTeam+' right now. Make sure the Live tab is connected.'); return; }
+    var addr3 = vehicle.address || 'Unknown location';
+    var clientMatch3 = matchStopToClient(addr3, jobs.filter(function(j){ return j.date === dateKey(new Date()) && j.team === ltTeam; }));
+    var statusText = vehicle.isMoving ? 'driving ('+vehicle.speed+' mph)' : 'stopped';
+
+    // Calculate expected finish if at a client
+    var etaText = '';
+    if (!vehicle.isMoving && clientMatch3) {
+      var todayJobs2 = jobs.filter(function(j){ return j.date === dateKey(new Date()) && j.team === ltTeam && !j.cancelled; }).sort(function(a,b){ return (jobStartMins(a)||0)-(jobStartMins(b)||0); });
+      var currentJob = todayJobs2.find(function(j){ var c=CLIENTS.find(function(x){return x.id===j.clientId;}); return c && clientMatch3.includes(c.fn) && clientMatch3.includes(c.ln); });
+      if (currentJob) {
+        var startM = jobStartMins(currentJob);
+        var durM = getJobDurationMins(currentJob);
+        if (startM !== null) {
+          var endM = startM + durM;
+          var endHr = Math.floor(endM/60)%24, endMn = endM%60;
+          etaText = ' Expected to finish around '+(endHr%12||12)+':'+(endMn<10?'0':'')+endMn+' '+(endHr>=12?'PM':'AM')+'.';
+        }
+        // Find arrival time from trips
+        if (vehicle.trips && vehicle.trips.length) {
+          var lastTrip = vehicle.trips.sort(function(a,b){return new Date(b.stop||b.start)-new Date(a.stop||a.start);})[0];
+          if (lastTrip && lastTrip.stop) {
+            var arrTime = new Date(lastTrip.stop);
+            etaText = ' Arrived at '+arrTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+'.'+etaText;
+          }
+        }
+      }
+    }
+
+    claireReply(message || 'Team '+ltTeam+' is currently '+statusText+' at '+addr3+'.'+(clientMatch3 ? ' That\'s '+clientMatch3+'\'s house.' : '')+etaText);
+
+  // ── SEND INVOICE ──
+  } else if (name === 'send_invoice') {
+    var invClient = findClient(input.client);
+    if (!invClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (invClient.bal <= 0) { claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
+    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from Manna Maids that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions! — Tom';
+    var status4 = document.getElementById('voice-cmd-status');
+    status4.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||invClient.fn+' '+invClient.ln+' owes $'+Math.round(invClient.bal)+'. Here\'s the invoice message:')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--text);line-height:1.5">'+invMsg+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
+      +'<button onclick="claireSendSms(\''+invClient.id+'\',\''+invMsg.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Invoice</button>'
+      +'</div>';
+    return;
+
+  // ── UPDATE CLIENT NOTES ──
+  } else if (name === 'update_client_notes') {
+    var nClient = findClient(input.client);
+    if (!nClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var oldNotes = nClient.notes || '';
+    nClient.notes = oldNotes ? oldNotes + ' | ' + input.notes : input.notes;
+    logPendingUpdate('Notes updated: '+nClient.fn+' '+nClient.ln, input.notes);
+    claireReply(message || 'Updated notes for '+nClient.fn+' '+nClient.ln+': "'+input.notes+'"');
+
+  // ── SEND MESSAGE ──
+  } else if (name === 'send_message') {
+    var mClient = findClient(input.client);
+    if (!mClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    var ph = (mClient.ph||'').replace(/\D/g,'');
+    var status3 = document.getElementById('voice-cmd-status');
+    status3.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||'Here\'s the message for '+mClient.fn+' '+mClient.ln+':')+'</div>'
+      +'<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--text);line-height:1.5">'+input.message+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
+      +'<button onclick="claireSendSms(\''+mClient.id+'\',\''+input.message.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send</button>'
+      +'</div>';
+
+  } else {
+    claireReply(message || 'I\'m not sure how to do that yet, but I\'m learning!');
+  }
+}
+
+// (legacy — replaced by executeClaireToolCall)
+function executeClaire(action, message) {
+  executeClaireToolCall({name:action.action,input:action}, message);
+}
+function _executeClaire_legacy(action, message) {
+  var status = document.getElementById('voice-cmd-status');
+
+  if (action.action === 'schedule') {
+    // Find the client
+    var lower = (action.client||'').toLowerCase();
+    var client = null;
+    CLIENTS.forEach(function(c) {
+      var full = (c.fn+' '+c.ln).toLowerCase();
+      if (full === lower || lower.includes(c.ln.toLowerCase())) {
+        if (!client || full === lower) client = c;
+      }
+    });
+    if (!client) { claireReply(message || 'I couldn\'t find that client in your system.'); return; }
+
+    var result = {
+      client: client,
+      clientName: (client.ln||'')+', '+(client.fn||''),
+      date: action.date || dateKey(new Date()),
+      time: action.time || '09:00',
+      timeDisplay: '',
+      team: (action.team||'B1').toUpperCase()
+    };
+    var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
+    result.timeDisplay = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
+
+    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">'+(message || 'I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>.')+'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
+      +'</div>';
+    window._pendingVoiceCmd = result;
+
+  } else if (action.action === 'cancel') {
+    var lower2 = (action.client||'').toLowerCase();
+    var client2 = CLIENTS.find(function(c){ return (c.fn+' '+c.ln).toLowerCase() === lower2 || lower2.includes(c.ln.toLowerCase()); });
+    if (!client2) { claireReply(message || 'I couldn\'t find that client in your system.'); return; }
+    var targetDate = action.date || dateKey(new Date());
+    var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
+    if (job) {
+      job.cancelled = true; saveJobs();
+      var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      claireReply(message || 'Done! I cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
+    } else {
+      // Find their next scheduled job to be helpful
+      var dateLabel = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && j.date > targetDate && !j.cancelled; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
+      var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
+      claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean scheduled for '+dateLabel+'.'+hint);
+    }
+
+  } else if (action.action === 'dayoff') {
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    if (emp) {
+      var dk = action.date || dateKey(new Date());
+      dailyAssignments[dk + '_' + emp.id] = 'OFF'; saveDailyAssignments();
+      logPendingUpdate(emp.name + ' → Day Off', new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      claireReply(message || 'Got it! '+emp.name+' is off. Team roster updated.');
+    } else {
+      claireReply(message || 'I couldn\'t find that employee.');
+    }
+
+  } else if (action.action === 'moveteam') {
+    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    if (emp2 && action.team) {
+      var dk2 = action.date || dateKey(new Date());
+      assignEmployee(emp2.id, action.team.toUpperCase(), dk2);
+      logPendingUpdate(emp2.name + ' → ' + action.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      claireReply(message || 'Moved '+emp2.name+' to Team '+action.team.toUpperCase()+'.');
+    } else {
+      claireReply(message || 'I couldn\'t find that employee or team.');
+    }
+
+  } else if (action.action === 'reminder') {
+    var now = new Date();
+    var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    manualTasks.unshift({ id: Date.now().toString(), text: action.text, time: timeStr, done: false });
+    saveManualTasks(); renderTasks();
+    claireReply(message || 'Noted! I added that to your reminders.');
+
+  } else {
+    claireReply(message || 'I\'m not sure how to do that yet.');
+  }
+}
+
+async function generateClaireQuote(address, frequency, aiMessage) {
+  try {
+    // Geocode the address
+    var coords = null;
+    await new Promise(function(resolve) {
+      geocodeAddress(address, function(c) { coords = c; resolve(); });
+    });
+    if (!coords) { claireReply('I couldn\'t find that address. Try including the city and state.'); return; }
+
+    // Try to get square footage from MassGIS
+    var sqft = 0, baths = 0;
+    try {
+      var url = 'https://gis.massgis.state.ma.us/ArcGIS/rest/services/massgis_cache/L3Parcels_and_Assess/MapServer/1/query'
+        + '?geometry=' + encodeURIComponent('{"x":'+coords.lng+',"y":'+coords.lat+',"spatialReference":{"wkid":4326}}')
+        + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelWithin'
+        + '&outFields=LIVING_AREA,NUM_BATHS,BLDG_AREA,GROSS_AREA&returnGeometry=false&f=json';
+      var r = await fetch(url);
+      var d = await r.json();
+      if (d.features && d.features.length > 0) {
+        var a = d.features[0].attributes;
+        sqft = parseFloat(a.LIVING_AREA || a.BLDG_AREA || a.GROSS_AREA || 0);
+        baths = parseFloat(a.NUM_BATHS || 0);
+      }
+    } catch(e) {}
+
+    if (!sqft) { claireReply('I found the address but couldn\'t get the square footage from public records. You may need to ask the homeowner.'); return; }
+
+    // Calculate quote based on sqft and frequency
+    // Base rate: ~$0.10-0.12/sqft for biweekly, adjusted by frequency
+    var baseRate = 0.11;
+    var freqMultiplier = { 'weekly':0.85, 'biweekly':1.0, 'every 2 weeks':1.0, 'monthly':1.15, 'one-time':1.35 };
+    var mult = freqMultiplier[(frequency||'biweekly').toLowerCase()] || 1.0;
+    var basePrice = Math.round(sqft * baseRate * mult);
+    // Add per-bathroom charge
+    basePrice += Math.round(baths * 15);
+    // Round to nearest $5
+    basePrice = Math.round(basePrice / 5) * 5;
+    // Clamp to reasonable range
+    if (basePrice < 150) basePrice = 150;
+    if (basePrice > 800) basePrice = 800;
+
+    var freqLabel = frequency || 'biweekly';
+    claireReply('Here\'s the quote for <strong>'+address+'</strong>:<br><br>'
+      +'🏠 <strong>'+Math.round(sqft).toLocaleString()+' sq ft</strong> · '+Math.round(baths)+' bath'+(baths!==1?'s':'')+'<br>'
+      +'📋 Frequency: <strong>'+freqLabel+'</strong><br>'
+      +'💰 Estimated price: <strong>$'+basePrice+'</strong> per clean<br><br>'
+      +'<span style="font-size:11px;color:var(--muted)">Based on property records + standard pricing. Adjust as needed for condition, extras, etc.</span>');
+  } catch(e) {
+    claireReply('Had trouble looking up that property. Try giving me the full address with city and state.');
+  }
+}
+
+function claireSendSms(clientId, msgText) {
+  var c = CLIENTS.find(function(x){ return x.id === clientId; });
+  if (!c) return;
+  var ph = (c.ph||'').replace(/\D/g,'');
+  navigator.clipboard.writeText(msgText).then(function() {
+    if (ph) {
+      window.location.href = 'rcmobile://sms?number=' + (ph.length === 10 ? '1' : '') + ph;
+    } else {
+      alert('Message copied to clipboard! No phone number on file — paste it manually.');
+    }
+    claireReply('Message copied and SMS opened for '+c.fn+' '+c.ln+'!');
+  }).catch(function() {
+    if (ph) {
+      window.location.href = 'sms:' + ph;
+    }
+    alert('Message:\n\n' + msgText);
+  });
+}
+
+// Fallback local parsing when API is unavailable
+function processVoiceCommandLocal(text) {
   var lower = text.toLowerCase();
 
-  // ── SCHEDULE COMMAND ──
-  // "schedule [client name] [day/date] [time] [team]"
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
     var result = parseScheduleCommand(lower, text);
-    if (result.error) {
-      status.innerHTML = '<div style="color:var(--amber);font-size:13px">'+result.error+'</div>';
-      return;
-    }
-    // Confirm before executing
+    if (result.error) { claireReply(result.error); return; }
     var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    var timeLabel = result.timeDisplay;
-    status.innerHTML = '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule Clean</div>'
-      +'<div style="font-size:13px;margin-bottom:4px"><strong>'+result.clientName+'</strong></div>'
-      +'<div style="font-size:13px;margin-bottom:4px">'+dayLabel+' at '+timeLabel+'</div>'
-      +'<div style="font-size:13px;margin-bottom:12px;color:'+(team_colors_map[result.team]||'var(--text)')+';font-weight:700">Team '+result.team+'</div>'
+    var status = document.getElementById('voice-cmd-status');
+    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
+      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+(team_colors_map[result.team]||'var(--text)')+'">Team '+result.team+'</strong>. Sound good?</div>'
       +'<div style="display:flex;gap:8px">'
-      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
-      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Confirm</button>'
+      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
+      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
       +'</div>';
     window._pendingVoiceCmd = result;
     return;
   }
-
-  // ── CANCEL COMMAND ──
   if (lower.includes('cancel')) {
     var result2 = parseScheduleCommand(lower, text);
     if (result2.client) {
-      var todayKey = dateKey(new Date());
-      var targetDate = result2.date || todayKey;
+      var targetDate = result2.date || dateKey(new Date());
       var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
-      if (job) {
-        job.cancelled = true;
-        saveJobs();
-        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-        logPendingUpdate('Cancelled: '+job.clientName, dayL);
-        renderCal();
-        status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Cancelled '+job.clientName+' on '+dayL+'</div>';
-        setTimeout(function(){ status.style.display='none'; }, 3000);
-        return;
-      }
+      if (job) { job.cancelled = true; saveJobs(); var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.'); return; }
     }
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that job to cancel. Try being more specific.</div>';
+    claireReply('Couldn\'t find that job to cancel.');
     return;
   }
-
-  // ── DAY OFF COMMAND ──
-  if (lower.includes('day off') || lower.includes('off today') || lower.includes('out today') || lower.includes('out sick')) {
-    var empName = text.replace(/schedule|day off|off today|out today|out sick|for|put|mark|set/gi,'').trim();
-    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === empName.toLowerCase() || empName.toLowerCase().includes(e.name.toLowerCase()); });
-    if (emp) {
-      var dk = dateKey(new Date());
-      dailyAssignments[dk + '_' + emp.id] = 'OFF';
-      saveDailyAssignments();
-      logPendingUpdate(emp.name + ' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
-      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp.name+' marked Day Off</div>';
-      setTimeout(function(){ status.style.display='none'; }, 3000);
-      return;
-    }
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that employee.</div>';
-    return;
+  if (lower.includes('day off') || lower.includes('out sick') || lower.includes('off today')) {
+    var empName = text.replace(/day off|off today|out sick|for|put|mark|set/gi,'').trim();
+    var emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
+    if (emp) { var dk=dateKey(new Date()); dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments(); logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})); claireReply('Got it! '+emp.name+' is off today.'); return; }
+    claireReply('Couldn\'t find that employee.'); return;
   }
-
-  // ── MOVE EMPLOYEE TO TEAM ──
-  // e.g. "move Sarah to team B1", "put Maria on B3 tomorrow", "switch John to M2"
-  var teamCodeMatch = lower.match(/\b(b1|b3|b5|s1|s3|m1|m2|m3)\b/i);
-  var hasMoveVerb = /\b(move|put|switch|assign|send|transfer)\b/.test(lower)
-                 || /\bto\s+team\b/.test(lower)
-                 || /\bon\s+team\b/.test(lower);
-  if (teamCodeMatch && hasMoveVerb) {
-    var newTeam = teamCodeMatch[1].toUpperCase();
-    // Strip command words + team token so what's left is hopefully the name
-    var nameGuess = text.replace(/\b(move|put|switch|assign|send|transfer|to|on|team|today|tomorrow|for)\b/gi,'')
-                        .replace(/\b(b1|b3|b5|s1|s3|m1|m2|m3)\b/gi,'')
-                        .replace(/\s+/g,' ').trim();
-    var empMove = null, bestLen = 0;
-    EMPLOYEE_ROSTER.forEach(function(e){
-      var en = (e.name||'').toLowerCase();
-      if (!en) return;
-      var first = en.split(' ')[0];
-      if (nameGuess && nameGuess.toLowerCase().indexOf(en) !== -1 && en.length > bestLen) { empMove = e; bestLen = en.length; }
-      else if (nameGuess && nameGuess.toLowerCase().indexOf(first) !== -1 && first.length > 2 && first.length > bestLen) { empMove = e; bestLen = first.length; }
-    });
-    if (!empMove) {
-      status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not find that employee. Try their first name.</div>';
-      return;
-    }
-    // Pick date: today by default, tomorrow if mentioned
-    var moveDate = dateKey(new Date());
-    if (lower.includes('tomorrow')) {
-      var tm = new Date(); tm.setDate(tm.getDate()+1); moveDate = dateKey(tm);
-    }
-    dailyAssignments[moveDate + '_' + empMove.id] = newTeam;
-    localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
-    var dayL = new Date(moveDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate(empMove.name + ' → Team ' + newTeam, dayL);
-    if (typeof renderTeamManager === 'function') renderTeamManager();
-    if (typeof renderCal === 'function') renderCal();
-    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+empMove.name+' → Team '+newTeam+'</div><div style="font-size:12px;color:var(--muted);margin-top:2px">'+dayL+'</div>';
-    setTimeout(function(){ status.style.display='none'; }, 3000);
-    return;
-  }
-
   // ── REMINDER ──
   if (lower.includes('remind') || lower.includes('remember') || lower.includes('note')) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
-    if (noteText) {
-      var now = new Date();
-      var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
-      saveManualTasks(); renderTasks();
-      status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Reminder added: "'+noteText+'"</div>';
-      setTimeout(function(){ status.style.display='none'; }, 3000);
-      return;
-    }
+    if (noteText) { var now=new Date(); var ts=now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); manualTasks.unshift({id:Date.now().toString(),text:noteText,time:ts,done:false}); saveManualTasks(); renderTasks(); claireReply('Noted! Added "'+noteText+'" to your reminders.'); return; }
   }
-
-  // ── FALLBACK: ASK CLAUDE TO INTERPRET ──
-  status.innerHTML = '<div style="color:var(--muted);font-size:13px">🤔 Thinking...</div>';
-  aiInterpretAndExecute(text);
-}
-
-// ── AI COMMAND INTERPRETER ──
-function getAnthropicKey() {
-  var k = localStorage.getItem('anthropic_api_key');
-  if (k) return k;
-  k = prompt('Paste your Anthropic API key (starts with sk-ant-). Stored locally, used for natural-language commands.');
-  if (k && k.trim().startsWith('sk-')) {
-    localStorage.setItem('anthropic_api_key', k.trim());
-    return k.trim();
-  }
-  return null;
-}
-
-async function aiInterpretAndExecute(text) {
-  var status = document.getElementById('voice-cmd-status');
-  var apiKey = getAnthropicKey();
-  if (!apiKey) {
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">AI command needs an API key. Tap the input and try again.</div>';
-    return;
-  }
-
-  // Build context
-  var clientList = CLIENTS.map(function(c){
-    var nm = ((c.fn||'')+' '+(c.ln||'')).trim();
-    return nm;
-  }).filter(Boolean).slice(0, 300).join('; ');
-  var employeeList = EMPLOYEE_ROSTER.map(function(e){ return e.name; }).filter(Boolean).join(', ');
-  var today = new Date();
-  var todayStr = dateKey(today);
-  var dow = today.toLocaleDateString('en-US',{weekday:'long'});
-
-  var systemPrompt =
-    'You are the command parser for a cleaning business app.\n' +
-    'Today is ' + dow + ' ' + todayStr + '.\n' +
-    'Valid teams: B1, B3, B5, S1, S3, M1, M2, M3.\n' +
-    'Employees: ' + employeeList + '.\n' +
-    'Clients: ' + clientList + '.\n\n' +
-    'Parse the user\'s instruction into ONE JSON action. Reply with ONLY a JSON object, no prose, no code fences.\n' +
-    'Shapes:\n' +
-    '{"action":"schedule","clientName":"<match from Clients>","date":"YYYY-MM-DD","time":"HH:MM","team":"B1|B3|B5|S1|S3|M1|M2|M3"}\n' +
-    '{"action":"cancel","clientName":"<name>","date":"YYYY-MM-DD"}\n' +
-    '{"action":"move_employee","employeeName":"<name from Employees>","team":"<team>","date":"YYYY-MM-DD"}\n' +
-    '{"action":"day_off","employeeName":"<name>","date":"YYYY-MM-DD"}\n' +
-    '{"action":"reminder","text":"<reminder text>"}\n' +
-    '{"action":"unknown","reason":"<brief reason>"}\n\n' +
-    'Use 24-hour time. Default date = today, default time = 09:00 when unclear. Pick the closest name match from the provided lists.';
-
-  var action = null;
-  try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: text }]
-      })
-    });
-    if (!resp.ok) {
-      var errBody = await resp.text();
-      if (resp.status === 401) localStorage.removeItem('anthropic_api_key');
-      status.innerHTML = '<div style="color:var(--amber);font-size:13px">AI error ('+resp.status+'). '+(resp.status===401?'Key removed — try again.':'')+'</div>';
-      return;
-    }
-    var data = await resp.json();
-    var raw = data && data.content && data.content[0] && data.content[0].text ? data.content[0].text.trim() : '';
-    var m = raw.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('no JSON');
-    action = JSON.parse(m[0]);
-  } catch(e) {
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">Could not reach AI. ('+e.message+')</div>';
-    return;
-  }
-
-  executeAiAction(action, text);
-}
-
-function executeAiAction(action, originalText) {
-  var status = document.getElementById('voice-cmd-status');
-  if (!action || !action.action) {
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">I couldn\'t interpret that. Try rephrasing.</div>';
-    return;
-  }
-
-  if (action.action === 'unknown') {
-    status.innerHTML = '<div style="color:var(--amber);font-size:13px">'+(action.reason||'Not sure what you meant.')+'</div>';
-    return;
-  }
-
-  if (action.action === 'schedule') {
-    var c = findClientByName(action.clientName || '');
-    if (!c) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Client not found: '+(action.clientName||'?')+'</div>'; return; }
-    var hr = parseInt((action.time||'09:00').split(':')[0],10)||9;
-    var mn = parseInt((action.time||'09:00').split(':')[1],10)||0;
-    var timeDisplay = (hr%12||12)+':'+String(mn).padStart(2,'0')+' '+(hr>=12?'PM':'AM');
-    var team = (action.team||'B1').toUpperCase();
-    var dayLabel = new Date((action.date||dateKey(new Date()))+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    status.innerHTML = '<div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px">Schedule Clean</div>'
-      +'<div style="font-size:13px;margin-bottom:4px"><strong>'+((c.ln||'')+', '+(c.fn||''))+'</strong></div>'
-      +'<div style="font-size:13px;margin-bottom:4px">'+dayLabel+' at '+timeDisplay+'</div>'
-      +'<div style="font-size:13px;margin-bottom:12px;color:'+(team_colors_map[team]||'var(--text)')+';font-weight:700">Team '+team+'</div>'
-      +'<div style="display:flex;gap:8px">'
-      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
-      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Confirm</button>'
-      +'</div>';
-    window._pendingVoiceCmd = {
-      client: c,
-      clientName: (c.ln||'')+', '+(c.fn||''),
-      date: action.date || dateKey(new Date()),
-      time: String(hr).padStart(2,'0')+':'+String(mn).padStart(2,'0'),
-      timeDisplay: timeDisplay,
-      team: team,
-      viaAI: true
-    };
-    return;
-  }
-
-  if (action.action === 'cancel') {
-    var c2 = findClientByName(action.clientName || '');
-    var targetDate = action.date || dateKey(new Date());
-    if (!c2) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Client not found.</div>'; return; }
-    var job = jobs.find(function(j){ return j.clientId === c2.id && j.date === targetDate && !j.cancelled; });
-    if (!job) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">No job for that client on that day.</div>'; return; }
-    job.cancelled = true; saveJobs();
-    var dayL2 = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate('Cancelled: '+job.clientName, dayL2, 'AI Chat');
-    renderCal();
-    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Cancelled '+job.clientName+' on '+dayL2+'</div>';
-    setTimeout(function(){ status.style.display='none'; }, 3000);
-    return;
-  }
-
-  if (action.action === 'move_employee') {
-    var emp = findEmployeeByName(action.employeeName || '');
-    if (!emp) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Employee not found.</div>'; return; }
-    var team2 = (action.team||'').toUpperCase();
-    var valid = ['B1','B3','B5','S1','S3','M1','M2','M3'];
-    if (valid.indexOf(team2) === -1) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Invalid team: '+team2+'</div>'; return; }
-    var d = action.date || dateKey(new Date());
-    dailyAssignments[d + '_' + emp.id] = team2;
-    localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
-    var dayL3 = new Date(d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate(emp.name+' → Team '+team2, dayL3, 'AI Chat');
-    if (typeof renderTeamManager === 'function') renderTeamManager();
-    if (typeof renderCal === 'function') renderCal();
-    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp.name+' → Team '+team2+'</div><div style="font-size:12px;color:var(--muted);margin-top:2px">'+dayL3+'</div>';
-    setTimeout(function(){ status.style.display='none'; }, 3000);
-    return;
-  }
-
-  if (action.action === 'day_off') {
-    var emp2 = findEmployeeByName(action.employeeName || '');
-    if (!emp2) { status.innerHTML = '<div style="color:var(--amber);font-size:13px">Employee not found.</div>'; return; }
-    var d2 = action.date || dateKey(new Date());
-    dailyAssignments[d2 + '_' + emp2.id] = 'OFF';
-    saveDailyAssignments();
-    var dayL4 = new Date(d2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate(emp2.name+' → Day Off', dayL4, 'AI Chat');
-    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ '+emp2.name+' marked Day Off</div>';
-    setTimeout(function(){ status.style.display='none'; }, 3000);
-    return;
-  }
-
-  if (action.action === 'reminder') {
-    var noteText = action.text || originalText;
-    var now = new Date();
-    var timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-    manualTasks.unshift({ id: Date.now().toString(), text: noteText, time: timeStr, done: false });
-    saveManualTasks(); renderTasks();
-    status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Reminder added: "'+noteText+'"</div>';
-    setTimeout(function(){ status.style.display='none'; }, 3000);
-    return;
-  }
-
-  status.innerHTML = '<div style="color:var(--amber);font-size:13px">Unrecognized action: '+action.action+'</div>';
-}
-
-function findClientByName(name) {
-  if (!name) return null;
-  var n = name.toLowerCase().trim();
-  var best = null, bestLen = 0;
-  CLIENTS.forEach(function(c){
-    var fn = (c.fn||'').toLowerCase(), ln = (c.ln||'').toLowerCase();
-    var full = (fn+' '+ln).trim(), rev = (ln+' '+fn).trim();
-    if (n === full || n === rev) { if (full.length > bestLen) { best = c; bestLen = full.length + 100; } }
-    else if (full && (n.indexOf(full) !== -1 || full.indexOf(n) !== -1) && full.length > bestLen) { best = c; bestLen = full.length; }
-    else if (ln.length > 2 && n.indexOf(ln) !== -1 && ln.length > bestLen) { best = c; bestLen = ln.length; }
-  });
-  return best;
-}
-
-function findEmployeeByName(name) {
-  if (!name) return null;
-  var n = name.toLowerCase().trim();
-  var best = null, bestLen = 0;
-  EMPLOYEE_ROSTER.forEach(function(e){
-    var en = (e.name||'').toLowerCase();
-    if (!en) return;
-    var first = en.split(' ')[0];
-    if (n === en && en.length > bestLen) { best = e; bestLen = en.length + 100; }
-    else if (n.indexOf(en) !== -1 && en.length > bestLen) { best = e; bestLen = en.length; }
-    else if (en.indexOf(n) !== -1 && n.length > 2 && n.length > bestLen) { best = e; bestLen = n.length; }
-    else if (first.length > 2 && n.indexOf(first) !== -1 && first.length > bestLen) { best = e; bestLen = first.length; }
-  });
-  return best;
+  claireReply('Sorry, I\'m having trouble connecting right now. Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
 }
 
 function cancelVoiceCmd() {
@@ -4161,7 +4577,7 @@ function executeScheduleCmd() {
   logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : undefined);
   renderCal();
 
-  status.innerHTML = '<div style="color:var(--green);font-size:14px;font-weight:600">✓ Scheduled!</div><div style="font-size:13px;color:var(--muted);margin-top:4px">'+cmd.clientName+' — '+dayLabel+' at '+cmd.timeDisplay+'</div>';
+  claireReply('All set! '+cmd.clientName+' is booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
   window._pendingVoiceCmd = null;
   setTimeout(function(){ status.style.display='none'; }, 3000);
 }
@@ -9750,12 +10166,7 @@ Reply only with the SMS text, nothing else.`;
     if (!apiKey) { draftEl.placeholder = 'AI draft needs an API key.'; return; }
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': apiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 150,
@@ -12441,12 +12852,7 @@ async function translateNote(text, lang, cacheKey) {
     if (!apiKey) return text;
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': apiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 150,
