@@ -13311,10 +13311,12 @@ function renderSchedule() {
   function frequencyBadge(clientObj) {
     if (!clientObj) return '';
     if (clientObj.occasional === true) return 'OCC';
-    if (clientObj.fc === 'OMS' || !clientObj.fc) return 'OMS';
-    var short = FREQ_SHORT[clientObj.fc] || clientObj.fc;
-    var firstTime = !_hadPriorClean.has(clientObj.id);
-    return firstTime ? ('OMS/' + short) : short;
+    // Only show OMS when the client's actual frequency IS one-time.
+    // Missing fc -> no badge; first-time clean of a recurring client shows
+    // their real frequency (WEK/EOW/etc.), not a misleading OMS prefix.
+    if (clientObj.fc === 'OMS') return 'OMS';
+    if (!clientObj.fc) return '';
+    return FREQ_SHORT[clientObj.fc] || clientObj.fc;
   }
 
   list.innerHTML = jobs.map((j, i) => {
