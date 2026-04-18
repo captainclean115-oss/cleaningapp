@@ -5425,6 +5425,17 @@ var LAUNCHER_APPS = [
     go: function(){ if (typeof openContentView === 'function') openContentView(); } },
   { id: 'route',   label: 'Route', icon: '🗺', grad: 'linear-gradient(135deg,#f87171,#dc2626)',
     go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
+  { id: 'tasks',   label: 'Updates', icon: '📋', grad: 'linear-gradient(135deg,#a78bfa,#7c3aed)',
+    badge: function(){
+      try {
+        var p = (JSON.parse(localStorage.getItem('cleanco_pending')||'[]').filter(function(x){return !x.done;}).length) || 0;
+        var m = (JSON.parse(localStorage.getItem('cleanco_tasks')||'[]').filter(function(x){return !x.done;}).length) || 0;
+        return p + m;
+      } catch(e) { return 0; }
+    },
+    go: function(){ showTab('tasks'); } },
+  { id: 'files',   label: 'Files', icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)',
+    go: function(){ if (typeof openFiles === 'function') openFiles(); } },
   { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
     go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
