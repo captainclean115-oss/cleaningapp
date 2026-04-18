@@ -4603,6 +4603,11 @@ async function processVoiceCommand(text) {
   var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
   var empNames = EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
 
+  // Count how many distinct asks are in Tom's message — rough heuristic that
+  // helps the model commit to chaining instead of stopping after one tool.
+  var askHints = (text.match(/\b(also|and|then|plus|next)\b/gi) || []).length
+               + (text.match(/[,;]/g) || []).length;
+
   var systemPrompt = 'You are Claire, a friendly AI assistant for Manna Maids, a residential cleaning company in Massachusetts. '
     +'Today is '+todayStr+' ('+todayKey+'). '
     +'You help the owner Tom manage scheduling, employees, and clients.\n\n'
@@ -4611,9 +4616,17 @@ async function processVoiceCommand(text) {
     +'- Cut filler: no "let me check", no "I\'ll look into that", no "sure thing!". Just answer or act.\n'
     +'- Warm but brisk — think sharp office manager who respects Tom\'s time.\n'
     +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
-    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n'
-    +'- If Tom asks for MULTIPLE things in one message (e.g. "cancel A, move B, change C"), do them ALL — call each tool in turn. After each tool runs you get the result and can call the next one. End with a brief one-sentence wrap-up.\n\n'
-    +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
+    +'- After confirming a single action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n\n'
+    +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY):\n'
+    +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
+    +'1. Call the tool for the FIRST request.\n'
+    +'2. When the tool_result comes back, LOOK AT TOM\'S ORIGINAL MESSAGE AGAIN. Ask yourself: what else did he ask for that I haven\'t done yet?\n'
+    +'3. If anything is left, CALL THE NEXT TOOL IMMEDIATELY. Do not stop to confirm or explain mid-stream.\n'
+    +'4. Repeat until EVERY item from his message has its own tool call.\n'
+    +'5. Only after the last tool, give a short wrap-up like "All set — cancelled X, moved Y, and updated Z."\n'
+    +'You MUST NOT stop after the first tool if Tom asked for more than one thing. Keep calling tools until done.\n'
+    +(askHints >= 2 ? '\nHEADS UP: Tom\'s current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
+    +'\nTeams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
     +'Total clients: '+CLIENTS.length+'\n'
     +'Today\'s jobs: '+todayJobs.length+'\n\n'
@@ -4637,7 +4650,7 @@ async function processVoiceCommand(text) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
         body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
+          model: 'claude-sonnet-4-6',
           max_tokens: 400,
           system: systemPrompt,
           tools: CLAIRE_TOOLS,
