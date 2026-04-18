@@ -9311,7 +9311,6 @@ const SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQftLO0w
 let clientExtras = {}; // keyed by customer ID
 
 async function syncFromSheets(silent=false) {
-  if (!silent) showSyncBanner('Syncing client data...');
   try {
     const resp = await fetch(SHEETS_CSV_URL);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -9337,8 +9336,6 @@ async function syncFromSheets(silent=false) {
     const upcomingCol = col('future') !== -1 ? col('future') : col('upcoming') !== -1 ? col('upcoming') : col('cleans') !== -1 ? col('cleans') : col('scheduled') !== -1 ? col('scheduled') : -1;
     const teamCol = col('team') !== -1 ? col('team') : -1;
     const quotedMinCol = col('quoted inhome min') !== -1 ? col('quoted inhome min') : col('quoted in home min') !== -1 ? col('quoted in home min') : col('inhome min') !== -1 ? col('inhome min') : col('quoted min') !== -1 ? col('quoted min') : -1;
-
-    if (!silent) showSyncBanner('Headers found: ' + headers.join(', '), 4000);
 
     // Build name lookup from CLIENTS array
     const nameLookup = {};
@@ -9397,7 +9394,6 @@ async function syncFromSheets(silent=false) {
     localStorage.setItem('client_extras', JSON.stringify(clientExtras));
     localStorage.setItem('sheets_last_sync', new Date().toISOString());
     if (!silent) {
-      showSyncBanner('✓ Synced ' + count + ' client records', 2000);
       // Only re-render if no card is currently expanded (avoid jump)
       if (typeof render === 'function' && !expandedId) render();
     }
@@ -17242,9 +17238,8 @@ function syncSheets() {
   var SCHED = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFM6p4vFIqzk02UdzYkY3NoylgqtfvRPyEazKIBaSU3tvCSHkcOTI85u_LrE530UofRs6G5-3K2OxW/pub?gid=0&single=true&output=csv';
   var CANCEL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFM6p4vFIqzk02UdzYkY3NoylgqtfvRPyEazKIBaSU3tvCSHkcOTI85u_LrE530UofRs6G5-3K2OxW/pub?gid=981364203&single=true&output=csv';
   var KEYS = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSFM6p4vFIqzk02UdzYkY3NoylgqtfvRPyEazKIBaSU3tvCSHkcOTI85u_LrE530UofRs6G5-3K2OxW/pub?gid=713428866&single=true&output=csv';
-  showSyncBanner('Syncing...');
   var done = 0;
-  function tick() { done++; if (done>=3) { showSyncBanner('Synced ✓', 3000); setTimeout(function(){ autoGenerateSchedule(); render&&render(); renderCal&&renderCal(); }, 300); } }
+  function tick() { done++; if (done>=3) { setTimeout(function(){ autoGenerateSchedule(); render&&render(); renderCal&&renderCal(); }, 300); } }
   fetch(CANCEL).then(function(r){return r.text();}).then(function(csv){
     var rows=parseCSV(csv),c={};
     for(var i=1;i<rows.length;i++){var n=(rows[i][0]||'').trim();if(n)c[n]=(c[n]||0)+1;}
