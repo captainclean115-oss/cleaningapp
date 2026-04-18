@@ -3205,7 +3205,9 @@ function renderStaffChatMessages() {
   c.innerHTML = thread.msgs.map(function(m){
     var mine = m.from === 'admin';
     var displayText = translatedText(m, mine ? m.lang : adminLang);
-    var showOriginal = !mine && m.lang !== adminLang;
+    // Show the original under the translated bubble whenever we actually had to translate
+    // (i.e., the displayed text differs from the stored original).
+    var showOriginal = !mine && displayText !== m.text;
     var time = new Date(m.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     return '<div class="conv-bubble-wrap '+(mine?'mine':'theirs')+'">'
       + '<div class="conv-bubble '+(mine?'mine':'theirs')+'" onclick="this.querySelector(\'.orig\').style.display=this.querySelector(\'.orig\').style.display===\'none\'?\'block\':\'none\'">'
@@ -3216,6 +3218,23 @@ function renderStaffChatMessages() {
       + '</div>';
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
+  // Fill in missing translations for staff messages on the fly, then re-render.
+  (async function(){
+    var dirty = false;
+    for (var i = 0; i < thread.msgs.length; i++) {
+      var m = thread.msgs[i];
+      if (m.from !== 'staff') continue;
+      if (!m.tx) m.tx = {};
+      if (!m.tx[adminLang] && adminLang === 'en') {
+        var en = await translateToEnglish(m.text);
+        if (en && en !== m.text) { m.tx.en = en; dirty = true; }
+      }
+    }
+    if (dirty) {
+      var c2 = loadStaffChats(); c2[_currentStaffChatId] = thread; saveStaffChats(c2);
+      renderStaffChatMessages();
+    }
+  })();
 }
 
 function closeStaffChat() {
@@ -3668,14 +3687,35 @@ async function sendStaffReplyEmp() {
   if (!thread) return;
   var empLang = thread.empLang || 'en';
   var msg = { id: 's' + Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: false };
-  if (empLang !== 'en') {
-    msg.tx.en = await translateChatMessage(text, empLang, 'en');
-  }
+  // Always attempt a to-English translation for the admin side — handles the case
+  // where an employee whose UI is configured as English actually types in Spanish/PT/CV.
+  // Claude auto-detects the source language when we say "translate to English".
+  msg.tx.en = await translateToEnglish(text);
   thread.msgs.push(msg);
   var allChats = loadStaffChats();
   allChats[currentEmployee.id] = thread;
   saveStaffChats(allChats);
   renderEmpChat();
+}
+
+// Lightweight helper: translate to English with auto-detected source language.
+async function translateToEnglish(text) {
+  if (!text) return text;
+  var apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+  if (!apiKey) return text;
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001', max_tokens: 300,
+        messages: [{ role: 'user', content: 'If this message is already in English, reply with ONLY the original text unchanged. Otherwise translate it to English. Reply with ONLY the result, no quotes, no explanation:\n\n'+text }]
+      })
+    });
+    if (!resp.ok) return text;
+    var data = await resp.json();
+    return (data.content && data.content[0] && data.content[0].text || text).trim();
+  } catch(e) { return text; }
 }
 
 function togglePendingDone(id) {
