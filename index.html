@@ -1727,14 +1727,13 @@ select.field-input { appearance: none; }
 
 <div class="topbar">
   <div class="topbar-inner">
-    <div id="topbar-cs-toggle" style="font-size:17px;font-weight:700;letter-spacing:-.01em"><span style="cursor:pointer" onclick="showClientsSubview()" id="topbar-clients-label">Clients</span> <span style="color:var(--muted)">/</span> <span id="topbar-staff-label" style="color:var(--accent);cursor:pointer" onclick="showStaffView()">Staff</span></div>
-    <div id="topbar-placeholder" style="display:none;font-size:17px;font-weight:700;opacity:0">Clients / Staff</div>
+    <div id="topbar-cs-toggle" style="display:none"></div>
+    <div id="topbar-placeholder" style="font-size:17px;font-weight:700;opacity:0">&nbsp;</div>
     <button id="route-optimizer-btn" onclick="openRouteOptimizer()" style="display:none;position:absolute;left:16px;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;z-index:1">🗺 Route</button>
     <button id="map-view-btn" onclick="openScheduleMap()" style="display:none;position:absolute;right:16px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;z-index:1">🗺 Map</button>
 
     <div id="clients-topbar-btns" style="display:none;align-items:center;gap:6px;margin-left:auto">
       <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;padding:6px 12px;border-radius:20px;cursor:pointer">Log out</button>
-      <button onclick="openQuoteTool()" style="background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer">💰 Quote</button>
       <button onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 16px;border-radius:20px;cursor:pointer">+ New</button>
     </div>
   </div>
@@ -2396,7 +2395,6 @@ function render() {
   document.getElementById('stats-bar').innerHTML = `
     <div class="stat-card"><div class="stat-label">Clients</div><div class="stat-value">${filtered.length}</div></div>
     <div class="stat-card" onclick="openBalanceFollowup()" style="cursor:pointer"><div class="stat-label">Outstanding 💰</div><div class="stat-value red">$${Math.round(balDue).toLocaleString()}</div></div>
-    <div class="stat-card" onclick="showTab('tasks')" style="cursor:pointer"><div class="stat-label">Updates ✅</div><div class="stat-value" style="color:${pendingCount>0?'var(--amber)':'var(--text)'}">${pendingCount}</div></div>
 `;
 
   const list = document.getElementById('client-list');
@@ -5422,9 +5420,12 @@ document.addEventListener('DOMContentLoaded', contentUpdateQueueBadge);
 // move in here over time.
 // ═══════════════════════════════════════════════════════════════════════
 var LAUNCHER_APPS = [
-  { id: 'clients', label: 'Clients & Staff', icon: '👥', grad: 'linear-gradient(135deg,#6c8fff,#3b82f6)', go: function(){ showTab('clients'); } },
-  { id: 'tasks',   label: 'Updates',         icon: '📋', grad: 'linear-gradient(135deg,#a78bfa,#7c3aed)', go: function(){ showTab('tasks'); } },
-  { id: 'files',   label: 'Files',           icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)', go: function(){ if (typeof openFiles === 'function') openFiles(); } },
+  { id: 'clients', label: 'Clients', icon: '👥', grad: 'linear-gradient(135deg,#6c8fff,#3b82f6)',
+    go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
+  { id: 'staff',   label: 'Staff',   icon: '🧑‍💼', grad: 'linear-gradient(135deg,#34d399,#059669)',
+    go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
+  { id: 'quote',   label: 'Quote',   icon: '💰', grad: 'linear-gradient(135deg,#fbbf24,#d97706)',
+    go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
 ];
 
 function openLauncher() {
