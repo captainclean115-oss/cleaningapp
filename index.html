@@ -967,11 +967,14 @@ body {
   margin-bottom: 6px;
 }
 .app-hero-back {
-  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
-  width: 40px; height: 40px; border-radius: 50%; font-size: 19px; cursor: pointer;
+  background: var(--surface2); border: 1px solid var(--border2); color: var(--text);
+  width: 44px; height: 44px; border-radius: 50%; font-size: 20px; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   position: absolute; top: calc(var(--safe-top) + 14px); left: 18px;
+  z-index: 10; pointer-events: auto;
+  font-family: 'DM Sans', sans-serif;
 }
+.app-hero-back:active { background: var(--surface); }
 .app-hero-brand { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; margin-top: 36px; }
 .app-hero-brand span { color: var(--accent); }
 .app-hero-sub { font-size: 15px; color: var(--muted); margin-top: 4px; }
@@ -2846,11 +2849,12 @@ function promptSetActor() {
   setCurrentActor(who);
 }
 
+var _claireActing = false; // set true while Claire runs a tool so logs auto-tag as "Claire"
 function logPendingUpdate(action, details, actor) {
   const now = new Date();
   const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-  const who = actor || getCurrentActor();
+  const who = actor || (_claireActing ? 'Claire' : getCurrentActor());
   pendingUpdates.unshift({
     id: Date.now().toString(),
     action,
@@ -3949,6 +3953,11 @@ function findClient(name) {
 }
 
 function executeClaireToolCall(toolCall, message) {
+  _claireActing = true;
+  try { return _executeClaireToolCallInner(toolCall, message); }
+  finally { setTimeout(function(){ _claireActing = false; }, 0); }
+}
+function _executeClaireToolCallInner(toolCall, message) {
   var input = toolCall.input || {};
   var name = toolCall.name;
 
@@ -3962,7 +3971,8 @@ function executeClaireToolCall(toolCall, message) {
       date: input.date || dateKey(new Date()),
       time: input.time || '09:00',
       timeDisplay: '',
-      team: (input.team||'B1').toUpperCase()
+      team: (input.team||'B1').toUpperCase(),
+      viaClaire: true
     };
     var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
     result.timeDisplay = (hr%12||12)+':'+(mn<10?'0':'')+mn+' '+(hr>=12?'PM':'AM');
@@ -4574,7 +4584,7 @@ function executeScheduleCmd() {
   saveJobs();
 
   var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : undefined);
+  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : (cmd.viaClaire ? 'Claire' : undefined));
   renderCal();
 
   claireReply('All set! '+cmd.clientName+' is booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
