@@ -4312,7 +4312,7 @@ function _claireBrowserSpeak(plain) {
   var u = new SpeechSynthesisUtterance(plain);
   if (!_claireVoice) _claireVoice = _pickClaireVoice();
   if (_claireVoice) u.voice = _claireVoice;
-  u.rate = 1.0; u.pitch = 1.05; u.volume = 1.0;
+  u.rate = 1.15; u.pitch = 1.05; u.volume = 1.0;
   u.onstart = function(){ _claireSetSpeakingUI(true); };
   u.onend = function(){ _claireSetSpeakingUI(false); };
   u.onerror = function(){ _claireSetSpeakingUI(false); };
@@ -4343,7 +4343,13 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
       script: {
         type: 'text',
         input: text,
-        provider: { type: 'microsoft', voice_id: 'en-US-JennyNeural' }
+        provider: {
+          type: 'microsoft',
+          voice_id: 'en-US-JennyNeural',
+          // Bump speaking rate ~15% above neutral so Claire sounds brisk
+          // without going chipmunk. Jenny stays warm at this speed.
+          voice_config: { style: 'Chat', rate: '+15%' }
+        }
       },
       config: { fluent: true, pad_audio: 0.0 }
     })
@@ -4594,10 +4600,12 @@ async function processVoiceCommand(text) {
     +'Today is '+todayStr+' ('+todayKey+'). '
     +'You help the owner Tom manage scheduling, employees, and clients.\n\n'
     +'VOICE STYLE (critical — your replies are spoken aloud with lip-sync):\n'
-    +'- Keep every reply to 1-2 short spoken sentences. No exceptions.\n'
-    +'- Write plain conversational English. NEVER use markdown — no **bold**, no bullets, no numbered lists, no headings, no asterisks, no backticks.\n'
+    +'- Be TERSE. One short sentence is the default. Two only if truly needed.\n'
+    +'- Cut filler: no "let me check", no "I\'ll look into that", no "sure thing!". Just answer or act.\n'
+    +'- Warm but brisk — think sharp office manager who respects Tom\'s time.\n'
+    +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
     +'- Do not enumerate multiple items in one reply. Handle one thing at a time; if Tom asks about multiple people, tackle the first and ask about the next.\n'
-    +'- Sound like a real office manager on the phone, not a chatbot writing a memo.\n\n'
+    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
     +'Total clients: '+CLIENTS.length+'\n'
