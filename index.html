@@ -4231,8 +4231,14 @@ function _claireRenderBubble(who, html) {
   requestAnimationFrame(function(){ box.scrollTop = box.scrollHeight; });
 }
 
+// When _claireSilent is true, tool handlers that call claireReply don't
+// render a bubble or speak. Used during the multi-action tool loop so
+// Tom sees ONE unified reply + ONE D-ID video at the end, instead of a
+// choppy "Done A" / "Done B" / "Done C" sequence with three videos.
+var _claireSilent = false;
 function claireReply(msg) {
   claireHideTyping();
+  if (_claireSilent) return;
   _claireRenderBubble('claire', msg);
   claireSpeak(msg);
 }
@@ -4619,11 +4625,11 @@ async function processVoiceCommand(text) {
     +'- After confirming a single action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n\n'
     +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY):\n'
     +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
-    +'1. Call the tool for the FIRST request.\n'
+    +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; Tom will not see any words you say between tool calls.\n'
     +'2. When the tool_result comes back, LOOK AT TOM\'S ORIGINAL MESSAGE AGAIN. Ask yourself: what else did he ask for that I haven\'t done yet?\n'
     +'3. If anything is left, CALL THE NEXT TOOL IMMEDIATELY. Do not stop to confirm or explain mid-stream.\n'
     +'4. Repeat until EVERY item from his message has its own tool call.\n'
-    +'5. Only after the last tool, give a short wrap-up like "All set — cancelled X, moved Y, and updated Z."\n'
+    +'5. After the LAST tool, give ONE final reply covering everything in one breath — this is the only thing Tom sees and hears. Example: "All set — cancelled Pat\'s Tuesday clean, moved Viviana to B3 for Monday, and switched Joe Agne to weekly." Keep it to 1-2 sentences, name each action briefly, then stop.\n'
     +'You MUST NOT stop after the first tool if Tom asked for more than one thing. Keep calling tools until done.\n'
     +(askHints >= 2 ? '\nHEADS UP: Tom\'s current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
     +'\nTeams: B1, B3, B5, S1, S3, M1, M2, M3\n'
@@ -4643,9 +4649,13 @@ async function processVoiceCommand(text) {
   // text reply) or we hit the safety cap.
   var MAX_TOOL_ROUNDS = 6;
   var didAnyToolCall = false;
+  // Run the entire tool loop in silent mode so individual tool handlers
+  // don't render intermediate bubbles or trigger intermediate D-ID videos.
+  // Only the final wrap-up reply gets rendered + spoken — ONE bubble, ONE
+  // smooth video per user message, regardless of how many actions chain.
+  _claireSilent = true;
   try {
     for (var round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      if (round > 0) claireShowTyping(); // between tool steps, show she's thinking again
       var resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
@@ -4658,15 +4668,13 @@ async function processVoiceCommand(text) {
         })
       });
       if (!resp.ok) {
+        _claireSilent = false;
         claireHideTyping();
         if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
         claireReply('I had trouble finishing that — want me to try again?');
         return;
       }
       var data = await resp.json();
-
-      // Hide typing dots now that a response is in hand.
-      claireHideTyping();
 
       var textReply = '';
       var toolCall = null;
@@ -4683,28 +4691,35 @@ async function processVoiceCommand(text) {
 
       if (toolCall) {
         didAnyToolCall = true;
-        // Execute. Action tools render their own claireReply; query tools
-        // just collect data and we continue the loop so Claire can answer
-        // using it on the next round.
+        // Tool runs silently (_claireSilent=true suppresses its bubble/speech).
+        // We still get the factual summary back for memory + the wrap-up call.
         var toolResult = executeClaireToolCall(toolCall, textReply);
         _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] });
         if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
         continue;
       }
 
-      // No tool call this round — Claire is wrapping up with a final reply.
+      // No tool call this round — Claude is wrapping up. Exit silent mode
+      // so this ONE reply renders + speaks normally.
+      _claireSilent = false;
       if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
       if (textReply) {
         claireReply(textReply);
       } else if (!didAnyToolCall) {
         claireReply('I\'m not sure what you need — can you say that differently?');
+      } else {
+        // Defensive: Claude returned neither text nor tool_use after tool
+        // calls. Shouldn't happen with Sonnet, but fall back gracefully.
+        claireReply('Done.');
       }
       return;
     }
     // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
+    _claireSilent = false;
     claireHideTyping();
     claireReply('That was a lot — anything still left to handle?');
   } catch(e) {
+    _claireSilent = false;
     claireHideTyping();
     processVoiceCommandLocal(text);
   }
