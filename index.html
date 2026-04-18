@@ -1180,6 +1180,70 @@ body {
   to { transform: scale(1); opacity: 1; }
 }
 
+/* ── HOME LAUNCHER (Finder / Launchpad style) ── */
+#launcher-view {
+  display: none;
+  position: fixed; inset: 0;
+  z-index: 280;
+}
+#launcher-view.active { display: block; }
+.launcher-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: launcher-fade 0.2s ease-out;
+}
+@keyframes launcher-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.launcher-sheet {
+  position: absolute; left: 0; right: 0;
+  bottom: calc(70px + var(--safe-bottom));
+  max-height: 70vh;
+  padding: 20px 18px calc(var(--safe-bottom) + 24px);
+  background: linear-gradient(180deg, rgba(20,22,32,0.98), rgba(15,17,23,0.98));
+  border-top: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 40px rgba(0,0,0,0.6);
+  animation: launcher-slide 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+@keyframes launcher-slide {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.launcher-title {
+  font-size: 13px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  margin-bottom: 14px; text-align: center;
+}
+.launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px 8px;
+}
+.launcher-tile {
+  background: none; border: none; padding: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+}
+.launcher-tile:active .launcher-icon { transform: scale(0.92); }
+.launcher-icon {
+  width: 58px; height: 58px; border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.1);
+  transition: transform 0.12s;
+}
+.launcher-label {
+  font-size: 11px; font-weight: 600;
+  color: var(--text); text-align: center; line-height: 1.2;
+  max-width: 72px; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Schedule-tab Content button */
 .cal-content-btn-row {
   display: flex; justify-content: center; margin: 10px 0 6px;
@@ -1783,6 +1847,17 @@ select.field-input { appearance: none; }
 </div>
 
 <!-- FILES VIEW (Finder-style grid) -->
+<!-- HOME LAUNCHER (app-drawer for tabs/tools Tom uses less often) -->
+<div id="launcher-view" aria-hidden="true">
+  <div class="launcher-backdrop" onclick="closeLauncher()"></div>
+  <div class="launcher-sheet">
+    <div class="launcher-title">Apps</div>
+    <div class="launcher-grid" id="launcher-grid">
+      <!-- Tiles rendered by renderLauncher() so they stay easy to reorder/add -->
+    </div>
+  </div>
+</div>
+
 <!-- CONTENT HUB (demo — social posting workflow) -->
 <div id="content-view">
   <div class="content-topbar">
@@ -2119,9 +2194,9 @@ select.field-input { appearance: none; }
 
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
-  <button class="nav-btn active" id="nav-clients" onclick="showTab('clients')">
-    <span class="nav-icon">👥</span>
-    <span>Clients/Staff</span>
+  <button class="nav-btn" id="nav-home" onclick="openLauncher()">
+    <span class="nav-icon">🏠</span>
+    <span>Home</span>
   </button>
   <button class="nav-btn" id="nav-cal" onclick="showTab('cal')">
     <span class="nav-icon">📅</span>
@@ -2556,7 +2631,7 @@ window.addEventListener('DOMContentLoaded', function() {
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
     var routeBtn = document.getElementById('route-optimizer-btn');
-    var activeTab = sessionStorage.getItem('cc_tab') || 'clients';
+    var activeTab = sessionStorage.getItem('cc_tab') || 'cal';
     if (routeBtn) routeBtn.style.display = (activeTab === 'cal') ? '' : 'none';
     var mapBtn2 = document.getElementById('map-view-btn');
     if (mapBtn2) mapBtn2.style.display = (activeTab === 'cal') ? '' : 'none';
@@ -2784,7 +2859,10 @@ function showTab(tab) {
   document.getElementById('gps-view').classList.toggle('active', tab === 'gps');
   var claireView = document.getElementById('claire-view');
   if (claireView) claireView.classList.toggle('active', tab === 'claire');
-  document.getElementById('nav-clients').classList.toggle('active', tab === 'clients');
+  // Home nav button is active whenever we're on a launcher-routed tab (Clients for now;
+  // more "apps" will be added behind the Home launcher later).
+  var navHome = document.getElementById('nav-home');
+  if (navHome) navHome.classList.toggle('active', tab === 'clients');
   document.getElementById('nav-cal').classList.toggle('active', tab === 'cal');
   var navClaire = document.getElementById('nav-claire');
   if (navClaire) navClaire.classList.toggle('active', tab === 'claire');
@@ -5337,6 +5415,43 @@ function contentUpdateQueueBadge() {
 
 // Initialize badge on load
 document.addEventListener('DOMContentLoaded', contentUpdateQueueBadge);
+
+// ═══════════════════════════════════════════════════════════════════════
+// HOME LAUNCHER — the "Home" nav button opens this app-drawer. Clients/Staff
+// lives in here now (it used to be a bottom-nav tab). More "apps" will
+// move in here over time.
+// ═══════════════════════════════════════════════════════════════════════
+var LAUNCHER_APPS = [
+  { id: 'clients', label: 'Clients & Staff', icon: '👥', grad: 'linear-gradient(135deg,#6c8fff,#3b82f6)', go: function(){ showTab('clients'); } },
+  { id: 'tasks',   label: 'Updates',         icon: '📋', grad: 'linear-gradient(135deg,#a78bfa,#7c3aed)', go: function(){ showTab('tasks'); } },
+  { id: 'files',   label: 'Files',           icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)', go: function(){ if (typeof openFiles === 'function') openFiles(); } },
+];
+
+function openLauncher() {
+  renderLauncher();
+  var v = document.getElementById('launcher-view');
+  if (v) { v.classList.add('active'); v.setAttribute('aria-hidden', 'false'); }
+}
+function closeLauncher() {
+  var v = document.getElementById('launcher-view');
+  if (v) { v.classList.remove('active'); v.setAttribute('aria-hidden', 'true'); }
+}
+function renderLauncher() {
+  var grid = document.getElementById('launcher-grid');
+  if (!grid) return;
+  grid.innerHTML = LAUNCHER_APPS.map(function(a, i) {
+    return '<button class="launcher-tile" onclick="launcherTap(' + i + ')">'
+      + '<div class="launcher-icon" style="background:' + a.grad + '">' + a.icon + '</div>'
+      + '<div class="launcher-label">' + a.label + '</div>'
+      + '</button>';
+  }).join('');
+}
+function launcherTap(i) {
+  var a = LAUNCHER_APPS[i];
+  if (!a) return;
+  closeLauncher();
+  try { a.go(); } catch(e) { console.error('launcher tap failed', e); }
+}
 
 // Entry point from the employee portal's own header button.
 // Pulls the currently-logged-in employee from currentEmployee and hands
@@ -12059,7 +12174,7 @@ function appUnlockManager() {
   buildFilters();
   applyFilters();
   updateTaskBadge();
-  const savedTab = sessionStorage.getItem('cc_tab') || 'clients';
+  const savedTab = sessionStorage.getItem('cc_tab') || 'cal';
   showTab(savedTab);
   rcInit();
   initSheets();
