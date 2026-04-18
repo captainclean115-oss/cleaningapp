@@ -4274,7 +4274,9 @@ function claireSpeak(text) {
   var didImg = localStorage.getItem('claire_did_image_url');
   if (didKey && didImg) {
     claireLipsyncSpeak(plain, didKey, didImg).catch(function(err){
-      console.warn('D-ID lip-sync failed, falling back to browser TTS:', err && err.message);
+      var errMsg = (err && err.message) ? err.message : String(err);
+      console.warn('D-ID lip-sync failed:', errMsg);
+      _claireRenderBubble('claire', '⚠️ Lip-sync failed — falling back to text. Error: ' + errMsg.slice(0, 180));
       _claireBrowserSpeak(plain);
     });
     return;
@@ -4296,6 +4298,28 @@ function _claireBrowserSpeak(plain) {
 }
 
 // ── Claire Tier 2: D-ID lip-sync video ──
+function _didAuthHeaders(apiKey) {
+  // D-ID gives keys in "base64(email):password" form. Send verbatim first;
+  // if that returns 401 we re-encode to standard Basic auth.
+  var raw = apiKey.replace(/^Basic\s+/i, '');
+  return [
+    { header: 'Basic ' + raw, label: 'raw' },
+    { header: 'Basic ' + btoa(raw), label: 'b64' }
+  ];
+}
+
+async function _didFetch(url, apiKey, init) {
+  var tries = _didAuthHeaders(apiKey);
+  var lastErr = null;
+  for (var i = 0; i < tries.length; i++) {
+    var h = Object.assign({}, (init && init.headers) || {}, { 'Authorization': tries[i].header });
+    var resp = await fetch(url, Object.assign({}, init, { headers: h }));
+    if (resp.status !== 401 && resp.status !== 403) return resp;
+    lastErr = resp;
+  }
+  return lastErr;
+}
+
 async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   var av = document.getElementById('claire-big-avatar');
   var video = document.getElementById('claire-video');
@@ -4304,10 +4328,9 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   var st = document.getElementById('claire-status-text');
   if (st) st.textContent = 'Thinking…';
 
-  var authHeader = 'Basic ' + apiKey.replace(/^Basic\s+/i, '');
-  var createResp = await fetch('https://api.d-id.com/talks', {
+  var createResp = await _didFetch('https://api.d-id.com/talks', apiKey, {
     method: 'POST',
-    headers: { 'Authorization': authHeader, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({
       source_url: imageUrl,
       script: {
@@ -4319,30 +4342,30 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
     })
   });
   if (!createResp.ok) {
-    var errText = await createResp.text();
+    var errText = '';
+    try { errText = await createResp.text(); } catch(e) {}
     _claireSetSpeakingUI(false);
-    throw new Error('D-ID create failed: ' + createResp.status + ' ' + errText.slice(0, 200));
+    throw new Error('D-ID API ' + createResp.status + ': ' + errText.slice(0, 200));
   }
   var createData = await createResp.json();
   var talkId = createData.id;
-  if (!talkId) { _claireSetSpeakingUI(false); throw new Error('No talk id returned'); }
+  if (!talkId) { _claireSetSpeakingUI(false); throw new Error('No talk id returned: ' + JSON.stringify(createData).slice(0,200)); }
 
   // Poll until ready
   var resultUrl = null;
   for (var attempt = 0; attempt < 40; attempt++) {
     await new Promise(function(r){ setTimeout(r, 700); });
-    var pollResp = await fetch('https://api.d-id.com/talks/' + talkId, {
-      headers: { 'Authorization': authHeader, 'Accept': 'application/json' }
-    });
-    if (!pollResp.ok) continue;
+    var pollResp = await _didFetch('https://api.d-id.com/talks/' + talkId, apiKey, { headers: { 'Accept': 'application/json' } });
+    if (!pollResp || !pollResp.ok) continue;
     var pollData = await pollResp.json();
     if (pollData.status === 'done' && pollData.result_url) { resultUrl = pollData.result_url; break; }
-    if (pollData.status === 'error') { _claireSetSpeakingUI(false); throw new Error('D-ID rendering error: ' + (pollData.error && pollData.error.description || 'unknown')); }
+    if (pollData.status === 'error' || pollData.status === 'rejected') { _claireSetSpeakingUI(false); throw new Error('D-ID render error: ' + JSON.stringify(pollData.error || pollData).slice(0, 200)); }
   }
   if (!resultUrl) { _claireSetSpeakingUI(false); throw new Error('Timed out waiting for lip-sync video'); }
 
   if (st) st.textContent = 'Speaking…';
   video.src = resultUrl;
+  video.muted = false;
   if (av) av.classList.add('lipsync');
   video.onended = function() {
     if (av) av.classList.remove('lipsync');
@@ -4352,10 +4375,22 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   try {
     await video.play();
   } catch(e) {
-    // Autoplay may be blocked — ask user to tap to start
-    if (av) av.classList.remove('lipsync');
-    _claireSetSpeakingUI(false);
-    throw e;
+    // Autoplay with sound blocked — retry muted so user at least sees lip movement,
+    // and show a tap-to-unmute bubble.
+    try {
+      video.muted = true;
+      await video.play();
+      _claireRenderBubble('claire', '🔇 Tap Claire\'s face to turn on sound.');
+      var once = function(){
+        video.muted = false;
+        if (av) av.removeEventListener('click', once);
+      };
+      if (av) av.addEventListener('click', once, { once: true });
+    } catch(e2) {
+      if (av) av.classList.remove('lipsync');
+      _claireSetSpeakingUI(false);
+      throw e2;
+    }
   }
 }
 
