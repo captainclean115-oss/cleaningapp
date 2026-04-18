@@ -4269,10 +4269,13 @@ function claireSpeak(text) {
   if (!text) return;
   var plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   if (!plain) return;
-  // Prefer lip-sync via D-ID if configured
-  var didProxy = localStorage.getItem('claire_did_proxy') || localStorage.getItem('claire_did_key');
+  // Prefer lip-sync via D-ID if configured. Only attempt when the stored proxy
+  // value looks like an https URL — otherwise fall straight through to TTS
+  // (avoids bogus "Proxy URL must start with https://" errors if the user has
+  //  a legacy API key saved from before the Worker-proxy migration).
+  var didProxy = localStorage.getItem('claire_did_proxy') || '';
   var didImg = localStorage.getItem('claire_did_image_url');
-  if (didProxy && didImg) {
+  if (didProxy && /^https:\/\//i.test(didProxy) && didImg) {
     claireLipsyncSpeak(plain, didProxy, didImg).catch(function(err){
       var errMsg = (err && err.message) ? err.message : String(err);
       console.warn('D-ID lip-sync failed:', errMsg);
@@ -4395,10 +4398,11 @@ function claireSaveDidKey() {
 function _claireRefreshDidStatus() {
   var st = document.getElementById('claire-did-status');
   if (!st) return;
-  var proxy = localStorage.getItem('claire_did_proxy') || localStorage.getItem('claire_did_key');
+  var proxy = localStorage.getItem('claire_did_proxy') || '';
+  var hasProxy = /^https:\/\//i.test(proxy);
   var img = localStorage.getItem('claire_did_image_url');
-  if (proxy && img) { st.textContent = '✓ Enabled'; st.style.color = 'var(--green)'; }
-  else if (proxy) { st.textContent = 'Proxy saved · set image URL to enable'; st.style.color = 'var(--amber)'; }
+  if (hasProxy && img) { st.textContent = '✓ Enabled'; st.style.color = 'var(--green)'; }
+  else if (hasProxy) { st.textContent = 'Proxy saved · set image URL to enable'; st.style.color = 'var(--amber)'; }
   else { st.textContent = 'Off'; st.style.color = 'var(--muted)'; }
 }
 
