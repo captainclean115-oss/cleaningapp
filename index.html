@@ -1616,9 +1616,9 @@ select.field-input { appearance: none; }
         <div style="font-size:12px;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:.05em">✨ Lip-sync (D-ID)</div>
         <div id="claire-did-status" style="font-size:10px;color:var(--muted)"></div>
       </div>
-      <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">Paste your D-ID API key to make Claire actually talk with matching lip movement. Get one free at <strong>d-id.com</strong>.</div>
-      <input id="claire-did-key" type="password" placeholder="D-ID API key (paste here)" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:10px 12px;outline:none;margin-bottom:8px">
-      <button onclick="claireSaveDidKey()" style="width:100%;background:var(--surface2);border:1px solid var(--accent2);color:var(--accent2);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;padding:9px;border-radius:8px;cursor:pointer">Save Key & Enable Lip-Sync</button>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">Paste your Cloudflare Worker URL (the D-ID relay). The Worker holds your D-ID key server-side — browsers can't call D-ID directly (CORS).</div>
+      <input id="claire-did-proxy" type="text" placeholder="https://claire-did.yourname.workers.dev" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:10px 12px;outline:none;margin-bottom:8px">
+      <button onclick="claireSaveDidKey()" style="width:100%;background:var(--surface2);border:1px solid var(--accent2);color:var(--accent2);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;padding:9px;border-radius:8px;cursor:pointer">Save Proxy & Enable Lip-Sync</button>
     </div>
 
     <div style="display:flex;gap:8px">
@@ -4270,10 +4270,10 @@ function claireSpeak(text) {
   var plain = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   if (!plain) return;
   // Prefer lip-sync via D-ID if configured
-  var didKey = localStorage.getItem('claire_did_key');
+  var didProxy = localStorage.getItem('claire_did_proxy') || localStorage.getItem('claire_did_key');
   var didImg = localStorage.getItem('claire_did_image_url');
-  if (didKey && didImg) {
-    claireLipsyncSpeak(plain, didKey, didImg).catch(function(err){
+  if (didProxy && didImg) {
+    claireLipsyncSpeak(plain, didProxy, didImg).catch(function(err){
       var errMsg = (err && err.message) ? err.message : String(err);
       console.warn('D-ID lip-sync failed:', errMsg);
       _claireRenderBubble('claire', '⚠️ Lip-sync failed — falling back to text. Error: ' + errMsg.slice(0, 180));
@@ -4297,30 +4297,12 @@ function _claireBrowserSpeak(plain) {
   try { window.speechSynthesis.speak(u); } catch(e) { _claireSetSpeakingUI(false); }
 }
 
-// ── Claire Tier 2: D-ID lip-sync video ──
-function _didAuthHeaders(apiKey) {
-  // D-ID gives keys in "base64(email):password" form. Send verbatim first;
-  // if that returns 401 we re-encode to standard Basic auth.
-  var raw = apiKey.replace(/^Basic\s+/i, '');
-  return [
-    { header: 'Basic ' + raw, label: 'raw' },
-    { header: 'Basic ' + btoa(raw), label: 'b64' }
-  ];
+// ── Claire Tier 2: D-ID lip-sync video (via Cloudflare Worker relay) ──
+function _didProxyBase(proxy) {
+  return String(proxy || '').trim().replace(/\/+$/, '');
 }
 
-async function _didFetch(url, apiKey, init) {
-  var tries = _didAuthHeaders(apiKey);
-  var lastErr = null;
-  for (var i = 0; i < tries.length; i++) {
-    var h = Object.assign({}, (init && init.headers) || {}, { 'Authorization': tries[i].header });
-    var resp = await fetch(url, Object.assign({}, init, { headers: h }));
-    if (resp.status !== 401 && resp.status !== 403) return resp;
-    lastErr = resp;
-  }
-  return lastErr;
-}
-
-async function claireLipsyncSpeak(text, apiKey, imageUrl) {
+async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
   var av = document.getElementById('claire-big-avatar');
   var video = document.getElementById('claire-video');
   if (!video) throw new Error('No video element');
@@ -4328,7 +4310,10 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   var st = document.getElementById('claire-status-text');
   if (st) st.textContent = 'Thinking…';
 
-  var createResp = await _didFetch('https://api.d-id.com/talks', apiKey, {
+  var base = _didProxyBase(proxyUrl);
+  if (!/^https?:\/\//i.test(base)) { _claireSetSpeakingUI(false); throw new Error('Proxy URL must start with https://'); }
+
+  var createResp = await fetch(base + '/talks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({
@@ -4345,7 +4330,7 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
     var errText = '';
     try { errText = await createResp.text(); } catch(e) {}
     _claireSetSpeakingUI(false);
-    throw new Error('D-ID API ' + createResp.status + ': ' + errText.slice(0, 200));
+    throw new Error('Proxy ' + createResp.status + ': ' + errText.slice(0, 200));
   }
   var createData = await createResp.json();
   var talkId = createData.id;
@@ -4355,7 +4340,7 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   var resultUrl = null;
   for (var attempt = 0; attempt < 40; attempt++) {
     await new Promise(function(r){ setTimeout(r, 700); });
-    var pollResp = await _didFetch('https://api.d-id.com/talks/' + talkId, apiKey, { headers: { 'Accept': 'application/json' } });
+    var pollResp = await fetch(base + '/talks/' + encodeURIComponent(talkId), { headers: { 'Accept': 'application/json' } });
     if (!pollResp || !pollResp.ok) continue;
     var pollData = await pollResp.json();
     if (pollData.status === 'done' && pollData.result_url) { resultUrl = pollData.result_url; break; }
@@ -4394,24 +4379,26 @@ async function claireLipsyncSpeak(text, apiKey, imageUrl) {
   }
 }
 
-// Persist D-ID key
+// Persist D-ID proxy URL (Cloudflare Worker)
 function claireSaveDidKey() {
-  var el = document.getElementById('claire-did-key');
-  var key = (el.value || '').trim();
-  if (!key) { alert('Paste your D-ID API key first.'); return; }
-  localStorage.setItem('claire_did_key', key);
+  var el = document.getElementById('claire-did-proxy');
+  var url = (el.value || '').trim();
+  if (!url) { alert('Paste your Cloudflare Worker URL first.'); return; }
+  if (!/^https:\/\//i.test(url)) { alert('Proxy URL must start with https://'); return; }
+  localStorage.setItem('claire_did_proxy', url);
+  localStorage.removeItem('claire_did_key'); // clean up old key storage
   el.value = '';
   _claireRefreshDidStatus();
-  alert('D-ID key saved. Claire will now lip-sync her replies (uses ~$0.10 per message).');
+  alert('Proxy saved. Claire will now lip-sync her replies (uses ~$0.10 per message via D-ID).');
 }
 
 function _claireRefreshDidStatus() {
   var st = document.getElementById('claire-did-status');
   if (!st) return;
-  var has = !!localStorage.getItem('claire_did_key');
+  var proxy = localStorage.getItem('claire_did_proxy') || localStorage.getItem('claire_did_key');
   var img = localStorage.getItem('claire_did_image_url');
-  if (has && img) { st.textContent = '✓ Enabled'; st.style.color = 'var(--green)'; }
-  else if (has) { st.textContent = 'Key saved · set image URL to enable'; st.style.color = 'var(--amber)'; }
+  if (proxy && img) { st.textContent = '✓ Enabled'; st.style.color = 'var(--green)'; }
+  else if (proxy) { st.textContent = 'Proxy saved · set image URL to enable'; st.style.color = 'var(--amber)'; }
   else { st.textContent = 'Off'; st.style.color = 'var(--muted)'; }
 }
 
@@ -4451,6 +4438,9 @@ function openClairePhotoPicker() {
   // Pre-fill URL field if one is saved (useful for D-ID)
   var savedUrl = localStorage.getItem('claire_did_image_url') || '';
   document.getElementById('claire-photo-url').value = savedUrl;
+  // Pre-fill the D-ID proxy field too so the user can see/edit what's saved
+  var proxyEl = document.getElementById('claire-did-proxy');
+  if (proxyEl) proxyEl.value = localStorage.getItem('claire_did_proxy') || '';
   _claireRefreshDidStatus();
   document.getElementById('claire-photo-modal').style.display = 'flex';
 }
