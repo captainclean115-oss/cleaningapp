@@ -4184,8 +4184,7 @@ function runVoiceCmd() {
   claireAddUserMsg(text);
   input.value = '';
   claireShowTyping();
-  // Tiny delay so the typing indicator is visible for realism even on local/fast paths
-  setTimeout(function(){ processVoiceCommand(text); }, 180);
+  processVoiceCommand(text);
 }
 
 // ── Claire chat UI helpers ──
@@ -4342,7 +4341,7 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
   // Poll until ready
   var resultUrl = null;
   for (var attempt = 0; attempt < 40; attempt++) {
-    await new Promise(function(r){ setTimeout(r, 700); });
+    await new Promise(function(r){ setTimeout(r, 400); });
     var pollResp = await fetch(base + '/talks/' + encodeURIComponent(talkId), { headers: { 'Accept': 'application/json' } });
     if (!pollResp || !pollResp.ok) continue;
     var pollData = await pollResp.json();
@@ -4565,8 +4564,6 @@ async function processVoiceCommand(text) {
     if (!_claireApiKey) { var s=document.getElementById('voice-cmd-status'); s.style.display='block'; claireReply('I need an API key to work. Try your command again.'); return; }
   }
 
-  claireReply('Let me think...');
-
   var today = new Date();
   var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   var todayKey = dateKey(today);
@@ -4590,8 +4587,8 @@ async function processVoiceCommand(text) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 500,
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 400,
         system: systemPrompt,
         tools: CLAIRE_TOOLS,
         messages: _claireHistory.concat([{ role: 'user', content: text }])
@@ -4600,10 +4597,6 @@ async function processVoiceCommand(text) {
 
     if (!resp.ok) { processVoiceCommandLocal(text); return; }
     var data = await resp.json();
-
-    // Remove "Let me think..."
-    var thinkEl = status.querySelector('div:last-child');
-    if (thinkEl && thinkEl.textContent.includes('think')) thinkEl.remove();
 
     // Process response — could be text, tool_use, or both
     var textReply = '';
