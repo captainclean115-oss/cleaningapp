@@ -4611,7 +4611,7 @@ async function processVoiceCommand(text) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'claude-sonnet-4-6',
         max_tokens: 400,
         system: systemPrompt,
         tools: CLAIRE_TOOLS,
@@ -4632,21 +4632,59 @@ async function processVoiceCommand(text) {
       });
     }
 
-    // Save to conversation history
+    // Save user turn + Claire's first response (text + any tool_use) to history
     _claireHistory.push({ role: 'user', content: text });
-    // Build assistant reply for history — include both text and tool use
     var assistantContent = [];
     if (textReply) assistantContent.push({ type: 'text', text: textReply });
     if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
     if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
-    // If tool was used, add a tool_result so the conversation is valid
-    if (toolCall) _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: 'Done.' }] });
-    // Keep last 10 exchanges (20 messages) so we don't blow up the context
-    if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
 
     if (toolCall) {
-      executeClaireToolCall(toolCall, textReply);
+      // Run the tool. executeClaireToolCall returns the factual outcome (for
+      // memory), and for action tools also calls claireReply to show the user.
+      var toolResult = executeClaireToolCall(toolCall, textReply);
+      _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] });
+      if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
+
+      // For query tools, Claire doesn't know the answer yet — she only saw the
+      // tool_result just now. Make a follow-up call so she can answer Tom
+      // using the real data.
+      if (CLAIRE_QUERY_TOOLS[toolCall.name]) {
+        try {
+          var fuResp = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-6',
+              max_tokens: 400,
+              system: systemPrompt,
+              tools: CLAIRE_TOOLS,
+              messages: _claireHistory
+            })
+          });
+          if (fuResp.ok) {
+            var fuData = await fuResp.json();
+            var fuText = '';
+            (fuData.content||[]).forEach(function(b){ if (b.type === 'text') fuText += b.text; });
+            fuText = fuText.trim();
+            if (fuText) {
+              _claireHistory.push({ role: 'assistant', content: [{ type: 'text', text: fuText }] });
+              claireReply(fuText);
+            } else {
+              claireReply(toolResult);
+            }
+          } else {
+            claireReply(toolResult);
+          }
+        } catch(e) {
+          claireReply(toolResult);
+        }
+      }
+      // Action tools: executeClaireToolCall already called claireReply with the
+      // outcome; nothing more to do here.
     } else {
+      if (textReply) _claireHistory.push({ role: 'assistant', content: [{ type: 'text', text: textReply }] });
+      if (_claireHistory.length > 20) _claireHistory = _claireHistory.slice(-20);
       claireReply(textReply || 'I\'m not sure what you need — can you say that differently?');
     }
   } catch(e) {
@@ -4671,10 +4709,38 @@ function findClient(name) {
   return best;
 }
 
+// Tools that return information to Claire rather than perform an action.
+// After one of these runs, we make a follow-up API call so Claire can
+// synthesize a reply that actually uses the data the tool returned.
+var CLAIRE_QUERY_TOOLS = {
+  lookup_client: 1, lookup_schedule: 1, lookup_balance: 1, lookup_employee: 1,
+  count_jobs: 1, get_revenue: 1, locate_team: 1
+};
+
+// Captures the factual outcome of the most recent tool call so it can be
+// stored as tool_result in conversation history (instead of just "Done.").
+// This is Claire's memory of her own actions.
+var _claireLastToolResult = '';
+
 function executeClaireToolCall(toolCall, message) {
   _claireActing = true;
-  try { return _executeClaireToolCallInner(toolCall, message); }
+  _claireLastToolResult = '';
+  try { _executeClaireToolCallInner(toolCall, message); }
   finally { setTimeout(function(){ _claireActing = false; }, 0); }
+  return _claireLastToolResult || ('Executed ' + toolCall.name + '.');
+}
+
+// When a pending action (schedule/invoice/SMS) is later confirmed by Tom
+// clicking Yes in the UI, append the final outcome to the latest tool_result
+// in Claire's history so she knows it went through.
+function _claireAmendLastToolResult(extra) {
+  for (var i = _claireHistory.length - 1; i >= 0; i--) {
+    var m = _claireHistory[i];
+    if (m.role === 'user' && Array.isArray(m.content) && m.content[0] && m.content[0].type === 'tool_result') {
+      m.content[0].content = String(m.content[0].content || '') + ' [Update: ' + extra + ']';
+      return;
+    }
+  }
 }
 function _executeClaireToolCallInner(toolCall, message) {
   var input = toolCall.input || {};
@@ -4683,7 +4749,7 @@ function _executeClaireToolCallInner(toolCall, message) {
   // ── SCHEDULE ──
   if (name === 'schedule_clean') {
     var client = findClient(input.client);
-    if (!client) { claireReply(message || 'I couldn\'t find that client. Can you give me their full name?'); return; }
+    if (!client) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client. Can you give me their full name?'); return; }
     var result = {
       client: client,
       clientName: (client.ln||'')+', '+(client.fn||''),
@@ -4704,29 +4770,32 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
       +'</div>';
     window._pendingVoiceCmd = result;
+    _claireLastToolResult = 'Proposed scheduling '+client.fn+' '+client.ln+' for '+dayLabel+' at '+result.timeDisplay+' with Team '+result.team+'. Waiting on Tom to click Yes/No in the UI to confirm.';
 
   // ── CANCEL ──
   } else if (name === 'cancel_clean') {
     var client2 = findClient(input.client);
-    if (!client2) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!client2) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     var targetDate = input.date || dateKey(new Date());
     var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
     if (job) {
       job.cancelled = true; saveJobs();
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      _claireLastToolResult = 'Cancelled '+client2.fn+' '+client2.ln+'\'s '+dayL+' clean. Done.';
       claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
     } else {
       var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && !j.cancelled && j.date > targetDate; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
       var dateL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
+      _claireLastToolResult = client2.fn+' '+client2.ln+' has no clean scheduled on '+dateL+'.'+hint+' Nothing was cancelled.';
       claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean on '+dateL+'.'+hint);
     }
 
   // ── MOVE CLEAN ──
   } else if (name === 'move_clean') {
     var client3 = findClient(input.client);
-    if (!client3) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!client3) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     // Normalize a job's date to YYYY-MM-DD regardless of stored format
     function _normDate(d){
       if (!d) return '';
@@ -4756,6 +4825,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     }
     if (!job2) {
       var past = clientJobs.sort(function(a,b){ return b._d.localeCompare(a._d); })[0];
+      _claireLastToolResult = 'No upcoming clean found for '+client3.fn+' '+client3.ln+'.'+(past?' Their last clean was '+new Date(past._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.':'')+' Nothing was moved.';
       claireReply((message ? message + ' ' : '') + 'I couldn\'t find an upcoming clean for '+client3.fn+' '+client3.ln+'.'+(past?' The last one I see is '+new Date(past._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.':''));
       return;
     }
@@ -4769,25 +4839,28 @@ function _executeClaireToolCallInner(toolCall, message) {
     logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL);
     recalcTeamTimes(job2.team, job2.date, job2.id);
     var moveMsg = 'Moved '+client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.';
+    _claireLastToolResult = moveMsg+' Done.';
     claireReply(message || moveMsg);
 
   // ── DAY OFF ──
   } else if (name === 'employee_day_off') {
     var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
-    if (!emp) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    if (!emp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk = input.date || dateKey(new Date());
     dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
     var dayStr = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     logPendingUpdate(emp.name+' → Day Off', dayStr);
+    _claireLastToolResult = emp.name+' marked off for '+dayStr+'. Done.';
     claireReply(message || 'Got it! '+emp.name+' is off for '+dayStr+'. Team roster updated.');
 
   // ── MOVE EMPLOYEE ──
   } else if (name === 'move_employee') {
     var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
-    if (!emp2) { claireReply(message || 'I couldn\'t find that employee.'); return; }
+    if (!emp2) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk2 = input.date || dateKey(new Date());
     assignEmployee(emp2.id, input.team.toUpperCase(), dk2);
     logPendingUpdate(emp2.name+' → '+input.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+    _claireLastToolResult = emp2.name+' moved to Team '+input.team.toUpperCase()+' on '+new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'. Done.';
     claireReply(message || 'Moved '+emp2.name+' to Team '+input.team.toUpperCase()+'.');
 
   // ── REMINDER ──
@@ -4796,19 +4869,20 @@ function _executeClaireToolCallInner(toolCall, message) {
     var ts = now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     manualTasks.unshift({id:Date.now().toString(),text:input.text,time:ts,done:false});
     saveManualTasks(); renderTasks();
+    _claireLastToolResult = 'Reminder added: "'+input.text+'". Done.';
     claireReply(message || 'Noted! Added "'+input.text+'" to your reminders.');
 
-  // ── LOOKUP CLIENT ──
+  // ── LOOKUP CLIENT ──  (query tool — no claireReply, follow-up API synthesizes reply)
   } else if (name === 'lookup_client') {
     var cl = findClient(input.client);
-    if (!cl) { claireReply('I couldn\'t find a client named "'+input.client+'".'); return; }
-    var info = cl.fn+' '+cl.ln+' — '+cl.addr+', '+cl.city+'. '
-      +(cl.ph?'Phone: '+cl.ph+'. ':'')
-      +'Frequency: '+cl.freq+'. '
-      +(cl.bal>0?'Balance: $'+Math.round(cl.bal)+'. ':'No balance. ')
-      +'Next clean: '+(cl.next||'not set')+'. '
-      +(cl.notes?'Notes: '+cl.notes:'');
-    claireReply(message || info);
+    if (!cl) { _claireLastToolResult = 'No client found matching "'+input.client+'".'; return; }
+    _claireLastToolResult = 'Client '+cl.fn+' '+cl.ln+' — address: '+cl.addr+', '+cl.city+'. '
+      +'Phone: '+(cl.ph||'none on file')+'. '
+      +(cl.em?'Email: '+cl.em+'. ':'')
+      +'Frequency: '+(cl.freq||'unknown')+'. '
+      +'Balance: $'+Math.round(cl.bal||0)+'. '
+      +'Next scheduled clean: '+(cl.next||'not set')+'. '
+      +(cl.notes?'Notes: '+cl.notes+'.':'No notes.');
 
   // ── LOOKUP SCHEDULE ──
   } else if (name === 'lookup_schedule') {
@@ -4817,30 +4891,29 @@ function _executeClaireToolCallInner(toolCall, message) {
     if (input.team) sJobs = sJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
     if (input.client) { var sc=findClient(input.client); if(sc) sJobs=sJobs.filter(function(j){return j.clientId===sc.id;}); }
     var sDayL = new Date(sDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    if (!sJobs.length) { claireReply('No jobs scheduled for '+sDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.'); return; }
-    var summary = sJobs.length+' job'+(sJobs.length>1?'s':'')+' on '+sDayL+(input.team?' for Team '+input.team.toUpperCase():'')+': '
-      +sJobs.slice(0,8).map(function(j){ return j.clientName+(j.time?' at '+j.time:''); }).join(', ')
-      +(sJobs.length>8?' + '+(sJobs.length-8)+' more':'');
-    claireReply(message || summary);
+    if (!sJobs.length) { _claireLastToolResult = 'No jobs scheduled for '+sDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.'; return; }
+    _claireLastToolResult = sJobs.length+' job'+(sJobs.length>1?'s':'')+' on '+sDayL+(input.team?' for Team '+input.team.toUpperCase():'')+': '
+      +sJobs.map(function(j){ return j.clientName+(j.time?' at '+j.time:'')+' (Team '+j.team+')'; }).join('; ')+'.';
 
   // ── LOOKUP BALANCE ──
   } else if (name === 'lookup_balance') {
     if (input.client) {
       var bc=findClient(input.client);
-      if (!bc) { claireReply('Couldn\'t find that client.'); return; }
-      claireReply(message || bc.fn+' '+bc.ln+(bc.bal>0?' has a balance of $'+Math.round(bc.bal)+'.':' has no outstanding balance.'));
+      if (!bc) { _claireLastToolResult = 'No client found matching "'+input.client+'".'; return; }
+      _claireLastToolResult = bc.fn+' '+bc.ln+(bc.bal>0?' has a balance of $'+Math.round(bc.bal)+'.':' has no outstanding balance.');
     } else {
       var owing = CLIENTS.filter(function(c){return c.bal>0;});
       var total = owing.reduce(function(s,c){return s+c.bal;},0);
-      claireReply(message || owing.length+' clients have outstanding balances totaling $'+Math.round(total).toLocaleString()+'.');
+      _claireLastToolResult = owing.length+' client'+(owing.length===1?'':'s')+' with outstanding balances totaling $'+Math.round(total).toLocaleString()+'. '
+        +(owing.length?'Top: '+owing.sort(function(a,b){return b.bal-a.bal;}).slice(0,5).map(function(c){return c.fn+' '+c.ln+' $'+Math.round(c.bal);}).join(', ')+'.':'');
     }
 
   // ── LOOKUP EMPLOYEE ──
   } else if (name === 'lookup_employee') {
     var le = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
-    if (!le) { claireReply('Couldn\'t find that employee.'); return; }
+    if (!le) { _claireLastToolResult = 'No employee found matching "'+input.employee+'".'; return; }
     var leTeam = getEmployeeTeam(le.id, dateKey(new Date()));
-    claireReply(message || le.name+' is on '+(leTeam?'Team '+leTeam:'no team (Day Off)')+'. Role: '+(le.role.length?le.role.join(', '):'Cleaner')+'. Depot: '+le.depot+'.');
+    _claireLastToolResult = le.name+' — today on '+(leTeam?'Team '+leTeam:'no team (Day Off)')+'. Role: '+(le.role.length?le.role.join(', '):'Cleaner')+'. Depot: '+le.depot+'. Default team: '+le.defaultTeam+'.';
 
   // ── COUNT JOBS ──
   } else if (name === 'count_jobs') {
@@ -4848,19 +4921,19 @@ function _executeClaireToolCallInner(toolCall, message) {
     var cJobs = jobs.filter(function(j){ return j.date === cDate && !j.cancelled; });
     if (input.team) cJobs = cJobs.filter(function(j){ return j.team === input.team.toUpperCase(); });
     var cDayL = new Date(cDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    claireReply(message || cJobs.length+' job'+(cJobs.length!==1?'s':'')+' scheduled for '+cDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.');
+    _claireLastToolResult = cJobs.length+' job'+(cJobs.length!==1?'s':'')+' scheduled for '+cDayL+(input.team?' on Team '+input.team.toUpperCase():'')+'.';
 
   // ── REVENUE ──
   } else if (name === 'get_revenue') {
     var rDate = input.date || dateKey(new Date());
     var rev = getDayRevenue(rDate);
     var rDayL = new Date(rDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    claireReply(message || 'Revenue for '+rDayL+': $'+Math.round(rev).toLocaleString()+'.');
+    _claireLastToolResult = 'Revenue for '+rDayL+': $'+Math.round(rev).toLocaleString()+'.';
 
   // ── CHANGE FREQUENCY ──
   } else if (name === 'change_frequency') {
     var fClient = findClient(input.client);
-    if (!fClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!fClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
 
     // Map frequency words to codes and intervals
     var freqMap = {
@@ -4873,7 +4946,7 @@ function _executeClaireToolCallInner(toolCall, message) {
       'one-time': { fc:'OMS', freq:'One-time', days:0 }
     };
     var newFreq = freqMap[(input.new_frequency||'').toLowerCase()];
-    if (!newFreq) { claireReply('I don\'t recognize that frequency. Try: weekly, every 2 weeks, every 3 weeks, every 4 weeks, or monthly.'); return; }
+    if (!newFreq) { _claireLastToolResult = 'Unknown frequency: "'+input.new_frequency+'". Valid: weekly, every 2 weeks, every 3 weeks, every 4 weeks, monthly, one-time.'; claireReply('I don\'t recognize that frequency. Try: weekly, every 2 weeks, every 3 weeks, every 4 weeks, or monthly.'); return; }
 
     var oldFreq = fClient.freq || 'unknown';
 
@@ -4944,22 +5017,24 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Done</button>'
       +'<button onclick="claireSendSms(\''+fClient.id+'\',\''+smsText.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Message</button>'
       +'</div>';
+    _claireLastToolResult = 'Changed '+fClient.fn+' '+fClient.ln+' from '+oldFreq+' to '+newFreq.freq+'. Regenerated future cleans through 6 months. Next clean: '+nextCleanLabel+'. An SMS draft is showing for Tom to review and send.';
 
   // ── EDIT CLIENT PROFILE ──
   } else if (name === 'edit_client') {
     var ecClient = findClient(input.client);
-    if (!ecClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (!ecClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     var fieldMap = {ph:'Phone',em:'Email',addr:'Address',city:'City',zip:'Zip',pkg:'Package',notes:'Notes',fn:'First Name',ln:'Last Name'};
     var fieldName = fieldMap[input.field] || input.field;
     var oldVal = ecClient[input.field] || '(empty)';
     ecClient[input.field] = input.value;
     logPendingUpdate('Updated '+ecClient.fn+' '+ecClient.ln, fieldName+': '+oldVal+' → '+input.value);
+    _claireLastToolResult = 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' from "'+oldVal+'" to "'+input.value+'". Done.';
     claireReply(message || 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' to "'+input.value+'".');
 
   // ── CHANGE PRICE ──
   } else if (name === 'change_price') {
     var cpClient = findClient(input.client);
-    if (!cpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (!cpClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     var newPrice = input.price.replace(/[$,]/g,'');
     var todayK = dateKey(new Date());
     var updated = 0;
@@ -4971,12 +5046,13 @@ function _executeClaireToolCallInner(toolCall, message) {
     });
     saveJobs(); renderCal();
     logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)');
+    _claireLastToolResult = 'Set '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+' and updated '+updated+' future cleans. Done.';
     claireReply(message || 'Changed '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+'. Updated '+updated+' future cleans.');
 
   // ── RECORD PAYMENT ──
   } else if (name === 'record_payment') {
     var rpClient = findClient(input.client);
-    if (!rpClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (!rpClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     var payAmt = parseFloat(input.amount.replace(/[$,]/g,'')) || 0;
     var oldBal = rpClient.bal || 0;
     rpClient.bal = Math.max(0, oldBal - payAmt);
@@ -4987,18 +5063,20 @@ function _executeClaireToolCallInner(toolCall, message) {
     pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method });
     localStorage.setItem('cleanco_pending', JSON.stringify(pending));
     logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method);
+    _claireLastToolResult = 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance: $'+Math.round(oldBal)+' -> $'+Math.round(rpClient.bal)+'. Done.';
     claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
 
   // ── GENERATE QUOTE ──
   } else if (name === 'generate_quote') {
     claireReply('Looking up property info for '+input.address+'...');
     generateClaireQuote(input.address, input.frequency || 'biweekly', message);
+    _claireLastToolResult = 'Started property lookup for '+input.address+' at '+(input.frequency || 'biweekly')+' frequency. Result will appear in the quote UI.';
     return;
 
   // ── EDIT EMPLOYEE HOURS ──
   } else if (name === 'edit_employee_hours') {
     var ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
-    if (!ehEmp) { claireReply(message || 'Couldn\'t find that employee.'); return; }
+    if (!ehEmp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'Couldn\'t find that employee.'); return; }
     var ehDate = input.date || dateKey(new Date());
     var existing = getEmpHours(ehEmp.id, ehDate) || {};
     if (input.start) existing.start = input.start;
@@ -5014,13 +5092,14 @@ function _executeClaireToolCallInner(toolCall, message) {
     if (input.end) changes.push('end: '+input.end);
     if (input.lunch) changes.push('lunch: '+input.lunch+'min');
     logPendingUpdate('Hours edited: '+ehEmp.name, dayL3+' — '+changes.join(', '));
+    _claireLastToolResult = 'Updated '+ehEmp.name+'\'s hours for '+dayL3+': '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : '')+' Done.';
     claireReply(message || 'Updated '+ehEmp.name+'\'s hours for '+dayL3+'. '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : ''));
 
-  // ── LOCATE TEAM ──
+  // ── LOCATE TEAM ──  (query tool — no claireReply)
   } else if (name === 'locate_team') {
     var ltTeam = (input.team||'').toUpperCase();
     var vehicle = gpsVehicles ? gpsVehicles.find(function(v){ return v.team === ltTeam; }) : null;
-    if (!vehicle) { claireReply(message || 'I don\'t have GPS data for Team '+ltTeam+' right now. Make sure the Live tab is connected.'); return; }
+    if (!vehicle) { _claireLastToolResult = 'No GPS data available for Team '+ltTeam+'. Live tab may not be connected.'; return; }
     var addr3 = vehicle.address || 'Unknown location';
     var clientMatch3 = matchStopToClient(addr3, jobs.filter(function(j){ return j.date === dateKey(new Date()) && j.team === ltTeam; }));
     var statusText = vehicle.isMoving ? 'driving ('+vehicle.speed+' mph)' : 'stopped';
@@ -5049,13 +5128,13 @@ function _executeClaireToolCallInner(toolCall, message) {
       }
     }
 
-    claireReply(message || 'Team '+ltTeam+' is currently '+statusText+' at '+addr3+'.'+(clientMatch3 ? ' That\'s '+clientMatch3+'\'s house.' : '')+etaText);
+    _claireLastToolResult = 'Team '+ltTeam+' is currently '+statusText+' at '+addr3+'.'+(clientMatch3 ? ' That matches '+clientMatch3+'\'s house.' : '')+etaText;
 
   // ── SEND INVOICE ──
   } else if (name === 'send_invoice') {
     var invClient = findClient(input.client);
-    if (!invClient) { claireReply(message || 'Couldn\'t find that client.'); return; }
-    if (invClient.bal <= 0) { claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
+    if (!invClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
+    if (invClient.bal <= 0) { _claireLastToolResult = invClient.fn+' '+invClient.ln+' has no outstanding balance. Nothing to invoice.'; claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
     var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from Manna Maids that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions! — Tom';
     var status4 = document.getElementById('voice-cmd-status');
     status4.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
@@ -5065,21 +5144,23 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
       +'<button onclick="claireSendSms(\''+invClient.id+'\',\''+invMsg.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send Invoice</button>'
       +'</div>';
+    _claireLastToolResult = 'Prepared invoice reminder for '+invClient.fn+' '+invClient.ln+' ($'+Math.round(invClient.bal)+' outstanding). Draft showing in UI for Tom to review and send.';
     return;
 
   // ── UPDATE CLIENT NOTES ──
   } else if (name === 'update_client_notes') {
     var nClient = findClient(input.client);
-    if (!nClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!nClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     var oldNotes = nClient.notes || '';
     nClient.notes = oldNotes ? oldNotes + ' | ' + input.notes : input.notes;
     logPendingUpdate('Notes updated: '+nClient.fn+' '+nClient.ln, input.notes);
+    _claireLastToolResult = 'Appended note to '+nClient.fn+' '+nClient.ln+': "'+input.notes+'". Done.';
     claireReply(message || 'Updated notes for '+nClient.fn+' '+nClient.ln+': "'+input.notes+'"');
 
   // ── SEND MESSAGE ──
   } else if (name === 'send_message') {
     var mClient = findClient(input.client);
-    if (!mClient) { claireReply(message || 'I couldn\'t find that client.'); return; }
+    if (!mClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     var ph = (mClient.ph||'').replace(/\D/g,'');
     var status3 = document.getElementById('voice-cmd-status');
     status3.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
@@ -5089,8 +5170,10 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'<button onclick="document.getElementById(\'voice-cmd-status\').style.display=\'none\'" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Cancel</button>'
       +'<button onclick="claireSendSms(\''+mClient.id+'\',\''+input.message.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send</button>'
       +'</div>';
+    _claireLastToolResult = 'Prepared message to '+mClient.fn+' '+mClient.ln+': "'+input.message+'". Draft showing in UI for Tom to review and send.';
 
   } else {
+    _claireLastToolResult = 'Unknown tool: '+name+'.';
     claireReply(message || 'I\'m not sure how to do that yet, but I\'m learning!');
   }
 }
@@ -5243,6 +5326,9 @@ function claireSendSms(clientId, msgText) {
   var c = CLIENTS.find(function(x){ return x.id === clientId; });
   if (!c) return;
   var ph = (c.ph||'').replace(/\D/g,'');
+  if (typeof _claireAmendLastToolResult === 'function') {
+    _claireAmendLastToolResult('Tom sent the SMS to '+c.fn+' '+c.ln+'.');
+  }
   navigator.clipboard.writeText(msgText).then(function() {
     if (ph) {
       window.location.href = 'rcmobile://sms?number=' + (ph.length === 10 ? '1' : '') + ph;
@@ -5339,6 +5425,9 @@ function executeScheduleCmd() {
   renderCal();
 
   claireReply('All set! '+cmd.clientName+' is booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
+  if (typeof _claireAmendLastToolResult === 'function' && cmd.viaClaire) {
+    _claireAmendLastToolResult('Tom confirmed. '+cmd.clientName+' booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
+  }
   window._pendingVoiceCmd = null;
   setTimeout(function(){ status.style.display='none'; }, 3000);
 }
