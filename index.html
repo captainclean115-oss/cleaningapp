@@ -1729,13 +1729,9 @@ select.field-input { appearance: none; }
   <div class="topbar-inner">
     <div id="topbar-cs-toggle" style="display:none"></div>
     <div id="topbar-placeholder" style="font-size:17px;font-weight:700;opacity:0">&nbsp;</div>
-    <button id="route-optimizer-btn" onclick="openRouteOptimizer()" style="display:none;position:absolute;left:16px;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;z-index:1">🗺 Route</button>
     <button id="map-view-btn" onclick="openScheduleMap()" style="display:none;position:absolute;right:16px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;z-index:1">🗺 Map</button>
 
-    <div id="clients-topbar-btns" style="display:none;align-items:center;gap:6px;margin-left:auto">
-      <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;padding:6px 12px;border-radius:20px;cursor:pointer">Log out</button>
-      <button onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:6px 16px;border-radius:20px;cursor:pointer">+ New</button>
-    </div>
+    <div id="clients-topbar-btns" style="display:none"></div>
   </div>
 </div>
 
@@ -1802,13 +1798,6 @@ select.field-input { appearance: none; }
       </div>
 
       <button onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
-    </div>
-    <div class="cal-content-btn-row">
-      <button class="cal-content-btn" onclick="openContentView()">
-        <span>📸</span>
-        <span>Content</span>
-        <span id="content-main-badge" class="cal-content-btn-badge" style="display:none">0</span>
-      </button>
     </div>
   </div>
   <div id="cal-body"></div>
@@ -5424,8 +5413,20 @@ var LAUNCHER_APPS = [
     go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',   label: 'Staff',   icon: '🧑‍💼', grad: 'linear-gradient(135deg,#34d399,#059669)',
     go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
+  { id: 'new',     label: 'New Client', icon: '➕', grad: 'linear-gradient(135deg,#60a5fa,#2563eb)',
+    go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
   { id: 'quote',   label: 'Quote',   icon: '💰', grad: 'linear-gradient(135deg,#fbbf24,#d97706)',
     go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
+  { id: 'content', label: 'Content', icon: '📸', grad: 'linear-gradient(135deg,#c084fc,#7c3aed)',
+    badge: function(){
+      try { return (JSON.parse(localStorage.getItem('content_queue')||'[]').filter(function(c){return c.status==='pending';}).length) || 0; }
+      catch(e){ return 0; }
+    },
+    go: function(){ if (typeof openContentView === 'function') openContentView(); } },
+  { id: 'route',   label: 'Route', icon: '🗺', grad: 'linear-gradient(135deg,#f87171,#dc2626)',
+    go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
+  { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
+    go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
 function openLauncher() {
@@ -5441,8 +5442,15 @@ function renderLauncher() {
   var grid = document.getElementById('launcher-grid');
   if (!grid) return;
   grid.innerHTML = LAUNCHER_APPS.map(function(a, i) {
+    var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
+    var badgeHtml = badgeCount > 0
+      ? '<span style="position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px;min-width:16px;text-align:center;box-shadow:0 0 0 2px var(--bg)">'+badgeCount+'</span>'
+      : '';
     return '<button class="launcher-tile" onclick="launcherTap(' + i + ')">'
+      + '<div style="position:relative">'
       + '<div class="launcher-icon" style="background:' + a.grad + '">' + a.icon + '</div>'
+      + badgeHtml
+      + '</div>'
       + '<div class="launcher-label">' + a.label + '</div>'
       + '</button>';
   }).join('');
