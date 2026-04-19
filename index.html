@@ -958,21 +958,29 @@ body {
 .field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
 
 /* Claire nav button */
+/* Claire gets a larger, centered, raised circle in the dock — fixed in place.
+   The button itself stays flex:1 like the others so the dock spacing is even,
+   but the icon inside lifts up, grows, and glows. */
 .nav-btn-claire { position: relative; }
 .nav-icon-claire {
-  width: 34px; height: 34px; border-radius: 50%;
-  background: linear-gradient(135deg, rgba(108,143,255,0.2), rgba(167,139,250,0.2));
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, #6c8fff 0%, #a78bfa 60%, #f472b6 110%);
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 0 12px rgba(108,143,255,0.4);
+  box-shadow:
+    0 6px 18px rgba(108,143,255,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.25),
+    inset 0 -2px 6px rgba(0,0,0,0.2);
   animation: claire-nav-glow 3s ease-in-out infinite;
-  margin-top: -2px;
+  /* Lift above the dock so the bigger circle visually "floats" */
+  margin-top: -18px; margin-bottom: -2px;
 }
+.nav-icon-claire svg { width: 30px; height: 30px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
 @keyframes claire-nav-glow {
-  0%, 100% { box-shadow: 0 0 12px rgba(108,143,255,0.3); }
-  50% { box-shadow: 0 0 18px rgba(167,139,250,0.6); }
+  0%, 100% { box-shadow: 0 6px 18px rgba(108,143,255,0.5), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -2px 6px rgba(0,0,0,0.2); }
+  50%      { box-shadow: 0 8px 24px rgba(167,139,250,0.75), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -2px 6px rgba(0,0,0,0.2); }
 }
 .nav-btn-claire.active .nav-icon-claire {
-  background: linear-gradient(135deg, rgba(108,143,255,0.35), rgba(167,139,250,0.35));
+  background: linear-gradient(135deg, #8ba7ff 0%, #c4a7ff 60%, #ff90c8 110%);
 }
 
 /* Claire dedicated view — fixed full-screen (above topbar, below bottom-nav) */
@@ -2305,7 +2313,19 @@ select.field-input { appearance: none; }
     <span>Schedule</span>
   </button>
   <button class="nav-btn nav-btn-claire" id="nav-claire" onclick="showTab('claire')">
-    <span class="nav-icon-claire" style="font-size:22px;line-height:1">🤫</span>
+    <span class="nav-icon-claire" aria-label="Claire">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="clairenavgrad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#ffffff"/>
+            <stop offset="1" stop-color="#f0e7ff"/>
+          </linearGradient>
+        </defs>
+        <path d="M12 2L14.09 9.26L21.5 11.35L14.09 13.44L12 20.7L9.91 13.44L2.5 11.35L9.91 9.26L12 2Z" fill="url(#clairenavgrad)"/>
+        <circle cx="19" cy="5" r="1.5" fill="url(#clairenavgrad)" opacity="0.85"/>
+        <circle cx="5" cy="18" r="1" fill="url(#clairenavgrad)" opacity="0.7"/>
+      </svg>
+    </span>
     <span>Claire</span>
   </button>
   <button class="nav-btn" id="nav-gps" onclick="showTab('gps')">
@@ -5609,7 +5629,13 @@ var HOME_APPS = [
   // Primary views (also in the dock but nice to have on home as iOS does)
   { id: 'cal',      label: 'Schedule', icon: '📅', grad: 'linear-gradient(135deg,#fb7185,#e11d48)',
     go: function(){ showTab('cal'); } },
-  { id: 'claire',   label: 'Claire',   icon: '🤫', grad: 'linear-gradient(135deg,#a78bfa,#6c8fff)',
+  { id: 'claire',   label: 'Claire', grad: 'linear-gradient(135deg,#6c8fff 0%,#a78bfa 60%,#f472b6 110%)',
+    iconHtml: '<svg viewBox="0 0 24 24" width="34" height="34" fill="none" aria-hidden="true">'
+      + '<path d="M12 2L14.09 9.26L21.5 11.35L14.09 13.44L12 20.7L9.91 13.44L2.5 11.35L9.91 9.26L12 2Z" fill="#fff"/>'
+      + '<circle cx="19" cy="5" r="1.5" fill="#fff" opacity="0.85"/>'
+      + '<circle cx="5" cy="18" r="1" fill="#fff" opacity="0.7"/>'
+      + '</svg>',
+    fixed: true,
     go: function(){ showTab('claire'); } },
   { id: 'gps',      label: 'Live',     icon: '🗺️', grad: 'linear-gradient(135deg,#34d399,#0d9488)',
     go: function(){ showTab('gps'); } },
@@ -5700,8 +5726,10 @@ function renderHomeScreen() {
   grid.innerHTML = apps.map(function(a) {
     var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
     var badgeHtml = badgeCount > 0 ? '<span class="home-app-badge">'+badgeCount+'</span>' : '';
-    return '<button class="home-app" data-app-id="' + a.id + '">'
-      + '<div class="home-app-icon" style="background:' + a.grad + '">' + a.icon + '</div>'
+    var inner = a.iconHtml || (a.icon || '');
+    var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
+    return '<button class="home-app' + (a.fixed ? ' home-app-fixed' : '') + '" data-app-id="' + a.id + '"' + fixedAttr + '">'
+      + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + '</div>'
       + badgeHtml
       + '<div class="home-app-label">' + a.label + '</div>'
       + '</button>';
@@ -5723,16 +5751,17 @@ function _homeWireTiles() {
     tile.addEventListener('pointerdown', function(e) {
       // Cancel any prior long-press timer
       clearTimeout(_homeLongPressTimer);
+      var isFixed = tile.getAttribute('data-fixed') === '1';
       // Arm a long-press: 550ms -> enter edit mode
       if (!_homeEditMode) {
         _homeLongPressTimer = setTimeout(function() {
           homeEnterEditMode();
-          // Also start dragging this tile right away — iOS does the same thing
-          _homeStartDrag(tile, id, e.clientX, e.clientY);
+          // Fixed tiles enter edit mode but don't start a drag
+          if (!isFixed) _homeStartDrag(tile, id, e.clientX, e.clientY);
           if (navigator.vibrate) { try { navigator.vibrate(40); } catch(err){} }
         }, 550);
-      } else {
-        // Already in edit mode — pointerdown starts a drag immediately
+      } else if (!isFixed) {
+        // Already in edit mode — pointerdown starts a drag immediately (non-fixed only)
         _homeStartDrag(tile, id, e.clientX, e.clientY);
       }
     });
@@ -5796,8 +5825,10 @@ function _homeStartDrag(tile, id, startX, startY) {
     document.querySelectorAll('.home-app.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
     if (over) {
       var target = over.closest && over.closest('.home-app');
-      if (target && target !== tile) { target.classList.add('drop-target'); _homeDrag.target = target; }
-      else { _homeDrag.target = null; }
+      // Can't drop onto Claire or any other fixed tile — she doesn't move.
+      if (target && target !== tile && target.getAttribute('data-fixed') !== '1') {
+        target.classList.add('drop-target'); _homeDrag.target = target;
+      } else { _homeDrag.target = null; }
     }
   }
   function onEnd(ev) {
