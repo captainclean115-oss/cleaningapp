@@ -985,15 +985,26 @@ body {
   font-size: 11px;
   font-weight: 500;
 }
-/* Block browser drag, long-press callouts, and iOS text magnifier while
-   the user interacts with dock buttons — otherwise holding an icon can
-   trigger the URL-bar squish or text-selection that "shrinks" the dock. */
+/* Block browser drag, long-press callouts, and iOS text magnifier. The dock
+   needs this aggressively because iOS kept bringing up the Copy/Look-Up
+   popup on Claire's SVG when the user held a home icon near it. */
 .bottom-nav, .bottom-nav * {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none;
 }
 .bottom-nav { touch-action: manipulation; }
+/* Let the button itself own hits — the SVG inside Claire shouldn't receive
+   pointer events or iOS will treat it like selectable content. */
+.nav-btn-claire svg, .nav-btn-claire svg * { pointer-events: none; }
+/* While a home-screen drag is live, blanket-disable selection so no element
+   anywhere on the page can pop the text callout under the finger. */
+body.home-dragging, body.home-dragging * {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
 
 /* Claire: bigger raised circle, pinned dead-center. */
 .nav-btn-claire {
@@ -6064,6 +6075,9 @@ function _homeStartDrag(tile, startX, startY) {
   // Freeze scrolling on the home pages wrap (CSS handles the rest)
   var hv = document.getElementById('home-view');
   if (hv) hv.classList.add('dragging');
+  // Kill any possibility of iOS triggering the text-selection/magnifier/
+  // copy-lookup callout anywhere on the page during the drag.
+  document.body.classList.add('home-dragging');
 
   _homeDrag = {
     tile: tile, clone: clone,
@@ -6123,6 +6137,7 @@ function _homeFinishDrag(commit) {
   document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
   var hv = document.getElementById('home-view');
   if (hv) hv.classList.remove('dragging');
+  document.body.classList.remove('home-dragging');
 
   if (commit && d.hover) {
     var targetPage = parseInt(d.hover.getAttribute('data-page'));
