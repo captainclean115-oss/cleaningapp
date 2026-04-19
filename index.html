@@ -1254,65 +1254,83 @@ body {
   max-width: 72px; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── iOS-STYLE HOME SCREEN ── */
+/* ── iPhone-style HOME SCREEN (Facebook-blue) ── */
 #home-view {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
   bottom: calc(70px + var(--safe-bottom));
-  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overflow: hidden;
+  /* Facebook blue (#1877F2) with soft top/bottom shade so it reads as depth, not flat */
   background:
-    radial-gradient(1200px 800px at 20% -10%, rgba(167,139,250,0.22), transparent 60%),
-    radial-gradient(900px 700px at 110% 10%, rgba(108,143,255,0.25), transparent 55%),
-    radial-gradient(800px 900px at 50% 120%, rgba(236,72,153,0.14), transparent 55%),
-    linear-gradient(180deg, #1a1a2e 0%, #16213e 55%, #0f3460 100%);
-  padding: calc(var(--safe-top) + 24px) 20px 24px;
+    radial-gradient(1200px 800px at 50% -20%, rgba(255,255,255,0.16), transparent 55%),
+    radial-gradient(900px 700px at 50% 120%, rgba(0,0,0,0.25), transparent 55%),
+    #1877F2;
+  padding: calc(var(--safe-top) + 20px) 0 0;
 }
 #home-view.active { display: block; }
 
 .home-greeting {
-  color: rgba(255,255,255,0.92);
+  color: rgba(255,255,255,0.95);
   font-size: 13px; font-weight: 600; letter-spacing: 0.04em;
   text-transform: uppercase;
   text-align: center;
-  margin-bottom: 4px;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  margin-bottom: 2px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.3);
 }
 .home-date {
-  color: rgba(255,255,255,0.6);
+  color: rgba(255,255,255,0.72);
   font-size: 11px; text-align: center;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
 }
 
+/* Horizontal scroll-snap pages */
+.home-pages-wrap {
+  display: flex; flex-direction: row;
+  overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  height: calc(100% - 80px);
+}
+.home-pages-wrap::-webkit-scrollbar { display: none; }
+.home-page {
+  flex: 0 0 100%; width: 100%;
+  scroll-snap-align: start;
+  overflow-y: auto;
+  padding: 0 20px 60px;
+}
 .home-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 26px 8px;
-  padding-bottom: 40px;
+  gap: 24px 8px;
   max-width: 460px; margin: 0 auto;
 }
 .home-app {
   background: none; border: none; padding: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
   cursor: pointer;
   font-family: 'DM Sans', sans-serif;
   position: relative;
   touch-action: manipulation;
   user-select: none; -webkit-user-select: none;
-  transition: transform 0.12s;
+  -webkit-tap-highlight-color: transparent;
+  /* Settle animation — FLIP: when order changes, tiles smoothly slide. */
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.1);
 }
-.home-app:active { transform: scale(0.92); }
+.home-app:active:not(.dragging) .home-app-icon { transform: scale(0.92); }
 .home-app-icon {
   width: 62px; height: 62px; border-radius: 16px;
   display: flex; align-items: center; justify-content: center;
   font-size: 32px; line-height: 1;
-  box-shadow: 0 8px 20px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.18);
   position: relative;
+  transition: transform 0.15s;
 }
 .home-app-label {
   font-size: 12px; line-height: 1.15;
-  color: rgba(255,255,255,0.96); font-weight: 500;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  color: rgba(255,255,255,0.97); font-weight: 500;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.45);
   text-align: center; max-width: 74px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -1321,36 +1339,111 @@ body {
   background: #ef4444; color: #fff;
   border-radius: 10px; font-size: 11px; font-weight: 700;
   padding: 1px 6px; min-width: 18px; text-align: center;
-  box-shadow: 0 0 0 2px rgba(20,20,40,0.9);
+  box-shadow: 0 0 0 2px #1877F2;
+  z-index: 2;
 }
 
-/* Edit-mode wiggle */
-#home-view.edit-mode .home-app-icon {
+/* Folder tile: 2×2 mini grid inside the icon square */
+.home-folder-icon {
+  background: rgba(255,255,255,0.18);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 8px; display: grid;
+  grid-template-columns: 1fr 1fr; gap: 4px;
+}
+.home-folder-mini {
+  width: 100%; height: 100%; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+/* Edit-mode wiggle — applies to every icon on every page */
+#home-view.edit-mode .home-app:not(.dragging) .home-app-icon {
   animation: home-wiggle 0.26s ease-in-out infinite;
 }
-#home-view.edit-mode .home-app:nth-child(2n) .home-app-icon { animation-delay: -0.1s; }
-#home-view.edit-mode .home-app:nth-child(3n) .home-app-icon { animation-delay: -0.2s; }
+#home-view.edit-mode .home-app:nth-child(2n):not(.dragging) .home-app-icon { animation-delay: -0.1s; }
+#home-view.edit-mode .home-app:nth-child(3n):not(.dragging) .home-app-icon { animation-delay: -0.2s; }
 @keyframes home-wiggle {
   0%, 100% { transform: rotate(-1.6deg); }
   50%      { transform: rotate(1.6deg); }
 }
 
-/* Drag ghost + drop indicator */
-.home-app.dragging { opacity: 0.35; }
-.home-app.drop-target::after {
-  content: '';
-  position: absolute; left: -6px; top: 2px; bottom: 22px;
-  width: 3px; background: rgba(255,255,255,0.9); border-radius: 2px;
-  box-shadow: 0 0 8px rgba(255,255,255,0.6);
+/* Dragging: hide original, show clone */
+.home-app.dragging { opacity: 0; pointer-events: none; }
+.home-app-clone {
+  position: fixed; z-index: 600;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(1.18);
+  filter: drop-shadow(0 18px 32px rgba(0,0,0,0.45));
+  transition: transform 0.2s;
+}
+.home-app-clone.dropping { transition: transform 0.3s cubic-bezier(0.2,0.9,0.3,1.1), left 0.3s cubic-bezier(0.2,0.9,0.3,1.1), top 0.3s cubic-bezier(0.2,0.9,0.3,1.1); }
+
+/* Hover states during drag */
+.home-app.folder-target .home-app-icon {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.6), 0 8px 24px rgba(0,0,0,0.3);
+}
+
+/* Page dots indicator */
+.home-page-dots {
+  position: absolute; left: 0; right: 0;
+  bottom: 8px;
+  display: flex; justify-content: center; gap: 7px;
+  z-index: 5;
+  pointer-events: none;
+}
+.home-page-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(255,255,255,0.45);
+  transition: background 0.2s, transform 0.2s;
+}
+.home-page-dot.active {
+  background: rgba(255,255,255,0.95);
+  transform: scale(1.15);
+}
+
+/* Folder expanded overlay */
+.home-folder-overlay {
+  position: fixed; inset: 0; z-index: 570;
+  background: rgba(24, 119, 242, 0.75);
+  backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+  display: none; align-items: center; justify-content: center;
+  padding: 60px 20px;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+.home-folder-overlay.active { display: flex; opacity: 1; }
+.home-folder-sheet {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 22px;
+  padding: 22px 20px;
+  max-width: 360px; width: 100%;
+  max-height: 70vh; overflow-y: auto;
+}
+.home-folder-title {
+  color: #fff; font-size: 15px; font-weight: 700;
+  text-align: center; margin-bottom: 16px;
+  font-family: 'DM Sans', sans-serif;
+}
+.home-folder-title-input {
+  width: 100%; background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 10px; color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 700;
+  text-align: center; padding: 8px 12px; outline: none;
+  margin-bottom: 16px;
 }
 
 .home-done-btn {
   display: none;
   position: fixed; top: calc(var(--safe-top) + 14px); right: 16px;
-  background: rgba(255,255,255,0.95); color: #0f3460;
+  background: rgba(255,255,255,0.95); color: #1877F2;
   border: none; padding: 8px 16px; border-radius: 18px;
   font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
-  cursor: pointer; z-index: 510;
+  cursor: pointer; z-index: 610;
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
 #home-view.edit-mode ~ .home-done-btn,
@@ -1953,8 +2046,12 @@ select.field-input { appearance: none; }
 <div id="home-view">
   <div class="home-greeting" id="home-greeting">Manna Maids</div>
   <div class="home-date" id="home-date"></div>
-  <div class="home-grid" id="home-grid"></div>
+  <div class="home-pages-wrap" id="home-pages-wrap"></div>
+  <div class="home-page-dots" id="home-page-dots"></div>
   <button class="home-done-btn" id="home-done-btn" onclick="homeExitEditMode()">Done</button>
+</div>
+<div class="home-folder-overlay" id="home-folder-overlay" onclick="if(event.target===this)closeHomeFolder()">
+  <div class="home-folder-sheet" id="home-folder-sheet"></div>
 </div>
 
 <!-- HOME LAUNCHER (legacy popup — kept for rollback, not wired to UI) -->
@@ -5678,26 +5775,62 @@ var HOME_APPS = [
     go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
-function _homeGetOrder() {
+// ═══════════════════════════════════════════════════════════════════════
+// HOME SCREEN — page/slot model (supports folders + multiple pages)
+//
+// Storage: 'home_pages' = [ page, page, ... ]
+//          page = [ slot, slot, ... ]
+//          slot = { type: 'app', id: 'schedule' }
+//                 or { type: 'folder', name: 'Tools', apps: ['quote','route'] }
+//
+// Migration: if only legacy 'home_app_order' exists, wrap it into one page.
+// ═══════════════════════════════════════════════════════════════════════
+var HOME_PAGE_CAPACITY = 16; // 4 cols × 4 rows per page feels right on phones
+
+function _homeGetPages() {
+  // Return cached if we have it
+  if (window.__homePagesCache) return window.__homePagesCache;
   try {
-    var saved = JSON.parse(localStorage.getItem('home_app_order') || 'null');
-    if (!Array.isArray(saved)) return null;
-    return saved;
-  } catch(e) { return null; }
+    var saved = JSON.parse(localStorage.getItem('home_pages') || 'null');
+    if (Array.isArray(saved) && saved.length && Array.isArray(saved[0])) {
+      window.__homePagesCache = saved;
+      return saved;
+    }
+  } catch(e){}
+  // Migration from legacy flat order
+  var legacy = null;
+  try { legacy = JSON.parse(localStorage.getItem('home_app_order') || 'null'); } catch(e){}
+  var ids = Array.isArray(legacy) ? legacy : HOME_APPS.map(function(a){ return a.id; });
+  // Make sure every current app is represented
+  HOME_APPS.forEach(function(a){ if (ids.indexOf(a.id) < 0) ids.push(a.id); });
+  // Split across pages of HOME_PAGE_CAPACITY
+  var pages = [];
+  for (var i = 0; i < ids.length; i += HOME_PAGE_CAPACITY) {
+    pages.push(ids.slice(i, i + HOME_PAGE_CAPACITY).map(function(id){ return { type:'app', id: id }; }));
+  }
+  // Guarantee at least 2 pages (user asked for multi-page support)
+  if (pages.length < 2) pages.push([]);
+  window.__homePagesCache = pages;
+  return pages;
 }
-function _homeSaveOrder(ids) {
-  try { localStorage.setItem('home_app_order', JSON.stringify(ids)); } catch(e) {}
+function _homeSavePages() {
+  var pages = window.__homePagesCache;
+  if (pages) {
+    try { localStorage.setItem('home_pages', JSON.stringify(pages)); } catch(e) {}
+  }
 }
-function _homeOrderedApps() {
-  var saved = _homeGetOrder();
-  if (!saved) return HOME_APPS.slice();
-  var byId = {};
-  HOME_APPS.forEach(function(a){ byId[a.id] = a; });
-  var out = [];
-  saved.forEach(function(id){ if (byId[id]) { out.push(byId[id]); delete byId[id]; } });
-  // Append any newly-added apps not yet in the saved order
-  HOME_APPS.forEach(function(a){ if (byId[a.id]) out.push(a); });
-  return out;
+function _homeGetSlotApp(id) { return HOME_APPS.find(function(a){ return a.id === id; }); }
+function _homeFindSlot(query) {
+  // Find a slot matching { type, id } across all pages. Returns { pageIdx, slotIdx, slot } or null.
+  var pages = _homeGetPages();
+  for (var p = 0; p < pages.length; p++) {
+    for (var s = 0; s < pages[p].length; s++) {
+      var slot = pages[p][s];
+      if (query.type === 'app' && slot.type === 'app' && slot.id === query.id) return { pageIdx: p, slotIdx: s, slot: slot };
+      if (query.type === 'folder' && slot.type === 'folder' && slot.name === query.id) return { pageIdx: p, slotIdx: s, slot: slot };
+    }
+  }
+  return null;
 }
 
 function _homeGreetingText() {
@@ -5712,86 +5845,135 @@ function _homeDateText() {
 }
 
 function renderHomeScreen() {
-  var grid = document.getElementById('home-grid');
-  if (!grid) return;
   var greet = document.getElementById('home-greeting');
   var date = document.getElementById('home-date');
   if (greet) greet.textContent = _homeGreetingText();
   if (date) date.textContent = _homeDateText();
 
-  var apps = _homeOrderedApps();
-  grid.innerHTML = apps.map(function(a) {
-    var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
-    var badgeHtml = badgeCount > 0 ? '<span class="home-app-badge">'+badgeCount+'</span>' : '';
-    var inner = a.iconHtml || (a.icon || '');
-    var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
-    return '<button class="home-app' + (a.fixed ? ' home-app-fixed' : '') + '" data-app-id="' + a.id + '"' + fixedAttr + '">'
-      + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + '</div>'
-      + badgeHtml
-      + '<div class="home-app-label">' + a.label + '</div>'
-      + '</button>';
+  var pagesEl = document.getElementById('home-pages-wrap');
+  var dotsEl = document.getElementById('home-page-dots');
+  if (!pagesEl || !dotsEl) return;
+
+  var pages = _homeGetPages();
+  pagesEl.innerHTML = pages.map(function(page, pi) {
+    var tiles = page.map(function(slot, si) { return _homeRenderSlot(slot, pi, si); }).join('');
+    return '<div class="home-page" data-page-idx="' + pi + '"><div class="home-grid">' + tiles + '</div></div>';
   }).join('');
+  dotsEl.innerHTML = pages.map(function(_, pi) {
+    return '<div class="home-page-dot' + (pi === 0 ? ' active' : '') + '" data-dot="' + pi + '"></div>';
+  }).join('');
+
+  _homeWireScroll();
   _homeWireTiles();
 }
 
-// ── Tap / long-press / drag handling ──
+function _homeRenderSlot(slot, pageIdx, slotIdx) {
+  if (slot.type === 'folder') {
+    var first4 = (slot.apps || []).slice(0, 4).map(function(id){
+      var a = _homeGetSlotApp(id);
+      if (!a) return '<div class="home-folder-mini"></div>';
+      var inner = a.iconHtml
+        ? a.iconHtml.replace('width="34"','width="16"').replace('height="34"','height="16"')
+        : (a.icon || '');
+      return '<div class="home-folder-mini" style="background:' + a.grad + '">' + inner + '</div>';
+    }).join('');
+    while (first4.split('home-folder-mini').length - 1 < 4) first4 += '<div class="home-folder-mini"></div>';
+    return '<button class="home-app" data-slot-type="folder" data-slot-name="' + _homeEscAttr(slot.name || 'Folder') + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '">'
+      + '<div class="home-app-icon home-folder-icon">' + first4 + '</div>'
+      + '<div class="home-app-label">' + (slot.name || 'Folder') + '</div>'
+      + '</button>';
+  }
+  var a = _homeGetSlotApp(slot.id);
+  if (!a) return '';
+  var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
+  var badgeHtml = badgeCount > 0 ? '<span class="home-app-badge">' + badgeCount + '</span>' : '';
+  var inner = a.iconHtml || (a.icon || '');
+  var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
+  return '<button class="home-app" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + '">'
+    + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + '</div>'
+    + badgeHtml
+    + '<div class="home-app-label">' + a.label + '</div>'
+    + '</button>';
+}
+
+function _homeEscAttr(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+// ─── Page scroll + dots ───
+function _homeWireScroll() {
+  var wrap = document.getElementById('home-pages-wrap');
+  var dots = document.getElementById('home-page-dots');
+  if (!wrap || !dots) return;
+  wrap.onscroll = function() {
+    var pageWidth = wrap.clientWidth;
+    if (!pageWidth) return;
+    var idx = Math.round(wrap.scrollLeft / pageWidth);
+    dots.querySelectorAll('.home-page-dot').forEach(function(d, i) {
+      d.classList.toggle('active', i === idx);
+    });
+  };
+}
+
+// ─── Tap / long-press / drag ───
 var _homeEditMode = false;
 var _homeLongPressTimer = null;
-var _homeDrag = null; // { id, startX, startY, el, ghost }
+var _homeDrag = null;          // active drag state
+var _homeFolderHoverTimer = null;
 
 function _homeWireTiles() {
-  var grid = document.getElementById('home-grid');
-  if (!grid) return;
-  grid.querySelectorAll('.home-app').forEach(function(tile) {
-    var id = tile.getAttribute('data-app-id');
-
-    tile.addEventListener('pointerdown', function(e) {
-      // Cancel any prior long-press timer
-      clearTimeout(_homeLongPressTimer);
-      var isFixed = tile.getAttribute('data-fixed') === '1';
-      // Arm a long-press: 550ms -> enter edit mode
-      if (!_homeEditMode) {
-        _homeLongPressTimer = setTimeout(function() {
-          homeEnterEditMode();
-          // Fixed tiles enter edit mode but don't start a drag
-          if (!isFixed) _homeStartDrag(tile, id, e.clientX, e.clientY);
-          if (navigator.vibrate) { try { navigator.vibrate(40); } catch(err){} }
-        }, 550);
-      } else if (!isFixed) {
-        // Already in edit mode — pointerdown starts a drag immediately (non-fixed only)
-        _homeStartDrag(tile, id, e.clientX, e.clientY);
-      }
-    });
-
-    tile.addEventListener('pointermove', function(e) {
-      // Cancel long-press if the user moves enough to be scrolling
-      if (_homeLongPressTimer) {
-        var st = tile._homeTouchStart || { x: e.clientX, y: e.clientY };
-        if (Math.abs(e.clientX - st.x) > 10 || Math.abs(e.clientY - st.y) > 10) {
-          clearTimeout(_homeLongPressTimer);
-          _homeLongPressTimer = null;
-        }
-      }
-    });
-    tile.addEventListener('pointerdown', function(e) {
-      tile._homeTouchStart = { x: e.clientX, y: e.clientY };
-    });
-
-    tile.addEventListener('pointerup', function(e) {
-      clearTimeout(_homeLongPressTimer);
-      _homeLongPressTimer = null;
-      // If not dragging and not in edit mode, this is a tap — open the app
-      if (!_homeDrag && !_homeEditMode) {
-        var app = HOME_APPS.find(function(x){ return x.id === id; });
-        if (app) { try { app.go(); } catch(err) { console.error(err); } }
-      }
-    });
-
-    tile.addEventListener('pointercancel', function() {
-      clearTimeout(_homeLongPressTimer);
-      _homeLongPressTimer = null;
-    });
+  var pagesEl = document.getElementById('home-pages-wrap');
+  if (!pagesEl) return;
+  pagesEl.querySelectorAll('.home-app').forEach(function(tile) {
+    tile.addEventListener('pointerdown', _homeOnTileDown);
+    tile.addEventListener('pointerup', _homeOnTileUp);
+    tile.addEventListener('pointermove', _homeOnTileMove);
+    tile.addEventListener('pointercancel', _homeOnTileCancel);
   });
+}
+
+function _homeOnTileDown(e) {
+  var tile = e.currentTarget;
+  tile._homeDownAt = { x: e.clientX, y: e.clientY };
+  clearTimeout(_homeLongPressTimer);
+  var isFixed = tile.getAttribute('data-fixed') === '1';
+  if (!_homeEditMode) {
+    _homeLongPressTimer = setTimeout(function() {
+      homeEnterEditMode();
+      if (navigator.vibrate) { try { navigator.vibrate(40); } catch(err){} }
+      if (!isFixed) _homeStartDrag(tile, e.clientX, e.clientY);
+    }, 500);
+  } else if (!isFixed) {
+    _homeStartDrag(tile, e.clientX, e.clientY);
+  }
+}
+function _homeOnTileMove(e) {
+  var tile = e.currentTarget;
+  if (_homeLongPressTimer && tile._homeDownAt) {
+    var dx = e.clientX - tile._homeDownAt.x;
+    var dy = e.clientY - tile._homeDownAt.y;
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      clearTimeout(_homeLongPressTimer);
+      _homeLongPressTimer = null;
+    }
+  }
+}
+function _homeOnTileUp(e) {
+  var tile = e.currentTarget;
+  clearTimeout(_homeLongPressTimer);
+  _homeLongPressTimer = null;
+  if (_homeDrag) return; // drag handler owns the release
+  if (_homeEditMode) return; // in edit mode, tap does nothing unless it's Done
+  var type = tile.getAttribute('data-slot-type');
+  if (type === 'folder') {
+    openHomeFolder(parseInt(tile.getAttribute('data-page')), parseInt(tile.getAttribute('data-slot-idx')));
+  } else {
+    var id = tile.getAttribute('data-app-id');
+    var app = HOME_APPS.find(function(x){ return x.id === id; });
+    if (app) { try { app.go(); } catch(err) { console.error(err); } }
+  }
+}
+function _homeOnTileCancel() {
+  clearTimeout(_homeLongPressTimer);
+  _homeLongPressTimer = null;
 }
 
 function homeEnterEditMode() {
@@ -5804,62 +5986,182 @@ function homeExitEditMode() {
   _homeEditMode = false;
   var hv = document.getElementById('home-view');
   if (hv) hv.classList.remove('edit-mode');
+  // Drop any live drag
+  if (_homeDrag) _homeFinishDrag(false);
 }
 
-function _homeStartDrag(tile, id, startX, startY) {
+// ─── Core drag (iPhone-style: floating clone, finger-follows, drop to swap/folder) ───
+function _homeStartDrag(tile, startX, startY) {
   if (_homeDrag) return;
-  _homeDrag = { id: id, el: tile, startX: startX, startY: startY };
-  tile.classList.add('dragging');
+  var rect = tile.getBoundingClientRect();
+  var clone = tile.cloneNode(true);
+  clone.classList.add('home-app-clone');
+  clone.classList.remove('dragging');
+  clone.style.left = (rect.left + rect.width/2) + 'px';
+  clone.style.top = (rect.top + rect.height/2) + 'px';
+  clone.style.width = rect.width + 'px';
+  document.body.appendChild(clone);
 
-  function onMove(ev) {
-    ev.preventDefault();
-    var x = ev.clientX, y = ev.clientY;
-    // Find the tile under the pointer (other than the dragged one)
-    tile.style.pointerEvents = 'none';
-    var over = document.elementFromPoint(x, y);
-    tile.style.pointerEvents = '';
-    // Clear previous drop target hint
-    document.querySelectorAll('.home-app.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
-    if (over) {
-      var target = over.closest && over.closest('.home-app');
-      // Can't drop onto Claire or any other fixed tile — she doesn't move.
-      if (target && target !== tile && target.getAttribute('data-fixed') !== '1') {
-        target.classList.add('drop-target'); _homeDrag.target = target;
-      } else { _homeDrag.target = null; }
-    }
-  }
-  function onEnd(ev) {
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onEnd);
-    document.removeEventListener('pointercancel', onEnd);
-    tile.classList.remove('dragging');
-    document.querySelectorAll('.home-app.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
-    var target = _homeDrag && _homeDrag.target;
-    _homeDrag = null;
-    if (target) {
-      var fromId = id;
-      var toId = target.getAttribute('data-app-id');
-      if (fromId && toId && fromId !== toId) _homeReorder(fromId, toId);
-    }
-  }
-  document.addEventListener('pointermove', onMove, { passive: false });
-  document.addEventListener('pointerup', onEnd);
-  document.addEventListener('pointercancel', onEnd);
+  tile.classList.add('dragging');
+  _homeDrag = {
+    tile: tile, clone: clone,
+    fromPage: parseInt(tile.getAttribute('data-page')),
+    fromSlot: parseInt(tile.getAttribute('data-slot-idx')),
+    slotType: tile.getAttribute('data-slot-type'),
+    appId: tile.getAttribute('data-app-id'),
+    hover: null, hoverStart: 0, folderHover: null
+  };
+
+  document.addEventListener('pointermove', _homeOnDragMove, { passive: false });
+  document.addEventListener('pointerup', _homeOnDragEnd);
+  document.addEventListener('pointercancel', _homeOnDragEnd);
 }
 
-function _homeReorder(fromId, toId) {
-  var order = _homeOrderedApps().map(function(a){ return a.id; });
-  var fromIdx = order.indexOf(fromId);
-  var toIdx = order.indexOf(toId);
-  if (fromIdx < 0 || toIdx < 0) return;
-  order.splice(fromIdx, 1);
-  // If moving forward, toIdx index was valid before removal
-  order.splice(toIdx, 0, fromId);
-  _homeSaveOrder(order);
+function _homeOnDragMove(e) {
+  if (!_homeDrag) return;
+  e.preventDefault();
+  var x = e.clientX, y = e.clientY;
+  _homeDrag.clone.style.left = x + 'px';
+  _homeDrag.clone.style.top = y + 'px';
+
+  // Determine hover target (use a temporary pointer-events:none on clone so elementFromPoint finds tiles)
+  _homeDrag.clone.style.display = 'none';
+  var under = document.elementFromPoint(x, y);
+  _homeDrag.clone.style.display = '';
+  var hoverTile = under && under.closest ? under.closest('.home-app') : null;
+
+  // Clear prior folder hover
+  document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
+
+  if (hoverTile && hoverTile !== _homeDrag.tile) {
+    if (hoverTile.getAttribute('data-fixed') === '1') {
+      _homeDrag.hover = null;
+    } else {
+      _homeDrag.hover = hoverTile;
+      hoverTile.classList.add('folder-target');
+    }
+  } else {
+    _homeDrag.hover = null;
+  }
+}
+
+function _homeOnDragEnd() {
+  _homeFinishDrag(true);
+}
+
+function _homeFinishDrag(commit) {
+  if (!_homeDrag) return;
+  document.removeEventListener('pointermove', _homeOnDragMove);
+  document.removeEventListener('pointerup', _homeOnDragEnd);
+  document.removeEventListener('pointercancel', _homeOnDragEnd);
+
+  var d = _homeDrag;
+  _homeDrag = null;
+  document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
+
+  if (commit && d.hover) {
+    var targetPage = parseInt(d.hover.getAttribute('data-page'));
+    var targetSlot = parseInt(d.hover.getAttribute('data-slot-idx'));
+    var targetType = d.hover.getAttribute('data-slot-type');
+
+    if (d.slotType === 'app' && targetType === 'app') {
+      // Drop one app onto another → create folder (iOS behavior)
+      _homeCreateFolder(d.fromPage, d.fromSlot, targetPage, targetSlot);
+    } else if (d.slotType === 'app' && targetType === 'folder') {
+      // Drop app into existing folder
+      _homeDropIntoFolder(d.fromPage, d.fromSlot, targetPage, targetSlot);
+    } else {
+      // Move/reorder
+      _homeMoveSlot(d.fromPage, d.fromSlot, targetPage, targetSlot);
+    }
+  }
+  // Remove clone; the re-render will restore tile visibility
+  try { d.clone.remove(); } catch(e){}
   renderHomeScreen();
 }
 
-// Exit edit mode when user taps anywhere on the home view outside a tile
+function _homeMoveSlot(fromPage, fromSlot, toPage, toSlot) {
+  var pages = _homeGetPages();
+  if (!pages[fromPage] || !pages[toPage]) return;
+  var moved = pages[fromPage].splice(fromSlot, 1)[0];
+  if (!moved) return;
+  // Adjust target slot if we removed from the same page before the target
+  if (fromPage === toPage && fromSlot < toSlot) toSlot--;
+  pages[toPage].splice(toSlot, 0, moved);
+  _homeSavePages();
+}
+
+function _homeCreateFolder(fromPage, fromSlot, toPage, toSlot) {
+  var pages = _homeGetPages();
+  var moved = pages[fromPage] && pages[fromPage][fromSlot];
+  var target = pages[toPage] && pages[toPage][toSlot];
+  if (!moved || !target || moved.type !== 'app' || target.type !== 'app') return;
+  // Build a default folder name from the target's app
+  var targetApp = _homeGetSlotApp(target.id);
+  var name = (targetApp && targetApp.label) || 'Folder';
+  var folder = { type: 'folder', name: name, apps: [target.id, moved.id] };
+  pages[toPage][toSlot] = folder;
+  // Remove the source
+  pages[fromPage].splice(fromSlot, 1);
+  _homeSavePages();
+}
+
+function _homeDropIntoFolder(fromPage, fromSlot, toPage, toSlot) {
+  var pages = _homeGetPages();
+  var moved = pages[fromPage] && pages[fromPage][fromSlot];
+  var target = pages[toPage] && pages[toPage][toSlot];
+  if (!moved || !target || moved.type !== 'app' || target.type !== 'folder') return;
+  if (!target.apps) target.apps = [];
+  if (target.apps.indexOf(moved.id) < 0) target.apps.push(moved.id);
+  pages[fromPage].splice(fromSlot, 1);
+  _homeSavePages();
+}
+
+// ─── Folder overlay ───
+var _homeOpenFolder = null; // { pageIdx, slotIdx }
+function openHomeFolder(pageIdx, slotIdx) {
+  var pages = _homeGetPages();
+  var slot = pages[pageIdx] && pages[pageIdx][slotIdx];
+  if (!slot || slot.type !== 'folder') return;
+  _homeOpenFolder = { pageIdx: pageIdx, slotIdx: slotIdx };
+  var sheet = document.getElementById('home-folder-sheet');
+  sheet.innerHTML = '<input class="home-folder-title-input" id="home-folder-name" value="' + _homeEscAttr(slot.name || 'Folder') + '" onchange="renameHomeFolder(this.value)" ' + (_homeEditMode ? '' : 'readonly') + '>'
+    + '<div class="home-grid">'
+    + (slot.apps || []).map(function(id) {
+        var a = _homeGetSlotApp(id);
+        if (!a) return '';
+        var inner = a.iconHtml || (a.icon || '');
+        return '<button class="home-app" onclick="_homeFolderTap(\'' + a.id + '\')">'
+          + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + '</div>'
+          + '<div class="home-app-label">' + a.label + '</div>'
+          + '</button>';
+      }).join('')
+    + (_homeEditMode ? '<button class="home-app" style="opacity:0.6" onclick="closeHomeFolder()"><div class="home-app-icon" style="background:rgba(255,255,255,0.15);font-size:26px">＋</div><div class="home-app-label">Done</div></button>' : '')
+    + '</div>';
+  document.getElementById('home-folder-overlay').classList.add('active');
+}
+function closeHomeFolder() {
+  _homeOpenFolder = null;
+  document.getElementById('home-folder-overlay').classList.remove('active');
+}
+function _homeFolderTap(appId) {
+  if (_homeEditMode) return;
+  var app = HOME_APPS.find(function(a){ return a.id === appId; });
+  if (!app) return;
+  closeHomeFolder();
+  try { app.go(); } catch(e){ console.error(e); }
+}
+function renameHomeFolder(name) {
+  if (!_homeOpenFolder) return;
+  var pages = _homeGetPages();
+  var slot = pages[_homeOpenFolder.pageIdx] && pages[_homeOpenFolder.pageIdx][_homeOpenFolder.slotIdx];
+  if (slot && slot.type === 'folder') {
+    slot.name = (name || '').trim() || 'Folder';
+    _homeSavePages();
+  }
+}
+
+// Exit edit mode when tapping empty area (outside tile / dock / done / overlay)
 document.addEventListener('click', function(e) {
   if (!_homeEditMode) return;
   var hv = document.getElementById('home-view');
@@ -5867,6 +6169,7 @@ document.addEventListener('click', function(e) {
   if (e.target.closest('.home-app')) return;
   if (e.target.closest('.home-done-btn')) return;
   if (e.target.closest('.bottom-nav')) return;
+  if (e.target.closest('.home-folder-overlay')) return;
   homeExitEditMode();
 });
 
