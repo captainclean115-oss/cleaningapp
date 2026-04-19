@@ -5440,6 +5440,14 @@ var LAUNCHER_APPS = [
     go: function(){ showTab('tasks'); } },
   { id: 'files',   label: 'Files', icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)',
     go: function(){ if (typeof openFiles === 'function') openFiles(); } },
+  { id: 'assets',    label: 'Assets',    icon: '🏷️', grad: 'linear-gradient(135deg,#94a3b8,#475569)',
+    go: function(){ _launcherComingSoon('Assets'); } },
+  { id: 'inventory', label: 'Inventory', icon: '🧴',  grad: 'linear-gradient(135deg,#22d3ee,#0891b2)',
+    go: function(){ _launcherComingSoon('Inventory'); } },
+  { id: 'rewards',   label: 'Rewards',   icon: '🎁',  grad: 'linear-gradient(135deg,#f472b6,#db2777)',
+    go: function(){ _launcherComingSoon('Rewards'); } },
+  { id: 'approval',  label: 'Approval',  icon: '✅',  grad: 'linear-gradient(135deg,#4ade80,#16a34a)',
+    go: function(){ _launcherComingSoon('Approval'); } },
   { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
     go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
@@ -5475,6 +5483,21 @@ function launcherTap(i) {
   if (!a) return;
   closeLauncher();
   try { a.go(); } catch(e) { console.error('launcher tap failed', e); }
+}
+
+// Placeholder toast for launcher tiles whose feature isn't built yet.
+// Reuses the .content-toast styling so it looks native to the app.
+function _launcherComingSoon(name) {
+  var wrap = document.createElement('div');
+  wrap.className = 'content-toast-wrap';
+  wrap.style.transition = 'opacity 0.3s';
+  wrap.innerHTML = '<div class="content-toast">'
+    + '<div style="font-size:38px;margin-bottom:6px">🛠️</div>'
+    + '<div style="font-size:18px;font-weight:700">'+name+'</div>'
+    + '<div style="font-size:13px;color:var(--muted);margin-top:4px">Coming soon</div>'
+    + '</div>';
+  document.body.appendChild(wrap);
+  setTimeout(function(){ wrap.style.opacity = '0'; setTimeout(function(){ wrap.remove(); }, 300); }, 1200);
 }
 
 // Entry point from the employee portal's own header button.
