@@ -1466,6 +1466,13 @@ body.home-dragging, body.home-dragging * {
   transform: scale(1.15);
   box-shadow: 0 0 0 3px rgba(255,255,255,0.6), 0 8px 24px rgba(0,0,0,0.3);
 }
+/* Dock buttons light up when a dragged icon hovers over them. */
+.bottom-nav .nav-btn.drop-target .nav-icon {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.6), 0 6px 16px rgba(0,0,0,0.4);
+}
+.bottom-nav .nav-btn { transition: transform 0.12s; }
+.bottom-nav .nav-btn .nav-icon { transition: transform 0.15s, box-shadow 0.15s; }
 
 /* Page dots indicator */
 .home-page-dots {
@@ -2481,16 +2488,7 @@ select.field-input { appearance: none; }
 
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
-  <div class="nav-half nav-half-left">
-    <button class="nav-btn" id="nav-cal" onclick="showTab('cal')">
-      <span class="nav-icon">📅</span>
-      <span>Schedule</span>
-    </button>
-    <button class="nav-btn" id="nav-gps" onclick="showTab('gps')">
-      <span class="nav-icon">🗺</span>
-      <span>Live</span>
-    </button>
-  </div>
+  <div class="nav-half nav-half-left" id="nav-half-left"></div>
   <!-- Claire is absolute-positioned at dead center — doesn't move regardless of how many other apps are in the nav. -->
   <button class="nav-btn nav-btn-claire" id="nav-claire" onclick="showTab('claire')">
     <span class="nav-icon-claire" aria-label="Claire">
@@ -2508,12 +2506,7 @@ select.field-input { appearance: none; }
     </span>
     <span>Claire</span>
   </button>
-  <div class="nav-half nav-half-right">
-    <button class="nav-btn" id="nav-messages" onclick="showTab('messages')">
-      <span class="nav-icon">💬</span>
-      <span id="nav-msg-label">Messages</span>
-    </button>
-  </div>
+  <div class="nav-half nav-half-right" id="nav-half-right"></div>
 </div>
 
 <div class="drawer-backdrop" id="backdrop" onclick="closeDrawer()"></div>
@@ -3165,11 +3158,16 @@ function showTab(tab) {
   // (for now, that's 'home' and 'clients'/'tasks').
   var navHome = document.getElementById('nav-home');
   if (navHome) navHome.classList.toggle('active', tab === 'home' || tab === 'clients' || tab === 'tasks');
-  document.getElementById('nav-cal').classList.toggle('active', tab === 'cal');
+  // Dock buttons are rendered dynamically from state, so any of these may be
+  // absent if Tom has pulled them out of the dock. Null-guard all lookups.
+  var navCal = document.getElementById('nav-cal');
+  if (navCal) navCal.classList.toggle('active', tab === 'cal');
   var navClaire = document.getElementById('nav-claire');
   if (navClaire) navClaire.classList.toggle('active', tab === 'claire');
-  document.getElementById('nav-messages').classList.toggle('active', tab === 'messages');
-  document.getElementById('nav-gps').classList.toggle('active', tab === 'gps');
+  var navMessages = document.getElementById('nav-messages');
+  if (navMessages) navMessages.classList.toggle('active', tab === 'messages');
+  var navGps = document.getElementById('nav-gps');
+  if (navGps) navGps.classList.toggle('active', tab === 'gps');
   const topSearch = document.querySelector('.search-wrap');
   const filterRow = document.getElementById('filter-row');
   const statsBar = document.querySelector('.stats-bar');
@@ -5717,6 +5715,9 @@ function contentUpdateQueueBadge() {
 
 // Initialize badge on load
 document.addEventListener('DOMContentLoaded', contentUpdateQueueBadge);
+// Render the dock from state as soon as the DOM is ready (so the bottom nav
+// has its icons right away, not just after the user opens the home screen).
+document.addEventListener('DOMContentLoaded', function(){ try { renderDock(); } catch(e){ console.warn(e); } });
 
 // ═══════════════════════════════════════════════════════════════════════
 // HOME LAUNCHER — the "Home" nav button opens this app-drawer. Clients/Staff
@@ -5873,38 +5874,48 @@ var HOME_APPS = [
 // Migration: if only legacy 'home_app_order' exists, wrap it into one page.
 // ═══════════════════════════════════════════════════════════════════════
 var HOME_PAGE_CAPACITY = 16; // 4 cols × 4 rows per page feels right on phones
+var DEFAULT_DOCK = ['cal', 'gps', 'messages']; // Claire is always the fixed center — not stored here
+var DOCK_MAX = 6; // total non-Claire slots the dock can hold (3 per side max)
 
-function _homeGetPages() {
-  // Return cached if we have it
-  if (window.__homePagesCache) return window.__homePagesCache;
-  try {
-    var saved = JSON.parse(localStorage.getItem('home_pages') || 'null');
-    if (Array.isArray(saved) && saved.length && Array.isArray(saved[0])) {
-      window.__homePagesCache = saved;
-      return saved;
+function _homeState() {
+  // Returns { pages, dock } with lazy init + migration from older shapes.
+  if (window.__homeStateCache) return window.__homeStateCache;
+  var parsed = null;
+  try { parsed = JSON.parse(localStorage.getItem('home_pages') || 'null'); } catch(e){}
+  var pages, dock;
+  if (parsed && parsed.pages && parsed.dock) {
+    pages = parsed.pages; dock = parsed.dock;
+  } else if (Array.isArray(parsed) && (parsed.length === 0 || Array.isArray(parsed[0]))) {
+    // Legacy: pages-only array. Set a default dock alongside.
+    pages = parsed; dock = DEFAULT_DOCK.slice();
+    // Dock apps shouldn't ALSO sit in the pages — strip duplicates.
+    for (var p = 0; p < pages.length; p++) {
+      pages[p] = pages[p].filter(function(slot){
+        return !(slot.type === 'app' && dock.indexOf(slot.id) !== -1);
+      });
     }
-  } catch(e){}
-  // Migration from legacy flat order
-  var legacy = null;
-  try { legacy = JSON.parse(localStorage.getItem('home_app_order') || 'null'); } catch(e){}
-  var ids = Array.isArray(legacy) ? legacy : HOME_APPS.map(function(a){ return a.id; });
-  // Make sure every current app is represented
-  HOME_APPS.forEach(function(a){ if (ids.indexOf(a.id) < 0) ids.push(a.id); });
-  // Split across pages of HOME_PAGE_CAPACITY
-  var pages = [];
-  for (var i = 0; i < ids.length; i += HOME_PAGE_CAPACITY) {
-    pages.push(ids.slice(i, i + HOME_PAGE_CAPACITY).map(function(id){ return { type:'app', id: id }; }));
+  } else {
+    // Fresh — build pages from HOME_APPS minus dock + Claire (she's hardcoded center).
+    var legacy = null;
+    try { legacy = JSON.parse(localStorage.getItem('home_app_order') || 'null'); } catch(e){}
+    var ids = Array.isArray(legacy) ? legacy.slice() : HOME_APPS.map(function(a){ return a.id; });
+    HOME_APPS.forEach(function(a){ if (ids.indexOf(a.id) < 0) ids.push(a.id); });
+    var dockSet = DEFAULT_DOCK.concat(['claire']);
+    ids = ids.filter(function(id){ return dockSet.indexOf(id) === -1; });
+    pages = [];
+    for (var i = 0; i < ids.length; i += HOME_PAGE_CAPACITY) {
+      pages.push(ids.slice(i, i + HOME_PAGE_CAPACITY).map(function(id){ return { type:'app', id: id }; }));
+    }
+    if (pages.length < 2) pages.push([]);
+    dock = DEFAULT_DOCK.slice();
   }
-  // Guarantee at least 2 pages (user asked for multi-page support)
-  if (pages.length < 2) pages.push([]);
-  window.__homePagesCache = pages;
-  return pages;
+  window.__homeStateCache = { pages: pages, dock: dock };
+  return window.__homeStateCache;
 }
+function _homeGetPages() { return _homeState().pages; }
+function _homeGetDock() { return _homeState().dock; }
 function _homeSavePages() {
-  var pages = window.__homePagesCache;
-  if (pages) {
-    try { localStorage.setItem('home_pages', JSON.stringify(pages)); } catch(e) {}
-  }
+  try { localStorage.setItem('home_pages', JSON.stringify(_homeState())); } catch(e){}
 }
 function _homeGetSlotApp(id) { return HOME_APPS.find(function(a){ return a.id === id; }); }
 function _homeFindSlot(query) {
@@ -5952,6 +5963,108 @@ function renderHomeScreen() {
 
   _homeWireScroll();
   _homeWireTiles();
+  renderDock();
+}
+
+function renderDock() {
+  var left = document.getElementById('nav-half-left');
+  var right = document.getElementById('nav-half-right');
+  if (!left || !right) return;
+  var dock = _homeGetDock();
+  // Split dock apps into left/right halves around Claire (left gets ceiling).
+  var splitAt = Math.ceil(dock.length / 2);
+  var leftIds = dock.slice(0, splitAt);
+  var rightIds = dock.slice(splitAt);
+  left.innerHTML = leftIds.map(_renderDockBtn).join('');
+  right.innerHTML = rightIds.map(_renderDockBtn).join('');
+  // After render, re-assert active class for the current tab
+  var tab = sessionStorage.getItem('cc_tab');
+  if (tab) {
+    ['cal','gps','messages','claire','clients','tasks'].forEach(function(t) {
+      var el = document.getElementById('nav-' + t);
+      if (el) el.classList.toggle('active', tab === t);
+    });
+    var navHome = document.getElementById('nav-home');
+    if (navHome) navHome.classList.toggle('active', tab === 'home');
+  }
+  _homeWireDockButtons();
+}
+function _renderDockBtn(appId) {
+  var app = HOME_APPS.find(function(a){ return a.id === appId; });
+  if (!app) return '';
+  var inner = app.iconHtml || (app.icon || '');
+  return '<button class="nav-btn" id="nav-' + appId + '" data-dock-id="' + appId + '" data-slot-type="dock" onclick="dockTap(\'' + appId + '\')">'
+    + '<span class="nav-icon" style="background:' + app.grad + '">' + inner + '</span>'
+    + '<span>' + app.label + '</span>'
+    + '</button>';
+}
+function dockTap(appId) {
+  // Guard — if a drag just finished, don't fire the tap
+  if (_homeDrag) return;
+  var app = HOME_APPS.find(function(a){ return a.id === appId; });
+  if (!app) return;
+  try { app.go(); } catch(e){ console.error(e); }
+}
+function _homeWireDockButtons() {
+  var nav = document.querySelector('.bottom-nav');
+  if (!nav) return;
+  nav.querySelectorAll('.nav-btn[data-dock-id]').forEach(function(btn) {
+    btn.addEventListener('pointerdown', function(e) {
+      btn._homeDownAt = { x: e.clientX, y: e.clientY };
+      clearTimeout(_homeLongPressTimer);
+      _homeLongPressTimer = setTimeout(function() {
+        homeEnterEditMode();
+        if (navigator.vibrate) { try { navigator.vibrate(40); } catch(err){} }
+        _homeStartDockDrag(btn, e.clientX, e.clientY);
+      }, 500);
+    });
+    btn.addEventListener('pointermove', function(e) {
+      if (_homeLongPressTimer && btn._homeDownAt) {
+        if (Math.abs(e.clientX - btn._homeDownAt.x) > 10 || Math.abs(e.clientY - btn._homeDownAt.y) > 10) {
+          clearTimeout(_homeLongPressTimer); _homeLongPressTimer = null;
+        }
+      }
+    });
+    btn.addEventListener('pointerup', function() {
+      clearTimeout(_homeLongPressTimer); _homeLongPressTimer = null;
+    });
+    btn.addEventListener('pointercancel', function() {
+      clearTimeout(_homeLongPressTimer); _homeLongPressTimer = null;
+    });
+  });
+}
+function _homeStartDockDrag(btn, startX, startY) {
+  if (_homeDrag) return;
+  var appId = btn.getAttribute('data-dock-id');
+  var rect = btn.getBoundingClientRect();
+  // Clone as a home-app-styled clone so it visually reads as an app icon
+  // while being dragged (rather than the small dock tile).
+  var app = HOME_APPS.find(function(a){ return a.id === appId; });
+  var clone = document.createElement('button');
+  clone.className = 'home-app home-app-clone';
+  clone.innerHTML = '<div class="home-app-icon" style="background:' + (app ? app.grad : '#333') + '">' + ((app && (app.iconHtml || app.icon)) || '') + '</div>'
+    + '<div class="home-app-label">' + (app ? app.label : '') + '</div>';
+  clone.style.left = (rect.left + rect.width/2) + 'px';
+  clone.style.top = (rect.top + rect.height/2) + 'px';
+  clone.style.width = '72px';
+  document.body.appendChild(clone);
+
+  btn.style.opacity = '0';
+  var hv = document.getElementById('home-view');
+  if (hv) hv.classList.add('dragging');
+  document.body.classList.add('home-dragging');
+
+  _homeDrag = {
+    tile: btn, clone: clone,
+    fromPage: -1, fromSlot: -1,
+    slotType: 'app',
+    appId: appId,
+    source: 'dock',
+    hover: null, lastX: startX, lastY: startY
+  };
+  document.addEventListener('pointermove', _homeOnDragMove, { passive: false });
+  document.addEventListener('pointerup', _homeOnDragEnd);
+  document.addEventListener('pointercancel', _homeOnDragEnd);
 }
 
 function _homeRenderSlot(slot, pageIdx, slotIdx) {
@@ -6124,11 +6237,21 @@ function _homeOnDragMove(e) {
   var under = document.elementFromPoint(x, y);
   _homeDrag.clone.style.display = '';
   var hoverTile = under && under.closest ? under.closest('.home-app') : null;
+  var hoverDockBtn = under && under.closest ? under.closest('.bottom-nav .nav-btn[data-dock-id]') : null;
+  var overDockArea = !!(under && under.closest && under.closest('.bottom-nav'));
 
-  // Clear prior folder hover
+  // Clear prior hover hints
   document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
+  document.querySelectorAll('.bottom-nav .nav-btn.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
 
-  if (hoverTile && hoverTile !== _homeDrag.tile) {
+  _homeDrag.overDockArea = overDockArea;
+  _homeDrag.hoverDockBtn = null;
+
+  if (hoverDockBtn && hoverDockBtn !== _homeDrag.tile) {
+    hoverDockBtn.classList.add('drop-target');
+    _homeDrag.hoverDockBtn = hoverDockBtn;
+    _homeDrag.hover = null;
+  } else if (hoverTile && hoverTile !== _homeDrag.tile) {
     if (hoverTile.getAttribute('data-fixed') === '1') {
       _homeDrag.hover = null;
     } else {
@@ -6153,9 +6276,39 @@ function _homeFinishDrag(commit) {
   var d = _homeDrag;
   _homeDrag = null;
   document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
+  document.querySelectorAll('.bottom-nav .nav-btn.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
   var hv = document.getElementById('home-view');
   if (hv) hv.classList.remove('dragging');
   document.body.classList.remove('home-dragging');
+
+  // ── Cross-container drops first: grid↔dock ──
+  if (commit && (d.overDockArea || d.hoverDockBtn)) {
+    if (d.source === 'dock') {
+      // Dock → dock: reorder
+      if (d.hoverDockBtn) {
+        var targetId = d.hoverDockBtn.getAttribute('data-dock-id');
+        _dockReorder(d.appId, targetId);
+      }
+      // Dock → dock empty area: append (no-op if already there)
+      // (handled by reorder above if a button was hovered)
+    } else {
+      // Grid → dock: remove from grid, add to dock
+      _dockAddFromGrid(d.appId, d.fromPage, d.fromSlot, d.hoverDockBtn ? d.hoverDockBtn.getAttribute('data-dock-id') : null);
+    }
+    try { d.clone.remove(); } catch(e){}
+    if (d.tile) d.tile.style.opacity = '';
+    renderHomeScreen();
+    return;
+  }
+
+  // Dock → grid (dropped outside the dock area, in the home view)
+  if (commit && d.source === 'dock' && !d.overDockArea) {
+    _dockRemoveToGrid(d.appId, d.hover);
+    try { d.clone.remove(); } catch(e){}
+    if (d.tile) d.tile.style.opacity = '';
+    renderHomeScreen();
+    return;
+  }
 
   if (commit && d.hover) {
     var targetPage = parseInt(d.hover.getAttribute('data-page'));
@@ -6191,6 +6344,64 @@ function _homeFinishDrag(commit) {
   // Remove clone; the re-render will restore tile visibility
   try { d.clone.remove(); } catch(e){}
   renderHomeScreen();
+}
+
+// ── Dock mutation helpers ──
+function _dockAddFromGrid(appId, fromPage, fromSlot, targetDockId) {
+  var state = _homeState();
+  // Remove from grid (if it was there)
+  if (fromPage >= 0 && state.pages[fromPage] && state.pages[fromPage][fromSlot]) {
+    var slot = state.pages[fromPage][fromSlot];
+    if (slot.type === 'app' && slot.id === appId) {
+      state.pages[fromPage].splice(fromSlot, 1);
+    }
+  }
+  // If already in dock, remove first (we'll re-insert at target)
+  var existing = state.dock.indexOf(appId);
+  if (existing >= 0) state.dock.splice(existing, 1);
+  // Respect dock capacity: if full, bump the last item back to the grid
+  if (state.dock.length >= DOCK_MAX) {
+    var bumped = state.dock.pop();
+    if (state.pages[0]) state.pages[0].push({ type:'app', id: bumped });
+  }
+  // Insert at target position (or end)
+  var insertAt = state.dock.length;
+  if (targetDockId) {
+    var ti = state.dock.indexOf(targetDockId);
+    if (ti >= 0) insertAt = ti;
+  }
+  state.dock.splice(insertAt, 0, appId);
+  _homeSavePages();
+}
+function _dockRemoveToGrid(appId, hoverTile) {
+  var state = _homeState();
+  var idx = state.dock.indexOf(appId);
+  if (idx < 0) return;
+  state.dock.splice(idx, 1);
+  // Decide where to put it on the grid
+  var pageIdx = _homeCurrentPageIdx();
+  if (!state.pages[pageIdx]) state.pages[pageIdx] = [];
+  if (hoverTile) {
+    var hp = parseInt(hoverTile.getAttribute('data-page'));
+    var hs = parseInt(hoverTile.getAttribute('data-slot-idx'));
+    if (!isNaN(hp) && !isNaN(hs) && state.pages[hp]) {
+      state.pages[hp].splice(hs, 0, { type:'app', id: appId });
+      _homeSavePages();
+      return;
+    }
+  }
+  state.pages[pageIdx].push({ type:'app', id: appId });
+  _homeSavePages();
+}
+function _dockReorder(fromId, toId) {
+  var state = _homeState();
+  var fi = state.dock.indexOf(fromId);
+  var ti = state.dock.indexOf(toId);
+  if (fi < 0 || ti < 0) return;
+  state.dock.splice(fi, 1);
+  if (fi < ti) ti--;
+  state.dock.splice(ti, 0, fromId);
+  _homeSavePages();
 }
 
 function _homeCurrentPageIdx() {
