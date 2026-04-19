@@ -1646,13 +1646,26 @@ body.home-dragging, body.home-dragging * {
 .claire-big-avatar.lipsync video { display: block; }
 .claire-big-avatar.lipsync .claire-avatar-edit,
 .claire-big-avatar.lipsync span { display: none; }
+/* Claire speaking — soft purple→teal pulse glow while Web Speech API is active.
+   Replaces the D-ID lip-sync video visual; she stays a static photo, but her
+   ring breathes/glows in sync with her voice. */
+.claire-big-avatar {
+  transition: box-shadow 0.4s ease;
+}
 .claire-big-avatar.speaking {
-  animation: claire-breathe 1.2s ease-in-out infinite;
-  box-shadow: 0 10px 30px rgba(108,143,255,0.5), 0 0 0 6px rgba(52,211,153,0.25);
+  animation: claire-breathe 1.4s ease-in-out infinite, claire-pulse-glow 1.4s ease-in-out infinite;
 }
 @keyframes claire-breathe {
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.02); }
+  50%      { transform: scale(1.025); }
+}
+@keyframes claire-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 40px rgba(142,123,255,0.55), 0 0 80px rgba(142,123,255,0.30);
+  }
+  50% {
+    box-shadow: 0 0 60px rgba(74,158,170,0.70), 0 0 120px rgba(142,123,255,0.50);
+  }
 }
 .claire-big-avatar .claire-avatar-edit {
   position: absolute; bottom: 6px; right: 6px;
@@ -2279,7 +2292,8 @@ select.field-input { appearance: none; }
     </div>
     <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:14px">💡 Tip: get a free AI-generated portrait from <strong>thispersondoesnotexist.com</strong>, save the image, then upload it here.</div>
 
-    <!-- D-ID (real lip-sync) -->
+    <!-- D-ID lip-sync section disabled 2026-04-18 — switched to Web Speech API.
+         Preserved in a comment so the markup can be restored if we bring D-ID back.
     <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <div style="font-size:12px;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:.05em">✨ Lip-sync (D-ID)</div>
@@ -2288,6 +2302,10 @@ select.field-input { appearance: none; }
       <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:8px">Paste your Cloudflare Worker URL (the D-ID relay). The Worker holds your D-ID key server-side — browsers can't call D-ID directly (CORS).</div>
       <input id="claire-did-proxy" type="text" placeholder="https://claire-did.yourname.workers.dev" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:10px 12px;outline:none;margin-bottom:8px">
       <button onclick="claireSaveDidKey()" style="width:100%;background:var(--surface2);border:1px solid var(--accent2);color:var(--accent2);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;padding:9px;border-radius:8px;cursor:pointer">Save Proxy & Enable Lip-Sync</button>
+    </div>
+    -->
+    <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:14px;font-size:11px;color:var(--muted);line-height:1.5">
+      ✨ Claire speaks using your device's built-in voice. No setup required.
     </div>
 
     <div style="display:flex;gap:8px">
@@ -2472,7 +2490,10 @@ select.field-input { appearance: none; }
     <div class="claire-big-avatar" id="claire-big-avatar" onclick="openClairePhotoPicker()" title="Tap to change photo">
       <span id="claire-avatar-letter">C</span>
       <div class="claire-avatar-edit">✎</div>
+      <!-- D-ID video element disabled 2026-04-18 — switched to Web Speech API.
+           Kept in comment for rollback reference.
       <video id="claire-video" playsinline></video>
+      -->
     </div>
     <div class="claire-identity" style="text-align:center;margin-top:14px">
       <div class="claire-name" style="font-size:20px;font-weight:700">Claire</div>
@@ -2481,6 +2502,14 @@ select.field-input { appearance: none; }
     <div id="claire-waveform" class="claire-waveform">
       <span></span><span></span><span></span><span></span><span></span>
     </div>
+    <button id="claire-stop-btn" onclick="claireStopSpeaking()" type="button"
+            style="display:none; margin-top:12px; padding:8px 20px;
+                   background:rgba(255,255,255,0.08); color:#fff;
+                   border:1px solid rgba(255,255,255,0.22); border-radius:20px;
+                   font-size:14px; font-weight:600; cursor:pointer;
+                   -webkit-tap-highlight-color: transparent;">
+      ⏸ Stop
+    </button>
   </div>
   <div id="claire-messages" class="claire-view-messages"></div>
   <div class="claire-view-input-row">
@@ -4953,27 +4982,76 @@ function _claireStripForSpeech(text) {
     .trim();
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Claire voice (Web Speech API)
+// Switched from D-ID lip-sync video to browser-native speech synthesis on
+// 2026-04-18. No API cost, no 5–15s render delay, no D-ID watermark.
+// Claire's avatar stays a static photo; a purple→teal pulse glow animates on
+// her ring while she's speaking. Stop button appears during speech so the
+// user can interrupt her mid-sentence.
+// ═══════════════════════════════════════════════════════════════════════
 function claireSpeak(text) {
   if (!text) return;
   var plain = _claireStripForSpeech(text);
   if (!plain) return;
-  // Prefer lip-sync via D-ID if configured. Only attempt when the stored proxy
-  // value looks like an https URL — otherwise fall straight through to TTS
-  // (avoids bogus "Proxy URL must start with https://" errors if the user has
-  //  a legacy API key saved from before the Worker-proxy migration).
-  var didProxy = localStorage.getItem('claire_did_proxy') || '';
-  var didImg = localStorage.getItem('claire_did_image_url');
-  if (didProxy && /^https:\/\//i.test(didProxy) && didImg) {
-    claireLipsyncSpeak(plain, didProxy, didImg).catch(function(err){
-      var errMsg = (err && err.message) ? err.message : String(err);
-      console.warn('D-ID lip-sync failed:', errMsg);
-      _claireRenderBubble('claire', '⚠️ Lip-sync failed — falling back to text. Error: ' + errMsg.slice(0, 180));
-      _claireBrowserSpeak(plain);
-    });
-    return;
-  }
-  _claireBrowserSpeak(plain);
+  if (!('speechSynthesis' in window)) return;
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  var u = new SpeechSynthesisUtterance(plain);
+  if (!_claireVoice) _claireVoice = _pickClaireVoice();
+  if (_claireVoice) u.voice = _claireVoice;
+  u.rate = 1.07;  // matches the old D-ID "+7%"
+  u.pitch = 1.05; // slightly warmer than neutral
+  u.volume = 1.0;
+  u.onstart = function(){ _claireSetSpeakingUI(true); };
+  u.onend   = function(){ _claireSetSpeakingUI(false); };
+  u.onerror = function(e){ console.warn('Claire speech error:', e); _claireSetSpeakingUI(false); };
+  try { window.speechSynthesis.speak(u); }
+  catch(e) { _claireSetSpeakingUI(false); }
 }
+
+// Allow the user to cut Claire off mid-sentence. Wired to the Stop button
+// that appears in the Claire view while she is speaking.
+function claireStopSpeaking() {
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  _claireSetSpeakingUI(false);
+}
+
+// iOS Safari populates the voice list asynchronously. Resolve once and cache
+// the preferred voice so the first call to claireSpeak doesn't race.
+function initClaireVoices() {
+  if (!('speechSynthesis' in window)) return;
+  var v = window.speechSynthesis.getVoices();
+  if (v && v.length) { _claireVoice = _pickClaireVoice(); return; }
+  window.speechSynthesis.onvoiceschanged = function(){
+    _claireVoice = _pickClaireVoice();
+  };
+}
+document.addEventListener('DOMContentLoaded', initClaireVoices);
+
+// Toggles the speaking-UI state: breathing+glow on the avatar, waveform
+// visibility, status text, and the Stop button.
+function _claireSetSpeakingUI(on) {
+  var av = document.getElementById('claire-big-avatar');
+  var wf = document.getElementById('claire-waveform');
+  var st = document.getElementById('claire-status-text');
+  var stopBtn = document.getElementById('claire-stop-btn');
+  if (av) av.classList.toggle('speaking', !!on);
+  if (wf) wf.classList.toggle('active', !!on);
+  if (st) st.textContent = on ? 'Speaking…' : 'Online · Your AI assistant';
+  if (stopBtn) stopBtn.style.display = on ? 'inline-block' : 'none';
+}
+
+// Legacy photo-picker D-ID UI helpers — kept so the photo picker modal
+// doesn't throw if old markup is still around. D-ID itself is disabled.
+function claireSaveDidKey() { /* no-op: D-ID disabled */ }
+function _claireRefreshDidStatus() { /* no-op: D-ID disabled */ }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   D-ID INTEGRATION DISABLED — switched to Web Speech API on 2026-04-18
+   Kept below as a commented archive in case we want to restore lip-sync
+   later (e.g. via D-ID streaming over WebRTC, or a different provider).
+   Do not delete; do not uncomment without redoing the voice flow above.
+   ───────────────────────────────────────────────────────────────────────
 
 function _claireBrowserSpeak(plain) {
   if (!('speechSynthesis' in window)) return;
@@ -4988,7 +5066,6 @@ function _claireBrowserSpeak(plain) {
   try { window.speechSynthesis.speak(u); } catch(e) { _claireSetSpeakingUI(false); }
 }
 
-// ── Claire Tier 2: D-ID lip-sync video (via Cloudflare Worker relay) ──
 function _didProxyBase(proxy) {
   return String(proxy || '').trim().replace(/\/+$/, '');
 }
@@ -5009,94 +5086,27 @@ async function claireLipsyncSpeak(text, proxyUrl, imageUrl) {
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({
       source_url: imageUrl,
-      script: {
-        type: 'text',
-        input: text,
-        provider: {
-          type: 'microsoft',
-          voice_id: 'en-US-JennyNeural',
-          // Bump speaking rate ~15% above neutral so Claire sounds brisk
-          // without going chipmunk. Jenny stays warm at this speed.
-          voice_config: { style: 'Chat', rate: '+7%' }
-        }
-      },
+      script: { type: 'text', input: text, provider: { type: 'microsoft', voice_id: 'en-US-JennyNeural', voice_config: { style: 'Chat', rate: '+7%' } } },
       config: { fluent: true, pad_audio: 0.0, stitch: true, driver_expressions: { expressions: [{ expression: 'neutral', start_frame: 0, intensity: 1 }] } }
     })
   });
-  if (!createResp.ok) {
-    var errText = '';
-    try { errText = await createResp.text(); } catch(e) {}
-    _claireSetSpeakingUI(false);
-    throw new Error('Proxy ' + createResp.status + ': ' + errText.slice(0, 200));
-  }
-  var createData = await createResp.json();
-  var talkId = createData.id;
-  if (!talkId) { _claireSetSpeakingUI(false); throw new Error('No talk id returned: ' + JSON.stringify(createData).slice(0,200)); }
-
-  // Poll until ready. Tight early (D-ID often returns in 2-4s on upgraded
-  // plans), then back off to 600ms. Total budget ~45s so longer renders
-  // don't bogus-timeout before they're actually done.
-  var resultUrl = null;
-  var pollDelays = [250, 250, 300, 300, 400, 400, 500, 500]; // fast start
-  for (var attempt = 0; attempt < 80; attempt++) {
-    var delay = pollDelays[attempt] || 600;
-    await new Promise(function(r){ setTimeout(r, delay); });
-    var pollResp;
-    try {
-      pollResp = await fetch(base + '/talks/' + encodeURIComponent(talkId), { headers: { 'Accept': 'application/json' } });
-    } catch(e) { continue; }
-    if (!pollResp || !pollResp.ok) continue;
-    var pollData = await pollResp.json();
-    if (pollData.status === 'done' && pollData.result_url) { resultUrl = pollData.result_url; break; }
-    if (pollData.status === 'error' || pollData.status === 'rejected') { _claireSetSpeakingUI(false); throw new Error('D-ID render error: ' + JSON.stringify(pollData.error || pollData).slice(0, 200)); }
-  }
-  if (!resultUrl) { _claireSetSpeakingUI(false); throw new Error('Timed out waiting for lip-sync video (>45s). D-ID may be slow right now — try again.'); }
-
-  if (st) st.textContent = 'Speaking…';
-  video.src = resultUrl;
-  video.muted = false;
-  if (av) av.classList.add('lipsync');
-  video.onended = function() {
-    if (av) av.classList.remove('lipsync');
-    _claireSetSpeakingUI(false);
-    video.removeAttribute('src');
-  };
-  try {
-    await video.play();
-  } catch(e) {
-    // Autoplay with sound blocked — retry muted so user at least sees lip movement,
-    // and show a tap-to-unmute bubble.
-    try {
-      video.muted = true;
-      await video.play();
-      _claireRenderBubble('claire', '🔇 Tap Claire\'s face to turn on sound.');
-      var once = function(){
-        video.muted = false;
-        if (av) av.removeEventListener('click', once);
-      };
-      if (av) av.addEventListener('click', once, { once: true });
-    } catch(e2) {
-      if (av) av.classList.remove('lipsync');
-      _claireSetSpeakingUI(false);
-      throw e2;
-    }
-  }
+  // (full polling + autoplay-fallback logic was here — see git history for the
+  // exact implementation if reviving)
 }
 
-// Persist D-ID proxy URL (Cloudflare Worker)
-function claireSaveDidKey() {
+function claireSaveDidKey_old() {
   var el = document.getElementById('claire-did-proxy');
   var url = (el.value || '').trim();
   if (!url) { alert('Paste your Cloudflare Worker URL first.'); return; }
   if (!/^https:\/\//i.test(url)) { alert('Proxy URL must start with https://'); return; }
   localStorage.setItem('claire_did_proxy', url);
-  localStorage.removeItem('claire_did_key'); // clean up old key storage
+  localStorage.removeItem('claire_did_key');
   el.value = '';
   _claireRefreshDidStatus();
   alert('Proxy saved. Claire will now lip-sync her replies (uses ~$0.10 per message via D-ID).');
 }
 
-function _claireRefreshDidStatus() {
+function _claireRefreshDidStatus_old() {
   var st = document.getElementById('claire-did-status');
   if (!st) return;
   var proxy = localStorage.getItem('claire_did_proxy') || '';
@@ -5107,14 +5117,7 @@ function _claireRefreshDidStatus() {
   else { st.textContent = 'Off'; st.style.color = 'var(--muted)'; }
 }
 
-function _claireSetSpeakingUI(on) {
-  var av = document.getElementById('claire-big-avatar');
-  var wf = document.getElementById('claire-waveform');
-  var st = document.getElementById('claire-status-text');
-  if (av) av.classList.toggle('speaking', !!on);
-  if (wf) wf.classList.toggle('active', !!on);
-  if (st) st.textContent = on ? 'Speaking…' : 'Online · Your AI assistant';
-}
+═══════════════════════════════════════════════════════════════════════ */
 
 // Some browsers populate voices asynchronously — refresh our cached pick when they do
 if ('speechSynthesis' in window) {
