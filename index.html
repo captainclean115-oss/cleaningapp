@@ -745,10 +745,17 @@ html { overscroll-behavior: none; }
 /* ═══ GLOBAL PIN SCREEN ═══ */
 #app-pin-screen {
   display: flex; position: fixed; inset: 0; z-index: 1000;
-  background: var(--bg); flex-direction: column;
+  flex-direction: column;
   align-items: center; justify-content: center;
   padding: 32px 24px;
-  background: radial-gradient(ellipse at 50% 0%, rgba(79,142,247,0.1) 0%, transparent 65%);
+  /* Same branded Field Flow wallpaper used by the manager home launcher
+     and the employee portal so every screen feels like the same app. */
+  background:
+    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
+    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
 }
 .app-pin-logo { text-align: center; margin-bottom: 36px; }
 .app-pin-logo-icon { font-size: 48px; margin-bottom: 10px; }
@@ -790,8 +797,10 @@ html { overscroll-behavior: none; }
 }
 .app-lang-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* PIN screen sits on top of everything — no need to hide elements */
-#app-pin-screen { z-index: 9999; background: var(--bg); }
+/* PIN screen sits on top of everything — no need to hide elements.
+   Background handled by the main #app-pin-screen rule above (branded
+   Field Flow wallpaper). Do NOT override with var(--bg) here. */
+#app-pin-screen { z-index: 9999; }
 
 
 
@@ -2187,7 +2196,7 @@ select.field-input { appearance: none; }
 <body style="touch-action:manipulation">
 
 <!-- ═══ APP PIN SCREEN ═══ -->
-<div id="app-pin-screen" style="display:flex;position:fixed;inset:0;z-index:9999;background:#0a0f1a;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;">
+<div id="app-pin-screen" style="display:flex;position:fixed;inset:0;z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;">
   <div style="text-align:center;margin-bottom:32px">
     <div style="font-size:48px;margin-bottom:10px">🧹</div>
     <div style="font-size:26px;font-weight:700;color:#f0f0f5;letter-spacing:-.02em">Field Flow</div>
