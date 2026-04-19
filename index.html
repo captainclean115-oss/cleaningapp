@@ -965,14 +965,25 @@ body {
 .nav-half {
   flex: 1;
   display: flex;
-  align-items: stretch;
+  align-items: center;
   justify-content: space-around;
-  padding: 0 8px;
+  padding: 0 6px;
 }
 .nav-half .nav-btn {
   flex: 0 0 auto;
-  min-width: 60px;
-  max-width: 80px;
+  width: 74px;
+  padding: 8px 0 6px;
+}
+/* Dock icon glyphs — match the visual weight of home-screen tiles */
+.bottom-nav .nav-btn .nav-icon {
+  font-size: 28px;
+  line-height: 1;
+  display: inline-block;
+  margin-bottom: 2px;
+}
+.bottom-nav .nav-btn span:last-child {
+  font-size: 11px;
+  font-weight: 500;
 }
 /* Block browser drag, long-press callouts, and iOS text magnifier while
    the user interacts with dock buttons — otherwise holding an icon can
@@ -2093,7 +2104,6 @@ select.field-input { appearance: none; }
   <div class="home-date" id="home-date"></div>
   <div class="home-pages-wrap" id="home-pages-wrap"></div>
   <div class="home-page-dots" id="home-page-dots"></div>
-  <button class="home-done-btn" id="home-done-btn" onclick="homeExitEditMode()">Done</button>
 </div>
 <div class="home-folder-overlay" id="home-folder-overlay" onclick="if(event.target===this)closeHomeFolder()">
   <div class="home-folder-sheet" id="home-folder-sheet"></div>
@@ -6073,6 +6083,7 @@ function _homeOnDragMove(e) {
   if (!_homeDrag) return;
   e.preventDefault();
   var x = e.clientX, y = e.clientY;
+  _homeDrag.lastX = x; _homeDrag.lastY = y;
   _homeDrag.clone.style.left = x + 'px';
   _homeDrag.clone.style.top = y + 'px';
 
@@ -6118,15 +6129,25 @@ function _homeFinishDrag(commit) {
     var targetSlot = parseInt(d.hover.getAttribute('data-slot-idx'));
     var targetType = d.hover.getAttribute('data-slot-type');
 
-    if (d.slotType === 'app' && targetType === 'app') {
-      // Drop one app onto another → create folder (iOS behavior)
+    // Use the drop pointer's position relative to the target to decide
+    // before/after insert. A drop near the centre of a target (inside 30%
+    // of its width) is treated as "onto" → folder creation. Left edge =
+    // insert BEFORE target. Right edge = insert AFTER target. This is
+    // what gives the freedom to move icons anywhere, not just swap in-row.
+    var rect = d.hover.getBoundingClientRect();
+    var cx = (d.lastX != null) ? d.lastX : (rect.left + rect.width/2);
+    var relX = (cx - rect.left) / rect.width; // 0..1
+    var ontoTarget = relX >= 0.35 && relX <= 0.65;
+
+    if (d.slotType === 'app' && targetType === 'app' && ontoTarget) {
+      // Drop dead-center → folder
       _homeCreateFolder(d.fromPage, d.fromSlot, targetPage, targetSlot);
-    } else if (d.slotType === 'app' && targetType === 'folder') {
-      // Drop app into existing folder
+    } else if (d.slotType === 'app' && targetType === 'folder' && ontoTarget) {
       _homeDropIntoFolder(d.fromPage, d.fromSlot, targetPage, targetSlot);
     } else {
-      // Move/reorder
-      _homeMoveSlot(d.fromPage, d.fromSlot, targetPage, targetSlot);
+      // Insert before or after target depending on which half was dropped on
+      var insertAfter = relX > 0.5;
+      _homeMoveSlotAt(d.fromPage, d.fromSlot, targetPage, targetSlot, insertAfter);
     }
   } else if (commit && !d.hover) {
     // Dropped in empty grid area — append the icon to the end of the
@@ -6158,12 +6179,18 @@ function _homeMoveSlotToEndOfVisiblePage(fromPage, fromSlot) {
 }
 
 function _homeMoveSlot(fromPage, fromSlot, toPage, toSlot) {
+  return _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, false);
+}
+function _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, insertAfter) {
   var pages = _homeGetPages();
   if (!pages[fromPage] || !pages[toPage]) return;
   var moved = pages[fromPage].splice(fromSlot, 1)[0];
   if (!moved) return;
-  // Adjust target slot if we removed from the same page before the target
   if (fromPage === toPage && fromSlot < toSlot) toSlot--;
+  if (insertAfter) toSlot++;
+  // Clamp
+  if (toSlot < 0) toSlot = 0;
+  if (toSlot > pages[toPage].length) toSlot = pages[toPage].length;
   pages[toPage].splice(toSlot, 0, moved);
   _homeSavePages();
 }
@@ -10531,17 +10558,11 @@ function getClientExtras(clientId) {
   return { notes, payment: '', avgRev: '', prefTime: '', prefDay: '', extraPhone: '', upcoming: '' };
 }
 
+// Sync banner suppressed — Tom doesn't want any sync notifications, including
+// pull-to-refresh and "Sync schedule from Sheets first" prompts. All callers
+// no-op silently. Errors still console.warn for dev visibility.
 function showSyncBanner(msg, duration=0) {
-  let banner = document.getElementById('sync-banner');
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'sync-banner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--accent);color:#fff;text-align:center;font-size:13px;font-weight:500;padding:calc(env(safe-area-inset-top,0px) + 8px) 8px 8px;transform:translateY(-100%);transition:transform .3s';
-    document.body.appendChild(banner);
-  }
-  banner.textContent = msg;
-  banner.style.transform = 'translateY(0)';
-  if (duration > 0) setTimeout(() => { banner.style.transform = 'translateY(-100%)'; }, duration);
+  try { console.warn('[sync]', msg); } catch(e){}
 }
 
 // Load cached extras on startup, then sync fresh
