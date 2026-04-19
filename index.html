@@ -58,10 +58,10 @@ body {
 
 /* ── TOP BAR ── */
 .topbar {
-  position: sticky; top: 0; z-index: 200;
-  background: var(--bg);
-  padding: calc(var(--safe-top) + 14px) 16px 14px;
-  border-bottom: 1px solid var(--border);
+  /* Hidden globally — each tab uses its own top area directly under the notch
+     so every feature view runs floor-to-ceiling (top of status-bar area to
+     top of the dock). The topbar was empty after all the cleanup anyway. */
+  display: none !important;
 }
 .topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; position: relative; }
 .app-title { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; flex: 1; }
@@ -69,7 +69,7 @@ body {
 .badge-count { background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; font-family: 'DM Mono', monospace; }
 
 /* ── SEARCH ── */
-.search-wrap { padding: 12px 16px; background: var(--bg); position: sticky; top: calc(var(--safe-top) + 58px); z-index: 99; }
+.search-wrap { padding: calc(var(--safe-top) + 12px) 16px 12px; background: var(--bg); position: sticky; top: 0; z-index: 99; }
 .search-inner { max-width: 600px; margin: 0 auto; display: flex; gap: 8px; }
 .search-box { position: relative; flex: 1; }
 .search-box input {
@@ -255,7 +255,7 @@ body {
   position: sticky; top: 0; z-index: 99;
   background: rgba(15,17,23,0.95);
   backdrop-filter: blur(20px);
-  padding: 12px 16px 8px;
+  padding: calc(var(--safe-top) + 12px) 16px 8px;
   border-bottom: 1px solid var(--border);
 }
 .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -383,7 +383,7 @@ body {
 #tasks-view { display: none; }
 #tasks-view.active { display: block; }
 
-.tasks-header { padding: 16px 16px 8px; }
+.tasks-header { padding: calc(var(--safe-top) + 16px) 16px 8px; }
 .tasks-section-title {
   font-size: 13px; font-weight: 600; text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted); margin: 16px 16px 8px;
@@ -438,7 +438,7 @@ body {
 #messages-view { display: none; }
 #messages-view.active { display: block; }
 
-.inbox-header { padding: 16px 16px 8px; }
+.inbox-header { padding: calc(var(--safe-top) + 16px) 16px 8px; }
 .inbox-title { font-size: 19px; font-weight: 600; margin-bottom: 4px; }
 .inbox-sub { font-size: 13px; color: var(--muted); }
 
@@ -527,9 +527,9 @@ body {
 
 /* ── GPS / LIVE MAP ── */
 #gps-view { display: none; }
-#gps-view.active { display: block; overflow-y: auto; height: calc(100vh - 60px); }
+#gps-view.active { display: block; overflow-y: auto; height: calc(100vh - 70px - var(--safe-bottom)); }
 
-.gps-header { padding: 12px 16px 8px; }
+.gps-header { padding: calc(var(--safe-top) + 12px) 16px 8px; }
 .gps-title { font-size: 19px; font-weight: 600; margin-bottom: 2px; }
 .gps-sub { font-size: 13px; color: var(--muted); }
 
