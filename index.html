@@ -987,32 +987,26 @@ html { overscroll-behavior: none; }
 .bottom-nav .nav-btn .nav-icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 46px; height: 46px;
-  /* iOS squircle */
   border-radius: 22.37%;
-  font-size: 24px;
   line-height: 1;
   margin-bottom: 3px;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
   position: relative;
   overflow: hidden;
 }
-/* Same top-light / bottom-shade overlay as the home tiles — keeps dock
-   icons visually matched to the grid. */
-.bottom-nav .nav-btn .nav-icon::after {
+.bottom-nav .nav-btn .nav-icon::before {
   content: '';
-  position: absolute; inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.03) 42%, rgba(0,0,0,0.10) 100%);
+  position: absolute; top: 0; left: 0; right: 0; height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 100%);
+  border-radius: 22.37% 22.37% 0 0;
   pointer-events: none;
   z-index: 1;
 }
 .bottom-nav .nav-btn .nav-icon > * { position: relative; z-index: 2; }
-#nav-cal  .nav-icon { background: linear-gradient(135deg,#fb7185,#e11d48); }
-#nav-gps  .nav-icon { background: linear-gradient(135deg,#34d399,#0d9488); }
-#nav-messages .nav-icon { background: linear-gradient(135deg,#22d3ee,#2563eb); }
 .bottom-nav .nav-btn span:last-child {
   font-size: 11px;
   font-weight: 500;
+  letter-spacing: -0.2px;
 }
 /* Block browser drag, long-press callouts, and iOS text magnifier. The dock
    needs this aggressively because iOS kept bringing up the Copy/Look-Up
@@ -1051,23 +1045,22 @@ body.home-dragging, body.home-dragging * {
 }
 .nav-icon-claire {
   width: 56px; height: 56px; border-radius: 50%;
-  background: linear-gradient(135deg, #6c8fff 0%, #a78bfa 60%, #f472b6 110%);
+  background: radial-gradient(circle at 30% 30%, #D4C5FF 0%, #8E7BFF 50%, #5E5CE6 100%);
   display: flex; align-items: center; justify-content: center;
-  box-shadow:
-    0 6px 18px rgba(108,143,255,0.55),
-    inset 0 1px 0 rgba(255,255,255,0.25),
-    inset 0 -2px 6px rgba(0,0,0,0.2);
-  animation: claire-nav-glow 3s ease-in-out infinite;
-  /* Lift above the dock so the bigger circle visually "floats" */
+  box-shadow: 0 0 30px rgba(142, 123, 255, 0.4);
   margin-top: -22px; margin-bottom: -2px;
+  position: relative;
+  overflow: hidden;
 }
-.nav-icon-claire svg { width: 30px; height: 30px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
-@keyframes claire-nav-glow {
-  0%, 100% { box-shadow: 0 6px 18px rgba(108,143,255,0.5), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -2px 6px rgba(0,0,0,0.2); }
-  50%      { box-shadow: 0 8px 24px rgba(167,139,250,0.75), inset 0 1px 0 rgba(255,255,255,0.3), inset 0 -2px 6px rgba(0,0,0,0.2); }
+.nav-icon-claire svg {
+  width: 54%; height: 54%;
+  stroke: #fff; fill: #fff; color: #fff;
+  stroke-linecap: round; stroke-linejoin: round;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+  position: relative; z-index: 2;
 }
 .nav-btn-claire.active .nav-icon-claire {
-  background: linear-gradient(135deg, #8ba7ff 0%, #c4a7ff 60%, #ff90c8 110%);
+  background: radial-gradient(circle at 30% 30%, #E4D7FF 0%, #A592FF 50%, #6C6CF0 100%);
 }
 
 /* Claire dedicated view — fixed full-screen (above topbar, below bottom-nav) */
@@ -1341,16 +1334,14 @@ body.home-dragging, body.home-dragging * {
   max-width: 72px; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── iPhone-style HOME SCREEN (black) ── */
+/* ── iPhone-style HOME SCREEN (iOS 17 look) ── */
 #home-view {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
   bottom: calc(70px + var(--safe-bottom));
   overflow: hidden;
-  /* Pure black floor-to-ceiling. No gradients so the status-bar strip
-     matches the body exactly — no lighter "sky" band at the top. */
-  background: #000;
+  background: linear-gradient(180deg, #0a0a1a 0%, #000000 60%, #0a0a15 100%);
   padding: calc(var(--safe-top) + 20px) 0 0;
 }
 #home-view.active { display: block; }
@@ -1416,28 +1407,48 @@ body.home-dragging, body.home-dragging * {
 .home-app:active:not(.dragging) .home-app-icon { transform: scale(0.92); }
 .home-app-icon {
   width: 62px; height: 62px;
-  /* iOS "squircle" proportion */
   border-radius: 22.37%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 32px; line-height: 1;
-  /* Floating-above-the-page shadow + inset highlights for subtle depth */
-  box-shadow: 0 4px 14px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -1px 0 rgba(0,0,0,0.18);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
   position: relative;
   overflow: hidden;
   transition: transform 0.15s;
 }
-/* Subtle gradient overlay on every icon — top highlight fading to a hint of
-   shadow at the bottom. Rides on top of each app's color background so all
-   icons read as 3D lit surfaces instead of flat paint. */
-.home-app-icon::after {
+/* Top-half gloss overlay — rides above the base gradient to give every
+   icon a subtle "lit" 3D look. */
+.home-app-icon::before {
   content: '';
-  position: absolute; inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.03) 42%, rgba(0,0,0,0.10) 100%);
+  position: absolute; top: 0; left: 0; right: 0; height: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 100%);
+  border-radius: 22.37% 22.37% 0 0;
   pointer-events: none;
   z-index: 1;
 }
 .home-app-icon > * { position: relative; z-index: 2; }
+/* All inlined Lucide SVGs render as white line-art at consistent weight. */
+.home-app-icon svg,
+.bottom-nav .nav-btn .nav-icon svg {
+  width: 55%;
+  height: 55%;
+  color: #fff;
+  stroke: #fff;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Specialty SVGs that render their own fills (calendar face, Claire's
+   sparkle orb) opt out of the global stroke rules. */
+.home-app-icon svg.cal-face,
+.bottom-nav .nav-btn .nav-icon svg.cal-face {
+  width: 100%; height: 100%;
+  stroke: none; fill: initial; color: initial;
+}
+.nav-icon-claire svg.sparkles-brand,
+.home-app-icon svg.sparkles-brand {
+  stroke: #fff; fill: #fff; color: #fff;
+  width: 54%; height: 54%;
+}
 .home-app-label {
   font-size: 12px; line-height: 1.15;
   color: rgba(255,255,255,0.97); font-weight: 500;
@@ -1468,7 +1479,11 @@ body.home-dragging, body.home-dragging * {
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; line-height: 1;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+  overflow: hidden;
 }
+/* Folder minis use a smaller portion of their tile — 70% keeps the Lucide
+   glyph legible without crowding the corners. */
+.home-folder-mini svg { width: 70%; height: 70%; }
 
 /* Edit-mode wiggle — applies to every icon on every page */
 #home-view.edit-mode .home-app:not(.dragging) .home-app-icon {
@@ -2523,16 +2538,13 @@ select.field-input { appearance: none; }
   <!-- Claire is absolute-positioned at dead center — doesn't move regardless of how many other apps are in the nav. -->
   <button class="nav-btn nav-btn-claire" id="nav-claire" onclick="showTab('claire')">
     <span class="nav-icon-claire" aria-label="Claire">
-      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <defs>
-          <linearGradient id="clairenavgrad" x1="4" y1="4" x2="20" y2="20" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#ffffff"/>
-            <stop offset="0.55" stop-color="#f7eeff"/>
-            <stop offset="1" stop-color="#e5d0ff"/>
-          </linearGradient>
-        </defs>
-        <path d="M12 2 Q12.5 9.5 21.5 11.5 Q12.5 13.5 12 21 Q11.5 13.5 2.5 11.5 Q11.5 9.5 12 2 Z" fill="url(#clairenavgrad)"/>
-        <path d="M19.5 3 Q19.7 5 21.5 5.3 Q19.7 5.6 19.5 7.5 Q19.3 5.6 17.5 5.3 Q19.3 5 19.5 3 Z" fill="url(#clairenavgrad)" opacity="0.75"/>
+      <!-- Lucide "sparkles" (inlined, offline-capable) -->
+      <svg class="sparkles-brand" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" stroke-width="2">
+        <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>
+        <path d="M20 3v4"/>
+        <path d="M22 5h-4"/>
+        <path d="M4 17v2"/>
+        <path d="M5 18H3"/>
       </svg>
     </span>
     <span>Claire</span>
@@ -5841,39 +5853,60 @@ function launcherTap(i) {
 // enter edit mode (tiles wiggle), then drag to reorder. Order persists in
 // localStorage ('home_app_order'). Tap "Done" in the corner to exit.
 // ═══════════════════════════════════════════════════════════════════════
+var LUCIDE = {
+  'users': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  'user-check': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>',
+  'user-plus': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></svg>',
+  'calculator': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></svg>',
+  'camera': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+  'navigation': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>',
+  'clipboard-list': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg>',
+  'folder': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>',
+  'tag': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><circle cx="7" cy="7" r="1"/></svg>',
+  'boxes': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></svg>',
+  'gift': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1-2.5-2.5A2.5 2.5 0 0 1 7.5 3c1.8 0 3 1.5 4.5 5-3-.5-4.5-1.2-4.5-0z"/><path d="M16.5 8a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 16.5 3c-1.8 0-3 1.5-4.5 5 3-.5 4.5-1.2 4.5-0z"/></svg>',
+  'badge-check': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>',
+  'graduation-cap': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></svg>',
+  'log-out': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>',
+  'map-pin': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M20 10c0 7-8 13-8 13s-8-6-8-13a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
+  'message-circle': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
+  'calendar': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg>',
+  'sparkles': '<svg class="sparkles-brand" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" stroke-width="2"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>',
+  'bar-chart-3': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>',
+  'handshake': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/></svg>',
+};
+
 var HOME_APPS = [
-  // Primary views (also in the dock but nice to have on home as iOS does)
-  { id: 'cal',      label: 'Schedule', icon: '📅', grad: 'linear-gradient(135deg,#fb7185,#e11d48)',
-    go: function(){ showTab('cal'); } },
-  { id: 'claire',   label: 'Claire', grad: 'linear-gradient(135deg,#6c8fff 0%,#a78bfa 60%,#f472b6 110%)',
-    iconHtml: '<svg viewBox="0 0 24 24" width="34" height="34" fill="none" aria-hidden="true">'
-      + '<path d="M12 2 Q12.5 9.5 21.5 11.5 Q12.5 13.5 12 21 Q11.5 13.5 2.5 11.5 Q11.5 9.5 12 2 Z" fill="#fff"/>'
-      + '<path d="M19.5 3 Q19.7 5 21.5 5.3 Q19.7 5.6 19.5 7.5 Q19.3 5.6 17.5 5.3 Q19.3 5 19.5 3 Z" fill="#fff" opacity="0.75"/>'
-      + '</svg>',
-    fixed: true,
-    go: function(){ showTab('claire'); } },
-  { id: 'gps',      label: 'Live',     icon: '🗺️', grad: 'linear-gradient(135deg,#34d399,#0d9488)',
-    go: function(){ showTab('gps'); } },
-  { id: 'messages', label: 'Messages', icon: '💬', grad: 'linear-gradient(135deg,#22d3ee,#2563eb)',
-    go: function(){ showTab('messages'); } },
-  // Everything that used to live in the popup launcher
-  { id: 'clients', label: 'Clients', icon: '👥', grad: 'linear-gradient(135deg,#6c8fff,#3b82f6)',
-    go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
-  { id: 'staff',   label: 'Staff',   icon: '🧑‍💼', grad: 'linear-gradient(135deg,#34d399,#059669)',
-    go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
-  { id: 'new',     label: 'New Client', icon: '➕', grad: 'linear-gradient(135deg,#60a5fa,#2563eb)',
-    go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
-  { id: 'quote',   label: 'Quote',   icon: '💰', grad: 'linear-gradient(135deg,#fbbf24,#d97706)',
-    go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
-  { id: 'content', label: 'Content', icon: '📸', grad: 'linear-gradient(135deg,#c084fc,#7c3aed)',
+  // Dock-default views (also addressable from the home grid if Tom drags them there)
+  { id: 'cal',      label: 'Schedule', grad: 'linear-gradient(135deg,#FF3B30,#FF6482)',
+    iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
+  { id: 'claire',   label: 'Claire',   grad: 'radial-gradient(circle at 30% 30%, #D4C5FF 0%, #8E7BFF 50%, #5E5CE6 100%)',
+    iconHtml: LUCIDE['sparkles'], fixed: true, go: function(){ showTab('claire'); } },
+  { id: 'gps',      label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
+    iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
+  { id: 'messages', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
+    iconHtml: LUCIDE['message-circle'], go: function(){ showTab('messages'); } },
+  // Grid row 1
+  { id: 'clients',  label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
+    iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
+  { id: 'staff',    label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
+    iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
+  { id: 'new',      label: 'New Client', grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
+    iconHtml: LUCIDE['user-plus'], go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
+  { id: 'quote',    label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
+    iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
+  // Grid row 2
+  { id: 'content',  label: 'Content',  grad: 'linear-gradient(135deg,#FF2D55 0%,#FF9500 35%,#FFD60A 65%,#30D158 100%)',
+    iconHtml: LUCIDE['camera'],
     badge: function(){
       try { return (JSON.parse(localStorage.getItem('content_queue')||'[]').filter(function(c){return c.status==='pending';}).length) || 0; }
       catch(e){ return 0; }
     },
     go: function(){ if (typeof openContentView === 'function') openContentView(); } },
-  { id: 'route',   label: 'Route', icon: '🧭', grad: 'linear-gradient(135deg,#f87171,#b91c1c)',
-    go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
-  { id: 'tasks',   label: 'Updates', icon: '📋', grad: 'linear-gradient(135deg,#a78bfa,#7c3aed)',
+  { id: 'route',    label: 'Route',    grad: 'linear-gradient(135deg,#90D585 0%,#EAC885 100%)',
+    iconHtml: LUCIDE['navigation'], go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
+  { id: 'tasks',    label: 'Updates',  grad: 'linear-gradient(135deg,#BF5AF2 0%,#8E4EC6 100%)',
+    iconHtml: LUCIDE['clipboard-list'],
     badge: function(){
       try {
         var p = (JSON.parse(localStorage.getItem('cleanco_pending')||'[]').filter(function(x){return !x.done;}).length) || 0;
@@ -5882,24 +5915,26 @@ var HOME_APPS = [
       } catch(e) { return 0; }
     },
     go: function(){ showTab('tasks'); } },
-  { id: 'files',   label: 'Files', icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)',
-    go: function(){ if (typeof openFiles === 'function') openFiles(); } },
-  { id: 'assets',    label: 'Assets',    icon: '🏷️', grad: 'linear-gradient(135deg,#94a3b8,#475569)',
-    go: function(){ _launcherComingSoon('Assets'); } },
-  { id: 'inventory', label: 'Inventory', icon: '🧴',  grad: 'linear-gradient(135deg,#22d3ee,#0891b2)',
-    go: function(){ _launcherComingSoon('Inventory'); } },
-  { id: 'rewards',   label: 'Rewards',   icon: '🎁',  grad: 'linear-gradient(135deg,#f472b6,#db2777)',
-    go: function(){ _launcherComingSoon('Rewards'); } },
-  { id: 'approval',  label: 'Approval',  icon: '✅',  grad: 'linear-gradient(135deg,#4ade80,#16a34a)',
-    go: function(){ _launcherComingSoon('Approval'); } },
-  { id: 'school',    label: 'School',    icon: '🎓',  grad: 'linear-gradient(135deg,#fca5a5,#b91c1c)',
-    go: function(){ _launcherComingSoon('School'); } },
-  { id: 'analytics', label: 'Analytics', icon: '📊',  grad: 'linear-gradient(135deg,#38bdf8,#0369a1)',
-    go: function(){ _launcherComingSoon('Analytics'); } },
-  { id: 'crm',       label: 'CRM',       icon: '🤝',  grad: 'linear-gradient(135deg,#fb923c,#c2410c)',
-    go: function(){ _launcherComingSoon('CRM'); } },
-  { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
-    go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
+  { id: 'files',    label: 'Files',    grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
+    iconHtml: LUCIDE['folder'], go: function(){ if (typeof openFiles === 'function') openFiles(); } },
+  // Grid row 3
+  { id: 'assets',     label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
+    iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
+  { id: 'inventory',  label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
+    iconHtml: LUCIDE['boxes'], go: function(){ _launcherComingSoon('Inventory'); } },
+  { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF375F 0%,#FF2D55 100%)',
+    iconHtml: LUCIDE['gift'], go: function(){ _launcherComingSoon('Rewards'); } },
+  { id: 'approval',   label: 'Approval',   grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
+    iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
+  // Grid row 4
+  { id: 'school',     label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
+    iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
+  { id: 'analytics',  label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
+    iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
+  { id: 'crm',        label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
+    iconHtml: LUCIDE['handshake'], go: function(){ _launcherComingSoon('CRM'); } },
+  { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
+    iconHtml: LUCIDE['log-out'], go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -6031,11 +6066,29 @@ function renderDock() {
 function _renderDockBtn(appId) {
   var app = HOME_APPS.find(function(a){ return a.id === appId; });
   if (!app) return '';
-  var inner = app.iconHtml || (app.icon || '');
+  var inner, bg;
+  if (appId === 'cal') {
+    // iOS-Calendar face: white tile with red month abbr + bold black day number
+    inner = _dockCalendarFaceSvg();
+    bg = 'linear-gradient(180deg, #FFFFFF 0%, #F2F2F7 100%)';
+  } else {
+    inner = app.iconHtml || (app.icon || '');
+    bg = app.grad;
+  }
   return '<button class="nav-btn" id="nav-' + appId + '" data-dock-id="' + appId + '" data-slot-type="dock" onclick="dockTap(\'' + appId + '\')">'
-    + '<span class="nav-icon" style="background:' + app.grad + '">' + inner + '</span>'
+    + '<span class="nav-icon" style="background:' + bg + '">' + inner + '</span>'
     + '<span>' + app.label + '</span>'
     + '</button>';
+}
+function _dockCalendarFaceSvg() {
+  var d = new Date();
+  var mon = d.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
+  var day = d.getDate();
+  return '<svg class="cal-face" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    + '<rect width="24" height="24" fill="#ffffff"/>'
+    + '<text x="12" y="7.5" fill="#FF3B30" font-size="4.2" font-weight="700" text-anchor="middle" font-family="-apple-system,system-ui,sans-serif" letter-spacing="0.3">' + mon + '</text>'
+    + '<text x="12" y="20" fill="#1c1c1e" font-size="13" font-weight="900" text-anchor="middle" font-family="-apple-system,system-ui,sans-serif">' + day + '</text>'
+    + '</svg>';
 }
 function dockTap(appId) {
   // Guard — if a drag just finished, don't fire the tap
