@@ -989,6 +989,128 @@ body {
   color: rgba(255,255,255,0.5); font-size: 22px; line-height: 1;
   font-weight: 300;
 }
+
+/* ── Rewards sub-page styling ── */
+.reward-section-label {
+  font-size: 11px; font-weight: 700;
+  color: rgba(255,255,255,0.55);
+  text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 0 22px 10px;
+}
+.reward-card {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 10px;
+  color: #fff;
+  font-family: 'DM Sans', sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s, background 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.reward-card:active { transform: scale(0.97); background: rgba(255,255,255,0.10); }
+.reward-card.locked { opacity: 0.42; cursor: default; }
+.reward-card-icon {
+  flex: 0 0 auto;
+  width: 44px; height: 44px; border-radius: 22.37%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700; color: #fff;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.22);
+  letter-spacing: 0;
+}
+.reward-card-body { min-width: 0; flex: 1; }
+.reward-card-name {
+  font-size: 13px; font-weight: 700; line-height: 1.2; margin-bottom: 3px;
+  white-space: normal;
+}
+.reward-card-cost {
+  font-size: 11px; font-weight: 600;
+  color: rgba(255,255,255,0.6);
+}
+.reward-earn-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 10px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.reward-earn-pts {
+  flex: 0 0 auto;
+  font-size: 13px; font-weight: 800;
+  color: #34D399;
+  min-width: 42px; padding-top: 2px;
+}
+.reward-earn-body { min-width: 0; flex: 1; }
+.reward-earn-label { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 2px; }
+.reward-earn-hint  { font-size: 12px; color: rgba(255,255,255,0.55); line-height: 1.4; }
+
+.reward-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.reward-row-me {
+  background: rgba(142,123,255,0.10);
+  border-radius: 10px;
+  border-bottom-color: transparent;
+}
+.reward-row-rank {
+  flex: 0 0 auto; width: 26px; text-align: center;
+  font-size: 14px; font-weight: 800;
+}
+.reward-row-name {
+  flex: 1; min-width: 0;
+  font-size: 14px; font-weight: 600; color: #fff;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.reward-row-pts {
+  flex: 0 0 auto;
+  font-size: 14px; font-weight: 800; color: #fff;
+  min-width: 48px; text-align: right;
+  letter-spacing: -0.02em;
+}
+.reward-gift-btn {
+  flex: 0 0 auto;
+  background: linear-gradient(135deg,#FF6482,#FF2D55);
+  border: none; color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 700;
+  padding: 6px 14px; border-radius: 16px;
+  cursor: pointer;
+}
+.reward-gift-btn:active { transform: scale(0.95); }
+
+/* Employee Schedule date bar — sits at the top of #tab-schedule, lets the
+   employee flip between past days and one day forward (tomorrow). */
+.emp-sched-datebar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.emp-sched-datebar-label {
+  flex: 1; min-width: 0;
+  text-align: center;
+  font-size: 14px; font-weight: 700;
+  color: rgba(255,255,255,0.92);
+  letter-spacing: -0.2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.emp-sched-nav {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #fff;
+  font-size: 20px; font-weight: 700; line-height: 1;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.12s;
+  padding: 0;
+}
+.emp-sched-nav:active { transform: scale(0.92); }
+.emp-sched-nav:disabled { cursor: not-allowed; }
 .employee-back-btn {
   display: none;
   margin: 8px 12px 0;
@@ -15671,15 +15793,66 @@ function portalLogout() {
 // ─────────────────────────────────────────
 // SCHEDULE
 // ─────────────────────────────────────────
+// Currently-viewed date for the employee Schedule sub-page. Null = today.
+// Employees can step back to any past day and one day forward (tomorrow max).
+var _empSchedDate = null;
+function _empSchedDateKey() {
+  var d = _empSchedDate || new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function _empSchedStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function empSchedGoToday() { _empSchedDate = new Date(); renderSchedule(); }
+function empSchedPrev() {
+  var d = _empSchedDate || new Date();
+  var n = new Date(d); n.setDate(n.getDate() - 1);
+  _empSchedDate = n; renderSchedule();
+}
+function empSchedNext() {
+  var d = _empSchedDate || new Date();
+  var n = new Date(d); n.setDate(n.getDate() + 1);
+  var maxDate = _empSchedStartOfDay(new Date());
+  maxDate.setDate(maxDate.getDate() + 1); // tomorrow is the cap
+  if (_empSchedStartOfDay(n) > maxDate) return;
+  _empSchedDate = n; renderSchedule();
+}
+
 function renderSchedule() {
   const today = new Date();
+  const todayStartMs = _empSchedStartOfDay(today).getTime();
+  const viewDate = _empSchedDate || today;
+  const viewStartMs = _empSchedStartOfDay(viewDate).getTime();
   // Use local date, not UTC (toISOString gives UTC which can be wrong day in EST)
-  const todayStr = today.getFullYear() + '-' + 
-    String(today.getMonth()+1).padStart(2,'0') + '-' + 
-    String(today.getDate()).padStart(2,'0');
+  const todayStr = viewDate.getFullYear() + '-' +
+    String(viewDate.getMonth()+1).padStart(2,'0') + '-' +
+    String(viewDate.getDate()).padStart(2,'0');
   const team = currentEmployee ? currentEmployee.team : '';
 
-  document.getElementById('today-label').textContent = t('todayJobs');
+  // Day-aware section title.
+  var dayOffsetMs = viewStartMs - todayStartMs;
+  var oneDayMs = 86400000;
+  var labelPrefix;
+  if (dayOffsetMs === 0) labelPrefix = "TODAY'S JOBS";
+  else if (dayOffsetMs === oneDayMs) labelPrefix = "TOMORROW";
+  else if (dayOffsetMs === -oneDayMs) labelPrefix = "YESTERDAY";
+  else labelPrefix = viewDate.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' }).toUpperCase();
+  var lbl = document.getElementById('today-label');
+  if (lbl) lbl.textContent = labelPrefix;
+
+  // Date-bar label + next-button disabled state.
+  var datebarLbl = document.getElementById('emp-sched-datebar-label');
+  if (datebarLbl) {
+    datebarLbl.textContent = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '')
+      + viewDate.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+  }
+  var nextBtn = document.getElementById('emp-sched-next-btn');
+  if (nextBtn) {
+    var atCap = dayOffsetMs >= oneDayMs;
+    nextBtn.disabled = atCap;
+    nextBtn.style.opacity = atCap ? '0.35' : '1';
+    nextBtn.style.pointerEvents = atCap ? 'none' : '';
+  }
+  var jumpChip = document.getElementById('emp-sched-today-chip');
+  if (jumpChip) jumpChip.style.display = (dayOffsetMs !== 0) ? 'block' : 'none';
 
   // Try to get jobs from localStorage (set by main app)
   let jobs = [];
@@ -15766,7 +15939,11 @@ function renderSchedule() {
 
   const list = document.getElementById('schedule-list');
   if (jobs.length === 0) {
-    let debugMsg = t('noJobs');
+    // Day-aware empty state so it reads correctly when viewing past days too.
+    let debugMsg;
+    if (dayOffsetMs === 0) debugMsg = t('noJobs');
+    else if (dayOffsetMs === oneDayMs) debugMsg = 'No jobs scheduled for tomorrow';
+    else debugMsg = 'No jobs on ' + viewDate.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' });
     try {
       const allStored = JSON.parse(localStorage.getItem('cleanco_jobs') || '[]');
       const todayJobs = allStored.filter(j => j.date === todayStr);
@@ -17562,7 +17739,11 @@ function showPortalTab(tab) {
       checkExistingSignature();
     } catch(e) {}
   }
-  if (tab === 'schedule') { renderSchedule(); }
+  if (tab === 'schedule') {
+    // Fresh opens always start on today; prev/next nav persists within the session.
+    _empSchedDate = null;
+    renderSchedule();
+  }
   if (tab === 'rewards') { renderEmployeeRewards(); }
 }
 
@@ -17662,30 +17843,212 @@ function renderEmployeeHome() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Employee Rewards — demo feature.
+// Shows points + tier, a redeem catalog, ways to earn, a team leaderboard,
+// and peer-to-peer gifting. Storage is all localStorage for the demo:
+//   content_points       : { empId -> points balance }
+//   rewards_ledger       : [{id, ts, type, from, to, amount, note}]
+//                          type = 'earned' | 'gift' | 'redemption'
+// ═══════════════════════════════════════════════════════════════════════
+var REWARD_CATALOG = [
+  { id: 'coffee',  name: 'Coffee on Tom',             cost: 30,  icon: 'C', grad: 'linear-gradient(135deg,#B08968,#6B4226)' },
+  { id: 'gas10',   name: '$10 Gas Card',              cost: 100, icon: 'G', grad: 'linear-gradient(135deg,#34D399,#0D9488)' },
+  { id: 'supplies',name: 'Premium Supplies Kit',      cost: 150, icon: 'S', grad: 'linear-gradient(135deg,#22D3EE,#0891B2)' },
+  { id: 'break',   name: 'Extra 30-min Paid Break',   cost: 75,  icon: 'B', grad: 'linear-gradient(135deg,#A78BFA,#7C3AED)' },
+  { id: 'hoodie',  name: 'Manna Maids Hoodie',        cost: 200, icon: 'H', grad: 'linear-gradient(135deg,#F472B6,#DB2777)' },
+  { id: 'amzn25',  name: '$25 Amazon Gift Card',      cost: 250, icon: 'A', grad: 'linear-gradient(135deg,#FBBF24,#D97706)' },
+  { id: 'halfday', name: 'Half-Day Paid Off',         cost: 500, icon: 'P', grad: 'linear-gradient(135deg,#FF6482,#FF2D55)' },
+  { id: 'dinner',  name: 'Dinner for Two on the Co',  cost: 350, icon: 'D', grad: 'linear-gradient(135deg,#FFD60A,#FF9500)' }
+];
+var WAYS_TO_EARN = [
+  { pts: 10,  label: 'Approved Content post',            hint: 'Share a photo/video from the field → manager approves.' },
+  { pts: 15,  label: '5-star client review',             hint: 'A client mentions you by name in a review.' },
+  { pts: 25,  label: 'Perfect attendance (1 week)',      hint: 'Clock in on time every shift Mon–Fri.' },
+  { pts: 25,  label: 'Gifted by a teammate',             hint: 'Anyone on the team can send you points.' },
+  { pts: 50,  label: 'Completed safety training',        hint: 'Finish the monthly training module.' },
+  { pts: 50,  label: 'Birthday bonus',                   hint: 'Automatic on your birthday, from the whole crew.' },
+  { pts: 100, label: 'Referred a new client who signed', hint: 'Big wins — big points.' }
+];
+
+function _rewardsTier(p) {
+  if (p >= 500) return { name: 'Legend',     color: '#FCD34D' };
+  if (p >= 250) return { name: 'Star',       color: '#A78BFA' };
+  if (p >= 100) return { name: 'Champion',   color: '#F472B6' };
+  if (p >= 50)  return { name: 'Active',     color: '#F87171' };
+  if (p >= 20)  return { name: 'Rising',     color: '#34D399' };
+  return          { name: 'Newcomer',  color: 'rgba(255,255,255,0.6)' };
+}
+function _rewardsGetPoints() {
+  try {
+    var map = JSON.parse(localStorage.getItem('content_points') || '{}');
+    return map;
+  } catch(e){ return {}; }
+}
+function _rewardsSavePoints(map) {
+  try { localStorage.setItem('content_points', JSON.stringify(map)); } catch(e){}
+}
+function _rewardsGetLedger() {
+  try { return JSON.parse(localStorage.getItem('rewards_ledger') || '[]'); } catch(e){ return []; }
+}
+function _rewardsAppendLedger(entry) {
+  var ledger = _rewardsGetLedger();
+  ledger.unshift(Object.assign({ id: 'r_'+Date.now(), ts: Date.now() }, entry));
+  if (ledger.length > 200) ledger = ledger.slice(0, 200);
+  try { localStorage.setItem('rewards_ledger', JSON.stringify(ledger)); } catch(e){}
+}
+
 function renderEmployeeRewards() {
   var el = document.getElementById('employee-rewards-body');
   if (!el) return;
-  var pts = 0;
-  try {
-    var map = JSON.parse(localStorage.getItem('content_points') || '{}');
-    if (currentEmployee) pts = map[currentEmployee.id] || 0;
-  } catch(e){}
-  function tier(p) {
-    if (p >= 100) return { name: 'Legend', color: '#FCD34D' };
-    if (p >= 50)  return { name: 'Star',   color: '#A78BFA' };
-    if (p >= 20)  return { name: 'Active', color: '#F87171' };
-    if (p >= 10)  return { name: 'Rising', color: '#34D399' };
-    return { name: 'New',  color: 'rgba(255,255,255,0.6)' };
+  var meId = currentEmployee ? currentEmployee.id : null;
+  var points = _rewardsGetPoints();
+  var myPts = (meId && points[meId]) ? points[meId] : 0;
+  var t = _rewardsTier(myPts);
+
+  // ── Hero: points + tier ──
+  var hero = '<div style="text-align:center;padding:28px 20px 16px">'
+    + '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.55);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Your Points</div>'
+    + '<div style="font-size:64px;font-weight:800;color:#fff;line-height:1;letter-spacing:-0.02em;margin-bottom:10px">' + myPts + '</div>'
+    + '<div style="display:inline-block;padding:6px 18px;border-radius:999px;background:' + t.color + '22;color:' + t.color + ';font-weight:700;font-size:13px;letter-spacing:0.02em">' + t.name + ' Tier</div>'
+    + '</div>';
+
+  // ── Redeem catalog ──
+  var catalog = '<div class="reward-section-label" style="margin-top:18px">Redeem</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:0 14px">'
+    + REWARD_CATALOG.map(function(r) {
+        var can = myPts >= r.cost;
+        return '<button class="reward-card' + (can ? '' : ' locked') + '" onclick="empRewardsRedeem(\'' + r.id + '\')"' + (can ? '' : ' disabled') + '>'
+          +   '<div class="reward-card-icon" style="background:' + r.grad + '">' + r.icon + '</div>'
+          +   '<div class="reward-card-body">'
+          +     '<div class="reward-card-name">' + r.name + '</div>'
+          +     '<div class="reward-card-cost">' + r.cost + ' pts</div>'
+          +   '</div>'
+          + '</button>';
+      }).join('')
+    + '</div>';
+
+  // ── Ways to earn ──
+  var earn = '<div class="reward-section-label" style="margin-top:26px">Ways to earn</div>'
+    + '<div style="padding:0 14px">'
+    + WAYS_TO_EARN.map(function(w) {
+        return '<div class="reward-earn-row">'
+          +   '<div class="reward-earn-pts">+' + w.pts + '</div>'
+          +   '<div class="reward-earn-body">'
+          +     '<div class="reward-earn-label">' + w.label + '</div>'
+          +     '<div class="reward-earn-hint">' + w.hint + '</div>'
+          +   '</div>'
+          + '</div>';
+      }).join('')
+    + '</div>';
+
+  // ── Leaderboard ──
+  var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
+  var board = roster.map(function(e) { return { id: e.id, name: e.name, pts: points[e.id] || 0 }; });
+  board.sort(function(a,b){ return b.pts - a.pts; });
+  var leaderboard = '<div class="reward-section-label" style="margin-top:26px">Team Leaderboard</div>'
+    + '<div style="padding:0 14px 24px">'
+    + board.slice(0, 24).map(function(row, i) {
+        var isMe = (row.id === meId);
+        var medal = i === 0 ? '1' : i === 1 ? '2' : i === 2 ? '3' : String(i+1);
+        var medalColor = i === 0 ? '#FCD34D' : i === 1 ? '#E5E7EB' : i === 2 ? '#F59E0B' : 'rgba(255,255,255,0.4)';
+        var giftBtn = (isMe || myPts <= 0) ? ''
+          : '<button class="reward-gift-btn" onclick="empRewardsGiftOpen(\'' + row.id + '\')">Gift</button>';
+        return '<div class="reward-row' + (isMe ? ' reward-row-me' : '') + '">'
+          +   '<div class="reward-row-rank" style="color:' + medalColor + '">' + medal + '</div>'
+          +   '<div class="reward-row-name">' + row.name + (isMe ? ' <span style="color:rgba(255,255,255,0.5);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
+          +   '<div class="reward-row-pts">' + row.pts + '</div>'
+          +   giftBtn
+          + '</div>';
+      }).join('')
+    + '</div>';
+
+  el.innerHTML = hero + catalog + earn + leaderboard;
+}
+
+// ── Redeem handler — demo only: files a request, fires a toast. ──
+function empRewardsRedeem(rewardId) {
+  var r = REWARD_CATALOG.find(function(x){ return x.id === rewardId; });
+  if (!r) return;
+  var meId = currentEmployee ? currentEmployee.id : null;
+  if (!meId) return;
+  var points = _rewardsGetPoints();
+  var myPts = points[meId] || 0;
+  if (myPts < r.cost) return;
+  if (!confirm('Redeem "' + r.name + '" for ' + r.cost + ' points?\nManager will review and fulfill.')) return;
+  // Demo: deduct immediately and log. Manager-side approval UI is a future
+  // build; for now a confirmation toast + ledger entry is enough.
+  points[meId] = myPts - r.cost;
+  _rewardsSavePoints(points);
+  _rewardsAppendLedger({ type: 'redemption', from: meId, to: null, amount: r.cost, note: r.name });
+  _rewardToast('Requested: ' + r.name, 'Manager will review.');
+  renderEmployeeRewards();
+}
+
+// ── Gifting ──
+function empRewardsGiftOpen(toId) {
+  var me = currentEmployee;
+  if (!me) return;
+  var toEmp = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER.find(function(e){ return e.id === toId; }) : null;
+  if (!toEmp) return;
+  var points = _rewardsGetPoints();
+  var myPts = points[me.id] || 0;
+  var overlay = document.getElementById('reward-gift-overlay');
+  if (!overlay) return;
+  document.getElementById('reward-gift-to-name').textContent = toEmp.name;
+  document.getElementById('reward-gift-balance').textContent = myPts + ' pts available';
+  var input = document.getElementById('reward-gift-amount');
+  input.value = '';
+  input.max = myPts;
+  input.placeholder = '10';
+  document.getElementById('reward-gift-note').value = '';
+  overlay.setAttribute('data-to-id', toId);
+  overlay.style.display = 'flex';
+  setTimeout(function(){ input.focus(); }, 60);
+}
+function empRewardsGiftClose() {
+  var overlay = document.getElementById('reward-gift-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+function empRewardsGiftConfirm() {
+  var overlay = document.getElementById('reward-gift-overlay');
+  if (!overlay) return;
+  var me = currentEmployee;
+  if (!me) return;
+  var toId = overlay.getAttribute('data-to-id');
+  var toEmp = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER.find(function(e){ return e.id === toId; }) : null;
+  if (!toEmp) return;
+  var amt = parseInt(document.getElementById('reward-gift-amount').value, 10);
+  var note = (document.getElementById('reward-gift-note').value || '').trim();
+  if (!amt || amt < 1) { alert('Enter a gift amount.'); return; }
+  var points = _rewardsGetPoints();
+  var myPts = points[me.id] || 0;
+  if (amt > myPts) { alert('You only have ' + myPts + ' points.'); return; }
+  if (toId === me.id) { alert("You can't gift points to yourself."); return; }
+  points[me.id] = myPts - amt;
+  points[toId] = (points[toId] || 0) + amt;
+  _rewardsSavePoints(points);
+  _rewardsAppendLedger({ type: 'gift', from: me.id, to: toId, amount: amt, note: note });
+  if (typeof logPendingUpdate === 'function') {
+    logPendingUpdate('Rewards gift', me.name + ' → ' + toEmp.name + ': +' + amt + ' pts' + (note ? ' · "' + note + '"' : ''), 'Staff');
   }
-  var t = tier(pts);
-  el.innerHTML = '<div style="text-align:center;padding:40px 20px;">'
-    + '<div style="font-size:56px;font-weight:800;color:#fff;line-height:1;margin-bottom:6px">' + pts + '</div>'
-    + '<div style="font-size:13px;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:24px">points</div>'
-    + '<div style="display:inline-block;padding:6px 16px;border-radius:20px;background:' + t.color + '22;color:' + t.color + ';font-weight:700;font-size:14px">' + t.name + ' Tier</div>'
-    + '<div style="margin-top:32px;font-size:13px;color:rgba(255,255,255,0.7);line-height:1.55">'
-    + 'Earn 10 points every time your manager approves content you submit.'
-    + '<br><br>Use the <strong>Share</strong> button or the <strong>Content</strong> tile to send a photo or video from the field.'
-    + '</div></div>';
+  empRewardsGiftClose();
+  _rewardToast('Sent +' + amt + ' to ' + toEmp.name, note ? '"' + note + '"' : 'They just got your points.');
+  renderEmployeeRewards();
+}
+
+// ── Toast helper (reuses the existing .content-toast styles) ──
+function _rewardToast(title, sub) {
+  var wrap = document.createElement('div');
+  wrap.className = 'content-toast-wrap';
+  wrap.style.transition = 'opacity 0.3s';
+  wrap.innerHTML = '<div class="content-toast">'
+    + '<div style="font-size:36px;margin-bottom:6px">✨</div>'
+    + '<div style="font-size:17px;font-weight:700">' + title + '</div>'
+    + (sub ? '<div style="font-size:12px;color:var(--muted);margin-top:4px">' + sub + '</div>' : '')
+    + '</div>';
+  document.body.appendChild(wrap);
+  setTimeout(function(){ wrap.style.opacity = '0'; setTimeout(function(){ wrap.remove(); }, 300); }, 1400);
 }
 
 
@@ -20061,8 +20424,39 @@ function syncSheets() {
     <span>Home</span>
   </button>
 
+<!-- Rewards — Gift points modal -->
+<div id="reward-gift-overlay" onclick="if(event.target===this)empRewardsGiftClose()"
+     style="display:none;position:fixed;inset:0;z-index:570;background:rgba(10,10,32,0.75);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);align-items:center;justify-content:center;padding:20px">
+  <div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:20px;padding:20px;max-width:360px;width:100%;color:#fff;font-family:'DM Sans',sans-serif">
+    <div style="font-size:12px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;text-align:center;margin-bottom:6px">Gift Points</div>
+    <div style="font-size:22px;font-weight:800;text-align:center;margin-bottom:4px">to <span id="reward-gift-to-name"></span></div>
+    <div id="reward-gift-balance" style="font-size:12px;color:rgba(255,255,255,0.55);text-align:center;margin-bottom:18px">0 pts available</div>
+    <label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">AMOUNT</label>
+    <input id="reward-gift-amount" type="number" min="1" step="1" inputmode="numeric"
+      style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:12px 14px;color:#fff;font-size:18px;font-weight:700;font-family:'DM Sans',sans-serif;outline:none;margin-bottom:14px">
+    <label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">NOTE (OPTIONAL)</label>
+    <input id="reward-gift-note" type="text" maxlength="80" placeholder="Thanks for covering Tuesday!"
+      style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 14px;color:#fff;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;margin-bottom:18px">
+    <div style="display:flex;gap:10px">
+      <button type="button" onclick="empRewardsGiftClose()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">Cancel</button>
+      <button type="button" onclick="empRewardsGiftConfirm()" style="flex:1.3;background:linear-gradient(135deg,#FF6482,#FF2D55);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:12px;cursor:pointer">Send Gift</button>
+    </div>
+  </div>
+</div>
+
   <!-- SCHEDULE TAB -->
   <div id="tab-schedule" class="section">
+    <!-- Date bar: employee can step back through past days and one day
+         forward (tomorrow). Anything beyond tomorrow is blocked. -->
+    <div class="emp-sched-datebar">
+      <button type="button" class="emp-sched-nav" onclick="empSchedPrev()" aria-label="Previous day">‹</button>
+      <div class="emp-sched-datebar-label" id="emp-sched-datebar-label">Today</div>
+      <button type="button" class="emp-sched-nav" id="emp-sched-next-btn" onclick="empSchedNext()" aria-label="Next day">›</button>
+    </div>
+    <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:10px;display:none">
+      <button type="button" onclick="empSchedGoToday()"
+        style="background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:'DM Sans',sans-serif;font-size:11px;font-weight:700;padding:4px 12px;border-radius:14px;cursor:pointer;letter-spacing:0.04em">JUMP TO TODAY</button>
+    </div>
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <div class="section-title" id="today-label" style="margin:0">TODAY'S JOBS</div>
       <div id="today-summary" style="font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.04em"></div>
