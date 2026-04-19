@@ -262,14 +262,10 @@ body {
 /* ── CALENDAR ── */
 #cal-view {
   display: none;
-  /* Explicit vertical scroll behaviour to stop the "sticky/buggy" scroll
-     Tom was seeing on manager Schedule. Forces the cal-view onto its own
-     GPU layer so the document's dual backdrop-filter sources (sticky
-     header + floating dock) don't fight over compositing on every pan. */
-  touch-action: pan-y;
+  /* Keep only the iOS momentum hint; drop the touch-action / will-change /
+     translateZ hacks — those were restricting horizontal gestures and
+     killing scroll momentum on finger release. */
   -webkit-overflow-scrolling: touch;
-  will-change: transform;
-  transform: translateZ(0);
 }
 #cal-view.active { display: block; }
 #clients-view { display: block; }
