@@ -1343,8 +1343,11 @@ body {
   position: relative;
   overflow: hidden;
 }
-/* Hide text labels on dock buttons — iOS-style dock shows icon only. */
-.bottom-nav .nav-btn span:last-child { display: none; }
+/* Hide text labels on dock buttons — iOS-style dock shows icon only.
+   Target only unclassed label spans so .nav-icon / .nav-icon-claire /
+   other icon wrappers keep rendering. (Earlier `:last-child` swallowed
+   Claire's icon span once her label was removed.) */
+.bottom-nav .nav-btn > span:not([class]) { display: none; }
 /* Tighter pill now that there are no labels below icons. */
 .nav-half .nav-btn { padding: 0; }
 .bottom-nav .nav-btn .nav-icon::before {
