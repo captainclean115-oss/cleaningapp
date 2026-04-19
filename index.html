@@ -50,9 +50,16 @@
 
 body {
   font-family: 'DM Sans', sans-serif;
-  background: var(--bg);
+  /* iOS-style wallpaper: soft purple glow near the top, cool blue tint near
+     the bottom, on a near-black base. Gives the icons a real "lit room"
+     feel instead of floating on pure black. */
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(60, 40, 120, 0.35) 0%, transparent 50%),
+    radial-gradient(ellipse at 20% 100%, rgba(20, 40, 80, 0.3) 0%, transparent 60%),
+    linear-gradient(180deg, #0d0d1f 0%, #050510 50%, #0a0a18 100%);
+  background-attachment: fixed;
   color: var(--text);
-  min-height: 100svh;
+  min-height: 100vh;
   overflow-x: clip;
   /* Kill pull-to-refresh and overscroll bounce. It was firing when Tom
      tried to pick up home-screen icons and breaking drag gestures. */
@@ -1341,7 +1348,12 @@ body.home-dragging, body.home-dragging * {
   top: 0; left: 0; right: 0;
   bottom: calc(70px + var(--safe-bottom));
   overflow: hidden;
-  background: linear-gradient(180deg, #0a0a1a 0%, #000000 60%, #0a0a15 100%);
+  /* Inherit the body wallpaper (multi-stop purple/blue over near-black)
+     so there's no seam between the home view and the fixed dock backdrop. */
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(60, 40, 120, 0.35) 0%, transparent 50%),
+    radial-gradient(ellipse at 20% 100%, rgba(20, 40, 80, 0.3) 0%, transparent 60%),
+    linear-gradient(180deg, #0d0d1f 0%, #050510 50%, #0a0a18 100%);
   padding: calc(var(--safe-top) + 20px) 0 0;
 }
 #home-view.active { display: block; }
@@ -1389,12 +1401,13 @@ body.home-dragging, body.home-dragging * {
 .home-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 24px 8px;
-  max-width: 460px; margin: 0 auto;
+  gap: 18px 14px;
+  padding: 4px 10px 20px;
+  max-width: 480px; margin: 0 auto;
 }
 .home-app {
   background: none; border: none; padding: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
   cursor: pointer;
   font-family: 'DM Sans', sans-serif;
   position: relative;
@@ -1406,20 +1419,25 @@ body.home-dragging, body.home-dragging * {
 }
 .home-app:active:not(.dragging) .home-app-icon { transform: scale(0.92); }
 .home-app-icon {
-  width: 62px; height: 62px;
+  width: 68px; height: 68px;
   border-radius: 22.37%;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+  /* Stacked shadow — tight layer for definition + wide diffused layer for
+     atmosphere + inner top-edge highlight. Reads as "lit", not "pasted on". */
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.20),
+    0 8px 20px rgba(0,0,0,0.25),
+    inset 0 1px 0 rgba(255,255,255,0.20);
   position: relative;
   overflow: hidden;
   transition: transform 0.15s;
 }
-/* Top-half gloss overlay — rides above the base gradient to give every
-   icon a subtle "lit" 3D look. */
+/* Top-half gloss overlay — rides above the base gradient to give every icon
+   a subtle "lit" 3D look. Slightly stronger than before (0.22 vs 0.18). */
 .home-app-icon::before {
   content: '';
   position: absolute; top: 0; left: 0; right: 0; height: 50%;
-  background: linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 100%);
+  background: linear-gradient(180deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 100%);
   border-radius: 22.37% 22.37% 0 0;
   pointer-events: none;
   z-index: 1;
@@ -1450,10 +1468,12 @@ body.home-dragging, body.home-dragging * {
   width: 54%; height: 54%;
 }
 .home-app-label {
-  font-size: 12px; line-height: 1.15;
+  font-size: 11px; line-height: 1.15;
   color: rgba(255,255,255,0.97); font-weight: 500;
+  letter-spacing: -0.2px;
+  margin-top: 1px;
   text-shadow: 0 1px 3px rgba(0,0,0,0.45);
-  text-align: center; max-width: 74px;
+  text-align: center; max-width: 80px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .home-app-badge {
@@ -5883,8 +5903,6 @@ var HOME_APPS = [
   // Dock-default views (also addressable from the home grid if Tom drags them there)
   { id: 'cal',      label: 'Schedule', grad: 'linear-gradient(135deg,#FF3B30,#FF6482)',
     iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
-  { id: 'claire',   label: 'Claire',   grad: 'radial-gradient(circle at 30% 30%, #D4C5FF 0%, #8E7BFF 50%, #5E5CE6 100%)',
-    iconHtml: LUCIDE['sparkles'], fixed: true, go: function(){ showTab('claire'); } },
   { id: 'gps',      label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
   { id: 'messages', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
@@ -5925,9 +5943,9 @@ var HOME_APPS = [
     iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
   { id: 'inventory',  label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['boxes'], go: function(){ _launcherComingSoon('Inventory'); } },
-  { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF375F 0%,#FF2D55 100%)',
+  { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
     iconHtml: LUCIDE['gift'], go: function(){ _launcherComingSoon('Rewards'); } },
-  { id: 'approval',   label: 'Approval',   grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
+  { id: 'approval',   label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
   { id: 'school',     label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
@@ -5985,6 +6003,10 @@ function _homeState() {
     }
     if (pages.length < 2) pages.push([]);
     dock = DEFAULT_DOCK.slice();
+  }
+  // One-time migration: if an older save put Claire in the grid pages, strip her.
+  for (var _pp = 0; _pp < pages.length; _pp++) {
+    pages[_pp] = pages[_pp].filter(function(s){ return !(s && s.type === 'app' && s.id === 'claire'); });
   }
   window.__homeStateCache = { pages: pages, dock: dock };
   return window.__homeStateCache;
