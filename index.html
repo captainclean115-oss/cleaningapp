@@ -260,7 +260,17 @@ body {
 .bottom-pad { height: calc(var(--safe-bottom) + 70px); }
 
 /* ── CALENDAR ── */
-#cal-view { display: none; }
+#cal-view {
+  display: none;
+  /* Explicit vertical scroll behaviour to stop the "sticky/buggy" scroll
+     Tom was seeing on manager Schedule. Forces the cal-view onto its own
+     GPU layer so the document's dual backdrop-filter sources (sticky
+     header + floating dock) don't fight over compositing on every pan. */
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  will-change: transform;
+  transform: translateZ(0);
+}
 #cal-view.active { display: block; }
 #clients-view { display: block; }
 #clients-view.hidden { display: none; }
@@ -867,14 +877,11 @@ body {
   padding-top: calc(var(--safe-top) + 0px);
   padding-bottom: calc(var(--safe-bottom) + 24px);
   min-height: 100vh;
-  /* Same Field Flow wallpaper as body + manager home — purple upper-left,
-     teal lower-right, near-black base. Fixed attachment keeps the glow
-     anchored while the portal scrolls. */
-  background:
-    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
-  background-attachment: fixed;
+  min-height: 100dvh;
+  /* Background is rendered by html+body (branded gradient). Transparent
+     here means the body gradient shows through edge-to-edge — no black
+     flash when the portal scrolls past its content and rubber-bands. */
+  background: transparent;
 }
 .portal-header {
   padding: max(20px, env(safe-area-inset-top)) 16px 16px;
@@ -1111,6 +1118,72 @@ body {
 }
 .emp-sched-nav:active { transform: scale(0.92); }
 .emp-sched-nav:disabled { cursor: not-allowed; }
+
+/* Employee Schedule — month-picker modal triggered by tapping the date. */
+.emp-sched-datebar-label {
+  background: none; border: none; padding: 4px 8px;
+  cursor: pointer; color: rgba(255,255,255,0.92);
+  font-family: 'DM Sans', sans-serif;
+}
+.emp-sched-datebar-label:active { background: rgba(255,255,255,0.08); border-radius: 8px; }
+#emp-sched-picker-overlay {
+  display: none; position: fixed; inset: 0; z-index: 580;
+  background: rgba(10,10,32,0.75);
+  backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+  align-items: center; justify-content: center; padding: 20px;
+}
+#emp-sched-picker-overlay.active { display: flex; }
+.emp-sched-picker-sheet {
+  width: 100%; max-width: 360px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 22px;
+  padding: 18px;
+  color: #fff; font-family: 'DM Sans', sans-serif;
+}
+.emp-sched-picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.emp-sched-picker-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.emp-sched-picker-monthnav { display: inline-flex; align-items: center; gap: 6px; }
+.emp-sched-picker-monthnav button {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: #fff; font-size: 18px; font-weight: 700; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+.emp-sched-picker-dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; }
+.emp-sched-picker-dow div {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+  color: rgba(255,255,255,0.45); text-align: center; padding: 6px 0;
+}
+.emp-sched-picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.emp-sched-picker-day {
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none;
+  color: #fff; font-size: 13px; font-weight: 600;
+  border-radius: 50%;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.emp-sched-picker-day:active:not(:disabled) { background: rgba(255,255,255,0.12); }
+.emp-sched-picker-day.today { border: 1px solid rgba(142,123,255,0.7); color: #fff; }
+.emp-sched-picker-day.selected { background: linear-gradient(135deg,#8E7BFF,#5E5CE6); color: #fff; font-weight: 800; }
+.emp-sched-picker-day.other-month { color: rgba(255,255,255,0.22); }
+.emp-sched-picker-day:disabled { color: rgba(255,255,255,0.18); cursor: not-allowed; }
+.emp-sched-picker-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.emp-sched-picker-foot button {
+  flex: 1; padding: 10px; border-radius: 12px;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  cursor: pointer;
+}
+.emp-sched-picker-foot .picker-today {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); color: #fff;
+}
+.emp-sched-picker-foot .picker-close {
+  background: linear-gradient(135deg,#8E7BFF,#5E5CE6); border: none; color: #fff;
+}
+
 .employee-back-btn {
   display: none;
   margin: 8px 12px 0;
@@ -15802,6 +15875,109 @@ function _empSchedDateKey() {
 }
 function _empSchedStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
 function empSchedGoToday() { _empSchedDate = new Date(); renderSchedule(); }
+
+// Month picker for employee Schedule. Tap the date label to open.
+var _empSchedPickerMonth = null;
+function empSchedOpenPicker() {
+  var base = _empSchedDate || new Date();
+  _empSchedPickerMonth = new Date(base.getFullYear(), base.getMonth(), 1);
+  _empSchedRenderPicker();
+  var overlay = document.getElementById('emp-sched-picker-overlay');
+  if (overlay) overlay.classList.add('active');
+}
+function empSchedClosePicker() {
+  var overlay = document.getElementById('emp-sched-picker-overlay');
+  if (overlay) overlay.classList.remove('active');
+}
+function empSchedPickerMonth(delta) {
+  if (!_empSchedPickerMonth) _empSchedPickerMonth = new Date();
+  var m = new Date(_empSchedPickerMonth);
+  m.setMonth(m.getMonth() + delta);
+  _empSchedPickerMonth = m;
+  _empSchedRenderPicker();
+}
+function empSchedPickerGoToday() {
+  _empSchedDate = new Date();
+  var today = new Date();
+  _empSchedPickerMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  _empSchedRenderPicker();
+  renderSchedule();
+  empSchedClosePicker();
+}
+function empSchedPickerPick(iso) {
+  _empSchedDate = new Date(iso + 'T00:00:00');
+  renderSchedule();
+  empSchedClosePicker();
+}
+function _empSchedRenderPicker() {
+  var grid = document.getElementById('emp-sched-picker-grid');
+  var title = document.getElementById('emp-sched-picker-title');
+  if (!grid || !_empSchedPickerMonth) return;
+  title.textContent = _empSchedPickerMonth.toLocaleDateString('en-US', { month:'long', year:'numeric' });
+  var year = _empSchedPickerMonth.getFullYear();
+  var month = _empSchedPickerMonth.getMonth();
+  var firstOfMonth = new Date(year, month, 1);
+  var startDay = firstOfMonth.getDay();
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  var prevMonthDays = new Date(year, month, 0).getDate();
+  // Cap: tomorrow. Anything strictly after is disabled.
+  var today = new Date();
+  var todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  var maxDate = new Date(todayStart); maxDate.setDate(maxDate.getDate() + 1);
+  var selRef = _empSchedDate || todayStart;
+  var selected = new Date(selRef.getFullYear(), selRef.getMonth(), selRef.getDate());
+  var out = '';
+  for (var cell = 0; cell < 42; cell++) {
+    var dayNum, cellDate, otherMonth = false;
+    if (cell < startDay) {
+      dayNum = prevMonthDays - (startDay - 1 - cell);
+      cellDate = new Date(year, month - 1, dayNum);
+      otherMonth = true;
+    } else if (cell >= startDay + daysInMonth) {
+      dayNum = cell - startDay - daysInMonth + 1;
+      cellDate = new Date(year, month + 1, dayNum);
+      otherMonth = true;
+    } else {
+      dayNum = cell - startDay + 1;
+      cellDate = new Date(year, month, dayNum);
+    }
+    var cellStart = new Date(cellDate.getFullYear(), cellDate.getMonth(), cellDate.getDate());
+    var disabled = cellStart > maxDate;
+    var isToday = cellStart.getTime() === todayStart.getTime();
+    var isSelected = cellStart.getTime() === selected.getTime();
+    var cls = 'emp-sched-picker-day';
+    if (otherMonth) cls += ' other-month';
+    if (isToday) cls += ' today';
+    if (isSelected) cls += ' selected';
+    var iso = cellDate.getFullYear() + '-' + String(cellDate.getMonth()+1).padStart(2,'0') + '-' + String(cellDate.getDate()).padStart(2,'0');
+    out += '<button type="button" class="' + cls + '"'
+      + (disabled ? ' disabled' : ' onclick="empSchedPickerPick(\'' + iso + '\')"')
+      + '>' + dayNum + '</button>';
+  }
+  grid.innerHTML = out;
+}
+
+// Seed demo points so the Rewards leaderboard looks populated on first open.
+// Only seeds employees that don't yet have an entry — never overrides real
+// earnings or manual adjustments.
+function _seedDemoRewardPoints() {
+  try {
+    var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
+    if (!roster.length) return;
+    var map = JSON.parse(localStorage.getItem('content_points') || '{}');
+    var seeds = [285, 220, 175, 150, 130, 110, 95, 80, 65, 55, 45, 40, 30, 25, 20, 15, 10, 5, 5, 0];
+    var changed = false;
+    roster.forEach(function(emp, i) {
+      if (typeof map[emp.id] === 'undefined' || map[emp.id] === null) {
+        map[emp.id] = seeds[i % seeds.length];
+        changed = true;
+      }
+    });
+    if (changed) localStorage.setItem('content_points', JSON.stringify(map));
+  } catch(e){}
+}
+document.addEventListener('DOMContentLoaded', _seedDemoRewardPoints);
+
 function empSchedPrev() {
   var d = _empSchedDate || new Date();
   var n = new Date(d); n.setDate(n.getDate() - 1);
@@ -20345,10 +20521,8 @@ function syncSheets() {
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
-        <button onclick="portalShareContent()" style="background:linear-gradient(135deg,#6c8fff,#a78bfa);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:20px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-          <span id="portal-share-text">Share</span>
-        </button>
+        <!-- Share button removed 2026-04-19 — the Content tile in the icon
+             grid is the single entry point now. -->
         <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">
           <span id="logout-text">Log out</span>
         </button>
@@ -20419,6 +20593,27 @@ function syncSheets() {
       <div class="employee-today-chev">›</div>
     </div>
   </div>
+<!-- Employee Schedule — month picker (tap the date label to open). -->
+<div id="emp-sched-picker-overlay" onclick="if(event.target===this)empSchedClosePicker()">
+  <div class="emp-sched-picker-sheet">
+    <div class="emp-sched-picker-head">
+      <div class="emp-sched-picker-title" id="emp-sched-picker-title">Month</div>
+      <div class="emp-sched-picker-monthnav">
+        <button type="button" onclick="empSchedPickerMonth(-1)" aria-label="Previous month">‹</button>
+        <button type="button" onclick="empSchedPickerMonth(1)" aria-label="Next month">›</button>
+      </div>
+    </div>
+    <div class="emp-sched-picker-dow">
+      <div>S</div><div>M</div><div>T</div><div>W</div><div>T</div><div>F</div><div>S</div>
+    </div>
+    <div class="emp-sched-picker-grid" id="emp-sched-picker-grid"></div>
+    <div class="emp-sched-picker-foot">
+      <button type="button" class="picker-today" onclick="empSchedPickerGoToday()">Today</button>
+      <button type="button" class="picker-close" onclick="empSchedClosePicker()">Close</button>
+    </div>
+  </div>
+</div>
+
   <button class="employee-back-btn" onclick="portalGoHome()" aria-label="Back to home">
     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
     <span>Home</span>
@@ -20450,7 +20645,8 @@ function syncSheets() {
          forward (tomorrow). Anything beyond tomorrow is blocked. -->
     <div class="emp-sched-datebar">
       <button type="button" class="emp-sched-nav" onclick="empSchedPrev()" aria-label="Previous day">‹</button>
-      <div class="emp-sched-datebar-label" id="emp-sched-datebar-label">Today</div>
+      <!-- Tap the date to open the month picker. -->
+      <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()">Today</button>
       <button type="button" class="emp-sched-nav" id="emp-sched-next-btn" onclick="empSchedNext()" aria-label="Next day">›</button>
     </div>
     <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:10px;display:none">
