@@ -1246,6 +1246,108 @@ body {
   max-width: 72px; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ── iOS-STYLE HOME SCREEN ── */
+#home-view {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  bottom: calc(70px + var(--safe-bottom));
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background:
+    radial-gradient(1200px 800px at 20% -10%, rgba(167,139,250,0.22), transparent 60%),
+    radial-gradient(900px 700px at 110% 10%, rgba(108,143,255,0.25), transparent 55%),
+    radial-gradient(800px 900px at 50% 120%, rgba(236,72,153,0.14), transparent 55%),
+    linear-gradient(180deg, #1a1a2e 0%, #16213e 55%, #0f3460 100%);
+  padding: calc(var(--safe-top) + 24px) 20px 24px;
+}
+#home-view.active { display: block; }
+
+.home-greeting {
+  color: rgba(255,255,255,0.92);
+  font-size: 13px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+  margin-bottom: 4px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.home-date {
+  color: rgba(255,255,255,0.6);
+  font-size: 11px; text-align: center;
+  margin-bottom: 24px;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 26px 8px;
+  padding-bottom: 40px;
+  max-width: 460px; margin: 0 auto;
+}
+.home-app {
+  background: none; border: none; padding: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+  position: relative;
+  touch-action: manipulation;
+  user-select: none; -webkit-user-select: none;
+  transition: transform 0.12s;
+}
+.home-app:active { transform: scale(0.92); }
+.home-app-icon {
+  width: 62px; height: 62px; border-radius: 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; line-height: 1;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
+  position: relative;
+}
+.home-app-label {
+  font-size: 12px; line-height: 1.15;
+  color: rgba(255,255,255,0.96); font-weight: 500;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  text-align: center; max-width: 74px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-app-badge {
+  position: absolute; top: -5px; right: -5px;
+  background: #ef4444; color: #fff;
+  border-radius: 10px; font-size: 11px; font-weight: 700;
+  padding: 1px 6px; min-width: 18px; text-align: center;
+  box-shadow: 0 0 0 2px rgba(20,20,40,0.9);
+}
+
+/* Edit-mode wiggle */
+#home-view.edit-mode .home-app-icon {
+  animation: home-wiggle 0.26s ease-in-out infinite;
+}
+#home-view.edit-mode .home-app:nth-child(2n) .home-app-icon { animation-delay: -0.1s; }
+#home-view.edit-mode .home-app:nth-child(3n) .home-app-icon { animation-delay: -0.2s; }
+@keyframes home-wiggle {
+  0%, 100% { transform: rotate(-1.6deg); }
+  50%      { transform: rotate(1.6deg); }
+}
+
+/* Drag ghost + drop indicator */
+.home-app.dragging { opacity: 0.35; }
+.home-app.drop-target::after {
+  content: '';
+  position: absolute; left: -6px; top: 2px; bottom: 22px;
+  width: 3px; background: rgba(255,255,255,0.9); border-radius: 2px;
+  box-shadow: 0 0 8px rgba(255,255,255,0.6);
+}
+
+.home-done-btn {
+  display: none;
+  position: fixed; top: calc(var(--safe-top) + 14px); right: 16px;
+  background: rgba(255,255,255,0.95); color: #0f3460;
+  border: none; padding: 8px 16px; border-radius: 18px;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  cursor: pointer; z-index: 510;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+#home-view.edit-mode ~ .home-done-btn,
+#home-view.edit-mode .home-done-btn { display: block; }
+
 /* Schedule-tab Content button */
 .cal-content-btn-row {
   display: flex; justify-content: center; margin: 10px 0 6px;
@@ -1839,7 +1941,15 @@ select.field-input { appearance: none; }
 </div>
 
 <!-- FILES VIEW (Finder-style grid) -->
-<!-- HOME LAUNCHER (app-drawer for tabs/tools Tom uses less often) -->
+<!-- iOS-STYLE HOME SCREEN — default landing after login -->
+<div id="home-view">
+  <div class="home-greeting" id="home-greeting">Manna Maids</div>
+  <div class="home-date" id="home-date"></div>
+  <div class="home-grid" id="home-grid"></div>
+  <button class="home-done-btn" id="home-done-btn" onclick="homeExitEditMode()">Done</button>
+</div>
+
+<!-- HOME LAUNCHER (legacy popup — kept for rollback, not wired to UI) -->
 <div id="launcher-view" aria-hidden="true">
   <div class="launcher-backdrop" onclick="closeLauncher()"></div>
   <div class="launcher-sheet">
@@ -2186,7 +2296,7 @@ select.field-input { appearance: none; }
 
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
-  <button class="nav-btn" id="nav-home" onclick="openLauncher()">
+  <button class="nav-btn" id="nav-home" onclick="showTab('home')">
     <span class="nav-icon">🏠</span>
     <span>Home</span>
   </button>
@@ -2622,7 +2732,7 @@ window.addEventListener('DOMContentLoaded', function() {
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
     var routeBtn = document.getElementById('route-optimizer-btn');
-    var activeTab = sessionStorage.getItem('cc_tab') || 'cal';
+    var activeTab = sessionStorage.getItem('cc_tab') || 'home';
     if (routeBtn) routeBtn.style.display = (activeTab === 'cal') ? '' : 'none';
     var mapBtn2 = document.getElementById('map-view-btn');
     if (mapBtn2) mapBtn2.style.display = (activeTab === 'cal') ? '' : 'none';
@@ -2842,6 +2952,9 @@ function jobsForDate(d) {
 
 function showTab(tab) {
   sessionStorage.setItem('cc_tab', tab);
+  var homeView = document.getElementById('home-view');
+  if (homeView) homeView.classList.toggle('active', tab === 'home');
+  if (tab === 'home') { renderHomeScreen(); }
   document.getElementById('clients-view').classList.toggle('hidden', tab !== 'clients');
   if (tab === 'clients') { showClientsSubview(); }
   document.getElementById('cal-view').classList.toggle('active', tab === 'cal');
@@ -2850,10 +2963,10 @@ function showTab(tab) {
   document.getElementById('gps-view').classList.toggle('active', tab === 'gps');
   var claireView = document.getElementById('claire-view');
   if (claireView) claireView.classList.toggle('active', tab === 'claire');
-  // Home nav button is active whenever we're on a launcher-routed tab (Clients for now;
-  // more "apps" will be added behind the Home launcher later).
+  // Home nav button is active on the home screen itself OR on any app reached via home
+  // (for now, that's 'home' and 'clients'/'tasks').
   var navHome = document.getElementById('nav-home');
-  if (navHome) navHome.classList.toggle('active', tab === 'clients');
+  if (navHome) navHome.classList.toggle('active', tab === 'home' || tab === 'clients' || tab === 'tasks');
   document.getElementById('nav-cal').classList.toggle('active', tab === 'cal');
   var navClaire = document.getElementById('nav-claire');
   if (navClaire) navClaire.classList.toggle('active', tab === 'claire');
@@ -5484,6 +5597,250 @@ function launcherTap(i) {
   closeLauncher();
   try { a.go(); } catch(e) { console.error('launcher tap failed', e); }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// iOS-STYLE HOME SCREEN
+// Default landing after login. Every "app" (current tab OR launcher
+// destination) lives here as a rearrangable tile. Long-press any tile to
+// enter edit mode (tiles wiggle), then drag to reorder. Order persists in
+// localStorage ('home_app_order'). Tap "Done" in the corner to exit.
+// ═══════════════════════════════════════════════════════════════════════
+var HOME_APPS = [
+  // Primary views (also in the dock but nice to have on home as iOS does)
+  { id: 'cal',      label: 'Schedule', icon: '📅', grad: 'linear-gradient(135deg,#fb7185,#e11d48)',
+    go: function(){ showTab('cal'); } },
+  { id: 'claire',   label: 'Claire',   icon: '🤫', grad: 'linear-gradient(135deg,#a78bfa,#6c8fff)',
+    go: function(){ showTab('claire'); } },
+  { id: 'gps',      label: 'Live',     icon: '🗺️', grad: 'linear-gradient(135deg,#34d399,#0d9488)',
+    go: function(){ showTab('gps'); } },
+  { id: 'messages', label: 'Messages', icon: '💬', grad: 'linear-gradient(135deg,#22d3ee,#2563eb)',
+    go: function(){ showTab('messages'); } },
+  // Everything that used to live in the popup launcher
+  { id: 'clients', label: 'Clients', icon: '👥', grad: 'linear-gradient(135deg,#6c8fff,#3b82f6)',
+    go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
+  { id: 'staff',   label: 'Staff',   icon: '🧑‍💼', grad: 'linear-gradient(135deg,#34d399,#059669)',
+    go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
+  { id: 'new',     label: 'New Client', icon: '➕', grad: 'linear-gradient(135deg,#60a5fa,#2563eb)',
+    go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
+  { id: 'quote',   label: 'Quote',   icon: '💰', grad: 'linear-gradient(135deg,#fbbf24,#d97706)',
+    go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
+  { id: 'content', label: 'Content', icon: '📸', grad: 'linear-gradient(135deg,#c084fc,#7c3aed)',
+    badge: function(){
+      try { return (JSON.parse(localStorage.getItem('content_queue')||'[]').filter(function(c){return c.status==='pending';}).length) || 0; }
+      catch(e){ return 0; }
+    },
+    go: function(){ if (typeof openContentView === 'function') openContentView(); } },
+  { id: 'route',   label: 'Route', icon: '🧭', grad: 'linear-gradient(135deg,#f87171,#b91c1c)',
+    go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
+  { id: 'tasks',   label: 'Updates', icon: '📋', grad: 'linear-gradient(135deg,#a78bfa,#7c3aed)',
+    badge: function(){
+      try {
+        var p = (JSON.parse(localStorage.getItem('cleanco_pending')||'[]').filter(function(x){return !x.done;}).length) || 0;
+        var m = (JSON.parse(localStorage.getItem('cleanco_tasks')||'[]').filter(function(x){return !x.done;}).length) || 0;
+        return p + m;
+      } catch(e) { return 0; }
+    },
+    go: function(){ showTab('tasks'); } },
+  { id: 'files',   label: 'Files', icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)',
+    go: function(){ if (typeof openFiles === 'function') openFiles(); } },
+  { id: 'assets',    label: 'Assets',    icon: '🏷️', grad: 'linear-gradient(135deg,#94a3b8,#475569)',
+    go: function(){ _launcherComingSoon('Assets'); } },
+  { id: 'inventory', label: 'Inventory', icon: '🧴',  grad: 'linear-gradient(135deg,#22d3ee,#0891b2)',
+    go: function(){ _launcherComingSoon('Inventory'); } },
+  { id: 'rewards',   label: 'Rewards',   icon: '🎁',  grad: 'linear-gradient(135deg,#f472b6,#db2777)',
+    go: function(){ _launcherComingSoon('Rewards'); } },
+  { id: 'approval',  label: 'Approval',  icon: '✅',  grad: 'linear-gradient(135deg,#4ade80,#16a34a)',
+    go: function(){ _launcherComingSoon('Approval'); } },
+  { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
+    go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
+];
+
+function _homeGetOrder() {
+  try {
+    var saved = JSON.parse(localStorage.getItem('home_app_order') || 'null');
+    if (!Array.isArray(saved)) return null;
+    return saved;
+  } catch(e) { return null; }
+}
+function _homeSaveOrder(ids) {
+  try { localStorage.setItem('home_app_order', JSON.stringify(ids)); } catch(e) {}
+}
+function _homeOrderedApps() {
+  var saved = _homeGetOrder();
+  if (!saved) return HOME_APPS.slice();
+  var byId = {};
+  HOME_APPS.forEach(function(a){ byId[a.id] = a; });
+  var out = [];
+  saved.forEach(function(id){ if (byId[id]) { out.push(byId[id]); delete byId[id]; } });
+  // Append any newly-added apps not yet in the saved order
+  HOME_APPS.forEach(function(a){ if (byId[a.id]) out.push(a); });
+  return out;
+}
+
+function _homeGreetingText() {
+  var h = new Date().getHours();
+  var g = h < 12 ? 'Good Morning' : h < 17 ? 'Good Afternoon' : 'Good Evening';
+  var actor = (typeof getCurrentActor === 'function') ? getCurrentActor() : '';
+  if (actor && actor !== 'Admin' && actor !== 'Manager') return g + ', ' + actor;
+  return g;
+}
+function _homeDateText() {
+  return new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+function renderHomeScreen() {
+  var grid = document.getElementById('home-grid');
+  if (!grid) return;
+  var greet = document.getElementById('home-greeting');
+  var date = document.getElementById('home-date');
+  if (greet) greet.textContent = _homeGreetingText();
+  if (date) date.textContent = _homeDateText();
+
+  var apps = _homeOrderedApps();
+  grid.innerHTML = apps.map(function(a) {
+    var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
+    var badgeHtml = badgeCount > 0 ? '<span class="home-app-badge">'+badgeCount+'</span>' : '';
+    return '<button class="home-app" data-app-id="' + a.id + '">'
+      + '<div class="home-app-icon" style="background:' + a.grad + '">' + a.icon + '</div>'
+      + badgeHtml
+      + '<div class="home-app-label">' + a.label + '</div>'
+      + '</button>';
+  }).join('');
+  _homeWireTiles();
+}
+
+// ── Tap / long-press / drag handling ──
+var _homeEditMode = false;
+var _homeLongPressTimer = null;
+var _homeDrag = null; // { id, startX, startY, el, ghost }
+
+function _homeWireTiles() {
+  var grid = document.getElementById('home-grid');
+  if (!grid) return;
+  grid.querySelectorAll('.home-app').forEach(function(tile) {
+    var id = tile.getAttribute('data-app-id');
+
+    tile.addEventListener('pointerdown', function(e) {
+      // Cancel any prior long-press timer
+      clearTimeout(_homeLongPressTimer);
+      // Arm a long-press: 550ms -> enter edit mode
+      if (!_homeEditMode) {
+        _homeLongPressTimer = setTimeout(function() {
+          homeEnterEditMode();
+          // Also start dragging this tile right away — iOS does the same thing
+          _homeStartDrag(tile, id, e.clientX, e.clientY);
+          if (navigator.vibrate) { try { navigator.vibrate(40); } catch(err){} }
+        }, 550);
+      } else {
+        // Already in edit mode — pointerdown starts a drag immediately
+        _homeStartDrag(tile, id, e.clientX, e.clientY);
+      }
+    });
+
+    tile.addEventListener('pointermove', function(e) {
+      // Cancel long-press if the user moves enough to be scrolling
+      if (_homeLongPressTimer) {
+        var st = tile._homeTouchStart || { x: e.clientX, y: e.clientY };
+        if (Math.abs(e.clientX - st.x) > 10 || Math.abs(e.clientY - st.y) > 10) {
+          clearTimeout(_homeLongPressTimer);
+          _homeLongPressTimer = null;
+        }
+      }
+    });
+    tile.addEventListener('pointerdown', function(e) {
+      tile._homeTouchStart = { x: e.clientX, y: e.clientY };
+    });
+
+    tile.addEventListener('pointerup', function(e) {
+      clearTimeout(_homeLongPressTimer);
+      _homeLongPressTimer = null;
+      // If not dragging and not in edit mode, this is a tap — open the app
+      if (!_homeDrag && !_homeEditMode) {
+        var app = HOME_APPS.find(function(x){ return x.id === id; });
+        if (app) { try { app.go(); } catch(err) { console.error(err); } }
+      }
+    });
+
+    tile.addEventListener('pointercancel', function() {
+      clearTimeout(_homeLongPressTimer);
+      _homeLongPressTimer = null;
+    });
+  });
+}
+
+function homeEnterEditMode() {
+  if (_homeEditMode) return;
+  _homeEditMode = true;
+  var hv = document.getElementById('home-view');
+  if (hv) hv.classList.add('edit-mode');
+}
+function homeExitEditMode() {
+  _homeEditMode = false;
+  var hv = document.getElementById('home-view');
+  if (hv) hv.classList.remove('edit-mode');
+}
+
+function _homeStartDrag(tile, id, startX, startY) {
+  if (_homeDrag) return;
+  _homeDrag = { id: id, el: tile, startX: startX, startY: startY };
+  tile.classList.add('dragging');
+
+  function onMove(ev) {
+    ev.preventDefault();
+    var x = ev.clientX, y = ev.clientY;
+    // Find the tile under the pointer (other than the dragged one)
+    tile.style.pointerEvents = 'none';
+    var over = document.elementFromPoint(x, y);
+    tile.style.pointerEvents = '';
+    // Clear previous drop target hint
+    document.querySelectorAll('.home-app.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
+    if (over) {
+      var target = over.closest && over.closest('.home-app');
+      if (target && target !== tile) { target.classList.add('drop-target'); _homeDrag.target = target; }
+      else { _homeDrag.target = null; }
+    }
+  }
+  function onEnd(ev) {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onEnd);
+    document.removeEventListener('pointercancel', onEnd);
+    tile.classList.remove('dragging');
+    document.querySelectorAll('.home-app.drop-target').forEach(function(n){ n.classList.remove('drop-target'); });
+    var target = _homeDrag && _homeDrag.target;
+    _homeDrag = null;
+    if (target) {
+      var fromId = id;
+      var toId = target.getAttribute('data-app-id');
+      if (fromId && toId && fromId !== toId) _homeReorder(fromId, toId);
+    }
+  }
+  document.addEventListener('pointermove', onMove, { passive: false });
+  document.addEventListener('pointerup', onEnd);
+  document.addEventListener('pointercancel', onEnd);
+}
+
+function _homeReorder(fromId, toId) {
+  var order = _homeOrderedApps().map(function(a){ return a.id; });
+  var fromIdx = order.indexOf(fromId);
+  var toIdx = order.indexOf(toId);
+  if (fromIdx < 0 || toIdx < 0) return;
+  order.splice(fromIdx, 1);
+  // If moving forward, toIdx index was valid before removal
+  order.splice(toIdx, 0, fromId);
+  _homeSaveOrder(order);
+  renderHomeScreen();
+}
+
+// Exit edit mode when user taps anywhere on the home view outside a tile
+document.addEventListener('click', function(e) {
+  if (!_homeEditMode) return;
+  var hv = document.getElementById('home-view');
+  if (!hv || !hv.classList.contains('active')) return;
+  if (e.target.closest('.home-app')) return;
+  if (e.target.closest('.home-done-btn')) return;
+  if (e.target.closest('.bottom-nav')) return;
+  homeExitEditMode();
+});
 
 // Placeholder toast for launcher tiles whose feature isn't built yet.
 // Reuses the .content-toast styling so it looks native to the app.
@@ -12221,7 +12578,7 @@ function appUnlockManager() {
   buildFilters();
   applyFilters();
   updateTaskBadge();
-  const savedTab = sessionStorage.getItem('cc_tab') || 'cal';
+  const savedTab = sessionStorage.getItem('cc_tab') || 'home';
   showTab(savedTab);
   rcInit();
   initSheets();
