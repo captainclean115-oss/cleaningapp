@@ -2304,10 +2304,6 @@ select.field-input { appearance: none; }
 
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
-  <button class="nav-btn" id="nav-home" onclick="showTab('home')">
-    <span class="nav-icon">🏠</span>
-    <span>Home</span>
-  </button>
   <button class="nav-btn" id="nav-cal" onclick="showTab('cal')">
     <span class="nav-icon">📅</span>
     <span>Schedule</span>
@@ -12609,8 +12605,10 @@ function appUnlockManager() {
   buildFilters();
   applyFilters();
   updateTaskBadge();
-  const savedTab = sessionStorage.getItem('cc_tab') || 'home';
-  showTab(savedTab);
+  // Always land on the iOS-style home screen when the app opens. In-session
+  // navigation still writes cc_tab so transient things can read it, but we
+  // intentionally ignore it here so every cold start feels the same.
+  showTab('home');
   rcInit();
   initSheets();
   // Auto-refresh GPS and messages every 2 minutes
