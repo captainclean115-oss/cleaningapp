@@ -1632,6 +1632,23 @@ body.home-dragging, body.home-dragging * {
   box-shadow: 0 0 0 2px #000;
   z-index: 2;
 }
+/* "Coming Soon" tiles — small SOON pill in the upper-right of the icon.
+   Marks roadmap-only features so Tom can point at them in a demo without
+   anyone tapping expecting them to work. */
+.home-app-icon .coming-soon-badge {
+  position: absolute;
+  top: 4px; right: 4px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 8.5px; font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 2px 5px;
+  border-radius: 5px;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.35);
+  z-index: 3;
+  pointer-events: none;
+}
 
 /* Folder tile: 2×2 mini grid inside the icon square */
 .home-folder-icon {
@@ -6123,6 +6140,7 @@ var LUCIDE = {
   'sparkles': '<svg class="sparkles-brand" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" stroke-width="2"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>',
   'bar-chart-3': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>',
   'handshake': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/></svg>',
+  'alert-triangle': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
 };
 
 var HOME_APPS = [
@@ -6180,6 +6198,11 @@ var HOME_APPS = [
     iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
   { id: 'crm',        label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
     iconHtml: LUCIDE['handshake'], go: function(){ _launcherComingSoon('CRM'); } },
+  // Roadmap: predictive churn detection. Yellow→red warns about at-risk
+  // clients, matching what the feature will do when built.
+  { id: 'churn',      label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
+    iconHtml: LUCIDE['alert-triangle'], soon: true,
+    go: function(){ _launcherComingSoon('Churn'); } },
   { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
     iconHtml: LUCIDE['log-out'], go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
@@ -6234,6 +6257,31 @@ function _homeState() {
   for (var _pp = 0; _pp < pages.length; _pp++) {
     pages[_pp] = pages[_pp].filter(function(s){ return !(s && s.type === 'app' && s.id === 'claire'); });
   }
+  // Auto-pick-up: any HOME_APPS entry that's not already somewhere (grid OR
+  // dock OR inside a folder) lands on page 0. Keeps newly-added tiles like
+  // Churn visible for users whose home_pages was persisted before the tile
+  // existed.
+  (function(){
+    var present = {};
+    dock.forEach(function(id){ present[id] = true; });
+    pages.forEach(function(page) {
+      page.forEach(function(slot) {
+        if (!slot) return;
+        if (slot.type === 'app' && slot.id) present[slot.id] = true;
+        else if (slot.type === 'folder' && Array.isArray(slot.apps)) {
+          slot.apps.forEach(function(id){ present[id] = true; });
+        }
+      });
+    });
+    var dockSet = { claire: true };
+    HOME_APPS.forEach(function(a) {
+      if (dockSet[a.id]) return;
+      if (!present[a.id]) {
+        if (!pages[0]) pages[0] = [];
+        pages[0].push({ type: 'app', id: a.id });
+      }
+    });
+  })();
   window.__homeStateCache = { pages: pages, dock: dock };
   return window.__homeStateCache;
 }
@@ -6430,10 +6478,12 @@ function _homeRenderSlot(slot, pageIdx, slotIdx) {
   if (!a) return '';
   var badgeCount = (typeof a.badge === 'function') ? (a.badge() || 0) : 0;
   var badgeHtml = badgeCount > 0 ? '<span class="home-app-badge">' + badgeCount + '</span>' : '';
+  var soonHtml = a.soon ? '<span class="coming-soon-badge">SOON</span>' : '';
   var inner = a.iconHtml || (a.icon || '');
   var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
-  return '<button class="home-app" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + '">'
-    + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + '</div>'
+  var soonCls = a.soon ? ' coming-soon' : '';
+  return '<button class="home-app' + soonCls + '" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + '">'
+    + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + soonHtml + '</div>'
     + badgeHtml
     + '<div class="home-app-label">' + a.label + '</div>'
     + '</button>';
@@ -6959,6 +7009,9 @@ function _launcherComingSoon(name) {
   document.body.appendChild(wrap);
   setTimeout(function(){ wrap.style.opacity = '0'; setTimeout(function(){ wrap.remove(); }, 300); }, 1200);
 }
+// Public alias — matches the spec name so external prompts/tests can call
+// showComingSoon('Churn') and get the same toast.
+function showComingSoon(name) { return _launcherComingSoon(name); }
 
 // Entry point from the employee portal's own header button.
 // Pulls the currently-logged-in employee from currentEmployee and hands
