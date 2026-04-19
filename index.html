@@ -1814,6 +1814,18 @@ body.home-dragging, body.home-dragging * {
 .claire-big-avatar.lipsync video { display: block; }
 .claire-big-avatar.lipsync .claire-avatar-edit,
 .claire-big-avatar.lipsync span { display: none; }
+/* Small muted hint that appears under Claire when no premium voice exists on
+   the device — explains how to download one in iOS Settings. */
+.claire-voice-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  text-align: center;
+  margin-top: 10px;
+  padding: 0 20px;
+  line-height: 1.5;
+  max-width: 360px;
+}
+
 /* Claire speaking — soft purple→teal pulse glow while Web Speech API is active.
    Replaces the D-ID lip-sync video visual; she stays a static photo, but her
    ring breathes/glows in sync with her voice. */
@@ -2687,6 +2699,11 @@ select.field-input { appearance: none; }
                    -webkit-tap-highlight-color: transparent;">
       ⏸ Stop
     </button>
+    <!-- Premium-voice hint: only rendered if no Enhanced/Premium voice is
+         available on this device. Populated by updateClaireVoiceHint(). -->
+    <div id="claire-voice-hint" class="claire-voice-hint" style="display:none"></div>
+    <!-- Debug line so Tom can see which voice actually got picked. -->
+    <div id="claire-voice-name" style="font-size:10px;color:rgba(255,255,255,0.30);text-align:center;margin-top:4px"></div>
   </div>
   <div id="claire-messages" class="claire-view-messages"></div>
   <div class="claire-view-input-row">
@@ -5122,21 +5139,44 @@ function claireReply(msg) {
 }
 
 // ── Claire voice (Tier 1: browser speechSynthesis) ──
+// Priority chain mirrors the one Tom put in the spec: explicit
+// Enhanced/Premium voice names first, then ANY en voice whose name contains
+// "Enhanced" or "Premium", then natural-sounding third-party voices (Google,
+// Siri, Microsoft), finally the classic Samantha fallback. Premium voices on
+// iOS 16+ sound dramatically warmer than the defaults.
 var _claireVoice = null;
 function _pickClaireVoice() {
   if (!('speechSynthesis' in window)) return null;
   var voices = window.speechSynthesis.getVoices();
   if (!voices || !voices.length) return null;
-  // Prefer a natural-sounding female English voice
-  var prefs = [
-    /Samantha/i, /Ava/i, /Allison/i, /Nicky/i, /Karen/i, /Moira/i, /Tessa/i,
-    /Google US English/i, /Microsoft Jenny/i, /Microsoft Aria/i, /female/i
-  ];
-  for (var i = 0; i < prefs.length; i++) {
-    var v = voices.find(function(x){ return prefs[i].test(x.name) && /en/i.test(x.lang); });
-    if (v) return v;
-  }
-  return voices.find(function(v){ return /^en[-_]/i.test(v.lang); }) || voices[0];
+  var byName = function(n) { return voices.find(function(v){ return v.name === n; }); };
+  var premium =
+    byName('Ava (Enhanced)') || byName('Ava (Premium)') ||
+    byName('Zoe (Enhanced)') || byName('Zoe (Premium)') ||
+    byName('Allison (Enhanced)') || byName('Allison (Premium)') ||
+    byName('Samantha (Enhanced)') || byName('Samantha (Premium)') ||
+    voices.find(function(v){ return v.name.indexOf('Enhanced') !== -1 && /^en/i.test(v.lang); }) ||
+    voices.find(function(v){ return v.name.indexOf('Premium')  !== -1 && /^en/i.test(v.lang); }) ||
+    voices.find(function(v){ return v.name.indexOf('Google') !== -1 && /^en-US/i.test(v.lang); }) ||
+    voices.find(function(v){ return v.name.indexOf('Siri')   !== -1 && /^en/i.test(v.lang); }) ||
+    byName('Samantha') || byName('Ava') ||
+    voices.find(function(v){ return /^en-US/i.test(v.lang) && /female/i.test(v.name); }) ||
+    voices.find(function(v){ return /^en-US/i.test(v.lang); }) ||
+    voices.find(function(v){ return /^en[-_]/i.test(v.lang); }) ||
+    voices[0];
+  return premium || null;
+}
+
+// True when no Enhanced/Premium English voice exists on this device — used
+// to decide whether to show the "download a premium voice" hint in the UI.
+function shouldShowVoiceHint() {
+  if (!('speechSynthesis' in window)) return false;
+  var voices = window.speechSynthesis.getVoices();
+  if (!voices || !voices.length) return false;
+  return !voices.some(function(v) {
+    return (v.name.indexOf('Enhanced') !== -1 || v.name.indexOf('Premium') !== -1)
+        && /^en/i.test(v.lang);
+  });
 }
 
 function _claireStripForSpeech(text) {
@@ -5175,9 +5215,16 @@ function claireSpeak(text) {
   try { window.speechSynthesis.cancel(); } catch(e){}
   var u = new SpeechSynthesisUtterance(plain);
   if (!_claireVoice) _claireVoice = _pickClaireVoice();
-  if (_claireVoice) u.voice = _claireVoice;
-  u.rate = 1.07;  // matches the old D-ID "+7%"
-  u.pitch = 1.05; // slightly warmer than neutral
+  if (_claireVoice) {
+    u.voice = _claireVoice;
+    try { console.log('Claire voice:', _claireVoice.name); } catch(e){}
+    var nameDisplay = document.getElementById('claire-voice-name');
+    if (nameDisplay) nameDisplay.textContent = 'Voice: ' + _claireVoice.name;
+  }
+  // Slower, calmer cadence — dialed down from 1.07 so she feels more
+  // assistant-like and less rushed. Pitch untouched.
+  u.rate = 0.92;
+  u.pitch = 1.05;
   u.volume = 1.0;
   u.onstart = function(){ _claireSetSpeakingUI(true); };
   u.onend   = function(){ _claireSetSpeakingUI(false); };
@@ -5194,16 +5241,38 @@ function claireStopSpeaking() {
 }
 
 // iOS Safari populates the voice list asynchronously. Resolve once and cache
-// the preferred voice so the first call to claireSpeak doesn't race.
+// the preferred voice so the first call to claireSpeak doesn't race. Also
+// refresh the voice-name display + hint-visibility when voices load in.
 function initClaireVoices() {
   if (!('speechSynthesis' in window)) return;
   var v = window.speechSynthesis.getVoices();
-  if (v && v.length) { _claireVoice = _pickClaireVoice(); return; }
+  if (v && v.length) {
+    _claireVoice = _pickClaireVoice();
+    updateClaireVoiceHint();
+    return;
+  }
   window.speechSynthesis.onvoiceschanged = function(){
     _claireVoice = _pickClaireVoice();
+    updateClaireVoiceHint();
   };
 }
 document.addEventListener('DOMContentLoaded', initClaireVoices);
+
+// Renders the "download a premium voice" help text when no enhanced voice is
+// installed, plus the small debug line showing which voice is selected.
+function updateClaireVoiceHint() {
+  var hint = document.getElementById('claire-voice-hint');
+  var name = document.getElementById('claire-voice-name');
+  if (hint) {
+    if (shouldShowVoiceHint()) {
+      hint.textContent = "For the best voice quality, go to Settings → Accessibility → Spoken Content → Voices → English → tap any voice and download one marked 'Enhanced' or 'Premium'. Claire will automatically use it.";
+      hint.style.display = 'block';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+  if (name && _claireVoice) name.textContent = 'Voice: ' + _claireVoice.name;
+}
 
 // Toggles the speaking-UI state: breathing+glow on the avatar, waveform
 // visibility, status text, and the Stop button.
