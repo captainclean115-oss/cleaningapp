@@ -958,10 +958,30 @@ body {
 .field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
 
 /* Claire nav button */
-/* Claire gets a larger, centered, raised circle in the dock — fixed in place.
-   The button itself stays flex:1 like the others so the dock spacing is even,
-   but the icon inside lifts up, grows, and glows. */
-.nav-btn-claire { position: relative; }
+/* Dock split into two halves around an absolutely-positioned Claire. Claire is
+   ALWAYS dead-center, no matter how many apps populate the left or right half. */
+.nav-half {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-around;
+}
+.nav-half .nav-btn { flex: 1 1 0; min-width: 0; }
+
+/* Claire: bigger raised circle, pinned dead-center. */
+.nav-btn-claire {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  transform: translateX(-50%);
+  flex: 0 0 auto;
+  width: 70px;
+  padding: 0;
+  background: none; border: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  font-family: 'DM Sans', sans-serif; font-size: 10px;
+  color: var(--muted);
+}
 .nav-icon-claire {
   width: 56px; height: 56px; border-radius: 50%;
   background: linear-gradient(135deg, #6c8fff 0%, #a78bfa 60%, #f472b6 110%);
@@ -972,7 +992,7 @@ body {
     inset 0 -2px 6px rgba(0,0,0,0.2);
   animation: claire-nav-glow 3s ease-in-out infinite;
   /* Lift above the dock so the bigger circle visually "floats" */
-  margin-top: -18px; margin-bottom: -2px;
+  margin-top: -22px; margin-bottom: -2px;
 }
 .nav-icon-claire svg { width: 30px; height: 30px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)); }
 @keyframes claire-nav-glow {
@@ -2401,10 +2421,17 @@ select.field-input { appearance: none; }
 
 <!-- BOTTOM NAV -->
 <div class="bottom-nav">
-  <button class="nav-btn" id="nav-cal" onclick="showTab('cal')">
-    <span class="nav-icon">📅</span>
-    <span>Schedule</span>
-  </button>
+  <div class="nav-half nav-half-left">
+    <button class="nav-btn" id="nav-cal" onclick="showTab('cal')">
+      <span class="nav-icon">📅</span>
+      <span>Schedule</span>
+    </button>
+    <button class="nav-btn" id="nav-gps" onclick="showTab('gps')">
+      <span class="nav-icon">🗺</span>
+      <span>Live</span>
+    </button>
+  </div>
+  <!-- Claire is absolute-positioned at dead center — doesn't move regardless of how many other apps are in the nav. -->
   <button class="nav-btn nav-btn-claire" id="nav-claire" onclick="showTab('claire')">
     <span class="nav-icon-claire" aria-label="Claire">
       <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -2415,22 +2442,18 @@ select.field-input { appearance: none; }
             <stop offset="1" stop-color="#e5d0ff"/>
           </linearGradient>
         </defs>
-        <!-- Main 4-point sparkle — concave sides, Gemini/AI style -->
         <path d="M12 2 Q12.5 9.5 21.5 11.5 Q12.5 13.5 12 21 Q11.5 13.5 2.5 11.5 Q11.5 9.5 12 2 Z" fill="url(#clairenavgrad)"/>
-        <!-- Small companion sparkle top-right -->
         <path d="M19.5 3 Q19.7 5 21.5 5.3 Q19.7 5.6 19.5 7.5 Q19.3 5.6 17.5 5.3 Q19.3 5 19.5 3 Z" fill="url(#clairenavgrad)" opacity="0.75"/>
       </svg>
     </span>
     <span>Claire</span>
   </button>
-  <button class="nav-btn" id="nav-gps" onclick="showTab('gps')">
-    <span class="nav-icon">🗺</span>
-    <span>Live</span>
-  </button>
-  <button class="nav-btn" id="nav-messages" onclick="showTab('messages')">
-    <span class="nav-icon">💬</span>
-    <span id="nav-msg-label">Messages</span>
-  </button>
+  <div class="nav-half nav-half-right">
+    <button class="nav-btn" id="nav-messages" onclick="showTab('messages')">
+      <span class="nav-icon">💬</span>
+      <span id="nav-msg-label">Messages</span>
+    </button>
+  </div>
 </div>
 
 <div class="drawer-backdrop" id="backdrop" onclick="closeDrawer()"></div>
@@ -6172,6 +6195,69 @@ document.addEventListener('click', function(e) {
   if (e.target.closest('.home-folder-overlay')) return;
   homeExitEditMode();
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Swipe-right-to-home gesture.
+// In any feature/view other than the home screen, a horizontal swipe from
+// left to right (finger moves right) returns to the home screen. Starts
+// are rejected if the user's finger begins inside a horizontally-scrolling
+// region (the map, carousels, text inputs) so normal interactions stay intact.
+// ═══════════════════════════════════════════════════════════════════════
+(function setupSwipeHome(){
+  var sx = 0, sy = 0, startedInIgnored = false, startedOnHome = false;
+
+  function isIgnored(el) {
+    while (el && el !== document.body) {
+      if (!el.classList) { el = el.parentElement; continue; }
+      if (el.id === 'gps-map') return true;
+      if (el.classList.contains('leaflet-container')) return true;
+      // Home pages wrap is itself a horizontal scroller — swipes there are page flips.
+      if (el.id === 'home-pages-wrap') return true;
+      if (el.id === 'home-view') return false;
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return true;
+      var cs = window.getComputedStyle(el);
+      if (cs && (cs.overflowX === 'auto' || cs.overflowX === 'scroll') && el.scrollWidth > el.clientWidth) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  function closeCurrentFeature() {
+    // Content view overlay
+    var cv = document.getElementById('content-view');
+    if (cv && cv.classList.contains('active')) {
+      try { closeContentView(); } catch(e){}
+    }
+    // Files overlay
+    var fv = document.getElementById('files-view');
+    if (fv && fv.style.display && fv.style.display !== 'none') {
+      try { if (typeof closeFiles === 'function') closeFiles(); } catch(e){}
+    }
+    // Folder overlay on home screen (shouldn't fire here since we exclude home, but safe)
+    var fo = document.getElementById('home-folder-overlay');
+    if (fo && fo.classList.contains('active')) { try { closeHomeFolder(); } catch(e){} }
+    // Then back to the home screen tab
+    showTab('home');
+  }
+
+  document.addEventListener('touchstart', function(e) {
+    var t = e.touches && e.touches[0]; if (!t) return;
+    sx = t.clientX; sy = t.clientY;
+    startedInIgnored = isIgnored(e.target);
+    startedOnHome = (sessionStorage.getItem('cc_tab') === 'home') && !document.getElementById('content-view').classList.contains('active');
+  }, { passive: true });
+
+  document.addEventListener('touchend', function(e) {
+    if (startedInIgnored || startedOnHome) return;
+    var ch = e.changedTouches && e.changedTouches[0]; if (!ch) return;
+    var dx = ch.clientX - sx;
+    var dy = Math.abs(ch.clientY - sy);
+    // Swipe RIGHT (finger moves left-to-right): positive dx, mostly horizontal.
+    if (dx > 90 && Math.abs(dx) > dy * 2) {
+      closeCurrentFeature();
+    }
+  }, { passive: true });
+})();
 
 // Placeholder toast for launcher tiles whose feature isn't built yet.
 // Reuses the .content-toast styling so it looks native to the app.
