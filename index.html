@@ -2674,7 +2674,7 @@ select.field-input { appearance: none; }
 <!-- PAYMENTS HUB (demo) — outstanding balances + manual card record.
      Real processor integration (Stripe / Square) slots into recordDemoPayment
      when you're ready. -->
-<div id="payments-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:transparent;flex-direction:column;overflow:hidden">
+<div id="payments-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:radial-gradient(ellipse at 30% 10%,rgba(94,92,230,0.45) 0%,transparent 55%),radial-gradient(ellipse at 80% 85%,rgba(30,158,170,0.4) 0%,transparent 60%),linear-gradient(180deg,#0a0a20 0%,#10142a 50%,#0d1618 100%);flex-direction:column;overflow:hidden">
   <div style="flex:0 0 auto;padding:calc(var(--safe-top) + 12px) 16px 10px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(10,10,32,0.7);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)">
     <button onclick="closePaymentsDemo()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);color:#fff;width:34px;height:34px;border-radius:50%;font-size:20px;line-height:1;cursor:pointer;padding:0">‹</button>
     <div style="flex:1;min-width:0">
@@ -7204,6 +7204,12 @@ document.addEventListener('click', function(e) {
       try { closeCustomerForm(); } catch(e){}
       return; // Don't navigate away — user was mid-form, let them stay on whatever tab is behind it
     }
+    // Payments overlay (demo) — close and stay where we were.
+    var pv = document.getElementById('payments-view');
+    if (pv && pv.style.display && pv.style.display !== 'none') {
+      try { closePaymentsDemo(); } catch(e){}
+      return;
+    }
     // Content view overlay
     var cv = document.getElementById('content-view');
     if (cv && cv.classList.contains('active')) {
@@ -7228,6 +7234,8 @@ document.addEventListener('click', function(e) {
     if (cv && cv.classList.contains('active')) return true;
     var fv = document.getElementById('files-view');
     if (fv && fv.style.display && fv.style.display !== 'none') return true;
+    var pv = document.getElementById('payments-view');
+    if (pv && pv.style.display && pv.style.display !== 'none') return true;
     return false;
   }
 
