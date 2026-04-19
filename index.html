@@ -54,7 +54,11 @@ body {
   color: var(--text);
   min-height: 100svh;
   overflow-x: clip;
+  /* Kill pull-to-refresh and overscroll bounce. It was firing when Tom
+     tried to pick up home-screen icons and breaking drag gestures. */
+  overscroll-behavior: none;
 }
+html { overscroll-behavior: none; }
 
 /* ── TOP BAR ── */
 .topbar {
@@ -1370,6 +1374,7 @@ body.home-dragging, body.home-dragging * {
   flex: 0 0 100%; width: 100%;
   scroll-snap-align: start;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 20px 60px;
 }
 .home-grid {
