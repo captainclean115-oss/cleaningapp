@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="My Clients">
-<meta name="theme-color" content="#0f1117">
+<meta name="theme-color" content="#000000">
 <title>My Clients</title>
 <script>
 // Suppress PIN-screen flash on pull-to-refresh: if user already unlocked this
@@ -974,13 +974,20 @@ body {
   width: 74px;
   padding: 8px 0 6px;
 }
-/* Dock icon glyphs — match the visual weight of home-screen tiles */
+/* Dock icon glyphs — each rendered as a mini app-icon tile so the dock
+   reads like an iOS home-screen dock rather than flat emojis. */
 .bottom-nav .nav-btn .nav-icon {
-  font-size: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 46px; height: 46px;
+  border-radius: 12px;
+  font-size: 24px;
   line-height: 1;
-  display: inline-block;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.15);
 }
+#nav-cal  .nav-icon { background: linear-gradient(135deg,#fb7185,#e11d48); }
+#nav-gps  .nav-icon { background: linear-gradient(135deg,#34d399,#0d9488); }
+#nav-messages .nav-icon { background: linear-gradient(135deg,#22d3ee,#2563eb); }
 .bottom-nav .nav-btn span:last-child {
   font-size: 11px;
   font-weight: 500;
@@ -1312,18 +1319,16 @@ body.home-dragging, body.home-dragging * {
   max-width: 72px; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* ── iPhone-style HOME SCREEN (Facebook-blue) ── */
+/* ── iPhone-style HOME SCREEN (black) ── */
 #home-view {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
   bottom: calc(70px + var(--safe-bottom));
   overflow: hidden;
-  /* Facebook blue (#1877F2) with soft top/bottom shade so it reads as depth, not flat */
-  background:
-    radial-gradient(1200px 800px at 50% -20%, rgba(255,255,255,0.16), transparent 55%),
-    radial-gradient(900px 700px at 50% 120%, rgba(0,0,0,0.25), transparent 55%),
-    #1877F2;
+  /* Pure black floor-to-ceiling. No gradients so the status-bar strip
+     matches the body exactly — no lighter "sky" band at the top. */
+  background: #000;
   padding: calc(var(--safe-top) + 20px) 0 0;
 }
 #home-view.active { display: block; }
@@ -1406,7 +1411,7 @@ body.home-dragging, body.home-dragging * {
   background: #ef4444; color: #fff;
   border-radius: 10px; font-size: 11px; font-weight: 700;
   padding: 1px 6px; min-width: 18px; text-align: center;
-  box-shadow: 0 0 0 2px #1877F2;
+  box-shadow: 0 0 0 2px #000;
   z-index: 2;
 }
 
