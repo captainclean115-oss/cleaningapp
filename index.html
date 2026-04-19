@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="My Clients">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#0a0a20">
 <title>My Clients</title>
 <script>
 // Suppress PIN-screen flash on pull-to-refresh: if user already unlocked this
@@ -48,25 +48,27 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
-body {
-  font-family: 'DM Sans', sans-serif;
+html, body {
+  margin: 0; padding: 0;
   /* Branded Field Flow wallpaper: purple glow in upper-left (matches Claire's
      orb) + teal glow in lower-right (matches the FF accent) over a deep
-     near-black base. Applied site-wide so manager and employee views — and
-     sub-pages that inherit body bg — read as the same space. */
+     near-black base. On html+body together so the wallpaper extends to the
+     TRUE viewport edges — including behind the iPhone status bar / Dynamic
+     Island area (viewport-fit=cover in the meta above). */
   background:
     radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
     radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
     linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
   background-attachment: fixed;
-  color: var(--text);
   min-height: 100vh;
-  overflow-x: clip;
-  /* Kill pull-to-refresh and overscroll bounce. It was firing when Tom
-     tried to pick up home-screen icons and breaking drag gestures. */
+  min-height: 100dvh;
   overscroll-behavior: none;
 }
-html { overscroll-behavior: none; }
+body {
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text);
+  overflow-x: clip;
+}
 
 /* ── TOP BAR ── */
 .topbar {
@@ -875,7 +877,7 @@ html { overscroll-behavior: none; }
   background-attachment: fixed;
 }
 .portal-header {
-  padding: 20px 16px 16px;
+  padding: max(20px, env(safe-area-inset-top)) 16px 16px;
   background: transparent;
   border-bottom: none;
 }
@@ -1122,12 +1124,14 @@ html { overscroll-behavior: none; }
 /* Push each half's icons toward its outer edge so they're NOT bunched up
    against Claire in the middle. Left half aligns left, right half aligns
    right. Inner padding reserves ~Claire's half-width + breathing room. */
-.nav-half-left  { justify-content: flex-start; padding-left: 14px;  padding-right: 56px; }
-.nav-half-right { justify-content: flex-end;   padding-right: 14px; padding-left: 56px; }
+/* Inner padding shrinks inside the floating pill so Claire's raised circle
+   has breathing room but side icons don't overflow the narrower container. */
+.nav-half-left  { justify-content: flex-start; padding-left: 6px;  padding-right: 42px; }
+.nav-half-right { justify-content: flex-end;   padding-right: 6px; padding-left: 42px; }
 .nav-half .nav-btn {
   flex: 0 0 auto;
-  width: 74px;
-  padding: 8px 0 6px;
+  width: 64px;
+  padding: 4px 0 2px;
 }
 /* Dock icon glyphs — each rendered as a mini app-icon tile so the dock
    reads like an iOS home-screen dock rather than flat emojis. */
@@ -1195,7 +1199,9 @@ body.home-dragging, body.home-dragging * {
   background: radial-gradient(circle at 30% 30%, #D4C5FF 0%, #8E7BFF 50%, #5E5CE6 100%);
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 0 30px rgba(142, 123, 255, 0.4);
-  margin-top: -22px; margin-bottom: -2px;
+  /* Pill dock is shorter than the old bar — less lift needed for Claire
+     to float above it cleanly. */
+  margin-top: -16px; margin-bottom: -2px;
   position: relative;
   overflow: hidden;
 }
@@ -1217,7 +1223,7 @@ body.home-dragging, body.home-dragging * {
   /* 60px = bottom-nav height; +10px extra clearance so the text input
      doesn't visually overlap the tab labels in mobile Safari where the
      browser's dynamic toolbar eats a few pixels under safe-bottom. */
-  bottom: calc(70px + var(--safe-bottom));
+  bottom: calc(100px + env(safe-area-inset-bottom));
   flex-direction: column;
   background: var(--bg);
   z-index: 210;
@@ -1249,7 +1255,7 @@ body.home-dragging, body.home-dragging * {
   display: none;
   /* Sits ABOVE the bottom-nav zone so the locked nav stays fully visible. */
   position: fixed; top: 0; left: 0; right: 0;
-  bottom: calc(70px + var(--safe-bottom));
+  bottom: calc(100px + env(safe-area-inset-bottom));
   background: var(--bg);
   z-index: 260;
   flex-direction: column;
@@ -1437,7 +1443,7 @@ body.home-dragging, body.home-dragging * {
 }
 .launcher-sheet {
   position: absolute; left: 0; right: 0;
-  bottom: calc(70px + var(--safe-bottom));
+  bottom: calc(100px + env(safe-area-inset-bottom));
   max-height: 70vh;
   padding: 20px 18px calc(var(--safe-bottom) + 24px);
   background: linear-gradient(180deg, rgba(20,22,32,0.98), rgba(15,17,23,0.98));
@@ -1486,7 +1492,7 @@ body.home-dragging, body.home-dragging * {
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0;
-  bottom: calc(70px + var(--safe-bottom));
+  bottom: calc(100px + env(safe-area-inset-bottom));
   overflow: hidden;
   /* Same branded wallpaper as body — purple (upper-left) + teal (lower-right)
      over a near-black base. Matches the employee portal exactly. */
@@ -1494,7 +1500,7 @@ body.home-dragging, body.home-dragging * {
     radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
     radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
     linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
-  padding: calc(var(--safe-top) + 20px) 0 0;
+  padding: max(20px, env(safe-area-inset-top)) 0 0;
 }
 #home-view.active { display: block; }
 
@@ -1542,7 +1548,9 @@ body.home-dragging, body.home-dragging * {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 18px 14px;
-  padding: 4px 10px 20px;
+  /* Generous bottom padding so the last row never slips under the
+     floating translucent dock. */
+  padding: 4px 10px 120px;
   max-width: 480px; margin: 0 auto;
 }
 .home-app {
@@ -2171,13 +2179,22 @@ select.field-input { appearance: none; }
 
 /* ── BOTTOM NAV ── */
 .bottom-nav {
-  position: fixed; bottom: 0; left: 0; right: 0;
-  background: rgba(13,13,20,0.95); backdrop-filter: blur(20px);
-  border-top: 1px solid var(--border);
-  display: flex; padding: 8px 0 12px;
-  /* Locked: stays above every overlay (launcher=280, content=260, files=260,
-     modals up to ~350). Anything that needs to render above the nav must
-     explicitly exceed 600 (reserved for system toasts). */
+  /* Floating translucent iOS-style glass dock — reveals the wallpaper
+     through a blur instead of sitting as a solid bar. */
+  position: fixed;
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
+  left: 16px; right: 16px;
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.10);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border-radius: 32px;
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.30);
+  /* Locked above every overlay (launcher=280, content=260, files=260,
+     modals up to ~350). Anything that must cover the dock must exceed 600. */
   z-index: 500;
 }
 .nav-btn {
@@ -2423,7 +2440,7 @@ select.field-input { appearance: none; }
   </div>
 </div>
 
-<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(70px + var(--safe-bottom));z-index:260;background:var(--bg);flex-direction:column">
+<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(100px + env(safe-area-inset-bottom));z-index:260;background:var(--bg);flex-direction:column">
   <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
     <div style="flex:1">
