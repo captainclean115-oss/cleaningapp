@@ -50,19 +50,26 @@
 
 html, body {
   margin: 0; padding: 0;
-  /* Branded Field Flow wallpaper: purple glow in upper-left (matches Claire's
-     orb) + teal glow in lower-right (matches the FF accent) over a deep
-     near-black base. On html+body together so the wallpaper extends to the
-     TRUE viewport edges — including behind the iPhone status bar / Dynamic
-     Island area (viewport-fit=cover in the meta above). */
-  background:
-    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
-  background-attachment: fixed;
   min-height: 100vh;
   min-height: 100dvh;
   overscroll-behavior: none;
+  /* Background rendered by a fixed ::before layer below — more reliable on
+     iOS Safari than background-attachment:fixed, which intermittently drops
+     out mid-scroll and leaves black. */
+  background: #0a0a18;
+}
+/* One fixed wallpaper layer behind everything. Always fills the true
+   viewport so scrolling in any sub-page can't reveal a black gap. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.40) 0%, transparent 60%),
+    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
 }
 body {
   font-family: 'DM Sans', sans-serif;
@@ -16174,6 +16181,8 @@ function _seedDemoRewardPoints() {
     var seeds = [285, 220, 175, 150, 130, 110, 95, 80, 65, 55, 45, 40, 30, 25, 20, 15, 10, 5, 5, 0];
     var changed = false;
     roster.forEach(function(emp, i) {
+      // Only seed employees that truly have no entry (0 from a previous
+      // seed or real earnings is preserved). Missing => seed.
       if (typeof map[emp.id] === 'undefined' || map[emp.id] === null) {
         map[emp.id] = seeds[i % seeds.length];
         changed = true;
@@ -16182,6 +16191,10 @@ function _seedDemoRewardPoints() {
     if (changed) localStorage.setItem('content_points', JSON.stringify(map));
   } catch(e){}
 }
+// Seed immediately if EMPLOYEE_ROSTER is already defined (script runs late);
+// also on DOMContentLoaded as a belt-and-suspenders fallback; also every
+// time any rewards view renders, in case the roster loaded async.
+if (typeof EMPLOYEE_ROSTER !== 'undefined') { try { _seedDemoRewardPoints(); } catch(e){} }
 document.addEventListener('DOMContentLoaded', _seedDemoRewardPoints);
 
 function empSchedPrev() {
@@ -18283,6 +18296,10 @@ function _rewardsAppendLedger(entry) {
 function renderEmployeeRewards() {
   var el = document.getElementById('employee-rewards-body');
   if (!el) return;
+  // Belt-and-suspenders: make sure the demo-points seeder has run before
+  // we compute any balances or leaderboard — guarantees populated data
+  // the first time Tom opens Rewards on a fresh device.
+  try { _seedDemoRewardPoints(); } catch(e){}
   var meId = currentEmployee ? currentEmployee.id : null;
   var points = _rewardsGetPoints();
   var myPts = (meId && points[meId]) ? points[meId] : 0;
