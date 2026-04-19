@@ -1012,7 +1012,9 @@ body {
 /* ── CONTENT HUB (demo) ── */
 #content-view {
   display: none;
-  position: fixed; inset: 0;
+  /* Sits ABOVE the bottom-nav zone so the locked nav stays fully visible. */
+  position: fixed; top: 0; left: 0; right: 0;
+  bottom: calc(70px + var(--safe-bottom));
   background: var(--bg);
   z-index: 260;
   flex-direction: column;
@@ -1662,7 +1664,11 @@ select.field-input { appearance: none; }
   position: fixed; bottom: 0; left: 0; right: 0;
   background: rgba(13,13,20,0.95); backdrop-filter: blur(20px);
   border-top: 1px solid var(--border);
-  display: flex; padding: 8px 0 12px; z-index: 200;
+  display: flex; padding: 8px 0 12px;
+  /* Locked: stays above every overlay (launcher=280, content=260, files=260,
+     modals up to ~350). Anything that needs to render above the nav must
+     explicitly exceed 600 (reserved for system toasts). */
+  z-index: 500;
 }
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center;
@@ -1896,7 +1902,7 @@ select.field-input { appearance: none; }
   </div>
 </div>
 
-<div id="files-view" style="display:none;position:fixed;inset:0;z-index:260;background:var(--bg);flex-direction:column">
+<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(70px + var(--safe-bottom));z-index:260;background:var(--bg);flex-direction:column">
   <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
     <div style="flex:1">
