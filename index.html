@@ -959,14 +959,30 @@ body {
 
 /* Claire nav button */
 /* Dock split into two halves around an absolutely-positioned Claire. Claire is
-   ALWAYS dead-center, no matter how many apps populate the left or right half. */
+   ALWAYS dead-center, no matter how many apps populate the left or right half.
+   Buttons inside a half keep their natural width so sides with different counts
+   don't stretch unevenly. */
 .nav-half {
   flex: 1;
   display: flex;
   align-items: stretch;
   justify-content: space-around;
+  padding: 0 8px;
 }
-.nav-half .nav-btn { flex: 1 1 0; min-width: 0; }
+.nav-half .nav-btn {
+  flex: 0 0 auto;
+  min-width: 60px;
+  max-width: 80px;
+}
+/* Block browser drag, long-press callouts, and iOS text magnifier while
+   the user interacts with dock buttons — otherwise holding an icon can
+   trigger the URL-bar squish or text-selection that "shrinks" the dock. */
+.bottom-nav, .bottom-nav * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.bottom-nav { touch-action: manipulation; }
 
 /* Claire: bigger raised circle, pinned dead-center. */
 .nav-btn-claire {
@@ -1314,6 +1330,15 @@ body {
   height: calc(100% - 80px);
 }
 .home-pages-wrap::-webkit-scrollbar { display: none; }
+/* Freeze the scroll-snap while dragging so the viewport doesn't chase the
+   finger (that's what was making the dock look like it "shrinks" — iOS
+   was reflowing the URL bar area in response to the scroll). */
+#home-view.dragging .home-pages-wrap {
+  overflow: hidden !important;
+  scroll-snap-type: none;
+  touch-action: none;
+}
+#home-view.dragging .home-page { touch-action: none; }
 .home-page {
   flex: 0 0 100%; width: 100%;
   scroll-snap-align: start;
@@ -6026,6 +6051,10 @@ function _homeStartDrag(tile, startX, startY) {
   document.body.appendChild(clone);
 
   tile.classList.add('dragging');
+  // Freeze scrolling on the home pages wrap (CSS handles the rest)
+  var hv = document.getElementById('home-view');
+  if (hv) hv.classList.add('dragging');
+
   _homeDrag = {
     tile: tile, clone: clone,
     fromPage: parseInt(tile.getAttribute('data-page')),
@@ -6081,6 +6110,8 @@ function _homeFinishDrag(commit) {
   var d = _homeDrag;
   _homeDrag = null;
   document.querySelectorAll('.home-app.folder-target').forEach(function(n){ n.classList.remove('folder-target'); });
+  var hv = document.getElementById('home-view');
+  if (hv) hv.classList.remove('dragging');
 
   if (commit && d.hover) {
     var targetPage = parseInt(d.hover.getAttribute('data-page'));
@@ -6097,10 +6128,33 @@ function _homeFinishDrag(commit) {
       // Move/reorder
       _homeMoveSlot(d.fromPage, d.fromSlot, targetPage, targetSlot);
     }
+  } else if (commit && !d.hover) {
+    // Dropped in empty grid area — append the icon to the end of the
+    // currently visible page so Tom can move an icon "away from the
+    // others" instead of only inserting between existing tiles.
+    _homeMoveSlotToEndOfVisiblePage(d.fromPage, d.fromSlot);
   }
   // Remove clone; the re-render will restore tile visibility
   try { d.clone.remove(); } catch(e){}
   renderHomeScreen();
+}
+
+function _homeCurrentPageIdx() {
+  var wrap = document.getElementById('home-pages-wrap');
+  if (!wrap) return 0;
+  var w = wrap.clientWidth;
+  if (!w) return 0;
+  return Math.round(wrap.scrollLeft / w);
+}
+function _homeMoveSlotToEndOfVisiblePage(fromPage, fromSlot) {
+  var pages = _homeGetPages();
+  if (!pages[fromPage]) return;
+  var moved = pages[fromPage].splice(fromSlot, 1)[0];
+  if (!moved) return;
+  var dest = _homeCurrentPageIdx();
+  if (!pages[dest]) pages[dest] = [];
+  pages[dest].push(moved);
+  _homeSavePages();
 }
 
 function _homeMoveSlot(fromPage, fromSlot, toPage, toSlot) {
@@ -6223,6 +6277,12 @@ document.addEventListener('click', function(e) {
   }
 
   function closeCurrentFeature() {
+    // Customer form modal (New / Edit client) — topmost priority
+    var custForm = document.getElementById('customer-form-overlay');
+    if (custForm && custForm.style.display && custForm.style.display !== 'none') {
+      try { closeCustomerForm(); } catch(e){}
+      return; // Don't navigate away — user was mid-form, let them stay on whatever tab is behind it
+    }
     // Content view overlay
     var cv = document.getElementById('content-view');
     if (cv && cv.classList.contains('active')) {
@@ -6240,11 +6300,23 @@ document.addEventListener('click', function(e) {
     showTab('home');
   }
 
+  function anyModalOpen() {
+    var cf = document.getElementById('customer-form-overlay');
+    if (cf && cf.style.display === 'flex') return true;
+    var cv = document.getElementById('content-view');
+    if (cv && cv.classList.contains('active')) return true;
+    var fv = document.getElementById('files-view');
+    if (fv && fv.style.display && fv.style.display !== 'none') return true;
+    return false;
+  }
+
   document.addEventListener('touchstart', function(e) {
     var t = e.touches && e.touches[0]; if (!t) return;
     sx = t.clientX; sy = t.clientY;
     startedInIgnored = isIgnored(e.target);
-    startedOnHome = (sessionStorage.getItem('cc_tab') === 'home') && !document.getElementById('content-view').classList.contains('active');
+    // Only suppress on the home screen if there's no modal/overlay covering it.
+    // When a modal like the customer form is on top, swipe-right should close it.
+    startedOnHome = (sessionStorage.getItem('cc_tab') === 'home') && !anyModalOpen();
   }, { passive: true });
 
   document.addEventListener('touchend', function(e) {
@@ -18314,7 +18386,6 @@ function syncSheets() {
   <div class="form-sheet">
     <div class="form-header">
       <div class="form-title" id="form-title">New Customer</div>
-      <button class="form-close" onclick="closeCustomerForm()">×</button>
     </div>
     <div class="form-body">
       <input type="hidden" id="form-client-id" value="">
