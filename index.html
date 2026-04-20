@@ -4803,11 +4803,17 @@ async function translateChatMessage(text, fromLang, toLang) {
 function getEmpChatThread() {
   if (!currentEmployee) return null;
   var chats = loadStaffChats();
+  // Always follow the employee's LIVE UI language. The thread used to sticky-
+  // cache empLang at first-open, so if an employee later switched from English
+  // to Spanish, admin messages kept rendering in English (msg.tx.en wins when
+  // targetLang === 'en'). Syncing on every fetch means translations always
+  // target whatever lang the employee is reading in right now.
+  var liveLang = currentLang || currentEmployee.lang || 'en';
   if (!chats[currentEmployee.id]) {
-    chats[currentEmployee.id] = { empLang: currentEmployee.lang || currentLang || 'en', msgs: [], lastReadAdmin: 0 };
+    chats[currentEmployee.id] = { empLang: liveLang, msgs: [], lastReadAdmin: 0 };
     saveStaffChats(chats);
-  } else if (!chats[currentEmployee.id].empLang) {
-    chats[currentEmployee.id].empLang = currentEmployee.lang || currentLang || 'en';
+  } else if (chats[currentEmployee.id].empLang !== liveLang) {
+    chats[currentEmployee.id].empLang = liveLang;
     saveStaffChats(chats);
   }
   return chats[currentEmployee.id];
