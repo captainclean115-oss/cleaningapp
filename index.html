@@ -3054,6 +3054,10 @@ body.in-portal .bottom-nav { display: none !important; }
 <div id="clients-view">
   <!-- CLIENTS LIST -->
   <div id="clients-subview">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px">
+      <div style="font-size:19px;font-weight:700;letter-spacing:-0.01em">Clients</div>
+      <button onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
+    </div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
     </div>
@@ -6877,8 +6881,6 @@ var LAUNCHER_APPS = [
     go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',   label: 'Staff',   icon: '🧑‍💼', grad: 'linear-gradient(135deg,#34d399,#059669)',
     go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
-  { id: 'new',     label: 'New Client', icon: '➕', grad: 'linear-gradient(135deg,#60a5fa,#2563eb)',
-    go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
   { id: 'quote',   label: 'Quote',   icon: '💰', grad: 'linear-gradient(135deg,#fbbf24,#d97706)',
     go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
   { id: 'content', label: 'Content', icon: '📸', grad: 'linear-gradient(135deg,#c084fc,#7c3aed)',
@@ -6997,8 +6999,6 @@ var HOME_APPS = [
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',    label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
     iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
-  { id: 'new',      label: 'New Client', grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
-    iconHtml: LUCIDE['user-plus'], go: function(){ if (typeof openNewCustomerForm === 'function') openNewCustomerForm(); } },
   { id: 'quote',    label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
     iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
   { id: 'payments', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
@@ -9809,28 +9809,29 @@ function assignEmployee(employeeId, team, dateStr) {
 // ─────────────────────────────────────────
 
 function openNewCustomerForm() {
-  // Make sure overlay exists
-  const overlay = document.getElementById('customer-form-overlay');
-  if (!overlay) { return; }
-  // Clear all fields
-  document.getElementById('form-client-id').value = '';
-  document.getElementById('form-title').textContent = 'New Customer';
-  document.getElementById('form-fn').value = '';
-  document.getElementById('form-ln').value = '';
-  document.getElementById('form-ph').value = '';
-  document.getElementById('form-email').value = '';
-  document.getElementById('form-addr').value = '';
-  document.getElementById('form-freq').value = 'BW';
-  document.getElementById('form-price').value = '';
-  document.getElementById('form-firstclean').value = '';
-  document.getElementById('form-team').value = '';
-  document.getElementById('form-prefday').value = '';
-  document.getElementById('form-preftime').value = '';
-  document.getElementById('form-payment').value = '';
-  document.getElementById('form-notes').value = '';
-  document.getElementById('form-delete-btn').style.display = 'none';
-  document.getElementById('form-save-btn').textContent = '💾 Save Customer';
-  document.getElementById('customer-form-overlay').style.display = 'flex';
+  // Reuse the full Client Profile editor for new-client flow. A draft
+  // client is pre-inserted so openClientEdit() has something to hydrate;
+  // cancel removes it, save commits it. This guarantees parity between
+  // create-form and profile-form — every profile field is fillable up
+  // front without duplicating markup.
+  var draftId = 'draft_' + Date.now();
+  var draft = {
+    id: draftId,
+    fn: '', ln: '', ph: '', em: '', addr: '', city: '', zip: '',
+    fc: 'RMS - EOW', next: '', pkg: '', team: '', notes: '',
+    bal: 0, last: '', margin: '', zone: '',
+    _draft: true
+  };
+  if (typeof CLIENTS !== 'undefined') CLIENTS.unshift(draft);
+  window._newClientDraftId = draftId;
+  if (typeof openClientEdit === 'function') {
+    openClientEdit(draftId);
+    // Retitle the header so it reads "New Client" not the empty name.
+    try {
+      var titleEl = document.getElementById('client-edit-title');
+      if (titleEl) titleEl.textContent = 'New Client';
+    } catch(e) {}
+  }
 }
 
 function openEditCustomerForm(clientId) {
@@ -12791,6 +12792,17 @@ function syncNextDateFromField(val) {
 function closeClientEdit() {
   document.getElementById('client-edit-modal').style.display = 'none';
   closePicker();
+  // If this close happened on a not-yet-saved draft new-client, drop it.
+  // saveClientEdit clears _newClientDraftId before calling this, so a
+  // real save will leave the client in place.
+  try {
+    var draftId = window._newClientDraftId;
+    if (draftId && typeof CLIENTS !== 'undefined') {
+      var idx = CLIENTS.findIndex(function(c){ return c.id === draftId; });
+      if (idx >= 0 && CLIENTS[idx]._draft) CLIENTS.splice(idx, 1);
+    }
+  } catch(e) {}
+  window._newClientDraftId = null;
 }
 
 let _cePickerIdx = null;
@@ -12940,6 +12952,9 @@ function saveClientEdit(clientId) {
   const idx = CLIENTS.findIndex(c => c.id === clientId);
   if (idx < 0) return;
   const c = CLIENTS[idx];
+  // Promote drafts: if this was a new-client draft, flip it to real now
+  // that the user has committed a save. closeClientEdit can't clean it up.
+  if (c._draft) { delete c._draft; window._newClientDraftId = null; }
 
   // Contact info
   c.fn = document.getElementById('ce-fn').value.trim();
