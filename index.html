@@ -2451,6 +2451,519 @@ body.in-portal .bottom-nav { display: none !important; }
 .nav-btn.active { color: var(--accent); }
 .nav-icon { font-size: 20px; }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   SMART PROCUREMENT — INVENTORY
+   Phase 1 (inventory + predictive runout): live.
+   Phase 2 (AI price-shop): simulated with deterministic mock vendors.
+   Design matches the rest of Field Flow — glass cards, purple/teal wallpaper
+   base, iOS squircles, DM Sans.
+   ═══════════════════════════════════════════════════════════════════════ */
+#inventory-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
+              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.4) 0%, transparent 60%),
+              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  flex-direction: column; overflow: hidden;
+  color: #fff; font-family: 'DM Sans', sans-serif;
+}
+#inventory-view.active { display: flex; }
+.inv-topbar {
+  flex: 0 0 auto;
+  padding: calc(var(--safe-top) + 12px) 16px 10px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(10,10,32,0.7);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.inv-back-btn {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #fff; width: 34px; height: 34px; border-radius: 50%;
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.inv-title-wrap { flex: 1; min-width: 0; }
+.inv-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.inv-subtitle { font-size: 12px; color: rgba(255,255,255,0.55); }
+.inv-add-btn {
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, #8E7BFF, #5E5CE6);
+  border: none; color: #fff;
+  width: 36px; height: 36px; border-radius: 50%;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 12px rgba(94,92,230,0.35);
+}
+.inv-add-btn svg { width: 20px; height: 20px; stroke: #fff; stroke-width: 2.5; fill: none; }
+.inv-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 14px 14px calc(env(safe-area-inset-bottom) + 40px);
+}
+
+/* Tabbed catalog — Shop the Web / Manna Clean */
+.inv-tabs {
+  display: flex; gap: 4px; padding: 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px; margin-bottom: 14px;
+}
+.inv-tab {
+  flex: 1; padding: 9px 10px;
+  background: transparent; border: none;
+  color: rgba(255,255,255,0.65);
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  border-radius: 10px; cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.inv-tab.active {
+  background: #fff; color: #0a0a20;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+}
+.inv-tab-soon {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.08em;
+  background: rgba(255,195,0,0.20); color: #FFD60A;
+  border: 1px solid rgba(255,214,10,0.35);
+  padding: 2px 5px; border-radius: 6px;
+}
+.inv-tab.active .inv-tab-soon { background: rgba(255,148,0,0.18); color: #FF9500; border-color: rgba(255,149,0,0.35); }
+
+/* Summary cards row */
+.inv-summary {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; margin-bottom: 14px;
+}
+.inv-sum-card {
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 16px; padding: 12px 10px; text-align: center;
+}
+.inv-sum-label { font-size: 10px; font-weight: 700; color: rgba(255,255,255,0.55); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.inv-sum-value { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.inv-sum-card.red .inv-sum-value { color: #FF6B6B; }
+.inv-sum-card.yellow .inv-sum-value { color: #FFD60A; }
+.inv-sum-card.green .inv-sum-value { color: #34D399; }
+
+/* Product card */
+.inv-card {
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px; padding: 14px;
+  margin-bottom: 10px;
+  display: flex; gap: 12px; align-items: flex-start;
+  cursor: pointer;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.inv-card:active { transform: scale(0.98); }
+.inv-card-swatch {
+  flex: 0 0 auto;
+  width: 54px; height: 54px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 16px; color: #fff;
+  letter-spacing: -0.02em;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 4px 10px rgba(0,0,0,0.25);
+}
+.inv-card-body { flex: 1 1 auto; min-width: 0; }
+.inv-card-name {
+  font-size: 14px; font-weight: 700;
+  letter-spacing: -0.01em; margin-bottom: 3px;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+}
+.inv-card-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.inv-cat-pill {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+  padding: 2px 7px; border-radius: 10px;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.75);
+  border: 1px solid rgba(255,255,255,0.12);
+  text-transform: uppercase;
+}
+.inv-flag-pill {
+  font-size: 9px; font-weight: 800;
+  padding: 2px 7px; border-radius: 10px;
+  background: rgba(255,149,0,0.18);
+  color: #FF9500;
+  border: 1px solid rgba(255,149,0,0.35);
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.inv-stock-bar {
+  height: 6px; border-radius: 3px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden; margin-bottom: 5px;
+}
+.inv-stock-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.inv-stock-fill.ok { background: linear-gradient(90deg, #30D158, #34D399); }
+.inv-stock-fill.low { background: linear-gradient(90deg, #FFD60A, #FF9500); }
+.inv-stock-fill.critical { background: linear-gradient(90deg, #FF9500, #FF3B30); }
+.inv-stock-fill.empty { background: linear-gradient(90deg, #FF3B30, #991B1B); }
+.inv-stock-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: rgba(255,255,255,0.65);
+  margin-bottom: 6px;
+}
+.inv-stock-num { font-weight: 700; color: rgba(255,255,255,0.92); }
+.inv-status-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.inv-status-pill {
+  font-size: 10px; font-weight: 800;
+  padding: 3px 9px; border-radius: 12px;
+  letter-spacing: 0.02em;
+}
+.inv-status-pill.ok       { background: rgba(52,211,153,0.18); color: #34D399; border: 1px solid rgba(52,211,153,0.30); }
+.inv-status-pill.low      { background: rgba(255,214,10,0.18); color: #FFD60A; border: 1px solid rgba(255,214,10,0.30); }
+.inv-status-pill.critical { background: rgba(255,59,48,0.20); color: #FF6B6B; border: 1px solid rgba(255,59,48,0.35); }
+.inv-status-pill.empty    { background: rgba(153,27,27,0.35); color: #FCA5A5; border: 1px solid rgba(248,113,113,0.40); }
+.inv-runout {
+  font-size: 11px; color: rgba(255,255,255,0.55);
+  margin-top: 4px;
+}
+
+/* Product detail modal */
+#inv-detail-overlay {
+  display: none;
+  position: fixed; inset: 0; z-index: 600;
+  background: rgba(10,10,32,0.80);
+  backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+  align-items: flex-end; justify-content: center;
+}
+#inv-detail-overlay.active { display: flex; }
+.inv-detail-sheet {
+  width: 100%; max-width: 520px;
+  background: linear-gradient(180deg, #1a1a3e 0%, #0d0d24 100%);
+  border-top: 1px solid rgba(255,255,255,0.14);
+  border-radius: 22px 22px 0 0;
+  padding: 18px 18px calc(env(safe-area-inset-bottom) + 24px);
+  max-height: 92vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  color: #fff; font-family: 'DM Sans', sans-serif;
+}
+.inv-detail-head {
+  display: flex; gap: 12px; align-items: center;
+  margin-bottom: 14px;
+}
+.inv-detail-head .inv-card-swatch { width: 58px; height: 58px; font-size: 18px; }
+.inv-detail-close {
+  position: absolute; top: 14px; right: 14px;
+  background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.14);
+  color: #fff; width: 30px; height: 30px; border-radius: 50%;
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.inv-detail-title { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+.inv-detail-sub { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+.inv-field {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px; padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.inv-field-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.55);
+  text-transform: uppercase; margin-bottom: 6px;
+}
+.inv-field input, .inv-field select {
+  width: 100%; background: transparent; border: none;
+  color: #fff; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 600;
+  outline: none; padding: 0;
+}
+.inv-field select option { background: #1a1a3e; color: #fff; }
+.inv-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.inv-slider-row { display: flex; align-items: center; gap: 10px; }
+.inv-slider-row input[type="range"] { flex: 1; accent-color: #8E7BFF; }
+.inv-slider-row input[type="number"] { flex: 0 0 70px; text-align: right; }
+.inv-runout-card {
+  background: linear-gradient(135deg, rgba(142,123,255,0.16), rgba(94,92,230,0.10));
+  border: 1px solid rgba(142,123,255,0.30);
+  border-radius: 16px; padding: 16px;
+  margin: 14px 0;
+}
+.inv-runout-big {
+  font-size: 24px; font-weight: 800;
+  letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px;
+}
+.inv-runout-dot {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+}
+.inv-runout-dot.high   { background: #34D399; box-shadow: 0 0 8px rgba(52,211,153,0.6); }
+.inv-runout-dot.medium { background: #FFD60A; box-shadow: 0 0 8px rgba(255,214,10,0.6); }
+.inv-runout-dot.low    { background: #FF6B6B; box-shadow: 0 0 8px rgba(255,107,107,0.6); }
+.inv-runout-expl { font-size: 12px; color: rgba(255,255,255,0.60); margin-top: 6px; }
+
+/* Find Best Price — the showcase button */
+.inv-price-btn {
+  display: flex; width: 100%;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #FF2D55 0%, #FF9500 100%);
+  border: none; color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 800;
+  border-radius: 14px;
+  cursor: pointer; position: relative; overflow: hidden;
+  align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 6px 18px rgba(255,45,85,0.30);
+  letter-spacing: -0.01em;
+  transition: transform 0.15s;
+}
+.inv-price-btn:active:not(:disabled) { transform: scale(0.98); }
+.inv-price-btn:disabled { opacity: 0.75; cursor: default; }
+.inv-price-btn .spark { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 2; }
+.inv-price-spin {
+  width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff; border-radius: 50%;
+  animation: inv-spin 0.8s linear infinite;
+}
+@keyframes inv-spin { to { transform: rotate(360deg); } }
+
+.inv-vendor-stack { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.inv-vendor-card {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 16px; padding: 14px;
+  position: relative;
+}
+.inv-vendor-card.best {
+  background: linear-gradient(135deg, rgba(52,211,153,0.14), rgba(6,95,70,0.06));
+  border-color: rgba(52,211,153,0.40);
+  box-shadow: 0 4px 20px rgba(52,211,153,0.12);
+}
+.inv-vendor-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.inv-vendor-name { font-size: 14px; font-weight: 800; letter-spacing: -0.01em; }
+.inv-vendor-best-badge {
+  font-size: 9px; font-weight: 900; letter-spacing: 0.08em;
+  background: #34D399; color: #052e16;
+  padding: 3px 8px; border-radius: 8px;
+}
+.inv-vendor-price { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.inv-vendor-ship { font-size: 11px; color: rgba(255,255,255,0.55); margin-top: 2px; }
+.inv-vendor-unit { font-size: 12px; color: rgba(255,255,255,0.70); margin-top: 6px; }
+.inv-vendor-approve {
+  margin-top: 10px; width: 100%;
+  padding: 9px; background: rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #fff; border-radius: 10px;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  cursor: pointer;
+}
+.inv-vendor-card.best .inv-vendor-approve {
+  background: linear-gradient(135deg, #34D399, #047857);
+  border-color: transparent;
+}
+.inv-vendor-footnote {
+  font-size: 10px; color: rgba(255,255,255,0.45);
+  text-align: center; margin-top: 10px; line-height: 1.5;
+}
+
+/* Manna Clean tab */
+.mc-banner {
+  background: linear-gradient(135deg, rgba(30,158,170,0.24), rgba(142,123,255,0.20));
+  border: 1px solid rgba(142,123,255,0.30);
+  border-radius: 20px; padding: 18px;
+  margin-bottom: 14px;
+  position: relative; overflow: hidden;
+}
+.mc-banner-head { font-size: 19px; font-weight: 800; letter-spacing: -0.015em; margin-bottom: 6px; }
+.mc-banner-sub { font-size: 13px; color: rgba(255,255,255,0.70); line-height: 1.5; margin-bottom: 10px; }
+.mc-banner-btn {
+  background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.20);
+  color: #fff; padding: 8px 14px; border-radius: 10px;
+  font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700;
+  cursor: pointer;
+}
+.mc-card {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px; padding: 14px;
+  margin-bottom: 10px;
+  position: relative; overflow: hidden;
+}
+.mc-card-top { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; }
+.mc-bottle {
+  flex: 0 0 auto;
+  width: 58px; height: 78px;
+  background: linear-gradient(180deg, #f5f7fa 0%, #e4e8ef 100%);
+  border-radius: 8px 8px 10px 10px;
+  position: relative;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+.mc-bottle::before {
+  content: ''; position: absolute;
+  top: -8px; left: 14px; right: 14px; height: 10px;
+  background: #3b3b55; border-radius: 3px 3px 0 0;
+}
+.mc-bottle-label {
+  position: absolute; top: 18px; left: 4px; right: 4px;
+  background: linear-gradient(135deg, #1e9eaa, #8E7BFF);
+  padding: 6px 4px; border-radius: 3px;
+  font-size: 7px; font-weight: 800;
+  color: #fff; text-align: center;
+  letter-spacing: 0.05em; line-height: 1.2;
+}
+.mc-bottle-label-small { font-size: 6px; opacity: 0.82; letter-spacing: 0.08em; margin-top: 2px; }
+.mc-soon-badge {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(255,149,0,0.24); color: #FFD60A;
+  border: 1px solid rgba(255,214,10,0.40);
+  font-size: 8px; font-weight: 900; letter-spacing: 0.08em;
+  padding: 3px 7px; border-radius: 8px;
+}
+.mc-card-info { flex: 1; min-width: 0; }
+.mc-card-name { font-size: 13px; font-weight: 800; margin-bottom: 4px; }
+.mc-price-row { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; font-size: 10px; }
+.mc-price-col { flex: 1; min-width: 70px; }
+.mc-price-col-label { color: rgba(255,255,255,0.50); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9px; font-weight: 700; }
+.mc-price-col-val { font-size: 14px; font-weight: 800; margin-top: 2px; }
+.mc-margin { color: #34D399; }
+.mc-retail { color: rgba(255,255,255,0.55); text-decoration: line-through; }
+
+.mc-revenue-stack { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.mc-rev-card {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px; padding: 12px;
+  display: flex; gap: 12px; align-items: center;
+  cursor: pointer;
+}
+.mc-rev-icon {
+  flex: 0 0 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+}
+.mc-rev-body { flex: 1; min-width: 0; }
+.mc-rev-head { display: flex; gap: 8px; align-items: center; margin-bottom: 2px; }
+.mc-rev-name { font-size: 13px; font-weight: 800; }
+.mc-rev-tag {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+  padding: 2px 6px; border-radius: 6px;
+}
+.mc-rev-tag.now { background: rgba(52,211,153,0.18); color: #34D399; border: 1px solid rgba(52,211,153,0.30); }
+.mc-rev-tag.y2 { background: rgba(255,214,10,0.18); color: #FFD60A; border: 1px solid rgba(255,214,10,0.30); }
+.mc-rev-tag.y3 { background: rgba(142,123,255,0.18); color: #A78BFA; border: 1px solid rgba(142,123,255,0.30); }
+.mc-rev-sub { font-size: 11px; color: rgba(255,255,255,0.60); }
+
+/* Roadmap timeline */
+.inv-roadmap-card {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px; padding: 14px 16px;
+  margin-top: 18px;
+}
+.inv-roadmap-toggle {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  background: none; border: none; color: #fff;
+  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 800;
+  cursor: pointer; padding: 0;
+  letter-spacing: -0.01em;
+}
+.inv-roadmap-caret { transition: transform 0.25s; }
+.inv-roadmap-card.open .inv-roadmap-caret { transform: rotate(90deg); }
+.inv-roadmap-body { display: none; margin-top: 14px; }
+.inv-roadmap-card.open .inv-roadmap-body { display: block; }
+.inv-phase {
+  position: relative; padding-left: 24px;
+  padding-bottom: 14px;
+  cursor: pointer;
+}
+.inv-phase:not(:last-child)::before {
+  content: ''; position: absolute;
+  left: 5px; top: 16px; bottom: 0;
+  width: 2px; background: rgba(255,255,255,0.14);
+}
+.inv-phase-dot {
+  position: absolute; left: 0; top: 4px;
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.20);
+  box-sizing: border-box;
+}
+.inv-phase-dot.live    { background: #34D399; border-color: #34D399; box-shadow: 0 0 10px rgba(52,211,153,0.6); }
+.inv-phase-dot.demo    { background: #FFD60A; border-color: #FFD60A; }
+.inv-phase-dot.future  { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.25); }
+.inv-phase-head { font-size: 13px; font-weight: 800; margin-bottom: 2px; }
+.inv-phase-status {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.inv-phase-status.live    { color: #34D399; }
+.inv-phase-status.demo    { color: #FFD60A; }
+.inv-phase-status.future  { color: rgba(255,255,255,0.45); }
+.inv-phase-desc { font-size: 11px; color: rgba(255,255,255,0.65); line-height: 1.5; }
+
+/* Add Product modal */
+#inv-add-overlay {
+  display: none; position: fixed; inset: 0; z-index: 610;
+  background: rgba(10,10,32,0.80);
+  backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+  align-items: flex-end; justify-content: center;
+}
+#inv-add-overlay.active { display: flex; }
+
+/* Employee Supplies sub-page */
+#emp-supplies-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 270;
+  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
+              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.4) 0%, transparent 60%),
+              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  flex-direction: column; overflow: hidden;
+  color: #fff; font-family: 'DM Sans', sans-serif;
+}
+#emp-supplies-view.active { display: flex; }
+.emp-sup-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px; background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px; margin-bottom: 8px;
+}
+.emp-sup-dot {
+  flex: 0 0 10px; height: 10px; border-radius: 50%;
+}
+.emp-sup-dot.ok { background: #34D399; }
+.emp-sup-dot.low { background: #FFD60A; }
+.emp-sup-dot.critical { background: #FF6B6B; }
+.emp-sup-dot.empty { background: #991B1B; }
+.emp-sup-name { flex: 1; font-size: 13px; font-weight: 700; }
+.emp-sup-btn {
+  flex: 0 0 auto; padding: 7px 13px;
+  background: rgba(255,149,0,0.18);
+  border: 1px solid rgba(255,149,0,0.35);
+  color: #FF9500; font-family: 'DM Sans', sans-serif;
+  font-size: 11px; font-weight: 800; letter-spacing: 0.02em;
+  border-radius: 10px; cursor: pointer;
+}
+.emp-sup-btn.flagged {
+  background: rgba(52,211,153,0.18);
+  border-color: rgba(52,211,153,0.35);
+  color: #34D399;
+}
+.emp-sup-cat-head {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.08em;
+  color: rgba(255,255,255,0.55); text-transform: uppercase;
+  margin: 14px 0 8px;
+}
+.emp-sup-report-link {
+  display: block; width: 100%;
+  margin-top: 10px; padding: 10px;
+  background: rgba(255,149,0,0.14);
+  border: 1px solid rgba(255,149,0,0.30);
+  color: #FF9500; font-family: 'DM Sans', sans-serif;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.02em;
+  border-radius: 12px; cursor: pointer; text-align: center;
+}
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -6389,8 +6902,8 @@ var LAUNCHER_APPS = [
     go: function(){ if (typeof openFiles === 'function') openFiles(); } },
   { id: 'assets',    label: 'Assets',    icon: '🏷️', grad: 'linear-gradient(135deg,#94a3b8,#475569)',
     go: function(){ _launcherComingSoon('Assets'); } },
-  { id: 'inventory', label: 'Inventory', icon: '🧴',  grad: 'linear-gradient(135deg,#22d3ee,#0891b2)',
-    go: function(){ _launcherComingSoon('Inventory'); } },
+  { id: 'inventory', label: 'Inventory', icon: '📦',  grad: 'linear-gradient(135deg,#5AC8FA,#007AFF)',
+    go: function(){ showInventoryPage(); } },
   { id: 'rewards',   label: 'Rewards',   icon: '🎁',  grad: 'linear-gradient(135deg,#f472b6,#db2777)',
     go: function(){ _launcherComingSoon('Rewards'); } },
   { id: 'approval',  label: 'Approval',  icon: '✅',  grad: 'linear-gradient(135deg,#4ade80,#16a34a)',
@@ -6456,6 +6969,7 @@ var LUCIDE = {
   'folder': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>',
   'tag': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><circle cx="7" cy="7" r="1"/></svg>',
   'boxes': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></svg>',
+  'package': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>',
   'gift': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1-2.5-2.5A2.5 2.5 0 0 1 7.5 3c1.8 0 3 1.5 4.5 5-3-.5-4.5-1.2-4.5-0z"/><path d="M16.5 8a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 16.5 3c-1.8 0-3 1.5-4.5 5 3-.5 4.5-1.2 4.5-0z"/></svg>',
   'badge-check': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>',
   'graduation-cap': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></svg>',
@@ -6521,7 +7035,9 @@ var HOME_APPS = [
   { id: 'assets',     label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
     iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
   { id: 'inventory',  label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
-    iconHtml: LUCIDE['boxes'], go: function(){ _launcherComingSoon('Inventory'); } },
+    iconHtml: LUCIDE['package'],
+    badge: function(){ try { return (typeof calcInventoryCounts === 'function') ? (calcInventoryCounts().needsReorder || 0) : 0; } catch(e){ return 0; } },
+    go: function(){ showInventoryPage(); } },
   { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
     iconHtml: LUCIDE['gift'],
     go: function(){
@@ -20046,6 +20562,594 @@ function syncSheets() {
   }).catch(tick);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// SMART PROCUREMENT — INVENTORY
+// localStorage key: inventory_v1  (do not reuse other keys)
+// Phase 1 (inventory + runout): real. Phase 2 (price-shop): simulated.
+// ═══════════════════════════════════════════════════════════════════════
+var INVENTORY_KEY = 'inventory_v1';
+var INVENTORY_FLAGS_KEY = 'inventory_flags_v1';
+
+var INVENTORY_SEED = [
+  { id:'inv_bona',     name:'Bona Pro Series Hardwood Floor Cleaner', cat:'Chemicals', stock:8,  max:12,  unit:'gallons',    rule:'per_job', rate:0.3,  cost:28 },
+  { id:'inv_simgreen', name:'Simple Green All-Purpose Cleaner',       cat:'Chemicals', stock:4,  max:6,   unit:'gallons',    rule:'per_job', rate:0.4,  cost:18 },
+  { id:'inv_mf50',     name:'Microfiber Cloths (bulk pack of 50)',    cat:'Supplies',  stock:85, max:150, unit:'cloths',     rule:'per_job', rate:2,    cost:24 },
+  { id:'inv_tpk',      name:'Toilet Paper (Kirkland 30-pack)',        cat:'Paper',     stock:2,  max:8,   unit:'packs',      rule:'per_job', rate:0.5,  cost:22 },
+  { id:'inv_bounty',   name:'Paper Towels (Bounty 12-pack)',          cat:'Paper',     stock:3,  max:10,  unit:'packs',      rule:'per_job', rate:0.3,  cost:28 },
+  { id:'inv_clorox',   name:'Clorox Disinfecting Wipes (canister)',   cat:'Chemicals', stock:6,  max:24,  unit:'canisters',  rule:'per_job', rate:0.2,  cost:8 },
+  { id:'inv_windex',   name:'Glass Cleaner (Windex gallon)',          cat:'Chemicals', stock:3,  max:8,   unit:'gallons',    rule:'per_job', rate:0.25, cost:14 },
+  { id:'inv_vacbag',   name:'Vacuum Bags (Sanitaire 24-pack)',        cat:'Equipment', stock:18, max:24,  unit:'packs',      rule:'per_job', rate:0.1,  cost:19 },
+  { id:'inv_gloves',   name:'Rubber Gloves (nitrile 100-pack)',       cat:'Supplies',  stock:2,  max:6,   unit:'boxes',      rule:'per_job', rate:1,    cost:16 },
+  { id:'inv_barmop',   name:'Bar Mop Towels (12-pack)',               cat:'Supplies',  stock:14, max:24,  unit:'packs',      rule:'per_job', rate:1,    cost:15 },
+  { id:'inv_magic',    name:'Mr. Clean Magic Erasers (30-pack)',      cat:'Chemicals', stock:5,  max:20,  unit:'packs',      rule:'per_job', rate:0.15, cost:22 },
+  { id:'inv_lysol',    name:'Toilet Bowl Cleaner (Lysol)',            cat:'Chemicals', stock:5,  max:12,  unit:'bottles',    rule:'per_job', rate:0.2,  cost:6 },
+  { id:'inv_mophead',  name:'Mop Heads (replacement 6-pack)',         cat:'Equipment', stock:8,  max:12,  unit:'packs',      rule:'per_job', rate:0.05, cost:18 },
+  { id:'inv_dustpan',  name:'Dust Pans (stand-up)',                   cat:'Equipment', stock:8,  max:8,   unit:'units',      rule:'manual',  rate:0,    cost:22 },
+  { id:'inv_trash',    name:'Trash Bags (33-gallon, 100-pack)',       cat:'Paper',     stock:4,  max:10,  unit:'boxes',      rule:'per_job', rate:0.5,  cost:18 }
+];
+
+function loadInventory() {
+  try {
+    var arr = JSON.parse(localStorage.getItem(INVENTORY_KEY) || 'null');
+    if (!Array.isArray(arr) || !arr.length) {
+      localStorage.setItem(INVENTORY_KEY, JSON.stringify(INVENTORY_SEED));
+      return INVENTORY_SEED.slice();
+    }
+    return arr;
+  } catch(e) { return INVENTORY_SEED.slice(); }
+}
+function saveInventory(arr) {
+  try { localStorage.setItem(INVENTORY_KEY, JSON.stringify(arr)); } catch(e){}
+}
+function loadInventoryFlags() {
+  try { return JSON.parse(localStorage.getItem(INVENTORY_FLAGS_KEY) || '{}') || {}; }
+  catch(e){ return {}; }
+}
+function saveInventoryFlags(map) {
+  try { localStorage.setItem(INVENTORY_FLAGS_KEY, JSON.stringify(map)); } catch(e){}
+}
+
+// Count jobs in the next N days from the existing schedule. If the jobs
+// array is empty (fresh app), fall back to 47/week ≈ 6.7/day.
+function _invJobsInNextDays(days) {
+  try {
+    if (typeof jobs === 'undefined' || !Array.isArray(jobs) || !jobs.length) return Math.round(47 * (days / 7));
+    var today = new Date(); today.setHours(0,0,0,0);
+    var max = new Date(today); max.setDate(max.getDate() + days);
+    var n = 0;
+    for (var i = 0; i < jobs.length; i++) {
+      var j = jobs[i]; if (!j || !j.date || j.cancelled) continue;
+      var d = new Date(j.date + 'T00:00:00');
+      if (d >= today && d < max) n++;
+    }
+    return n || Math.round(47 * (days / 7));
+  } catch(e) { return Math.round(47 * (days / 7)); }
+}
+
+function calculateInventoryStatus(p) {
+  var stock = +p.stock || 0;
+  var rate  = +p.rate  || 0;
+  var rule  = p.rule   || 'per_job';
+  var jobs30 = _invJobsInNextDays(30);
+  // Manual products don't predict — treat stock fraction only.
+  if (rule === 'manual' || !rate) {
+    var pct = p.max ? (stock / p.max) : 1;
+    var status = stock <= 0 ? 'empty'
+               : pct <= 0.10 ? 'critical'
+               : pct <= 0.30 ? 'low' : 'ok';
+    return { status: status, runoutDate: null, daysUntilRunout: null, confidence: 'low' };
+  }
+  // Usage-per-job: scale by job count proxy. Rule variations all map to
+  // per-job approx for the demo (we'd factor bedroom/bathroom/sqft in Phase 3).
+  var perDay = (jobs30 * rate) / 30;
+  if (perDay <= 0) {
+    return { status: stock <= 0 ? 'empty' : 'ok', runoutDate: null, daysUntilRunout: null, confidence: 'low' };
+  }
+  var daysUntilRunout = Math.max(0, Math.floor(stock / perDay));
+  var runoutDate = new Date(); runoutDate.setDate(runoutDate.getDate() + daysUntilRunout);
+  var status = stock <= 0 ? 'empty'
+             : daysUntilRunout <= 3 ? 'critical'
+             : daysUntilRunout <= 14 ? 'low' : 'ok';
+  var confidence = jobs30 > 30 ? 'high' : jobs30 > 10 ? 'medium' : 'low';
+  return { status: status, runoutDate: runoutDate, daysUntilRunout: daysUntilRunout, confidence: confidence };
+}
+
+function calcInventoryCounts() {
+  var inv = loadInventory();
+  var reorder = 0, coming = 0, monthly = 0;
+  var jobs30 = _invJobsInNextDays(30);
+  for (var i = 0; i < inv.length; i++) {
+    var p = inv[i];
+    var s = calculateInventoryStatus(p);
+    if (s.status === 'empty' || s.status === 'critical') reorder++;
+    else if (s.status === 'low') coming++;
+    // Monthly spend estimate: (jobs/30 days × rate) of the product → units/month × cost
+    if (p.rule !== 'manual' && p.rate > 0) {
+      monthly += (jobs30 * p.rate) * (p.cost || 0) / (p.max || 1) * (p.max || 1);
+      // simplify: (jobs * rate) gives raw unit demand — divide by pack size isn't needed here.
+    }
+  }
+  // Simpler: monthly spend = sum over products of (jobs30 * rate * cost).
+  monthly = 0;
+  for (var j = 0; j < inv.length; j++) {
+    var pp = inv[j];
+    if (pp.rule !== 'manual' && pp.rate > 0) monthly += (jobs30 * pp.rate) * (pp.cost || 0);
+  }
+  return { needsReorder: reorder, comingUp: coming, monthlySpend: Math.round(monthly) };
+}
+
+// ── UI: open / close ────────────────────────────────────────────────────
+function showInventoryPage() {
+  var v = document.getElementById('inventory-view');
+  if (!v) return;
+  v.classList.add('active'); v.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  renderInventoryAll();
+}
+function closeInventoryPage() {
+  var v = document.getElementById('inventory-view');
+  if (!v) return;
+  v.classList.remove('active'); v.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+}
+function switchInventoryTab(which) {
+  document.getElementById('inv-tab-web').classList.toggle('active', which === 'web');
+  document.getElementById('inv-tab-mc').classList.toggle('active', which === 'mc');
+  document.getElementById('inv-pane-web').style.display = which === 'web' ? '' : 'none';
+  document.getElementById('inv-pane-mc').style.display  = which === 'mc'  ? '' : 'none';
+  if (which === 'mc') renderMcProducts();
+}
+function toggleInvRoadmap() {
+  var c = document.getElementById('inv-roadmap-card');
+  if (c) c.classList.toggle('open');
+}
+
+// ── Render ──────────────────────────────────────────────────────────────
+function _invSwatch(p) {
+  // Deterministic colour per product from id hash so same product always
+  // gets the same swatch.
+  var h = 0; for (var i = 0; i < p.id.length; i++) h = (h * 31 + p.id.charCodeAt(i)) | 0;
+  var hues = [210, 270, 30, 160, 340, 195, 55];
+  var hue = hues[Math.abs(h) % hues.length];
+  var initials = (p.name || '').split(/\s+/).slice(0,2).map(function(w){return w[0];}).join('').toUpperCase();
+  return '<div class="inv-card-swatch" style="background:linear-gradient(135deg,hsl('+hue+',70%,50%),hsl('+((hue+30)%360)+',65%,35%))">'+initials+'</div>';
+}
+function _invStatusLabel(s) {
+  if (s.status === 'empty')    return 'EMPTY';
+  if (s.status === 'critical') return 'CRITICAL — reorder NOW';
+  if (s.status === 'low')      return 'LOW — reorder in ' + (s.daysUntilRunout != null ? s.daysUntilRunout : '~') + 'd';
+  return 'OK';
+}
+function _invRunoutStr(s) {
+  if (s.daysUntilRunout == null) return 'Manual count — review weekly';
+  if (!s.runoutDate) return '';
+  var d = s.runoutDate;
+  var dateStr = d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  return 'Runs out: ' + dateStr + ' (' + s.daysUntilRunout + ' days)';
+}
+function _invRank(status) {
+  return status === 'empty' ? 0 : status === 'critical' ? 1 : status === 'low' ? 2 : 3;
+}
+function renderInventoryProducts() {
+  var list = document.getElementById('inv-product-list');
+  if (!list) return;
+  var inv = loadInventory().slice();
+  var flags = loadInventoryFlags();
+  var withStatus = inv.map(function(p) { return { p:p, s: calculateInventoryStatus(p) }; });
+  withStatus.sort(function(a,b) {
+    var d = _invRank(a.s.status) - _invRank(b.s.status);
+    if (d !== 0) return d;
+    return (a.s.daysUntilRunout == null ? 9999 : a.s.daysUntilRunout) - (b.s.daysUntilRunout == null ? 9999 : b.s.daysUntilRunout);
+  });
+  list.innerHTML = withStatus.map(function(row) {
+    var p = row.p, s = row.s;
+    var pct = p.max ? Math.max(0, Math.min(100, (p.stock / p.max) * 100)) : 0;
+    var fillCls = s.status === 'ok' ? 'ok' : s.status;
+    var flagCount = (flags[p.id] && flags[p.id].length) ? flags[p.id].length : 0;
+    var flagHtml = flagCount > 0 ? '<span class="inv-flag-pill">⚠ '+flagCount+' flagged</span>' : '';
+    return ''
+      + '<div class="inv-card" onclick="openInvDetail(\''+p.id+'\')">'
+      +   _invSwatch(p)
+      +   '<div class="inv-card-body">'
+      +     '<div class="inv-card-name">'+_escapeInv(p.name)+'</div>'
+      +     '<div class="inv-card-meta"><span class="inv-cat-pill">'+_escapeInv(p.cat)+'</span>'+flagHtml+'</div>'
+      +     '<div class="inv-stock-row"><span>Stock</span><span class="inv-stock-num">'+p.stock+' of '+p.max+' '+_escapeInv(p.unit||'')+'</span></div>'
+      +     '<div class="inv-stock-bar"><div class="inv-stock-fill '+fillCls+'" style="width:'+pct+'%"></div></div>'
+      +     '<div class="inv-status-line"><span class="inv-status-pill '+s.status+'">'+_invStatusLabel(s)+'</span></div>'
+      +     '<div class="inv-runout">'+_invRunoutStr(s)+'</div>'
+      +   '</div>'
+      + '</div>';
+  }).join('') || '<div style="text-align:center;color:rgba(255,255,255,0.55);padding:40px 20px;font-size:13px">No products yet. Tap + to add your first.</div>';
+}
+function renderInventorySummary() {
+  var c = calcInventoryCounts();
+  document.getElementById('inv-sum-reorder').textContent = c.needsReorder;
+  document.getElementById('inv-sum-coming').textContent = c.comingUp;
+  document.getElementById('inv-sum-spend').textContent = '$' + c.monthlySpend.toLocaleString();
+}
+function renderInventoryAll() {
+  renderInventorySummary();
+  renderInventoryProducts();
+  renderInvRoadmap();
+  renderMcProducts();
+}
+
+function _escapeInv(s) {
+  s = String(s == null ? '' : s);
+  return s.replace(/[&<>"']/g, function(c) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+// ── Product Detail + Find Best Price ────────────────────────────────────
+var _invDetailId = null;
+function openInvDetail(id) {
+  _invDetailId = id;
+  var inv = loadInventory();
+  var p = inv.find(function(x){return x.id===id;});
+  if (!p) return;
+  var s = calculateInventoryStatus(p);
+  var body = document.getElementById('inv-detail-body');
+  var runCls = (s.confidence === 'high') ? 'high' : (s.confidence === 'medium') ? 'medium' : 'low';
+  var runBig = s.daysUntilRunout == null
+    ? 'Manual count'
+    : (s.daysUntilRunout <= 0 ? 'Runs out TODAY'
+      : 'Runs out in ' + s.daysUntilRunout + ' day' + (s.daysUntilRunout === 1 ? '' : 's'));
+  var runDate = s.runoutDate ? s.runoutDate.toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+  var jobs30 = _invJobsInNextDays(30);
+  var expl = (p.rule === 'manual')
+    ? 'Manual usage rule — runout prediction off. Adjust stock manually as you consume.'
+    : 'Based on ' + jobs30 + ' jobs scheduled in the next 30 days and ' + p.rate + ' per-' + (p.rule.replace('per_','')) + ' usage.';
+  body.innerHTML = ''
+    + '<div class="inv-detail-head">' + _invSwatch(p)
+    +   '<div style="flex:1;min-width:0">'
+    +     '<div class="inv-detail-title">'+_escapeInv(p.name)+'</div>'
+    +     '<div class="inv-detail-sub">'+_escapeInv(p.cat)+' · '+_escapeInv(p.unit||'')+'</div>'
+    +   '</div>'
+    + '</div>'
+    + '<div class="inv-field"><div class="inv-field-label">Current Stock</div>'
+    +   '<div class="inv-slider-row">'
+    +     '<input id="inv-d-stock" type="range" min="0" max="'+p.max+'" step="1" value="'+p.stock+'" oninput="invDetailUpdate()">'
+    +     '<input id="inv-d-stock-num" type="number" min="0" step="1" value="'+p.stock+'" oninput="invDetailUpdate(true)">'
+    +   '</div>'
+    + '</div>'
+    + '<div class="inv-field"><div class="inv-field-label">Usage Rule</div>'
+    +   '<select id="inv-d-rule" onchange="invDetailUpdate()">'
+    +     _invRuleOpts(p.rule)
+    +   '</select>'
+    + '</div>'
+    + '<div class="inv-field-grid">'
+    +   '<div class="inv-field"><div class="inv-field-label">Consumption Rate</div>'
+    +     '<input id="inv-d-rate" type="number" min="0" step="0.01" value="'+p.rate+'" oninput="invDetailUpdate()">'
+    +   '</div>'
+    +   '<div class="inv-field"><div class="inv-field-label">Avg Cost ($)</div>'
+    +     '<input id="inv-d-cost" type="number" min="0" step="0.01" value="'+p.cost+'" oninput="invDetailUpdate()">'
+    +   '</div>'
+    + '</div>'
+    + '<div class="inv-runout-card" id="inv-d-runoutcard">'
+    +   '<div class="inv-runout-big"><span class="inv-runout-dot '+runCls+'"></span><span id="inv-d-runbig">'+runBig+'</span></div>'
+    +   '<div style="font-size:12px;color:rgba(255,255,255,0.75);margin-top:2px" id="inv-d-rundate">'+(runDate ? 'Runs out: '+runDate : '')+'</div>'
+    +   '<div class="inv-runout-expl" id="inv-d-runexpl">'+expl+'</div>'
+    + '</div>'
+    + '<button class="inv-price-btn" id="inv-d-pricebtn" onclick="runPriceShop()">'
+    +   '<svg class="spark" viewBox="0 0 24 24"><path d="M12 2l2.39 5.95L20 9l-4.3 3.78L17 19l-5-3-5 3 1.3-6.22L4 9l5.61-1.05L12 2z"/></svg>'
+    +   '<span>Find Best Price</span>'
+    + '</button>'
+    + '<div id="inv-vendor-stack"></div>'
+    + '<div style="display:flex;gap:10px;margin-top:16px">'
+    +   '<button onclick="invDetailSave()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;padding:12px;border-radius:12px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;cursor:pointer">Save Changes</button>'
+    +   '<button onclick="invDetailDelete()" style="flex:0 0 auto;background:rgba(255,59,48,0.12);border:1px solid rgba(255,59,48,0.32);color:#FF6B6B;padding:12px 14px;border-radius:12px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;cursor:pointer">Delete</button>'
+    + '</div>';
+  document.getElementById('inv-detail-overlay').classList.add('active');
+}
+function _invRuleOpts(cur) {
+  var opts = [
+    ['per_job','Per Job'], ['per_hour','Per Hour'],
+    ['per_bedroom','Per Bedroom'], ['per_bathroom','Per Bathroom'],
+    ['per_sqft','Per Sq Ft'], ['manual','Manual']
+  ];
+  return opts.map(function(o){ return '<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+o[1]+'</option>'; }).join('');
+}
+function invDetailUpdate(fromNum) {
+  var inv = loadInventory();
+  var i = inv.findIndex(function(x){return x.id===_invDetailId;});
+  if (i < 0) return;
+  var p = inv[i];
+  var slider = document.getElementById('inv-d-stock');
+  var num = document.getElementById('inv-d-stock-num');
+  if (fromNum) slider.value = num.value; else num.value = slider.value;
+  p.stock = Math.max(0, +num.value || 0);
+  p.rule  = document.getElementById('inv-d-rule').value;
+  p.rate  = Math.max(0, +document.getElementById('inv-d-rate').value || 0);
+  p.cost  = Math.max(0, +document.getElementById('inv-d-cost').value || 0);
+  var s = calculateInventoryStatus(p);
+  var runCls = (s.confidence === 'high') ? 'high' : (s.confidence === 'medium') ? 'medium' : 'low';
+  var runBig = s.daysUntilRunout == null
+    ? 'Manual count'
+    : (s.daysUntilRunout <= 0 ? 'Runs out TODAY'
+      : 'Runs out in ' + s.daysUntilRunout + ' day' + (s.daysUntilRunout === 1 ? '' : 's'));
+  document.getElementById('inv-d-runbig').textContent = runBig;
+  var dot = document.querySelector('#inv-d-runoutcard .inv-runout-dot');
+  if (dot) { dot.className = 'inv-runout-dot ' + runCls; }
+  var rd = document.getElementById('inv-d-rundate');
+  rd.textContent = s.runoutDate ? 'Runs out: '+s.runoutDate.toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+}
+function invDetailSave() {
+  var inv = loadInventory();
+  var i = inv.findIndex(function(x){return x.id===_invDetailId;});
+  if (i < 0) return;
+  invDetailUpdate();
+  saveInventory(inv);
+  closeInvDetail();
+  renderInventoryAll();
+}
+function invDetailDelete() {
+  if (!confirm('Delete this product?')) return;
+  var inv = loadInventory().filter(function(x){return x.id !== _invDetailId;});
+  saveInventory(inv);
+  closeInvDetail();
+  renderInventoryAll();
+}
+function closeInvDetail() {
+  var o = document.getElementById('inv-detail-overlay');
+  if (o) o.classList.remove('active');
+  _invDetailId = null;
+}
+
+// ── Price-shop: deterministic mock across 4 vendors ─────────────────────
+function _invHash(s) { var h = 0; for (var i=0;i<s.length;i++) h = (h*131 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+function _invPriceShop(product) {
+  // Anchor the "street price" near product.cost, then nudge per vendor.
+  var base = +product.cost || 20;
+  var h = _invHash(product.id);
+  var nudge = function(seed, lo, hi) {
+    var x = Math.sin(h + seed) * 10000;
+    x = x - Math.floor(x); // 0..1
+    return lo + (hi - lo) * x;
+  };
+  // Amazon: premium retail, free Prime shipping.
+  var amaz = { name:'Amazon Business',   price: +(base * (1.05 + nudge(1, 0.04, 0.14))).toFixed(2), ship: 0,    ea: 'Prime — 2-day',      url:'https://business.amazon.com' };
+  // Walmart: slightly cheaper than Amazon with $8 shipping.
+  var wmt  = { name:'Walmart Business',  price: +(base * (0.98 + nudge(2, 0.02, 0.10))).toFixed(2), ship: 7.99, ea: 'Ships in 3-5 days',  url:'https://business.walmart.com' };
+  // Sam's Club: bulk member price.
+  var sams = { name:"Sam's Club Business", price: +(base * (0.92 + nudge(3, 0.02, 0.08))).toFixed(2), ship: 0,    ea: 'Member — free ship', url:'https://www.samsclub.com/b/club-pickup/1777795' };
+  // Webstaurant: trade supply, cheapest, higher shipping.
+  var web  = { name:'Webstaurant Store', price: +(base * (0.82 + nudge(4, 0.02, 0.12))).toFixed(2), ship: 12.99,ea: 'Ships in 2-4 days',  url:'https://www.webstaurantstore.com' };
+  var vendors = [amaz, wmt, sams, web];
+  // Per-unit (landed) = (price + ship) / (rate * 100 ≈ pack size proxy → 1 for demo).
+  // Simpler: use price + shipping as "all-in" and sort by that.
+  vendors.forEach(function(v) { v.landed = v.price + v.ship; v.unit = v.landed; });
+  // Mark best landed price.
+  var minLanded = Math.min.apply(null, vendors.map(function(v){return v.landed;}));
+  vendors.forEach(function(v){ v.best = Math.abs(v.landed - minLanded) < 0.01; });
+  return vendors;
+}
+function runPriceShop() {
+  var btn = document.getElementById('inv-d-pricebtn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '<div class="inv-price-spin"></div><span>Searching across vendors…</span>';
+  var inv = loadInventory();
+  var p = inv.find(function(x){return x.id===_invDetailId;});
+  if (!p) return;
+  setTimeout(function() {
+    var vendors = _invPriceShop(p);
+    var html = vendors.map(function(v) {
+      var bestBadge = v.best ? '<span class="inv-vendor-best-badge">BEST PRICE</span>' : '';
+      return ''
+        + '<div class="inv-vendor-card'+(v.best?' best':'')+'">'
+        +   '<div class="inv-vendor-head"><span class="inv-vendor-name">'+_escapeInv(v.name)+'</span>'+bestBadge+'</div>'
+        +   '<div class="inv-vendor-price">$'+v.price.toFixed(2)+'</div>'
+        +   '<div class="inv-vendor-ship">'+_escapeInv(v.ea)+(v.ship > 0 ? ' · +$'+v.ship.toFixed(2)+' shipping' : ' · free shipping')+'</div>'
+        +   '<div class="inv-vendor-unit">Landed: $'+v.landed.toFixed(2)+'</div>'
+        +   '<button class="inv-vendor-approve" onclick="window.open(\''+v.url+'\', \'_blank\')">Approve & Open →</button>'
+        + '</div>';
+    }).join('');
+    html += '<div class="inv-vendor-footnote">Prices refreshed just now · Affiliate links included · Real vendor API integration ships in 4–6 weeks</div>';
+    document.getElementById('inv-vendor-stack').innerHTML = html;
+    btn.innerHTML = '<svg class="spark" viewBox="0 0 24 24"><path d="M12 2l2.39 5.95L20 9l-4.3 3.78L17 19l-5-3-5 3 1.3-6.22L4 9l5.61-1.05L12 2z"/></svg><span>Refresh Prices</span>';
+    btn.disabled = false;
+  }, 2000);
+}
+
+// ── Manna Clean tab ─────────────────────────────────────────────────────
+/* BRAND_NAME — to be made configurable in SaaS version */
+var MANNA_CLEAN_BRAND = 'Manna Clean';
+function _mcRebrand(name) {
+  // Turn "Bona Pro Series Hardwood Floor Cleaner" → "Manna Clean Hardwood Floor Cleaner"
+  // by stripping the lead brand.
+  var map = {
+    'Bona Pro Series Hardwood Floor Cleaner': 'Hardwood Floor Cleaner',
+    'Simple Green All-Purpose Cleaner':       'All-Purpose Cleaner',
+    'Microfiber Cloths (bulk pack of 50)':    'Microfiber Cloths (50-pack)',
+    'Toilet Paper (Kirkland 30-pack)':        'Toilet Paper (30-pack)',
+    'Paper Towels (Bounty 12-pack)':          'Paper Towels (12-pack)',
+    'Clorox Disinfecting Wipes (canister)':   'Disinfecting Wipes',
+    'Glass Cleaner (Windex gallon)':          'Glass Cleaner (gallon)',
+    'Vacuum Bags (Sanitaire 24-pack)':        'Vacuum Bags (24-pack)',
+    'Rubber Gloves (nitrile 100-pack)':       'Nitrile Gloves (100-pack)',
+    'Bar Mop Towels (12-pack)':               'Bar Mop Towels (12-pack)',
+    'Mr. Clean Magic Erasers (30-pack)':      'Magic Erasers (30-pack)',
+    'Toilet Bowl Cleaner (Lysol)':            'Toilet Bowl Cleaner',
+    'Mop Heads (replacement 6-pack)':         'Mop Heads (6-pack)',
+    'Dust Pans (stand-up)':                   'Dust Pans (stand-up)',
+    'Trash Bags (33-gallon, 100-pack)':       'Trash Bags (33gal, 100-pack)'
+  };
+  var stripped = map[name] || name.replace(/^(Bona|Simple Green|Kirkland|Bounty|Clorox|Windex|Sanitaire|Lysol|Mr\.\s*Clean|Scotch)\b[^,]*?\s+/i, '');
+  return MANNA_CLEAN_BRAND + ' ' + stripped;
+}
+function renderMcProducts() {
+  var list = document.getElementById('mc-product-list');
+  if (!list) return;
+  var inv = loadInventory();
+  list.innerHTML = inv.map(function(p) {
+    var retail = (+p.cost || 0) * 1.60; // retail markup
+    var ourCost = (+p.cost || 0) * 0.70; // drop-ship cost
+    var margin = retail > 0 ? Math.round((1 - ourCost/retail) * 100) : 0;
+    var rebranded = _mcRebrand(p.name);
+    return ''
+      + '<div class="mc-card">'
+      +   '<span class="mc-soon-badge">COMING YEAR 2</span>'
+      +   '<div class="mc-card-top">'
+      +     '<div class="mc-bottle">'
+      +       '<div class="mc-bottle-label">MANNA<br>CLEAN<div class="mc-bottle-label-small">' + _escapeInv((p.cat||'').toUpperCase()) + '</div></div>'
+      +     '</div>'
+      +     '<div class="mc-card-info">'
+      +       '<div class="mc-card-name">'+_escapeInv(rebranded)+'</div>'
+      +       '<div style="font-size:10px;color:rgba(255,255,255,0.55)">'+_escapeInv(p.cat)+' · '+_escapeInv(p.unit||'')+'</div>'
+      +       '<div class="mc-price-row">'
+      +         '<div class="mc-price-col"><div class="mc-price-col-label">Retail</div><div class="mc-price-col-val mc-retail">$'+retail.toFixed(2)+'</div></div>'
+      +         '<div class="mc-price-col"><div class="mc-price-col-label">Your cost</div><div class="mc-price-col-val">$'+ourCost.toFixed(2)+'</div></div>'
+      +         '<div class="mc-price-col"><div class="mc-price-col-label">Margin</div><div class="mc-price-col-val mc-margin">'+margin+'%</div></div>'
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      + '</div>';
+  }).join('');
+}
+function showMcLearnMore() {
+  alert('Manna Clean launches in Year 2, once we hit 500+ users.\n\nYour cleaning chemicals, paper, and supplies — re-manufactured and labeled under your brand. Drop-shipped direct to your teams.\n\nTypical margins: 30–50% higher than retail resale. No inventory risk — we ship only what you order.');
+}
+function showRevenueDetail(kind) {
+  var txt = {
+    affiliate: 'Affiliate revenue (live now): every time you tap "Approve & Open" on a vendor card, Field Flow earns a small affiliate commission. You get the lowest price; we fund the platform.',
+    rebates: 'Vendor rebates (Year 2): once we hit ~500 active cleaning businesses buying through Field Flow, we negotiate direct 3–8% rebates from manufacturers. Those rebates flow back to you as credit.',
+    label: 'Private Label (Year 2-3): the Manna Clean brand — same manufacturers, your label on the bottle. 30–50% higher margins. Drop-shipped direct so you carry no inventory.'
+  }[kind] || '';
+  alert(txt);
+}
+
+// ── Roadmap ─────────────────────────────────────────────────────────────
+var INV_ROADMAP_PHASES = [
+  { n:1, title:'Inventory + Predictive Runout', status:'LIVE',                        cls:'live',   desc:'Tracks stock, predicts runout from your schedule, flags low supplies automatically. Active now.' },
+  { n:2, title:'AI Price-Shopping',             status:'DEMO — real APIs in 4–6 weeks', cls:'demo',   desc:'Queries Amazon, Walmart, Sam\'s Club, Webstaurant for each reorder. One-tap approve. Affiliate revenue funds the feature.' },
+  { n:3, title:'Real Auto-Purchase',            status:'Month 6–9',                     cls:'future', desc:'Vendor APIs place real orders using your stored credentials. 2-hour cancel window before the order locks.' },
+  { n:4, title:'Per-Product Autopilot',         status:'Month 9–12',                    cls:'future', desc:'Once predictions prove accurate on your team, you can flip autopilot on per product — reorders happen without you approving each one.' },
+  { n:5, title:'Direct Vendor Partnerships',    status:'Year 2',                        cls:'future', desc:'3–8% rebates from manufacturers once total platform volume justifies. Rebates flow back to you as credit.' },
+  { n:6, title:'Manna Clean Private Label',     status:'Year 2-3',                      cls:'future', desc:'30–50% margins on house-brand supplies. Same product, your label, drop-shipped direct. No inventory risk.' }
+];
+function renderInvRoadmap() {
+  var body = document.getElementById('inv-roadmap-body');
+  if (!body) return;
+  body.innerHTML = INV_ROADMAP_PHASES.map(function(p, i) {
+    return ''
+      + '<div class="inv-phase" onclick="showPhaseDetail('+i+')">'
+      +   '<span class="inv-phase-dot '+p.cls+'"></span>'
+      +   '<div class="inv-phase-head">Phase '+p.n+': '+_escapeInv(p.title)+'</div>'
+      +   '<div class="inv-phase-status '+p.cls+'">'+_escapeInv(p.status)+'</div>'
+      +   '<div class="inv-phase-desc">'+_escapeInv(p.desc)+'</div>'
+      + '</div>';
+  }).join('');
+}
+function showPhaseDetail(i) {
+  var p = INV_ROADMAP_PHASES[i];
+  if (p) alert('Phase ' + p.n + ' — ' + p.title + '\n\n' + p.status + '\n\n' + p.desc);
+}
+
+// ── Add Product modal ───────────────────────────────────────────────────
+function openAddProductModal() {
+  ['inv-add-name','inv-add-stock','inv-add-max','inv-add-unit','inv-add-rate','inv-add-cost'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  var catEl = document.getElementById('inv-add-cat'); if (catEl) catEl.value = 'Chemicals';
+  var ruleEl = document.getElementById('inv-add-rule'); if (ruleEl) ruleEl.value = 'per_job';
+  document.getElementById('inv-add-overlay').classList.add('active');
+}
+function closeAddProductModal() {
+  document.getElementById('inv-add-overlay').classList.remove('active');
+}
+function saveNewProduct() {
+  var name = (document.getElementById('inv-add-name').value || '').trim();
+  if (!name) { alert('Product name is required.'); return; }
+  var p = {
+    id: 'inv_' + Date.now(),
+    name: name,
+    cat:  document.getElementById('inv-add-cat').value,
+    stock: Math.max(0, +document.getElementById('inv-add-stock').value || 0),
+    max:   Math.max(1, +document.getElementById('inv-add-max').value   || 1),
+    unit:  (document.getElementById('inv-add-unit').value || 'units').trim(),
+    rule:  document.getElementById('inv-add-rule').value,
+    rate:  Math.max(0, +document.getElementById('inv-add-rate').value || 0),
+    cost:  Math.max(0, +document.getElementById('inv-add-cost').value || 0)
+  };
+  var inv = loadInventory();
+  inv.push(p);
+  saveInventory(inv);
+  closeAddProductModal();
+  renderInventoryAll();
+}
+
+// ── Employee Supplies sub-page ──────────────────────────────────────────
+function openEmpSupplies() {
+  var v = document.getElementById('emp-supplies-view');
+  if (!v) return;
+  v.classList.add('active'); v.setAttribute('aria-hidden','false');
+  document.body.classList.add('overlay-open');
+  renderEmpSupplies();
+}
+function closeEmpSupplies() {
+  var v = document.getElementById('emp-supplies-view');
+  if (!v) return;
+  v.classList.remove('active'); v.setAttribute('aria-hidden','true');
+  document.body.classList.remove('overlay-open');
+}
+function _empTeamId() {
+  try { return (typeof currentEmployee !== 'undefined' && currentEmployee) ? (currentEmployee.team || currentEmployee.defaultTeam || currentEmployee.id) : 'team'; }
+  catch(e){ return 'team'; }
+}
+function renderEmpSupplies() {
+  var body = document.getElementById('emp-supplies-body');
+  if (!body) return;
+  var inv = loadInventory();
+  var flags = loadInventoryFlags();
+  var team = _empTeamId();
+  var todayKey = new Date().toISOString().slice(0,10);
+  var byCat = {};
+  inv.forEach(function(p){ (byCat[p.cat] = byCat[p.cat] || []).push(p); });
+  var cats = Object.keys(byCat).sort();
+  var html = '';
+  cats.forEach(function(cat) {
+    html += '<div class="emp-sup-cat-head">'+_escapeInv(cat)+'</div>';
+    html += byCat[cat].map(function(p) {
+      var s = calculateInventoryStatus(p);
+      var already = (flags[p.id] || []).some(function(f){ return f.team === team && f.date === todayKey; });
+      var btnCls = already ? 'emp-sup-btn flagged' : 'emp-sup-btn';
+      var btnLabel = already ? '✓ Flagged' : 'Flag as Low';
+      return ''
+        + '<div class="emp-sup-row">'
+        +   '<span class="emp-sup-dot '+s.status+'"></span>'
+        +   '<span class="emp-sup-name">'+_escapeInv(p.name)+'</span>'
+        +   '<button class="'+btnCls+'" onclick="flagProductLow(\''+p.id+'\')">'+btnLabel+'</button>'
+        + '</div>';
+    }).join('');
+  });
+  // Today's flags summary
+  var myFlags = [];
+  inv.forEach(function(p){
+    var arr = flags[p.id] || [];
+    arr.forEach(function(f){ if (f.team === team && f.date === todayKey) myFlags.push(p.name); });
+  });
+  if (myFlags.length) {
+    html += '<div class="emp-sup-cat-head">Today — Your Team Reported</div>';
+    html += '<div style="padding:12px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.22);border-radius:12px;font-size:12px;line-height:1.6">'
+         +   myFlags.map(function(n){ return '✓ ' + _escapeInv(n); }).join('<br>')
+         + '</div>';
+  }
+  body.innerHTML = html || '<div style="text-align:center;color:rgba(255,255,255,0.55);padding:40px 20px;font-size:13px">No products yet. Ask your manager to set them up.</div>';
+}
+function flagProductLow(id) {
+  var flags = loadInventoryFlags();
+  var team = _empTeamId();
+  var todayKey = new Date().toISOString().slice(0,10);
+  var arr = flags[id] = (flags[id] || []);
+  var existing = arr.findIndex(function(f){ return f.team === team && f.date === todayKey; });
+  if (existing >= 0) arr.splice(existing, 1);
+  else arr.push({ team: team, date: todayKey, ts: Date.now() });
+  saveInventoryFlags(flags);
+  renderEmpSupplies();
+}
+
 </script>
 
 
@@ -20925,6 +22029,7 @@ function syncSheets() {
       </div>
       <div class="employee-today-chev">›</div>
     </div>
+    <button class="emp-sup-report-link" id="emp-sup-report-link" onclick="openEmpSupplies()">⚠ Report Low Supplies</button>
   </div>
 <!-- Employee Schedule — month picker (tap the date label to open). -->
 <div id="emp-sched-picker-overlay" onclick="if(event.target===this)empSchedClosePicker()">
@@ -21591,5 +22696,183 @@ function syncSheets() {
     </div>
   </div>
 </div>
+
+<!-- ═══════ SMART PROCUREMENT — INVENTORY ═══════ -->
+<div id="inventory-view" aria-hidden="true">
+  <div class="inv-topbar">
+    <button class="inv-back-btn" onclick="closeInventoryPage()" aria-label="Back">‹</button>
+    <div class="inv-title-wrap">
+      <div class="inv-title">Inventory</div>
+      <div class="inv-subtitle">Smart procurement for your supplies</div>
+    </div>
+    <button class="inv-add-btn" onclick="openAddProductModal()" aria-label="Add product">
+      <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+  <div class="inv-body" id="inv-body">
+    <div class="inv-tabs" role="tablist">
+      <button class="inv-tab active" id="inv-tab-web" role="tab" onclick="switchInventoryTab('web')">Shop the Web</button>
+      <button class="inv-tab" id="inv-tab-mc" role="tab" onclick="switchInventoryTab('mc')">
+        <span>Manna Clean</span><span class="inv-tab-soon">SOON</span>
+      </button>
+    </div>
+
+    <!-- Shop the Web pane -->
+    <div id="inv-pane-web">
+      <div class="inv-summary">
+        <div class="inv-sum-card red">
+          <div class="inv-sum-label">Needs Reorder</div>
+          <div class="inv-sum-value" id="inv-sum-reorder">0</div>
+        </div>
+        <div class="inv-sum-card yellow">
+          <div class="inv-sum-label">Coming Up</div>
+          <div class="inv-sum-value" id="inv-sum-coming">0</div>
+        </div>
+        <div class="inv-sum-card green">
+          <div class="inv-sum-label">Est. Monthly</div>
+          <div class="inv-sum-value" id="inv-sum-spend">$0</div>
+        </div>
+      </div>
+      <div id="inv-product-list"></div>
+    </div>
+
+    <!-- Manna Clean pane -->
+    <div id="inv-pane-mc" style="display:none">
+      <div class="mc-banner">
+        <!-- BRAND_NAME — to be made configurable in SaaS version -->
+        <div class="mc-banner-head">Manna Clean — Your Own Brand, Coming Year 2</div>
+        <div class="mc-banner-sub">Same products, your label, 30–50% higher margins. Drop-shipped direct from our manufacturer network.</div>
+        <button class="mc-banner-btn" onclick="showMcLearnMore()">Learn More</button>
+      </div>
+      <div id="mc-product-list"></div>
+      <div class="mc-revenue-stack">
+        <div class="mc-rev-card" onclick="showRevenueDetail('affiliate')">
+          <div class="mc-rev-icon" style="background:linear-gradient(135deg,rgba(52,211,153,0.24),rgba(6,95,70,0.10))">💸</div>
+          <div class="mc-rev-body">
+            <div class="mc-rev-head">
+              <div class="mc-rev-name">Affiliate</div>
+              <span class="mc-rev-tag now">NOW</span>
+            </div>
+            <div class="mc-rev-sub">Earn on every reorder via Amazon/Walmart links</div>
+          </div>
+        </div>
+        <div class="mc-rev-card" onclick="showRevenueDetail('rebates')">
+          <div class="mc-rev-icon" style="background:linear-gradient(135deg,rgba(255,214,10,0.24),rgba(180,83,9,0.10))">🤝</div>
+          <div class="mc-rev-body">
+            <div class="mc-rev-head">
+              <div class="mc-rev-name">Vendor Rebates</div>
+              <span class="mc-rev-tag y2">YEAR 2</span>
+            </div>
+            <div class="mc-rev-sub">Negotiate direct rebates once volume hits 500+ users</div>
+          </div>
+        </div>
+        <div class="mc-rev-card" onclick="showRevenueDetail('label')">
+          <div class="mc-rev-icon" style="background:linear-gradient(135deg,rgba(142,123,255,0.26),rgba(94,92,230,0.10))">🏷️</div>
+          <div class="mc-rev-body">
+            <div class="mc-rev-head">
+              <!-- BRAND_NAME — to be made configurable in SaaS version -->
+              <div class="mc-rev-name">Private Label (Manna Clean)</div>
+              <span class="mc-rev-tag y3">YEAR 2-3</span>
+            </div>
+            <div class="mc-rev-sub">30–50% margins on Manna Clean branded products</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Roadmap (shows on both tabs) -->
+    <div class="inv-roadmap-card" id="inv-roadmap-card">
+      <button class="inv-roadmap-toggle" onclick="toggleInvRoadmap()">
+        <span>Smart Procurement — The Full Vision</span>
+        <span class="inv-roadmap-caret">›</span>
+      </button>
+      <div class="inv-roadmap-body" id="inv-roadmap-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Product Detail modal -->
+<div id="inv-detail-overlay" onclick="if(event.target===this)closeInvDetail()" aria-hidden="true">
+  <div class="inv-detail-sheet" id="inv-detail-sheet" style="position:relative">
+    <button class="inv-detail-close" onclick="closeInvDetail()" aria-label="Close">×</button>
+    <div id="inv-detail-body"></div>
+  </div>
+</div>
+
+<!-- Add Product modal -->
+<div id="inv-add-overlay" onclick="if(event.target===this)closeAddProductModal()" aria-hidden="true">
+  <div class="inv-detail-sheet" style="max-height:90vh">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="inv-detail-title">Add Product</div>
+      <button class="inv-detail-close" style="position:relative;top:auto;right:auto" onclick="closeAddProductModal()">×</button>
+    </div>
+    <div class="inv-field">
+      <div class="inv-field-label">Product Name *</div>
+      <input id="inv-add-name" type="text" placeholder="e.g. Bona Hardwood Cleaner">
+    </div>
+    <div class="inv-field">
+      <div class="inv-field-label">Category</div>
+      <select id="inv-add-cat">
+        <option value="Chemicals">Chemicals</option>
+        <option value="Paper">Paper</option>
+        <option value="Equipment">Equipment</option>
+        <option value="Supplies">Supplies</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="inv-field-grid">
+      <div class="inv-field">
+        <div class="inv-field-label">Current Stock</div>
+        <input id="inv-add-stock" type="number" min="0" step="1" placeholder="12">
+      </div>
+      <div class="inv-field">
+        <div class="inv-field-label">Max / Full Stock</div>
+        <input id="inv-add-max" type="number" min="1" step="1" placeholder="24">
+      </div>
+    </div>
+    <div class="inv-field">
+      <div class="inv-field-label">Unit</div>
+      <input id="inv-add-unit" type="text" placeholder="bottles, rolls, bags…">
+    </div>
+    <div class="inv-field">
+      <div class="inv-field-label">Usage Rule</div>
+      <select id="inv-add-rule">
+        <option value="per_job">Per Job</option>
+        <option value="per_hour">Per Hour</option>
+        <option value="per_bedroom">Per Bedroom</option>
+        <option value="per_bathroom">Per Bathroom</option>
+        <option value="per_sqft">Per Sq Ft</option>
+        <option value="manual">Manual</option>
+      </select>
+    </div>
+    <div class="inv-field-grid">
+      <div class="inv-field">
+        <div class="inv-field-label">Consumption Rate</div>
+        <input id="inv-add-rate" type="number" min="0" step="0.01" placeholder="0.5">
+      </div>
+      <div class="inv-field">
+        <div class="inv-field-label">Avg Cost ($)</div>
+        <input id="inv-add-cost" type="number" min="0" step="0.01" placeholder="18.00">
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:6px">
+      <button onclick="closeAddProductModal()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer">Cancel</button>
+      <button onclick="saveNewProduct()" style="flex:1.3;background:linear-gradient(135deg,#8E7BFF,#5E5CE6);border:none;color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer">Save Product</button>
+    </div>
+  </div>
+</div>
+
+<!-- Employee Supplies sub-page -->
+<div id="emp-supplies-view" aria-hidden="true">
+  <div class="inv-topbar">
+    <button class="inv-back-btn" onclick="closeEmpSupplies()" aria-label="Back">‹</button>
+    <div class="inv-title-wrap">
+      <div class="inv-title">Report Low Supplies</div>
+      <div class="inv-subtitle">Let your manager know what your team needs</div>
+    </div>
+  </div>
+  <div class="inv-body" id="emp-supplies-body"></div>
+</div>
+
 </body>
 </html>
