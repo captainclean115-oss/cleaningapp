@@ -4560,8 +4560,23 @@ function showMessagesSubTab(tab) {
 }
 
 function getEmployeeById(id) {
+  // Check the hardcoded roster first (canonical), then the user-added
+  // staff list in localStorage. Fixes the "chat shows as e_<timestamp>"
+  // inbox bug for employees created through the admin UI / application
+  // flow — those IDs aren't in EMPLOYEE_ROSTER.
   var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
-  return roster.find(function(e){ return e.id === id; });
+  var hit = roster.find(function(e){ return e.id === id; });
+  if (hit) return hit;
+  try {
+    var staff = JSON.parse(localStorage.getItem('emp_roster') || '[]');
+    var m = staff.find(function(e){ return e.id === id; });
+    if (m) {
+      // Normalize field names — admin-form stores `team`, roster uses
+      // `defaultTeam`. Expose both so downstream code keeps working.
+      return Object.assign({}, m, { defaultTeam: m.team || m.defaultTeam || '' });
+    }
+  } catch(e){}
+  return null;
 }
 
 function staffUnreadForAdmin(thread) {
@@ -4657,9 +4672,13 @@ function formatRelativeTime(ts) {
 
 function translatedText(msg, targetLang) {
   if (!msg) return '';
-  if (msg.lang === targetLang) return msg.text;
+  // Prefer an explicit translation when present — the sender's `lang` tag is
+  // only their UI preference and can drift from what they actually typed.
+  // Since we now always populate msg.tx[targetLang] via an auto-detect pivot,
+  // that value is more trustworthy than the raw text when langs "match".
   if (msg.tx && msg.tx[targetLang]) return msg.tx[targetLang];
-  return msg.text; // fall back to original until live translation lands
+  if (msg.lang === targetLang) return msg.text;
+  return msg.text;
 }
 
 var _currentStaffChatId = null;
@@ -4748,12 +4767,14 @@ async function sendStaffReplyAdmin() {
   var thread = chats[_currentStaffChatId];
   if (!thread) return;
   var msg = { id: 'a' + Date.now(), from: 'admin', lang: adminLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Pre-translate to every supported target so whoever reads the message
-  // (employee, admin, or admin in a different chat-lang later) always gets
-  // it in their preferred language without another round-trip.
-  var targets = ['en', 'es', 'pt', 'cv'].filter(function(l){ return l !== adminLang; });
+  // Auto-detect source via English pivot — adminLang is the UI preference, not
+  // necessarily what was actually typed. translateToEnglish uses Claude
+  // auto-detect so the pivot is faithful no matter what got typed.
+  var enText = await translateToEnglish(text);
+  msg.tx.en = enText;
+  var targets = ['es', 'pt', 'cv'].filter(function(l){ return l !== adminLang; });
   await Promise.all(targets.map(async function(lang) {
-    msg.tx[lang] = await translateChatMessage(text, adminLang, lang);
+    msg.tx[lang] = await translateChatMessage(enText, 'en', lang);
   }));
   thread.msgs.push(msg);
   thread.lastReadAdmin = Date.now();
@@ -5207,14 +5228,17 @@ async function sendStaffReplyEmp() {
   if (!thread) return;
   var empLang = thread.empLang || 'en';
   var msg = { id: 's' + Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Pre-translate into every other supported language. The admin's chat-lang
-  // preference is independent of this employee's UI language, so translating
-  // ONLY to English (old behavior) broke the case where the admin reads in
-  // Spanish/PT/CV. Fanning out to all targets here guarantees whoever reads
-  // the message sees it in their preferred tongue.
-  var targets = ['en', 'es', 'pt', 'cv'].filter(function(l){ return l !== empLang; });
+  // Auto-detect the real source language by pivoting through English. The
+  // employee's UI-language setting can drift from what they actually type
+  // (e.g. thread empLang defaulted to 'en' but they typed "Hola"), so trusting
+  // empLang as the translation source dropped messages. translateToEnglish
+  // uses Claude auto-detect, so it returns faithful English regardless of
+  // what language was typed. We then fan out from English to every other lang.
+  var enText = await translateToEnglish(text);
+  msg.tx.en = enText;
+  var targets = ['es', 'pt', 'cv'].filter(function(l){ return l !== empLang; });
   await Promise.all(targets.map(async function(lang) {
-    msg.tx[lang] = await translateChatMessage(text, empLang, lang);
+    msg.tx[lang] = await translateChatMessage(enText, 'en', lang);
   }));
   thread.msgs.push(msg);
   var allChats = loadStaffChats();
