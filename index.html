@@ -1426,14 +1426,12 @@ body.home-dragging, body.home-dragging * {
   background: radial-gradient(circle at 30% 30%, #E4D7FF 0%, #A592FF 50%, #6C6CF0 100%);
 }
 
-/* Claire dedicated view — fixed full-screen (above topbar, below bottom-nav) */
+/* Claire dedicated view — fixed full-screen. The dock auto-hides when any
+   non-home tab is active (body:not(.home-active) rule), so Claire takes the
+   whole viewport. The input row carries its own safe-bottom padding. */
 #claire-view {
   display: none;
-  position: fixed; top: 0; left: 0; right: 0;
-  /* 60px = bottom-nav height; +10px extra clearance so the text input
-     doesn't visually overlap the tab labels in mobile Safari where the
-     browser's dynamic toolbar eats a few pixels under safe-bottom. */
-  bottom: calc(110px + env(safe-area-inset-bottom));
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   flex-direction: column;
   background: var(--bg);
   z-index: 210;
