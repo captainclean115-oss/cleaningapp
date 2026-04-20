@@ -4705,16 +4705,21 @@ function renderStaffChatMessages() {
       + '</div>';
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
-  // Fill in missing translations for staff messages on the fly, then re-render.
+  // Fill in missing translations for ANY message (staff OR admin) that
+  // doesn't have a translation into the admin's currently-selected chat
+  // language. Handles history written before the two-way-translate fix
+  // landed, plus admins who switch chat-lang mid-conversation.
   (async function(){
     var dirty = false;
     for (var i = 0; i < thread.msgs.length; i++) {
       var m = thread.msgs[i];
-      if (m.from !== 'staff') continue;
       if (!m.tx) m.tx = {};
-      if (!m.tx[adminLang] && adminLang === 'en') {
-        var en = await translateToEnglish(m.text);
-        if (en && en !== m.text) { m.tx.en = en; dirty = true; }
+      if (m.lang === adminLang) continue; // already in the right lang
+      if (m.tx[adminLang]) continue;       // already translated
+      var translated = await translateChatMessage(m.text, m.lang || 'en', adminLang);
+      if (translated && translated !== m.text) {
+        m.tx[adminLang] = translated;
+        dirty = true;
       }
     }
     if (dirty) {
@@ -4741,10 +4746,13 @@ async function sendStaffReplyAdmin() {
   var thread = chats[_currentStaffChatId];
   if (!thread) return;
   var msg = { id: 'a' + Date.now(), from: 'admin', lang: adminLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Translate to staff language if different
-  if (thread.empLang !== adminLang) {
-    msg.tx[thread.empLang] = await translateChatMessage(text, adminLang, thread.empLang);
-  }
+  // Pre-translate to every supported target so whoever reads the message
+  // (employee, admin, or admin in a different chat-lang later) always gets
+  // it in their preferred language without another round-trip.
+  var targets = ['en', 'es', 'pt', 'cv'].filter(function(l){ return l !== adminLang; });
+  await Promise.all(targets.map(async function(lang) {
+    msg.tx[lang] = await translateChatMessage(text, adminLang, lang);
+  }));
   thread.msgs.push(msg);
   thread.lastReadAdmin = Date.now();
   saveStaffChats(chats);
@@ -4818,6 +4826,29 @@ function renderEmpChat() {
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
   updateEmpChatBadge();
+  // Backfill: any admin (or legacy) message that isn't yet translated into
+  // this employee's language gets translated here and saved. Covers history
+  // written before the two-way-translate fix.
+  (async function(){
+    var dirty = false;
+    for (var i = 0; i < thread.msgs.length; i++) {
+      var m = thread.msgs[i];
+      if (m.from === 'ai') continue;              // AI already replies in empLang
+      if (!m.tx) m.tx = {};
+      if (m.lang === empLang) continue;
+      if (m.tx[empLang]) continue;
+      var translated = await translateChatMessage(m.text, m.lang || 'en', empLang);
+      if (translated && translated !== m.text) {
+        m.tx[empLang] = translated;
+        dirty = true;
+      }
+    }
+    if (dirty) {
+      var all = loadStaffChats();
+      if (currentEmployee) { all[currentEmployee.id] = thread; saveStaffChats(all); }
+      renderEmpChat();
+    }
+  })();
 }
 
 // ── AI ASSISTANT (employee side) ──
@@ -5174,10 +5205,15 @@ async function sendStaffReplyEmp() {
   if (!thread) return;
   var empLang = thread.empLang || 'en';
   var msg = { id: 's' + Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Always attempt a to-English translation for the admin side — handles the case
-  // where an employee whose UI is configured as English actually types in Spanish/PT/CV.
-  // Claude auto-detects the source language when we say "translate to English".
-  msg.tx.en = await translateToEnglish(text);
+  // Pre-translate into every other supported language. The admin's chat-lang
+  // preference is independent of this employee's UI language, so translating
+  // ONLY to English (old behavior) broke the case where the admin reads in
+  // Spanish/PT/CV. Fanning out to all targets here guarantees whoever reads
+  // the message sees it in their preferred tongue.
+  var targets = ['en', 'es', 'pt', 'cv'].filter(function(l){ return l !== empLang; });
+  await Promise.all(targets.map(async function(lang) {
+    msg.tx[lang] = await translateChatMessage(text, empLang, lang);
+  }));
   thread.msgs.push(msg);
   var allChats = loadStaffChats();
   allChats[currentEmployee.id] = thread;
