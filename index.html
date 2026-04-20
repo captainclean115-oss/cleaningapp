@@ -48,28 +48,26 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
-html, body {
+html {
   margin: 0; padding: 0;
   min-height: 100vh;
   min-height: 100dvh;
-  overscroll-behavior: none;
-  /* Background rendered by a fixed ::before layer below — more reliable on
-     iOS Safari than background-attachment:fixed, which intermittently drops
-     out mid-scroll and leaves black. */
-  background: #0a0a18;
-}
-/* One fixed wallpaper layer behind everything. Always fills the true
-   viewport so scrolling in any sub-page can't reveal a black gap. */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
+  /* Wallpaper lives on html itself — iOS Safari paints html background
+     across the entire viewport automatically (it IS the viewport). More
+     reliable than body::before with z-index:-1 or background-attachment:
+     fixed, both of which dropped out mid-scroll on the employee portal. */
   background:
     radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
     radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.40) 0%, transparent 60%),
     linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  overscroll-behavior: none;
+}
+body {
+  margin: 0; padding: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: transparent;
+  overscroll-behavior: none;
 }
 body {
   font-family: 'DM Sans', sans-serif;
@@ -280,8 +278,10 @@ body {
 
 .cal-header {
   position: sticky; top: 0; z-index: 99;
-  background: rgba(15,17,23,0.95);
-  backdrop-filter: blur(20px);
+  /* Solid dark background instead of backdrop-filter: blur() — the blur
+     re-computes every scroll frame and was the main cause of the
+     sticky-feeling vertical scroll on Schedule. */
+  background: #0d0d1f;
   padding: calc(var(--safe-top) + 12px) 16px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -2417,7 +2417,9 @@ select.field-input { appearance: none; }
 /* ── BOTTOM NAV ── */
 .bottom-nav {
   /* Floating translucent iOS-style glass dock — reveals the wallpaper
-     through a blur instead of sitting as a solid bar. */
+     through a blur instead of sitting as a solid bar. Only rendered on
+     the home screen — when any feature view is open, the dock hides and
+     the feature gets the whole screen. Swipe-right returns to home. */
   position: fixed;
   bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
   left: 16px; right: 16px;
@@ -2434,6 +2436,12 @@ select.field-input { appearance: none; }
      modals up to ~350). Anything that must cover the dock must exceed 600. */
   z-index: 500;
 }
+/* Dock is for the home screen only. Inside any feature view OR any
+   overlay OR the employee portal, give the feature the whole screen —
+   iPhone behavior. */
+body:not(.home-active) .bottom-nav,
+body.overlay-open .bottom-nav,
+body.in-portal .bottom-nav { display: none !important; }
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   gap: 3px; background: none; border: none; cursor: pointer;
@@ -3670,6 +3678,9 @@ function jobsForDate(d) {
 
 function showTab(tab) {
   sessionStorage.setItem('cc_tab', tab);
+  // Dock is only visible on the home screen — iOS-style. Swipe-right goes
+  // back to home from any feature view, which re-adds the class.
+  document.body.classList.toggle('home-active', tab === 'home');
   var homeView = document.getElementById('home-view');
   if (homeView) homeView.classList.toggle('active', tab === 'home');
   if (tab === 'home') { renderHomeScreen(); }
@@ -4417,10 +4428,12 @@ var FILES_LIST = [
 function openFiles() {
   renderFilesGrid();
   document.getElementById('files-view').style.display = 'flex';
+  document.body.classList.add('overlay-open');
 }
 
 function closeFiles() {
   document.getElementById('files-view').style.display = 'none';
+  document.body.classList.remove('overlay-open');
 }
 
 function renderFilesGrid() {
@@ -5773,6 +5786,7 @@ function openContentView() {
   var btn = document.getElementById('content-post-btn');
   if (btn) { btn.textContent = 'Post now'; btn.onclick = contentPost; }
   document.getElementById('content-view').classList.add('active');
+  document.body.classList.add('overlay-open');
   contentSwitchTab('create');
   contentReset();
   contentRenderSocials();
@@ -5785,6 +5799,7 @@ function openContentViewAsEmployee(empId, empName) {
   var btn = document.getElementById('content-post-btn');
   if (btn) { btn.textContent = '📤 Submit for approval'; btn.onclick = contentEmployeeSubmit; }
   document.getElementById('content-view').classList.add('active');
+  document.body.classList.add('overlay-open');
   contentSwitchTab('create');
   contentReset();
   // Employees don't pick platforms — admin does on approval
@@ -5794,6 +5809,7 @@ function openContentViewAsEmployee(empId, empName) {
 
 function closeContentView() {
   document.getElementById('content-view').classList.remove('active');
+  document.body.classList.remove('overlay-open');
   contentReset();
 }
 
@@ -7196,7 +7212,18 @@ document.addEventListener('click', function(e) {
       if (el.id === 'home-pages-wrap') return true;
       if (el.id === 'home-view') return false;
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return true;
+      // Known horizontal-scroll strips where a rightward swipe is a scroll,
+      // not a go-home gesture. Matching by class name is more reliable than
+      // the computed-style check below, which fails if the strip happens
+      // to be scrolled fully left at touchstart.
+      if (el.classList.contains('week-strip')
+       || el.classList.contains('filter-scroll')
+       || el.classList.contains('route-team-tabs')
+       || el.classList.contains('msg-types')
+       || el.classList.contains('home-pages-wrap')
+       || el.classList.contains('emp-sched-datebar')) return true;
       var cs = window.getComputedStyle(el);
+      // Any horizontally-scrollable element with actual overflow.
       if (cs && (cs.overflowX === 'auto' || cs.overflowX === 'scroll') && el.scrollWidth > el.clientWidth) return true;
       el = el.parentElement;
     }
@@ -7298,11 +7325,13 @@ function openPaymentsDemo() {
   var v = document.getElementById('payments-view');
   if (!v) return;
   v.style.display = 'flex';
+  document.body.classList.add('overlay-open');
   renderPaymentsView();
 }
 function closePaymentsDemo() {
   var v = document.getElementById('payments-view');
   if (v) v.style.display = 'none';
+  document.body.classList.remove('overlay-open');
 }
 function renderPaymentsView() {
   var body = document.getElementById('payments-body');
@@ -14189,6 +14218,7 @@ function appUnlockEmployee(emp) {
   // Show portal screen, hide login screen
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('portal-screen').style.display = 'block';
+  document.body.classList.add('in-portal');
   // Refresh submitted forms with latest manager decisions
   submittedForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
   setTimeout(() => renderPortalSubmittedForms(), 100);
@@ -14297,6 +14327,7 @@ function logout() {
   if (panel) { panel.classList.remove('active'); panel.style.display = ''; }
   const portalScreen = document.getElementById('portal-screen');
   if (portalScreen) portalScreen.style.display = 'none';
+  document.body.classList.remove('in-portal');
   const loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'flex';
   // Restore manager chrome
@@ -16034,6 +16065,7 @@ function toggleAppDetail(idx) {
 function loginSuccess() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('portal-screen').style.display = 'block';
+  document.body.classList.add('in-portal');
   // Refresh submitted forms with latest manager decisions
   submittedForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
   setTimeout(() => renderPortalSubmittedForms(), 100);
@@ -16073,6 +16105,7 @@ function portalLogout() {
   updatePinDots();
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('portal-screen').style.display = 'none';
+  document.body.classList.remove('in-portal');
   document.getElementById('login-error').textContent = '';
 }
 
@@ -16179,15 +16212,26 @@ function _seedDemoRewardPoints() {
     if (!roster.length) return;
     var map = JSON.parse(localStorage.getItem('content_points') || '{}');
     var seeds = [285, 220, 175, 150, 130, 110, 95, 80, 65, 55, 45, 40, 30, 25, 20, 15, 10, 5, 5, 0];
+    // If everyone currently sits at 0 (fresh install, wiped storage, or a
+    // prior seeder that wrote zeroes), reseed with demo values. Preserves
+    // real earnings — once anyone has > 0 points, this branch no-ops.
+    var anyPositive = roster.some(function(emp){ return (map[emp.id] || 0) > 0; });
     var changed = false;
-    roster.forEach(function(emp, i) {
-      // Only seed employees that truly have no entry (0 from a previous
-      // seed or real earnings is preserved). Missing => seed.
-      if (typeof map[emp.id] === 'undefined' || map[emp.id] === null) {
+    if (!anyPositive) {
+      roster.forEach(function(emp, i) {
         map[emp.id] = seeds[i % seeds.length];
-        changed = true;
-      }
-    });
+      });
+      changed = true;
+    } else {
+      // Normal top-up: fill in any brand-new employees that don't have
+      // an entry yet without touching existing balances.
+      roster.forEach(function(emp, i) {
+        if (typeof map[emp.id] === 'undefined' || map[emp.id] === null) {
+          map[emp.id] = seeds[i % seeds.length];
+          changed = true;
+        }
+      });
+    }
     if (changed) localStorage.setItem('content_points', JSON.stringify(map));
   } catch(e){}
 }
