@@ -4335,7 +4335,8 @@ function renderCal() {
       const hasJobs = dJobs.length > 0;
       const dRev = getDayRevenue(dateKey(d));
       const revStr = dRev > 0 ? '$' + (dRev >= 1000 ? (dRev/1000).toFixed(1)+'k' : dRev.toLocaleString()) : '';
-      stripHtml += '<div class="week-day'+(isActive?' active':'')+(isTd&&!isActive?' today':'')+(hasJobs?' has-jobs':'')+'" data-ts="'+d.getTime()+'" onclick="calDate=new Date('+d.getTime()+');renderCal()">'
+      var _wxIso = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      stripHtml += '<div class="week-day'+(isActive?' active':'')+(isTd&&!isActive?' today':'')+(hasJobs?' has-jobs':'')+'" data-ts="'+d.getTime()+'" data-scroller-date="'+_wxIso+'" onclick="calDate=new Date('+d.getTime()+');renderCal()">'
         +'<span class="wd-name">'+DAYS[d.getDay()]+'</span>'
         +'<span class="wd-num">'+d.getDate()+'</span>'
         +'<span style="font-size:9px;color:'+(isActive?'rgba(255,255,255,0.8)':'var(--green)')+'">'+revStr+'</span>'
@@ -4537,6 +4538,7 @@ function renderCal() {
     bodyHtml += '</div>';
 
     document.getElementById('cal-body').innerHTML = stripHtml + bodyHtml;
+    try { if (typeof applyWeatherToScroller === 'function') applyWeatherToScroller(); } catch(e){}
 
     // Scroll strip to active day + timeline to 9am
     function scrollTimeline() {
@@ -21163,6 +21165,106 @@ function flagProductLow(id) {
   else arr.push({ team: team, date: todayKey, ts: Date.now() });
   saveInventoryFlags(flags);
   renderEmpSupplies();
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// WEATHER — tiny addition to the Schedule date scroller
+// Silent no-op when no API key is configured. Never throws. Never touches
+// DOM outside .week-strip cells. Runs only when renderCal fires.
+// ═══════════════════════════════════════════════════════════════════════
+const WEATHER_API_KEY = 'PASTE_KEY_HERE';
+const WEATHER_LOCATION = { lat: 42.0959, lon: -70.9495 };
+const WEATHER_UNITS = 'imperial';
+const WEATHER_CACHE_KEY = 'weather_cache_v1';
+const WEATHER_CACHE_TTL = 3 * 60 * 60 * 1000;
+
+async function fetchWeatherForecast() {
+  try {
+    var cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
+    if (cached && (Date.now() - cached.timestamp) < WEATHER_CACHE_TTL) {
+      return cached.data;
+    }
+  } catch (e) {}
+
+  if (!WEATHER_API_KEY || WEATHER_API_KEY === 'PASTE_KEY_HERE') return null;
+
+  try {
+    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + WEATHER_LOCATION.lat
+            + '&lon=' + WEATHER_LOCATION.lon + '&units=' + WEATHER_UNITS
+            + '&appid=' + WEATHER_API_KEY;
+    var res = await fetch(url);
+    if (!res.ok) return null;
+    var json = await res.json();
+
+    var byDay = {};
+    (json.list || []).forEach(function(entry) {
+      if (!entry.dt_txt) return;
+      var parts = entry.dt_txt.split(' ');
+      var date = parts[0];
+      var hour = parseInt((parts[1] || '00:00:00').split(':')[0], 10);
+      if (!byDay[date] || Math.abs(hour - 12) < Math.abs(byDay[date]._hour - 12)) {
+        byDay[date] = {
+          temp: Math.round(entry.main.temp),
+          condition: (entry.weather && entry.weather[0] && entry.weather[0].main) || 'Clouds',
+          _hour: hour
+        };
+      }
+    });
+
+    try {
+      localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: byDay }));
+    } catch (e) {}
+
+    return byDay;
+  } catch (e) {
+    console.warn('Weather fetch failed:', e);
+    return null;
+  }
+}
+
+function weatherGlyph(condition) {
+  var common = 'width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+  switch (condition) {
+    case 'Clear':
+      return '<svg ' + common + '><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
+    case 'Clouds':
+      return '<svg ' + common + '><path d="M17.5 19a4.5 4.5 0 1 0 0-9h-1.8A7 7 0 1 0 4 15.9"/></svg>';
+    case 'Rain':
+    case 'Drizzle':
+      return '<svg ' + common + '><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 19v1M8 14v1M16 19v1M16 14v1M12 21v1M12 16v1"/></svg>';
+    case 'Snow':
+      return '<svg ' + common + '><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01M8 19h.01M12 17h.01M12 21h.01M16 15h.01M16 19h.01"/></svg>';
+    case 'Thunderstorm':
+      return '<svg ' + common + '><path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/><polyline points="13 11 9 17 15 17 11 23"/></svg>';
+    case 'Mist':
+    case 'Fog':
+    case 'Haze':
+      return '<svg ' + common + '><path d="M3 8h18M3 12h18M3 16h18"/></svg>';
+    default:
+      return '<svg ' + common + '><path d="M17.5 19a4.5 4.5 0 1 0 0-9h-1.8A7 7 0 1 0 4 15.9"/></svg>';
+  }
+}
+
+async function applyWeatherToScroller() {
+  var forecast;
+  try { forecast = await fetchWeatherForecast(); } catch (e) { return; }
+  if (!forecast) return;
+  var cells = document.querySelectorAll('[data-scroller-date]');
+  if (!cells.length) return;
+  cells.forEach(function(cell) {
+    var dateStr = cell.getAttribute('data-scroller-date');
+    if (!dateStr) return;
+    var wx = forecast[dateStr];
+    var existing = cell.querySelector('.wx-inline');
+    if (existing) existing.remove();
+    if (!wx) return;
+    var wxEl = document.createElement('div');
+    wxEl.className = 'wx-inline';
+    wxEl.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:3px;margin-top:2px;font-size:10px;font-weight:500;color:rgba(255,255,255,0.7);';
+    wxEl.innerHTML = weatherGlyph(wx.condition) + '<span>' + wx.temp + '\u00B0</span>';
+    cell.appendChild(wxEl);
+  });
 }
 
 </script>
