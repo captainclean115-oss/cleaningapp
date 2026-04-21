@@ -2964,6 +2964,91 @@ body.in-portal .bottom-nav { display: none !important; }
   border-radius: 12px; cursor: pointer; text-align: center;
 }
 
+/* ═════ ADMIN SCREEN (tight build — manager only) ═════ */
+#admin-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
+              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.40) 0%, transparent 60%),
+              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  flex-direction: column; overflow: hidden;
+  color: #fff; font-family: 'DM Sans', sans-serif;
+}
+#admin-view.active { display: flex; }
+.admin-topbar {
+  flex: 0 0 auto;
+  padding: calc(var(--safe-top) + 12px) 16px 10px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(10,10,32,0.70);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.admin-back {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: #fff; width: 34px; height: 34px; border-radius: 50%;
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.admin-title-wrap { flex: 1; text-align: center; }
+.admin-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.admin-sub   { font-size: 12px; color: rgba(255,255,255,0.55); }
+.admin-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 14px 14px calc(env(safe-area-inset-bottom) + 40px);
+}
+.admin-tabs {
+  display: flex; gap: 4px; padding: 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px; margin-bottom: 14px;
+}
+.admin-tab {
+  flex: 1; padding: 9px 10px;
+  background: transparent; border: none;
+  color: rgba(255,255,255,0.65);
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+  border-radius: 10px; cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.admin-tab.active { background: #fff; color: #0a0a20; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+.admin-sec {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px; padding: 6px 0;
+  margin-bottom: 12px;
+}
+.admin-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.admin-row:first-child { border-top: none; }
+.admin-row-label { flex: 1; min-width: 0; font-size: 15px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.admin-switch { position: relative; display: inline-block; width: 46px; height: 28px; flex-shrink: 0; }
+.admin-switch input { opacity: 0; width: 0; height: 0; }
+.admin-switch-track {
+  position: absolute; inset: 0; cursor: pointer;
+  background: rgba(255,255,255,0.18);
+  border-radius: 14px;
+  transition: background 0.25s;
+}
+.admin-switch-track::before {
+  content: ''; position: absolute;
+  left: 2px; top: 2px;
+  width: 24px; height: 24px;
+  background: #fff; border-radius: 50%;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.30);
+}
+.admin-switch input:checked + .admin-switch-track { background: #30D158; }
+.admin-switch input:checked + .admin-switch-track::before { transform: translateX(18px); }
+.admin-footnote {
+  font-size: 12px; color: rgba(255,255,255,0.50);
+  text-align: center; padding: 14px 10px; line-height: 1.6;
+}
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -3056,7 +3141,7 @@ body.in-portal .bottom-nav { display: none !important; }
   <div id="clients-subview">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px">
       <div style="font-size:19px;font-weight:700;letter-spacing:-0.01em">Clients</div>
-      <button onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
+      <button data-permission="new_client_icon" data-permission-role="manager" onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
     </div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
@@ -6973,6 +7058,7 @@ var LUCIDE = {
   'folder': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>',
   'tag': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><circle cx="7" cy="7" r="1"/></svg>',
   'boxes': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></svg>',
+  'sliders-horizontal': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/></svg>',
   'package': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>',
   'gift': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1-2.5-2.5A2.5 2.5 0 0 1 7.5 3c1.8 0 3 1.5 4.5 5-3-.5-4.5-1.2-4.5-0z"/><path d="M16.5 8a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 16.5 3c-1.8 0-3 1.5-4.5 5 3-.5 4.5-1.2 4.5-0z"/></svg>',
   'badge-check': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>',
@@ -6994,14 +7080,14 @@ var HOME_APPS = [
     iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
   { id: 'gps',      label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
-  { id: 'messages', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
+  { id: 'messages', permKey: 'inbox_icon', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
     iconHtml: LUCIDE['message-circle'], go: function(){ showTab('messages'); } },
   // Grid row 1
   { id: 'clients',  label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',    label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
     iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
-  { id: 'quote',    label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
+  { id: 'quote',    permKey: 'quote_icon', label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
     iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
   { id: 'payments', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
     iconHtml: LUCIDE['credit-card'],
@@ -7012,16 +7098,16 @@ var HOME_APPS = [
     },
     go: function(){ openPaymentsDemo(); } },
   // Grid row 2
-  { id: 'content',  label: 'Content',  grad: 'linear-gradient(135deg,#FF2D55 0%,#FF9500 35%,#FFD60A 65%,#30D158 100%)',
+  { id: 'content',  permKey: 'content_icon', label: 'Content',  grad: 'linear-gradient(135deg,#FF2D55 0%,#FF9500 35%,#FFD60A 65%,#30D158 100%)',
     iconHtml: LUCIDE['camera'],
     badge: function(){
       try { return (JSON.parse(localStorage.getItem('content_queue')||'[]').filter(function(c){return c.status==='pending';}).length) || 0; }
       catch(e){ return 0; }
     },
     go: function(){ if (typeof openContentView === 'function') openContentView(); } },
-  { id: 'route',    label: 'Route',    grad: 'linear-gradient(135deg,#90D585 0%,#EAC885 100%)',
+  { id: 'route',    permKey: 'route_icon', label: 'Route',    grad: 'linear-gradient(135deg,#90D585 0%,#EAC885 100%)',
     iconHtml: LUCIDE['navigation'], go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
-  { id: 'tasks',    label: 'Updates',  grad: 'linear-gradient(135deg,#BF5AF2 0%,#8E4EC6 100%)',
+  { id: 'tasks',    permKey: 'updates_icon', label: 'Updates',  grad: 'linear-gradient(135deg,#BF5AF2 0%,#8E4EC6 100%)',
     iconHtml: LUCIDE['clipboard-list'],
     badge: function(){
       try {
@@ -7031,16 +7117,16 @@ var HOME_APPS = [
       } catch(e) { return 0; }
     },
     go: function(){ showTab('tasks'); } },
-  { id: 'files',    label: 'Files',    grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
+  { id: 'files',    permKey: 'files_icon', label: 'Files',    grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['folder'], go: function(){ if (typeof openFiles === 'function') openFiles(); } },
   // Grid row 3
-  { id: 'assets',     label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
+  { id: 'assets',     permKey: 'assets_icon', label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
     iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
-  { id: 'inventory',  label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
+  { id: 'inventory',  permKey: 'inventory_icon', label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['package'],
     badge: function(){ try { return (typeof calcInventoryCounts === 'function') ? (calcInventoryCounts().needsReorder || 0) : 0; } catch(e){ return 0; } },
     go: function(){ showInventoryPage(); } },
-  { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
+  { id: 'rewards',    permKey: 'rewards_icon', label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
     iconHtml: LUCIDE['gift'],
     go: function(){
       // Manager view of rewards = the Content Hub's Rewards tab (leaderboard,
@@ -7052,21 +7138,23 @@ var HOME_APPS = [
         setTimeout(function(){ if (typeof contentSwitchTab === 'function') contentSwitchTab('rewards'); }, 60);
       }
     } },
-  { id: 'approval',   label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
+  { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
-  { id: 'school',     label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
+  { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
     iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
-  { id: 'analytics',  label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
+  { id: 'analytics',  permKey: 'analytics_icon', label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
     iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
-  { id: 'crm',        label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
+  { id: 'crm',        permKey: 'crm_icon', label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
     iconHtml: LUCIDE['handshake'], go: function(){ _launcherComingSoon('CRM'); } },
   // Roadmap: predictive churn detection. Yellow→red warns about at-risk
   // clients, matching what the feature will do when built.
-  { id: 'churn',      label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
+  { id: 'churn',      permKey: 'churn_icon', label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
     iconHtml: LUCIDE['alert-triangle'], soon: true,
     go: function(){ _launcherComingSoon('Churn'); } },
-  { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
+  { id: 'admin',      label: 'Admin',      grad: 'linear-gradient(135deg,#64748B 0%,#475569 100%)',
+    iconHtml: LUCIDE['sliders-horizontal'], go: function(){ openAdminScreen(); } },
+    { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
     iconHtml: LUCIDE['log-out'], go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
@@ -7200,6 +7288,8 @@ function renderHomeScreen() {
   _homeWireScroll();
   _homeWireTiles();
   renderDock();
+  // Apply manager permissions to freshly-rendered home tiles. Defined below.
+  try { if (typeof applyPermissions === 'function') applyPermissions(); } catch(e){}
 }
 
 function renderDock() {
@@ -7345,7 +7435,8 @@ function _homeRenderSlot(slot, pageIdx, slotIdx) {
   var inner = a.iconHtml || (a.icon || '');
   var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
   var soonCls = a.soon ? ' coming-soon' : '';
-  return '<button class="home-app' + soonCls + '" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + '">'
+  var permAttr = a.permKey ? (' data-permission="' + a.permKey + '" data-permission-role="manager"') : '';
+  return '<button class="home-app' + soonCls + '" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + permAttr + '">'
     + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + soonHtml + '</div>'
     + badgeHtml
     + '<div class="home-app-label">' + a.label + '</div>'
@@ -21267,6 +21358,110 @@ async function applyWeatherToScroller() {
   });
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// PERMISSIONS (manager only — tight scope)
+// No DOMContentLoaded hooks, no intervals, no render-function wrappers.
+// applyPermissions() is invoked only by renderHomeScreen's last line.
+// ═══════════════════════════════════════════════════════════════════════
+var DEFAULT_PERMISSIONS = {
+  manager: {
+    analytics_icon: true, churn_icon: true, inbox_icon: true,
+    rewards_icon: true, assets_icon: true, inventory_icon: true,
+    content_icon: true, quote_icon: true, approval_icon: true,
+    route_icon: true, files_icon: true, updates_icon: true,
+    school_icon: true, crm_icon: true, new_client_icon: true
+  }
+};
+function getPermissions() {
+  try {
+    var stored = JSON.parse(localStorage.getItem('permissions') || '{}') || {};
+    return { manager: Object.assign({}, DEFAULT_PERMISSIONS.manager, stored.manager || {}) };
+  } catch (e) {
+    return { manager: Object.assign({}, DEFAULT_PERMISSIONS.manager) };
+  }
+}
+function setPermission(role, key, value) {
+  var perms = getPermissions();
+  if (!perms[role]) perms[role] = {};
+  perms[role][key] = !!value;
+  try { localStorage.setItem('permissions', JSON.stringify(perms)); } catch(e){}
+}
+function isPermitted(role, key) {
+  var perms = getPermissions();
+  return perms[role] && perms[role][key] !== false;
+}
+function applyPermissions() {
+  // Only touches elements carrying data-permission + manager role.
+  var perms = getPermissions();
+  var nodes = document.querySelectorAll('[data-permission][data-permission-role="manager"]');
+  for (var i = 0; i < nodes.length; i++) {
+    var el = nodes[i];
+    var key = el.getAttribute('data-permission');
+    if (perms.manager[key] === false) el.style.display = 'none';
+    else el.style.display = '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ADMIN SCREEN
+// ═══════════════════════════════════════════════════════════════════════
+var ADMIN_MANAGER_ROWS = [
+  ['analytics_icon', 'Analytics Icon'],
+  ['churn_icon',     'Churn Icon'],
+  ['inbox_icon',     'Inbox Icon'],
+  ['rewards_icon',   'Rewards Icon'],
+  ['assets_icon',    'Assets Icon'],
+  ['inventory_icon', 'Inventory Icon'],
+  ['content_icon',   'Content Icon'],
+  ['quote_icon',     'Quote Icon'],
+  ['approval_icon',  'Approval Icon'],
+  ['route_icon',     'Route Icon'],
+  ['files_icon',     'Files Icon'],
+  ['updates_icon',   'Updates Icon'],
+  ['school_icon',    'School Icon'],
+  ['crm_icon',       'CRM Icon'],
+  ['new_client_icon','New Client Icon']
+];
+function openAdminScreen() {
+  var v = document.getElementById('admin-view');
+  if (!v) return;
+  v.classList.add('active');
+  v.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  renderAdminRows();
+}
+function closeAdminScreen() {
+  var v = document.getElementById('admin-view');
+  if (!v) return;
+  v.classList.remove('active');
+  v.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+  // Re-apply on return so changes take effect without a reload.
+  try { applyPermissions(); } catch(e){}
+}
+function renderAdminRows() {
+  var body = document.getElementById('admin-rows');
+  if (!body) return;
+  var perms = getPermissions();
+  body.innerHTML = ADMIN_MANAGER_ROWS.map(function(r) {
+    var key = r[0], label = r[1];
+    var on = perms.manager && perms.manager[key] !== false;
+    return '<div class="admin-row">'
+      + '<div class="admin-row-label">' + _adminEsc(label) + '</div>'
+      + '<label class="admin-switch">'
+      +   '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="setPermission(\'manager\',\'' + key + '\',this.checked)">'
+      +   '<span class="admin-switch-track"></span>'
+      + '</label>'
+      + '</div>';
+  }).join('');
+}
+function _adminEsc(s) {
+  return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
 </script>
 
 
@@ -22989,6 +23184,28 @@ async function applyWeatherToScroller() {
     </div>
   </div>
   <div class="inv-body" id="emp-supplies-body"></div>
+</div>
+
+
+<!-- ═══════ ADMIN SCREEN ═══════ -->
+<div id="admin-view" aria-hidden="true">
+  <div class="admin-topbar">
+    <button class="admin-back" onclick="closeAdminScreen()" aria-label="Back">‹</button>
+    <div class="admin-title-wrap">
+      <div class="admin-title">Admin</div>
+      <div class="admin-sub">Feature visibility</div>
+    </div>
+    <div style="width:34px"></div>
+  </div>
+  <div class="admin-body">
+    <div class="admin-tabs" role="tablist">
+      <button class="admin-tab active" role="tab" aria-selected="true">Manager</button>
+    </div>
+    <div class="admin-sec">
+      <div id="admin-rows"></div>
+    </div>
+    <div class="admin-footnote">Changes take effect when you return to the home screen. Core features (Clients, Staff, Schedule, Claire, Messages) cannot be disabled.</div>
+  </div>
 </div>
 
 </body>
