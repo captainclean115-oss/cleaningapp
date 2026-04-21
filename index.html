@@ -2964,130 +2964,6 @@ body.in-portal .bottom-nav { display: none !important; }
   border-radius: 12px; cursor: pointer; text-align: center;
 }
 
-/* ═════ ADMIN + ASSETS screens + briefing weather ═════ */
-#admin-view, #assets-view {
-  display: none;
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  z-index: 260;
-  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
-              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.40) 0%, transparent 60%),
-              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
-  flex-direction: column; overflow: hidden;
-  color: #fff; font-family: 'DM Sans', sans-serif;
-}
-#admin-view.active, #assets-view.active { display: flex; }
-.admin-topbar {
-  flex: 0 0 auto;
-  padding: calc(var(--safe-top) + 12px) 16px 10px;
-  display: flex; align-items: center; gap: 10px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  background: rgba(10,10,32,0.7);
-  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-}
-.admin-back {
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.14);
-  color: #fff; width: 34px; height: 34px; border-radius: 50%;
-  font-size: 20px; line-height: 1; cursor: pointer; padding: 0;
-  display: flex; align-items: center; justify-content: center;
-}
-.admin-title-wrap { flex: 1; text-align: center; }
-.admin-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
-.admin-sub { font-size: 12px; color: rgba(255,255,255,0.55); }
-.admin-body {
-  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 14px 14px calc(env(safe-area-inset-bottom) + 40px);
-}
-.admin-tabs {
-  display: flex; gap: 4px; padding: 4px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 14px; margin-bottom: 14px;
-}
-.admin-tab {
-  flex: 1; padding: 9px 10px;
-  background: transparent; border: none;
-  color: rgba(255,255,255,0.65);
-  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
-  border-radius: 10px; cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.admin-tab.active { background: #fff; color: #0a0a20; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
-.admin-sec {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 16px; padding: 6px 0;
-  margin-bottom: 12px;
-}
-.admin-sec-head {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px 4px;
-}
-.admin-sec-title { font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255,255,255,0.75); }
-.admin-sec-sub  { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: rgba(255,255,255,0.45); padding: 10px 14px 4px; text-transform: uppercase; }
-.admin-sec-add {
-  background: rgba(142,123,255,0.18); border: 1px solid rgba(142,123,255,0.30);
-  color: #A78BFA; font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 800;
-  padding: 5px 12px; border-radius: 16px; cursor: pointer;
-}
-.admin-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 14px;
-  border-top: 1px solid rgba(255,255,255,0.08);
-}
-.admin-row:first-child { border-top: none; }
-.admin-row-label { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
-.admin-row-meta { font-size: 11px; color: rgba(255,255,255,0.55); letter-spacing: 0.02em; }
-.admin-row-del {
-  background: transparent; border: none; color: rgba(255,255,255,0.45);
-  font-size: 20px; line-height: 1; padding: 0 4px; cursor: pointer;
-}
-.admin-empty { padding: 14px; color: rgba(255,255,255,0.55); font-size: 13px; }
-
-/* iOS-style switch */
-.admin-switch { position: relative; display: inline-block; width: 46px; height: 28px; flex-shrink: 0; }
-.admin-switch input { opacity: 0; width: 0; height: 0; }
-.admin-switch-track {
-  position: absolute; inset: 0; cursor: pointer;
-  background: rgba(255,255,255,0.18);
-  border-radius: 14px;
-  transition: background 0.25s;
-}
-.admin-switch-track::before {
-  content: '';
-  position: absolute;
-  left: 2px; top: 2px;
-  width: 24px; height: 24px;
-  background: #fff; border-radius: 50%;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-}
-.admin-switch input:checked + .admin-switch-track { background: #30D158; }
-.admin-switch input:checked + .admin-switch-track::before { transform: translateX(18px); }
-
-.admin-footnote {
-  font-size: 11px; color: rgba(255,255,255,0.45);
-  text-align: center; padding: 14px 10px; line-height: 1.6;
-}
-
-/* Time-off + vehicle-service modals reuse the inventory-detail sheet style */
-#emp-timeoff-overlay, #vs-add-overlay {
-  display: none; position: fixed; inset: 0; z-index: 620;
-  background: rgba(10,10,32,0.80);
-  backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
-  align-items: flex-end; justify-content: center;
-}
-#emp-timeoff-overlay.active, #vs-add-overlay.active { display: flex; }
-
-/* Weather pill under revenue in the scroller */
-.wd-weather {
-  display: flex; align-items: center; justify-content: center;
-  gap: 3px; font-size: 10px; font-weight: 500;
-  color: rgba(255,255,255,0.72);
-  margin-top: 2px;
-}
-.wd-weather svg { width: 12px; height: 12px; }
-
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -3180,7 +3056,7 @@ body.in-portal .bottom-nav { display: none !important; }
   <div id="clients-subview">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px">
       <div style="font-size:19px;font-weight:700;letter-spacing:-0.01em">Clients</div>
-      <button data-permission="new_client_icon" data-permission-role="manager" onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
+      <button onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
     </div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
@@ -7027,7 +6903,7 @@ var LAUNCHER_APPS = [
   { id: 'files',   label: 'Files', icon: '📁', grad: 'linear-gradient(135deg,#fbbf24,#f59e0b)',
     go: function(){ if (typeof openFiles === 'function') openFiles(); } },
   { id: 'assets',    label: 'Assets',    icon: '🏷️', grad: 'linear-gradient(135deg,#94a3b8,#475569)',
-    go: function(){ openAssetsPage(); } },
+    go: function(){ _launcherComingSoon('Assets'); } },
   { id: 'inventory', label: 'Inventory', icon: '📦',  grad: 'linear-gradient(135deg,#5AC8FA,#007AFF)',
     go: function(){ showInventoryPage(); } },
   { id: 'rewards',   label: 'Rewards',   icon: '🎁',  grad: 'linear-gradient(135deg,#f472b6,#db2777)',
@@ -7040,10 +6916,7 @@ var LAUNCHER_APPS = [
     go: function(){ _launcherComingSoon('Analytics'); } },
   { id: 'crm',       label: 'CRM',       icon: '🤝',  grad: 'linear-gradient(135deg,#fb923c,#c2410c)',
     go: function(){ _launcherComingSoon('CRM'); } },
-  { id: 'admin',   label: 'Admin',   icon: '⚙️', grad: 'linear-gradient(135deg,#64748b 0%,#475569 100%)',
-    iconHtml: LUCIDE['sliders-horizontal'],
-    go: function(){ openAdminScreen(); } },
-    { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
+  { id: 'logout',  label: 'Log out', icon: '🚪', grad: 'linear-gradient(135deg,#6b7280,#374151)',
     go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
@@ -7099,8 +6972,6 @@ var LUCIDE = {
   'tag': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><circle cx="7" cy="7" r="1"/></svg>',
   'boxes': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2.97 12.92A2 2 0 0 0 2 14.63v3.24a2 2 0 0 0 .97 1.71l3 1.8a2 2 0 0 0 2.06 0L12 19v-5.5l-5-3-4.03 2.42Z"/><path d="m7 16.5-4.74-2.85"/><path d="m7 16.5 5-3"/><path d="M7 16.5v5.17"/><path d="M12 13.5V19l3.97 2.38a2 2 0 0 0 2.06 0l3-1.8a2 2 0 0 0 .97-1.71v-3.24a2 2 0 0 0-.97-1.71L17 10.5l-5 3Z"/><path d="m17 16.5-5-3"/><path d="m17 16.5 4.74-2.85"/><path d="M17 16.5v5.17"/><path d="M7.97 4.42A2 2 0 0 0 7 6.13v4.37l5 3 5-3V6.13a2 2 0 0 0-.97-1.71l-3-1.8a2 2 0 0 0-2.06 0l-3 1.8Z"/><path d="M12 8 7.26 5.15"/><path d="m12 8 4.74-2.85"/><path d="M12 13.5V8"/></svg>',
   'package': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>',
-  'sliders-horizontal': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/></svg>',
-  'wrench': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   'gift': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1-2.5-2.5A2.5 2.5 0 0 1 7.5 3c1.8 0 3 1.5 4.5 5-3-.5-4.5-1.2-4.5-0z"/><path d="M16.5 8a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 16.5 3c-1.8 0-3 1.5-4.5 5 3-.5 4.5-1.2 4.5-0z"/></svg>',
   'badge-check': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>',
   'graduation-cap': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></svg>',
@@ -7121,16 +6992,16 @@ var HOME_APPS = [
     iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
   { id: 'gps',      label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
-  { id: 'messages', permKey: 'inbox_icon', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
+  { id: 'messages', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
     iconHtml: LUCIDE['message-circle'], go: function(){ showTab('messages'); } },
   // Grid row 1
   { id: 'clients',  label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',    label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
     iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
-  { id: 'quote',    permKey: 'quote_icon', label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
+  { id: 'quote',    label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
     iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
-  { id: 'payments', permKey: 'payments_icon', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
+  { id: 'payments', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
     iconHtml: LUCIDE['credit-card'],
     badge: function(){
       try {
@@ -7139,16 +7010,16 @@ var HOME_APPS = [
     },
     go: function(){ openPaymentsDemo(); } },
   // Grid row 2
-  { id: 'content',  permKey: 'content_icon', label: 'Content',  grad: 'linear-gradient(135deg,#FF2D55 0%,#FF9500 35%,#FFD60A 65%,#30D158 100%)',
+  { id: 'content',  label: 'Content',  grad: 'linear-gradient(135deg,#FF2D55 0%,#FF9500 35%,#FFD60A 65%,#30D158 100%)',
     iconHtml: LUCIDE['camera'],
     badge: function(){
       try { return (JSON.parse(localStorage.getItem('content_queue')||'[]').filter(function(c){return c.status==='pending';}).length) || 0; }
       catch(e){ return 0; }
     },
     go: function(){ if (typeof openContentView === 'function') openContentView(); } },
-  { id: 'route',    permKey: 'route_icon', label: 'Route',    grad: 'linear-gradient(135deg,#90D585 0%,#EAC885 100%)',
+  { id: 'route',    label: 'Route',    grad: 'linear-gradient(135deg,#90D585 0%,#EAC885 100%)',
     iconHtml: LUCIDE['navigation'], go: function(){ if (typeof openRouteOptimizer === 'function') openRouteOptimizer(); } },
-  { id: 'tasks',    permKey: 'updates_icon', label: 'Updates',  grad: 'linear-gradient(135deg,#BF5AF2 0%,#8E4EC6 100%)',
+  { id: 'tasks',    label: 'Updates',  grad: 'linear-gradient(135deg,#BF5AF2 0%,#8E4EC6 100%)',
     iconHtml: LUCIDE['clipboard-list'],
     badge: function(){
       try {
@@ -7158,16 +7029,16 @@ var HOME_APPS = [
       } catch(e) { return 0; }
     },
     go: function(){ showTab('tasks'); } },
-  { id: 'files',    permKey: 'files_icon', label: 'Files',    grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
+  { id: 'files',    label: 'Files',    grad: 'linear-gradient(135deg,#64D2FF 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['folder'], go: function(){ if (typeof openFiles === 'function') openFiles(); } },
   // Grid row 3
-  { id: 'assets',     permKey: 'assets_icon', label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
-    iconHtml: LUCIDE['tag'], go: function(){ openAssetsPage(); } },
-  { id: 'inventory',  permKey: 'inventory_icon', label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
+  { id: 'assets',     label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
+    iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
+  { id: 'inventory',  label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['package'],
     badge: function(){ try { return (typeof calcInventoryCounts === 'function') ? (calcInventoryCounts().needsReorder || 0) : 0; } catch(e){ return 0; } },
     go: function(){ showInventoryPage(); } },
-  { id: 'rewards',    permKey: 'rewards_icon', label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
+  { id: 'rewards',    label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
     iconHtml: LUCIDE['gift'],
     go: function(){
       // Manager view of rewards = the Content Hub's Rewards tab (leaderboard,
@@ -7179,23 +7050,21 @@ var HOME_APPS = [
         setTimeout(function(){ if (typeof contentSwitchTab === 'function') contentSwitchTab('rewards'); }, 60);
       }
     } },
-  { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
+  { id: 'approval',   label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
-  { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
+  { id: 'school',     label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
     iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
-  { id: 'analytics',  permKey: 'analytics_icon', label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
+  { id: 'analytics',  label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
     iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
-  { id: 'crm',        permKey: 'crm_icon', label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
+  { id: 'crm',        label: 'CRM',        grad: 'linear-gradient(135deg,#fb923c 0%,#c2410c 100%)',
     iconHtml: LUCIDE['handshake'], go: function(){ _launcherComingSoon('CRM'); } },
   // Roadmap: predictive churn detection. Yellow→red warns about at-risk
   // clients, matching what the feature will do when built.
-  { id: 'churn',      permKey: 'churn_icon', label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
+  { id: 'churn',      label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
     iconHtml: LUCIDE['alert-triangle'], soon: true,
     go: function(){ _launcherComingSoon('Churn'); } },
-  { id: 'admin',      label: 'Admin',      grad: 'linear-gradient(135deg,#64748B 0%,#475569 100%)',
-    iconHtml: LUCIDE['sliders-horizontal'], go: function(){ openAdminScreen(); } },
-    { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
+  { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
     iconHtml: LUCIDE['log-out'], go: function(){ if (confirm('Log out?') && typeof logout === 'function') logout(); } },
 ];
 
@@ -7474,8 +7343,7 @@ function _homeRenderSlot(slot, pageIdx, slotIdx) {
   var inner = a.iconHtml || (a.icon || '');
   var fixedAttr = a.fixed ? ' data-fixed="1"' : '';
   var soonCls = a.soon ? ' coming-soon' : '';
-  var permAttr = a.permKey ? (' data-permission="' + a.permKey + '" data-permission-role="manager"') : '';
-  return '<button class="home-app' + soonCls + '" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + permAttr + '">'
+  return '<button class="home-app' + soonCls + '" data-slot-type="app" data-app-id="' + a.id + '" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"' + fixedAttr + '">'
     + '<div class="home-app-icon" style="background:' + a.grad + '">' + inner + soonHtml + '</div>'
     + badgeHtml
     + '<div class="home-app-label">' + a.label + '</div>'
@@ -12827,20 +12695,6 @@ function openClientEdit(clientId) {
       </div>
     </div>
 
-    <!-- SECTION: Weekly briefing flag — auto-expires in 7 days -->
-    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">This Week's Briefing</div>
-    ${(function(){
-      var wf = (function(){ try { return JSON.parse(localStorage.getItem('weekly_flags')||'{}') || {}; } catch(e){ return {}; } })();
-      var cur = wf[c.id] || null;
-      var checked = cur ? 'checked' : '';
-      var note = cur ? (cur.note||'') : '';
-      return '<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer">'
-        + '<input type="checkbox" id="ce-wflag" '+checked+' style="accent-color:#FFD60A">'
-        + '<span style="font-size:13px">⭐ Flag for this week\'s briefing</span>'
-        + '</label>'
-        + '<input id="ce-wflag-note" class="field-input" value="'+note.replace(/"/g,'&quot;')+'" style="width:100%;margin-bottom:20px" placeholder="What to know (e.g. First clean after baby, pet-sit needed)">';
-    })()}
-
     <!-- SECTION: Notes -->
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Notes</div>
     <textarea id="ce-notes" class="field-input" rows="3" style="width:100%;resize:none;margin-bottom:24px" placeholder="Special instructions, access notes, preferences…">${c.notes||''}</textarea>
@@ -13142,15 +12996,6 @@ function saveClientEdit(clientId) {
     saveJobs();
   }
 
-  // Weekly-flag checkbox + note — writes into weekly_flags
-  try {
-    var wfCb = document.getElementById('ce-wflag');
-    var wfNote = document.getElementById('ce-wflag-note');
-    if (wfCb) {
-      var flagNote = wfCb.checked ? ((wfNote && wfNote.value.trim()) || 'Flagged for this week') : '';
-      setWeeklyFlag(clientId, flagNote);
-    }
-  } catch(e){}
   // Persist ALL field changes to localStorage so they survive refresh
   saveClientEdits(clientId, {
     fn: c.fn, ln: c.ln, ph: c.ph, em: c.em,
@@ -15407,15 +15252,7 @@ function renderStaffView() {
           <div style="font-size:12px;color:var(--muted);margin-top:2px">${f.data['f-reason']||''} ${f.data['f-notes'] ? '· ' + f.data['f-notes'] : ''}</div>
         </div>`).join('');
     }
-    // Admin-entered time off feeds the Weekly Briefing. Render below the
-    // employee-submitted form list so both are visible in one place.
-    try {
-      toEl.insertAdjacentHTML('beforeend', renderAdminTimeOffForStaff(emp));
-    } catch(e) {}
   }
-  // Remember which profile is open so the time-off modal save can
-  // re-render the list afterward.
-  try { window._currentStaffIdx = idx; } catch(e){}
 }
 
 function saveFormDecision(formIdx, status, note) {
@@ -21328,675 +21165,6 @@ function flagProductLow(id) {
   renderEmpSupplies();
 }
 
-
-// ═══════════════════════════════════════════════════════════════════════
-// PERMISSIONS
-// Everything defaults ON. Admin screen flips keys; applyPermissions()
-// shows/hides tiles on home + portal. Core features (Schedule/Clients/
-// Staff/Messages/Claire) are intentionally not permissioned.
-// ═══════════════════════════════════════════════════════════════════════
-var DEFAULT_PERMISSIONS = {
-  manager: {
-    weekly_briefing: true,
-    analytics_icon: true, churn_icon: true, inbox_icon: true,
-    rewards_icon: true, assets_icon: true, inventory_icon: true,
-    content_icon: true, quote_icon: true, approval_icon: true,
-    route_icon: true, files_icon: true, updates_icon: true,
-    school_icon: true, crm_icon: true, new_client_icon: true,
-    payments_icon: true
-  },
-  employee: {
-    content_icon: true, rewards_icon: true, forms_icon: true,
-    hours_icon: true, chat_icon: true,
-    issue_button: true, incident_button: true, payment_button: true
-  }
-};
-function getPermissions() {
-  try {
-    var stored = JSON.parse(localStorage.getItem('permissions') || '{}') || {};
-    return {
-      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager,  stored.manager  || {}),
-      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee, stored.employee || {})
-    };
-  } catch (e) {
-    return JSON.parse(JSON.stringify(DEFAULT_PERMISSIONS));
-  }
-}
-function setPermission(role, key, value) {
-  var perms = getPermissions();
-  perms[role][key] = !!value;
-  localStorage.setItem('permissions', JSON.stringify(perms));
-  applyPermissions();
-}
-function isPermitted(role, key) {
-  var perms = getPermissions();
-  return perms[role] && perms[role][key] !== false;
-}
-
-// Onclick → permission key map for the static employee-portal icons. We
-// key by the onclick string instead of touching the icon HTML (doing so
-// has broken the grid twice before). Adding a new icon? Just add its
-// onclick here.
-var EMP_ICON_PERMISSION_MAP = {
-  'openEmployeeContent()': 'content_icon',
-  'openEmployeeRewards()': 'rewards_icon',
-  'openEmployeeForms()':   'forms_icon',
-  'openEmployeeHours()':   'hours_icon',
-  'openEmployeeChat()':    'chat_icon'
-};
-
-function applyPermissions() {
-  var perms = getPermissions();
-  // Manager tiles + any element that uses data-permission data-permission-role
-  document.querySelectorAll('[data-permission]').forEach(function(el) {
-    var role = el.getAttribute('data-permission-role') || 'manager';
-    var key  = el.getAttribute('data-permission');
-    var on = perms[role] && perms[role][key] !== false;
-    el.style.display = on ? '' : 'none';
-  });
-  // Employee icons — keyed by onclick, no HTML mutation needed
-  document.querySelectorAll('.employee-icon-wrap').forEach(function(el) {
-    var oc = (el.getAttribute('onclick') || '').trim();
-    var key = EMP_ICON_PERMISSION_MAP[oc];
-    if (!key) return;
-    var on = perms.employee[key] !== false;
-    el.style.display = on ? '' : 'none';
-  });
-}
-
-// Re-apply after home render, portal open, and job-card render.
-(function _hookApplyPermissions(){
-  var origRender = window.renderHomeScreen;
-  if (typeof origRender === 'function') {
-    window.renderHomeScreen = function() {
-      var r = origRender.apply(this, arguments);
-      try { applyPermissions(); } catch(e){}
-      return r;
-    };
-  }
-  // DOMContentLoaded doesn't fire twice, so fire-once is safe here.
-  document.addEventListener('DOMContentLoaded', function(){ try { applyPermissions(); } catch(e){} });
-  // Poll once shortly after load in case of async renders.
-  setTimeout(function(){ try { applyPermissions(); } catch(e){} }, 400);
-})();
-
-// ═══════════════════════════════════════════════════════════════════════
-// ADMIN SCREEN
-// Full-screen modal with Manager/Employee tabs. Each row is a labeled
-// iOS-style toggle. Toggling writes to localStorage + re-runs
-// applyPermissions immediately.
-// ═══════════════════════════════════════════════════════════════════════
-var ADMIN_MANAGER_ROWS = [
-  ['weekly_briefing', 'Weekly Briefing Panel'],
-  ['analytics_icon', 'Analytics Icon'],
-  ['churn_icon',     'Churn Icon'],
-  ['inbox_icon',     'Inbox Icon'],
-  ['rewards_icon',   'Rewards Icon'],
-  ['assets_icon',    'Assets Icon'],
-  ['inventory_icon', 'Inventory Icon'],
-  ['content_icon',   'Content Icon'],
-  ['quote_icon',     'Quote Icon'],
-  ['approval_icon',  'Approval Icon'],
-  ['route_icon',     'Route Icon'],
-  ['files_icon',     'Files Icon'],
-  ['updates_icon',   'Updates Icon'],
-  ['school_icon',    'School Icon'],
-  ['crm_icon',       'CRM Icon'],
-  ['new_client_icon','New Client Icon']
-];
-var ADMIN_EMPLOYEE_ROWS = [
-  ['content_icon', 'Content Icon'],
-  ['rewards_icon', 'Rewards Icon'],
-  ['forms_icon',   'Forms Icon'],
-  ['hours_icon',   'Hours Icon'],
-  ['chat_icon',    'Chat Icon'],
-  ['issue_button',    'Issue Button (job card)'],
-  ['incident_button', 'Incident Button (job card)'],
-  ['payment_button',  'Payment Button (job card)']
-];
-
-function openAdminScreen() {
-  var v = document.getElementById('admin-view');
-  if (!v) return;
-  v.classList.add('active');
-  v.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('overlay-open');
-  adminSwitchTab('manager');
-}
-function closeAdminScreen() {
-  var v = document.getElementById('admin-view');
-  if (!v) return;
-  v.classList.remove('active');
-  v.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('overlay-open');
-}
-function adminSwitchTab(which) {
-  document.getElementById('admin-tab-mgr').classList.toggle('active', which === 'manager');
-  document.getElementById('admin-tab-emp').classList.toggle('active', which === 'employee');
-  renderAdminRows(which);
-}
-function renderAdminRows(which) {
-  var rows = which === 'employee' ? ADMIN_EMPLOYEE_ROWS : ADMIN_MANAGER_ROWS;
-  var body = document.getElementById('admin-rows');
-  if (!body) return;
-  var perms = getPermissions();
-  body.innerHTML = rows.map(function(r) {
-    var key = r[0], label = r[1];
-    var on = perms[which] && perms[which][key] !== false;
-    return '<div class="admin-row">'
-      + '<div class="admin-row-label">' + _adminEsc(label) + '</div>'
-      + '<label class="admin-switch">'
-      +   '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="setPermission(\'' + which + '\',\'' + key + '\',this.checked);renderAdminRows(\'' + which + '\')">'
-      +   '<span class="admin-switch-track"></span>'
-      + '</label>'
-      + '</div>';
-  }).join('');
-}
-function _adminEsc(s) {
-  return String(s==null?'':s).replace(/[&<>"']/g, function(c){
-    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ASSETS / VEHICLE SERVICE
-// Minimal "vehicles" + "other assets" page with a Vehicle Service
-// subsection so briefing has data to read.
-// ═══════════════════════════════════════════════════════════════════════
-var VEHICLE_SERVICE_KEY = 'vehicle_service';
-var VEHICLES_KEY = 'assets_vehicles';
-var DEFAULT_VEHICLES = ['Van 1','Van 2','Van 3','Truck 1'];
-
-function _loadVehicles() {
-  try {
-    var v = JSON.parse(localStorage.getItem(VEHICLES_KEY) || 'null');
-    return Array.isArray(v) && v.length ? v : DEFAULT_VEHICLES.slice();
-  } catch(e){ return DEFAULT_VEHICLES.slice(); }
-}
-function loadVehicleService() {
-  try { return JSON.parse(localStorage.getItem(VEHICLE_SERVICE_KEY) || '[]') || []; }
-  catch(e){ return []; }
-}
-function saveVehicleService(arr) {
-  try { localStorage.setItem(VEHICLE_SERVICE_KEY, JSON.stringify(arr)); } catch(e){}
-}
-function getVehicleServiceThisWeek(weekStart, weekEnd) {
-  return loadVehicleService().filter(function(s){
-    return s.service_date >= weekStart && s.service_date <= weekEnd;
-  });
-}
-
-function openAssetsPage() {
-  var v = document.getElementById('assets-view');
-  if (!v) return;
-  v.classList.add('active');
-  v.setAttribute('aria-hidden','false');
-  document.body.classList.add('overlay-open');
-  renderAssetsPage();
-}
-function closeAssetsPage() {
-  var v = document.getElementById('assets-view');
-  if (!v) return;
-  v.classList.remove('active');
-  v.setAttribute('aria-hidden','true');
-  document.body.classList.remove('overlay-open');
-}
-function renderAssetsPage() {
-  var body = document.getElementById('assets-body');
-  if (!body) return;
-  var vehicles = _loadVehicles();
-  var services = loadVehicleService().slice().sort(function(a,b){ return a.service_date < b.service_date ? -1 : 1; });
-  var todayKey = new Date().toISOString().slice(0,10);
-  var upcoming = services.filter(function(s){ return s.service_date >= todayKey; });
-  var past = services.filter(function(s){ return s.service_date < todayKey; });
-  body.innerHTML = ''
-    + '<div class="admin-sec">'
-    +   '<div class="admin-sec-head">'
-    +     '<div class="admin-sec-title">Vehicle Service</div>'
-    +     '<button class="admin-sec-add" onclick="openAddVehicleServiceModal()">+ Add</button>'
-    +   '</div>'
-    +   (upcoming.length
-        ? upcoming.map(_renderServiceRow).join('')
-        : '<div class="admin-empty">No upcoming service appointments.</div>')
-    +   (past.length
-        ? '<div class="admin-sec-sub">Past</div>' + past.map(_renderServiceRow).join('')
-        : '')
-    + '</div>'
-    + '<div class="admin-sec">'
-    +   '<div class="admin-sec-head">'
-    +     '<div class="admin-sec-title">Fleet</div>'
-    +   '</div>'
-    +   vehicles.map(function(v){
-          return '<div class="admin-row"><div class="admin-row-label">🚐 ' + _adminEsc(v) + '</div><div class="admin-row-meta">Active</div></div>';
-        }).join('')
-    + '</div>';
-}
-function _renderServiceRow(s) {
-  return '<div class="admin-row">'
-    + '<div class="admin-row-label">🔧 ' + _adminEsc(s.vehicle_id) + ' — ' + _adminEsc(s.service_type) + '</div>'
-    + '<div class="admin-row-meta">' + _adminEsc(s.service_date) + '</div>'
-    + '<button class="admin-row-del" onclick="deleteVehicleService(\'' + s.id + '\')" aria-label="Delete">×</button>'
-    + '</div>';
-}
-function openAddVehicleServiceModal() {
-  var v = document.getElementById('vs-add-overlay');
-  if (!v) return;
-  var sel = document.getElementById('vs-vehicle');
-  if (sel) sel.innerHTML = _loadVehicles().map(function(x){ return '<option value="'+_adminEsc(x)+'">'+_adminEsc(x)+'</option>'; }).join('');
-  document.getElementById('vs-date').value = new Date().toISOString().slice(0,10);
-  document.getElementById('vs-type').value = '';
-  document.getElementById('vs-notes').value = '';
-  v.classList.add('active');
-}
-function closeAddVehicleServiceModal() {
-  var v = document.getElementById('vs-add-overlay');
-  if (v) v.classList.remove('active');
-}
-function saveVehicleServiceEntry() {
-  var vehicle = document.getElementById('vs-vehicle').value;
-  var date    = document.getElementById('vs-date').value;
-  var type    = document.getElementById('vs-type').value.trim();
-  var notes   = document.getElementById('vs-notes').value.trim();
-  if (!vehicle || !date || !type) { alert('Vehicle, date, and service type are required.'); return; }
-  var arr = loadVehicleService();
-  arr.push({ id: 'vs_'+Date.now(), vehicle_id: vehicle, service_date: date, service_type: type, notes: notes });
-  saveVehicleService(arr);
-  closeAddVehicleServiceModal();
-  renderAssetsPage();
-}
-function deleteVehicleService(id) {
-  if (!confirm('Delete this service entry?')) return;
-  var arr = loadVehicleService().filter(function(s){ return s.id !== id; });
-  saveVehicleService(arr);
-  renderAssetsPage();
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// EMPLOYEE TIME OFF (admin-entered, feeds briefing)
-// ═══════════════════════════════════════════════════════════════════════
-var EMP_TIME_OFF_KEY = 'employee_time_off';
-function loadEmployeeTimeOff() {
-  try { return JSON.parse(localStorage.getItem(EMP_TIME_OFF_KEY) || '[]') || []; }
-  catch(e){ return []; }
-}
-function saveEmployeeTimeOff(arr) {
-  try { localStorage.setItem(EMP_TIME_OFF_KEY, JSON.stringify(arr)); } catch(e){}
-}
-function getEmployeesOutThisWeek(weekStart, weekEnd) {
-  return loadEmployeeTimeOff().filter(function(e){
-    return !(e.end_date < weekStart || e.start_date > weekEnd);
-  });
-}
-
-// Modal: Add time off for a specific employee. Called from the staff
-// profile view (which injects an "Add Time Off" button below the existing
-// timeoff list).
-var _currentTimeOffEmpId = null;
-function openEmployeeTimeOffModal(empId, empName) {
-  _currentTimeOffEmpId = empId;
-  document.getElementById('to-emp-name').textContent = empName || empId;
-  document.getElementById('to-start').value = new Date().toISOString().slice(0,10);
-  document.getElementById('to-end').value = '';
-  document.getElementById('to-reason').value = '';
-  document.getElementById('emp-timeoff-overlay').classList.add('active');
-}
-function closeEmployeeTimeOffModal() {
-  document.getElementById('emp-timeoff-overlay').classList.remove('active');
-  _currentTimeOffEmpId = null;
-}
-function saveEmployeeTimeOffEntry() {
-  var start  = document.getElementById('to-start').value;
-  var end    = document.getElementById('to-end').value || start;
-  var reason = document.getElementById('to-reason').value.trim();
-  if (!start) { alert('Start date is required.'); return; }
-  if (end < start) { alert('End date must be on or after start date.'); return; }
-  var arr = loadEmployeeTimeOff();
-  arr.push({
-    id: 'to_'+Date.now(),
-    employee_id: _currentTimeOffEmpId,
-    start_date: start, end_date: end,
-    reason: reason
-  });
-  saveEmployeeTimeOff(arr);
-  closeEmployeeTimeOffModal();
-  // Refresh the staff profile modal in-place if it's open
-  try {
-    var idx = typeof _currentStaffIdx !== 'undefined' ? _currentStaffIdx : null;
-    if (idx != null && typeof openStaffProfile === 'function') openStaffProfile(idx);
-  } catch(e){}
-}
-function deleteEmployeeTimeOff(id) {
-  if (!confirm('Delete this time-off entry?')) return;
-  var arr = loadEmployeeTimeOff().filter(function(e){ return e.id !== id; });
-  saveEmployeeTimeOff(arr);
-  try {
-    var idx = typeof _currentStaffIdx !== 'undefined' ? _currentStaffIdx : null;
-    if (idx != null && typeof openStaffProfile === 'function') openStaffProfile(idx);
-  } catch(e){}
-}
-
-// Injected into the staff profile's timeoff section after the existing
-// emp_forms list. Appends admin-entered time off + an Add button.
-function renderAdminTimeOffForStaff(emp) {
-  if (!emp) return '';
-  var id = emp.id || emp.name;
-  var all = loadEmployeeTimeOff().filter(function(e){ return e.employee_id === id; });
-  all.sort(function(a,b){ return a.start_date < b.start_date ? 1 : -1; });
-  var listHtml = all.length
-    ? all.map(function(e){
-        return '<div class="admin-row">'
-          + '<div class="admin-row-label">' + _adminEsc(e.start_date) + ' → ' + _adminEsc(e.end_date) + '</div>'
-          + '<div class="admin-row-meta">' + _adminEsc(e.reason || '') + '</div>'
-          + '<button class="admin-row-del" onclick="deleteEmployeeTimeOff(\'' + e.id + '\')" aria-label="Delete">×</button>'
-          + '</div>';
-      }).join('')
-    : '<div class="admin-empty">No admin-entered time off.</div>';
-  return ''
-    + '<div class="admin-sec" style="margin-top:14px">'
-    +   '<div class="admin-sec-head">'
-    +     '<div class="admin-sec-title">Admin-Entered Time Off</div>'
-    +     '<button class="admin-sec-add" onclick="openEmployeeTimeOffModal(\'' + _adminEsc(id) + '\',\'' + _adminEsc(emp.name||'') + '\')">+ Add</button>'
-    +   '</div>'
-    +   listHtml
-    + '</div>';
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// WEEKLY FLAGS (per-client "know this week" notes)
-// Auto-expire after 7 days from flagged_at.
-// ═══════════════════════════════════════════════════════════════════════
-function getWeeklyFlagsActive() {
-  var flags;
-  try { flags = JSON.parse(localStorage.getItem('weekly_flags') || '{}') || {}; }
-  catch(e){ flags = {}; }
-  var now = Date.now();
-  var ttl = 7 * 24 * 60 * 60 * 1000;
-  var keep = {};
-  Object.keys(flags).forEach(function(cid){
-    var f = flags[cid];
-    if (!f || !f.flagged_at) return;
-    var age = now - new Date(f.flagged_at).getTime();
-    if (age < ttl) keep[cid] = f;
-  });
-  try { localStorage.setItem('weekly_flags', JSON.stringify(keep)); } catch(e){}
-  return keep;
-}
-function setWeeklyFlag(clientId, note) {
-  var flags;
-  try { flags = JSON.parse(localStorage.getItem('weekly_flags') || '{}') || {}; }
-  catch(e){ flags = {}; }
-  if (!note) {
-    delete flags[clientId];
-  } else {
-    flags[clientId] = { note: note, flagged_at: new Date().toISOString().slice(0,10) };
-  }
-  try { localStorage.setItem('weekly_flags', JSON.stringify(flags)); } catch(e){}
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// WEATHER — 5-day forecast beneath each scroller date's revenue
-// ═══════════════════════════════════════════════════════════════════════
-var WEATHER_API_KEY = 'PASTE_KEY_HERE';
-var WEATHER_LOCATION = { lat: 42.0959, lon: -70.9495 };
-var WEATHER_UNITS = 'imperial';
-var WEATHER_CACHE_KEY = 'weather_cache_v1';
-var WEATHER_CACHE_TTL = 3 * 60 * 60 * 1000;
-
-async function fetchWeatherForecast() {
-  try {
-    var cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.timestamp) < WEATHER_CACHE_TTL) {
-      return cached.data;
-    }
-  } catch(e){}
-  if (!WEATHER_API_KEY || WEATHER_API_KEY === 'PASTE_KEY_HERE') return null;
-  try {
-    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + WEATHER_LOCATION.lat
-            + '&lon=' + WEATHER_LOCATION.lon + '&units=' + WEATHER_UNITS
-            + '&appid=' + WEATHER_API_KEY;
-    var res = await fetch(url);
-    if (!res.ok) return null;
-    var json = await res.json();
-    var byDay = {};
-    (json.list || []).forEach(function(entry) {
-      if (!entry.dt_txt) return;
-      var date = entry.dt_txt.split(' ')[0];
-      var hour = parseInt((entry.dt_txt.split(' ')[1] || '00:00:00').split(':')[0], 10);
-      if (!byDay[date] || Math.abs(hour - 12) < Math.abs(byDay[date]._hour - 12)) {
-        byDay[date] = {
-          temp: Math.round(entry.main.temp),
-          condition: (entry.weather && entry.weather[0] && entry.weather[0].main) || 'Clouds',
-          _hour: hour
-        };
-      }
-    });
-    localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: byDay }));
-    return byDay;
-  } catch(e) { console.warn('Weather fetch failed:', e); return null; }
-}
-
-function weatherGlyph(condition) {
-  var common = 'width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
-  switch (condition) {
-    case 'Clear':
-      return '<svg ' + common + '><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
-    case 'Clouds':
-      return '<svg ' + common + '><path d="M17.5 19a4.5 4.5 0 1 0 0-9h-1.8A7 7 0 1 0 4 15.9"/></svg>';
-    case 'Rain':
-    case 'Drizzle':
-      return '<svg ' + common + '><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 19v1M8 14v1M16 19v1M16 14v1M12 21v1M12 16v1"/></svg>';
-    case 'Snow':
-      return '<svg ' + common + '><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01M8 19h.01M12 17h.01M12 21h.01M16 15h.01M16 19h.01"/></svg>';
-    case 'Thunderstorm':
-      return '<svg ' + common + '><path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/><polyline points="13 11 9 17 15 17 11 23"/></svg>';
-    case 'Mist': case 'Fog': case 'Haze':
-      return '<svg ' + common + '><path d="M3 8h18M3 12h18M3 16h18"/></svg>';
-    default:
-      return '<svg ' + common + '><path d="M17.5 19a4.5 4.5 0 1 0 0-9h-1.8A7 7 0 1 0 4 15.9"/></svg>';
-  }
-}
-
-function renderScrollerWeather(data) {
-  if (!data) return;
-  var strip = document.getElementById('cal-week-strip');
-  if (!strip) return;
-  strip.querySelectorAll('.week-day').forEach(function(cell) {
-    var ts = parseInt(cell.getAttribute('data-ts'), 10);
-    if (!ts) return;
-    var d = new Date(ts);
-    var key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-    var w = data[key];
-    // Strip any previous weather node (re-render safety).
-    var old = cell.querySelector('.wd-weather');
-    if (old) old.remove();
-    if (!w) return;
-    var weather = document.createElement('span');
-    weather.className = 'wd-weather';
-    weather.innerHTML = weatherGlyph(w.condition) + '<span>' + w.temp + '°</span>';
-    cell.appendChild(weather);
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// WEEKLY BRIEFING
-// ═══════════════════════════════════════════════════════════════════════
-function getCurrentWeekBounds() {
-  var today = new Date(); today.setHours(0,0,0,0);
-  var start = today.toISOString().slice(0,10);
-  var endDate = new Date(today); endDate.setDate(endDate.getDate() + 6);
-  var end = endDate.toISOString().slice(0,10);
-  return { start: start, end: end };
-}
-
-// The CLIENTS data uses `next` in MM/DD/YYYY format, but briefing compares
-// against YYYY-MM-DD. This normalizes for us.
-function _briefClientNextIso(c) {
-  if (!c || !c.next) return null;
-  var s = c.next;
-  if (s.indexOf('-') > -1 && s.length === 10) return s;
-  if (s.indexOf('/') > -1) {
-    var p = s.split('/');
-    if (p.length === 3) return p[2] + '-' + p[0].padStart(2,'0') + '-' + p[1].padStart(2,'0');
-  }
-  return null;
-}
-
-function renderWeeklyBriefing() {
-  if (!isPermitted('manager', 'weekly_briefing')) return '';
-  var bounds = getCurrentWeekBounds();
-  var start = bounds.start, end = bounds.end;
-  var sections = [];
-
-  var empOut = getEmployeesOutThisWeek(start, end);
-  if (empOut.length) {
-    sections.push({
-      emoji: '🧑‍🤝‍🧑', title: 'Employees out this week',
-      items: empOut.map(function(e){
-        var who = e.employee_id;
-        try {
-          var staff = (typeof getStaffList === 'function') ? getStaffList() : [];
-          var m = staff.find(function(s){ return s.id === e.employee_id || s.name === e.employee_id; });
-          if (m) who = m.name + (m.team ? ' ('+m.team+')' : '');
-        } catch(ex){}
-        return who + ' — ' + e.start_date + ' to ' + e.end_date + (e.reason ? ' (' + e.reason + ')' : '');
-      })
-    });
-  }
-
-  var vehSvc = getVehicleServiceThisWeek(start, end);
-  if (vehSvc.length) sections.push({
-    emoji: '🚐', title: 'Vehicle service this week',
-    items: vehSvc.map(function(v){ return v.vehicle_id + ' — ' + v.service_type + ' on ' + v.service_date; })
-  });
-
-  var flags = getWeeklyFlagsActive();
-  var flagItems = [];
-  Object.keys(flags).forEach(function(cid) {
-    var f = flags[cid];
-    var client = (typeof CLIENTS !== 'undefined') ? CLIENTS.find(function(c){ return c.id === cid; }) : null;
-    if (client) flagItems.push(client.fn + ' ' + client.ln + ' — ' + f.note);
-  });
-  if (flagItems.length) sections.push({ emoji: '⭐', title: 'Special requests this week', items: flagItems });
-
-  var CL = (typeof CLIENTS !== 'undefined') ? CLIENTS : [];
-  var firstTimers = CL.filter(function(c){
-    var iso = _briefClientNextIso(c);
-    return iso && iso >= start && iso <= end && !c.last;
-  }).map(function(c){ return c.fn + ' ' + c.ln + (c.city ? ' — ' + c.city : '') + ' — ' + _briefClientNextIso(c); });
-  if (firstTimers.length) sections.push({ emoji: '🆕', title: 'First-time clients this week', items: firstTimers });
-
-  var balances = CL.filter(function(c){
-    var iso = _briefClientNextIso(c);
-    return (c.bal || 0) > 500 && iso && iso >= start && iso <= end;
-  }).map(function(c){ return c.fn + ' ' + c.ln + ' — $' + c.bal + ' — ' + _briefClientNextIso(c); });
-  if (balances.length) sections.push({ emoji: '💰', title: 'Balances with jobs this week', items: balances });
-
-  // Keys/access notes: CLIENT_KEYS is keyed by last-name; use that as a
-  // fallback when the client_keys localStorage entry is empty.
-  var keysStorage = {};
-  try { keysStorage = JSON.parse(localStorage.getItem('client_keys') || '{}') || {}; } catch(e){}
-  var keyItems = [];
-  CL.forEach(function(c){
-    var iso = _briefClientNextIso(c);
-    if (!iso || iso < start || iso > end) return;
-    var info = keysStorage[c.id];
-    if (!info && typeof CLIENT_KEYS !== 'undefined' && c.ln) {
-      var k = CLIENT_KEYS[c.ln.toLowerCase()];
-      if (k && k.key) info = k.key;
-    }
-    if (info) keyItems.push(c.fn + ' ' + c.ln + ' — ' + info);
-  });
-  if (keyItems.length) sections.push({ emoji: '🔑', title: 'Keys / access notes', items: keyItems });
-
-  // Stubs — auto-activate when their data stores populate.
-  try {
-    var sqs = JSON.parse(localStorage.getItem('service_quality_scores') || 'null');
-    if (sqs && Object.keys(sqs).length) {
-      var atRisk = CL.filter(function(c){
-        var score = sqs[c.id];
-        var iso = _briefClientNextIso(c);
-        return score && (score.tier === 'Red' || score.tier === 'Yellow') && iso && iso >= start && iso <= end;
-      }).map(function(c){ return c.fn + ' ' + c.ln + ' — ' + sqs[c.id].tier + ' — ' + _briefClientNextIso(c); });
-      if (atRisk.length) sections.push({ emoji: '⚠️', title: 'Watch-list clients', items: atRisk });
-    }
-  } catch(e){}
-  try {
-    var inv = JSON.parse(localStorage.getItem('inventory_v1') || 'null');
-    if (Array.isArray(inv) && inv.length && typeof calculateInventoryStatus === 'function') {
-      var running = inv.filter(function(p){
-        var s = calculateInventoryStatus(p);
-        return s && s.daysUntilRunout != null && s.daysUntilRunout <= 7 && s.status !== 'ok';
-      }).map(function(p){
-        var s = calculateInventoryStatus(p);
-        var d = s.runoutDate ? s.runoutDate.toISOString().slice(0,10) : '';
-        return p.name + ' — runs out ' + d;
-      });
-      if (running.length) sections.push({ emoji: '📦', title: 'Supplies running low', items: running });
-    }
-  } catch(e){}
-
-  var totalCount = sections.reduce(function(sum, s){ return sum + s.items.length; }, 0);
-  var headerText = totalCount === 0
-    ? '📋  This Week — all clear'
-    : '📋  This Week — ' + totalCount + ' thing' + (totalCount === 1 ? '' : 's') + ' to know';
-
-  var sectionsHtml = totalCount === 0
-    ? '<div style="font-size:12px;color:rgba(255,255,255,0.6);padding:8px 0;">Nothing to flag this week.</div>'
-    : sections.map(function(s){
-        return '<div style="margin-top:12px;">'
-          +   '<div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.95);margin-bottom:4px;">' + s.emoji + '  ' + _adminEsc(s.title) + '</div>'
-          +   s.items.map(function(item){
-                return '<div style="font-size:12px;color:rgba(255,255,255,0.8);padding:3px 0 3px 22px;">' + _adminEsc(item) + '</div>';
-              }).join('')
-          + '</div>';
-      }).join('');
-
-  return ''
-    + '<div id="weeklyBriefingCard" style="margin:10px 14px 12px;background:rgba(255,255,255,0.12);backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);border-radius:20px;padding:14px 16px;border:1px solid rgba(255,255,255,0.10);">'
-    +   '<div onclick="toggleWeeklyBriefing()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;">'
-    +     '<div style="font-size:14px;font-weight:600;color:rgba(255,255,255,0.95);">' + headerText + '</div>'
-    +     '<div id="weeklyBriefingChevron" style="transition:transform 0.2s;color:rgba(255,255,255,0.7);">▼</div>'
-    +   '</div>'
-    +   '<div id="weeklyBriefingBody" style="display:none;margin-top:8px;">'
-    +     sectionsHtml
-    +   '</div>'
-    + '</div>';
-}
-
-function toggleWeeklyBriefing() {
-  var body = document.getElementById('weeklyBriefingBody');
-  var chev = document.getElementById('weeklyBriefingChevron');
-  if (!body) return;
-  if (body.style.display === 'none' || body.style.display === '') {
-    body.style.display = 'block';
-    if (chev) chev.style.transform = 'rotate(180deg)';
-  } else {
-    body.style.display = 'none';
-    if (chev) chev.style.transform = 'rotate(0deg)';
-  }
-}
-
-// Wrap renderCal so the briefing card prepends to cal-body's innerHTML
-// on every Schedule render, then trigger weather fetch.
-(function _wrapRenderCalForBriefingAndWeather() {
-  var orig = window.renderCal;
-  if (typeof orig !== 'function') return;
-  window.renderCal = function() {
-    var r = orig.apply(this, arguments);
-    try {
-      var body = document.getElementById('cal-body');
-      if (body && !body.querySelector('#weeklyBriefingCard')) {
-        var html = renderWeeklyBriefing();
-        if (html) body.insertAdjacentHTML('afterbegin', html);
-      }
-    } catch(e){ console.warn('briefing render failed', e); }
-    try {
-      fetchWeatherForecast().then(function(data){ renderScrollerWeather(data); });
-    } catch(e){}
-    return r;
-  };
-})();
-
 </script>
 
 
@@ -23719,77 +22887,6 @@ function toggleWeeklyBriefing() {
     </div>
   </div>
   <div class="inv-body" id="emp-supplies-body"></div>
-</div>
-
-
-<!-- ═══════ ADMIN SCREEN ═══════ -->
-<div id="admin-view" aria-hidden="true">
-  <div class="admin-topbar">
-    <button class="admin-back" onclick="closeAdminScreen()" aria-label="Back">‹</button>
-    <div class="admin-title-wrap">
-      <div class="admin-title">Admin</div>
-      <div class="admin-sub">Permissions &amp; feature visibility</div>
-    </div>
-    <div style="width:34px"></div>
-  </div>
-  <div class="admin-body">
-    <div class="admin-tabs" role="tablist">
-      <button class="admin-tab active" id="admin-tab-mgr" role="tab" onclick="adminSwitchTab('manager')">Manager</button>
-      <button class="admin-tab" id="admin-tab-emp" role="tab" onclick="adminSwitchTab('employee')">Employee</button>
-    </div>
-    <div class="admin-sec">
-      <div id="admin-rows"></div>
-    </div>
-    <div class="admin-footnote">Changes take effect immediately. Core features (Schedule, Clients, Staff, Messages, Claire) cannot be disabled.</div>
-  </div>
-</div>
-
-<!-- ═══════ ASSETS SCREEN ═══════ -->
-<div id="assets-view" aria-hidden="true">
-  <div class="admin-topbar">
-    <button class="admin-back" onclick="closeAssetsPage()" aria-label="Back">‹</button>
-    <div class="admin-title-wrap">
-      <div class="admin-title">Assets</div>
-      <div class="admin-sub">Fleet &amp; vehicle service</div>
-    </div>
-    <div style="width:34px"></div>
-  </div>
-  <div class="admin-body" id="assets-body"></div>
-</div>
-
-<!-- Employee time-off add modal -->
-<div id="emp-timeoff-overlay" aria-hidden="true" onclick="if(event.target===this)closeEmployeeTimeOffModal()">
-  <div class="inv-detail-sheet" style="max-height:85vh;position:relative">
-    <button class="inv-detail-close" onclick="closeEmployeeTimeOffModal()">×</button>
-    <div class="inv-detail-title">Add Time Off</div>
-    <div class="inv-detail-sub" id="to-emp-name" style="margin-bottom:12px"></div>
-    <div class="inv-field-grid">
-      <div class="inv-field"><div class="inv-field-label">Start Date</div><input id="to-start" type="date"></div>
-      <div class="inv-field"><div class="inv-field-label">End Date</div><input id="to-end" type="date"></div>
-    </div>
-    <div class="inv-field"><div class="inv-field-label">Reason (optional)</div><input id="to-reason" type="text" placeholder="Vacation, sick, personal…"></div>
-    <div style="display:flex;gap:10px;margin-top:6px">
-      <button onclick="closeEmployeeTimeOffModal()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer">Cancel</button>
-      <button onclick="saveEmployeeTimeOffEntry()" style="flex:1.3;background:linear-gradient(135deg,#8E7BFF,#5E5CE6);border:none;color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer">Save Time Off</button>
-    </div>
-  </div>
-</div>
-
-<!-- Vehicle service add modal -->
-<div id="vs-add-overlay" aria-hidden="true" onclick="if(event.target===this)closeAddVehicleServiceModal()">
-  <div class="inv-detail-sheet" style="max-height:85vh;position:relative">
-    <button class="inv-detail-close" onclick="closeAddVehicleServiceModal()">×</button>
-    <div class="inv-detail-title">Add Vehicle Service</div>
-    <div class="inv-detail-sub" style="margin-bottom:12px">Appears in Schedule’s Weekly Briefing</div>
-    <div class="inv-field"><div class="inv-field-label">Vehicle</div><select id="vs-vehicle"></select></div>
-    <div class="inv-field"><div class="inv-field-label">Service Date</div><input id="vs-date" type="date"></div>
-    <div class="inv-field"><div class="inv-field-label">Service Type</div><input id="vs-type" type="text" placeholder="Oil change, tires, inspection…"></div>
-    <div class="inv-field"><div class="inv-field-label">Notes (optional)</div><input id="vs-notes" type="text" placeholder="Any extra context"></div>
-    <div style="display:flex;gap:10px;margin-top:6px">
-      <button onclick="closeAddVehicleServiceModal()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer">Cancel</button>
-      <button onclick="saveVehicleServiceEntry()" style="flex:1.3;background:linear-gradient(135deg,#8E7BFF,#5E5CE6);border:none;color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer">Save Service</button>
-    </div>
-  </div>
 </div>
 
 </body>
