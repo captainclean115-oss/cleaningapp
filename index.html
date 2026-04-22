@@ -3052,6 +3052,8 @@ body.in-portal .bottom-nav { display: none !important; }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Penta Auth: Supabase JS SDK. SDK is loaded for use by the ?auth=1 path only; when ?auth=1 is NOT present, no client is created and no auth code runs. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body style="touch-action:manipulation">
 
@@ -23207,6 +23209,230 @@ function _adminEsc(s) {
     <div class="admin-footnote">Changes take effect when you return to the home screen. Core features (Clients, Staff, Schedule, Claire, Messages) cannot be disabled.</div>
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     PENTA AUTH — parallel auth path, ONLY activates when ?auth=1 is present.
+     When ?auth=1 is NOT in the URL, the IIFE returns immediately (line 3)
+     before touching window.supabase, so the existing localStorage app boots
+     identically. No PentaAuth global is created; no overlay is rendered.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="penta-auth-overlay" style="display:none"></div>
+<script>
+(function(){
+  // GUARD — runs before any Supabase SDK usage. Exits early when ?auth=1 is absent.
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('auth') !== '1') return;
+
+  var PROJECT_URL = 'https://wymoezilyjmyibmuqqmr.supabase.co';
+  var PUBLISHABLE_KEY = 'sb_publishable_lsRZrYHU00rFbZ7S4Jkc7w_TlI3WvEz';
+
+  // Wait for SDK (loaded in <head>) to be parsed.
+  function waitForSDK(cb){
+    if (window.supabase && window.supabase.createClient) return cb();
+    setTimeout(function(){ waitForSDK(cb); }, 30);
+  }
+
+  function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  function showError(msg){
+    var el = document.getElementById('pa-error');
+    if (el) el.textContent = msg || '';
+  }
+
+  function showInfo(msg){
+    var el = document.getElementById('pa-error');
+    if (el) { el.textContent = msg || ''; el.style.color = '#34d399'; }
+  }
+
+  function loginHTML(){
+    return ''+
+      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
+      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Welcome back</div>'+
+      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">Sign in to continue</div>'+
+      '  <button id="pa-google-btn" style="width:100%;background:#fff;color:#333;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:16px;font-family:inherit">Sign in with Google</button>'+
+      '  <div style="text-align:center;color:#8b8fa8;font-size:12px;margin-bottom:16px">— or —</div>'+
+      '  <input id="pa-email" type="email" placeholder="Email" autocomplete="email" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <input id="pa-password" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <button id="pa-signin-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:14px;font-family:inherit">Sign in</button>'+
+      '  <div id="pa-error" style="color:#f87171;font-size:12px;min-height:16px;margin-bottom:10px"></div>'+
+      '  <div style="display:flex;justify-content:space-between;font-size:12px">'+
+      '    <a id="pa-forgot-link" href="#" style="color:#6c8fff;text-decoration:none">Forgot password?</a>'+
+      '    <a id="pa-signup-link" href="#" style="color:#6c8fff;text-decoration:none">Sign up</a>'+
+      '  </div>'+
+      '</div>';
+  }
+
+  function signupHTML(){
+    return ''+
+      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
+      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Create account</div>'+
+      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">Set up your business</div>'+
+      '  <div style="display:flex;gap:8px;margin-bottom:10px">'+
+      '    <input id="pa-first-name" type="text" placeholder="First name" autocomplete="given-name" style="flex:1;min-width:0;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;font-family:inherit">'+
+      '    <input id="pa-last-name" type="text" placeholder="Last name" autocomplete="family-name" style="flex:1;min-width:0;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;font-family:inherit">'+
+      '  </div>'+
+      '  <input id="pa-business-name" type="text" placeholder="Business name" autocomplete="organization" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <input id="pa-email" type="email" placeholder="Email" autocomplete="email" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <input id="pa-password" type="password" placeholder="Password" autocomplete="new-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <input id="pa-confirm-password" type="password" placeholder="Confirm password" autocomplete="new-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
+      '  <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#8b8fa8;margin-bottom:14px;cursor:pointer">'+
+      '    <input id="pa-terms" type="checkbox" style="width:16px;height:16px;cursor:pointer;flex-shrink:0">'+
+      '    <span>I agree to the Terms of Service</span>'+
+      '  </label>'+
+      '  <button id="pa-signup-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:14px;font-family:inherit">Create account</button>'+
+      '  <div id="pa-error" style="font-size:12px;min-height:16px;margin-bottom:10px;color:#f87171"></div>'+
+      '  <div style="text-align:center;font-size:12px">'+
+      '    <a id="pa-login-link" href="#" style="color:#6c8fff;text-decoration:none">Already have an account? Sign in</a>'+
+      '  </div>'+
+      '</div>';
+  }
+
+  function accountHTML(){
+    var s = window.PentaAuth && window.PentaAuth.session;
+    var email = (s && s.user && s.user.email) || '';
+    return ''+
+      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
+      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Account</div>'+
+      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">You are signed in</div>'+
+      '  <div style="background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:14px;margin-bottom:16px">'+
+      '    <div style="font-size:11px;color:#8b8fa8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Signed in as</div>'+
+      '    <div style="font-size:14px;color:#f0f0f5;word-break:break-all">'+ escapeHtml(email) +'</div>'+
+      '  </div>'+
+      '  <button id="pa-logout-btn" style="width:100%;background:transparent;color:#f87171;border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;font-family:inherit">Log out</button>'+
+      '</div>';
+  }
+
+  function render(){
+    var root = document.getElementById('penta-auth-overlay');
+    root.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;font-family:\"DM Sans\",sans-serif;color:#f0f0f5;overflow-y:auto';
+    var v = window.PentaAuth.view;
+    root.innerHTML = v === 'signup' ? signupHTML() : v === 'account' ? accountHTML() : loginHTML();
+    wireHandlers();
+  }
+
+  function wireHandlers(){
+    var pa = window.PentaAuth;
+    var el;
+
+    if (el = document.getElementById('pa-signin-btn')) el.onclick = async function(){
+      showError('');
+      var r = await pa.signIn(
+        (document.getElementById('pa-email').value || '').trim(),
+        document.getElementById('pa-password').value || ''
+      );
+      if (r && r.error) showError(r.error);
+    };
+
+    if (el = document.getElementById('pa-google-btn')) el.onclick = function(){ pa.signInGoogle(); };
+
+    if (el = document.getElementById('pa-signup-link')) el.onclick = function(e){ e.preventDefault(); pa.view = 'signup'; render(); };
+    if (el = document.getElementById('pa-login-link')) el.onclick = function(e){ e.preventDefault(); pa.view = 'login'; render(); };
+
+    if (el = document.getElementById('pa-forgot-link')) el.onclick = async function(e){
+      e.preventDefault(); showError('');
+      var email = (document.getElementById('pa-email').value || '').trim();
+      if (!email) return showError('Enter your email above first');
+      var r = await pa.forgotPassword(email);
+      if (r && r.error) showError(r.error);
+      else showInfo('Check your email for a reset link.');
+    };
+
+    if (el = document.getElementById('pa-signup-btn')) el.onclick = async function(){
+      showError('');
+      var r = await pa.signUp({
+        email: (document.getElementById('pa-email').value || '').trim(),
+        password: document.getElementById('pa-password').value || '',
+        confirmPassword: document.getElementById('pa-confirm-password').value || '',
+        terms: document.getElementById('pa-terms').checked,
+        firstName: (document.getElementById('pa-first-name').value || '').trim(),
+        lastName: (document.getElementById('pa-last-name').value || '').trim(),
+        businessName: (document.getElementById('pa-business-name').value || '').trim()
+      });
+      if (r && r.error) showError(r.error);
+      else if (r && r.needsConfirm) showInfo('Check your email to confirm your account.');
+    };
+
+    if (el = document.getElementById('pa-logout-btn')) el.onclick = function(){ pa.signOut(); };
+  }
+
+  waitForSDK(function(){
+    var client = window.supabase.createClient(PROJECT_URL, PUBLISHABLE_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    });
+
+    window.PentaAuth = {
+      client: client,
+      view: 'login',
+      session: null,
+
+      signIn: async function(email, password){
+        var r = await client.auth.signInWithPassword({ email: email, password: password });
+        if (r.error) return { error: r.error.message };
+        this.session = r.data.session;
+        this.view = 'account';
+        render();
+        return { ok: true };
+      },
+
+      signInGoogle: async function(){
+        var redirect = window.location.origin + window.location.pathname + '?auth=1';
+        return client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: redirect } });
+      },
+
+      signUp: async function(o){
+        if (!o.email || !o.password) return { error: 'Email and password required' };
+        if (o.password !== o.confirmPassword) return { error: 'Passwords do not match' };
+        if (!o.terms) return { error: 'You must accept the Terms of Service' };
+        var r = await client.auth.signUp({
+          email: o.email,
+          password: o.password,
+          options: {
+            data: {
+              first_name: o.firstName,
+              last_name: o.lastName,
+              business_name: o.businessName
+            },
+            emailRedirectTo: window.location.origin + window.location.pathname + '?auth=1'
+          }
+        });
+        if (r.error) return { error: r.error.message };
+        return { ok: true, needsConfirm: !r.data.session };
+      },
+
+      forgotPassword: async function(email){
+        var r = await client.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin + window.location.pathname + '?auth=1'
+        });
+        if (r.error) return { error: r.error.message };
+        return { ok: true };
+      },
+
+      signOut: async function(){
+        await client.auth.signOut();
+        this.session = null;
+        this.view = 'login';
+        render();
+      }
+    };
+
+    client.auth.getSession().then(function(r){
+      window.PentaAuth.session = r.data.session;
+      window.PentaAuth.view = r.data.session ? 'account' : 'login';
+      render();
+    });
+
+    client.auth.onAuthStateChange(function(_event, session){
+      window.PentaAuth.session = session;
+      window.PentaAuth.view = session ? 'account' : 'login';
+      render();
+    });
+  });
+})();
+</script>
 
 </body>
 </html>
