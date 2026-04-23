@@ -12259,9 +12259,17 @@ function _buildHoursReport(offset) {
                 + '–' + sunday.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   var fnameWeek = monday.toISOString().slice(0,10);
 
+  // Polished text layout: box-drawing headers, inline weekly total next to
+  // each employee name, column-aligned day rows inside the <pre> monospace.
+  // Column budgets: 2 indent · 14 day · 16 time · 10 duration · lunch tail.
+  var SEP_HEAVY = '═'.repeat(43);
+  var SEP_THIN  = '─'.repeat(43);
+
   var textLines = [];
-  textLines.push('Hours Report — Week of ' + weekLabel);
-  textLines.push('Manna Maids');
+  textLines.push(SEP_HEAVY);
+  textLines.push('  HOURS REPORT');
+  textLines.push('  Week of ' + weekLabel + ' · Manna Maids');
+  textLines.push(SEP_HEAVY);
   textLines.push('');
 
   var csvRows = [];
@@ -12283,8 +12291,8 @@ function _buildHoursReport(offset) {
 
     teamEmployees.forEach(function(emp) {
       empsSeen++;
-      textLines.push((emp.name || emp.id).toUpperCase() + ' (' + team + ')');
       var empWeekHours = 0;
+      var dayRows = [];
 
       days.forEach(function(d, i) {
         var dk = dateKey(d);
@@ -12314,8 +12322,10 @@ function _buildHoursReport(offset) {
 
         if (empH > 0 && startStr && endStr) {
           empWeekHours += empH;
-          var lunchTxt = lunchMin ? ', lunch ' + (Math.floor(lunchMin/60)) + ':' + String(lunchMin%60).padStart(2,'0') : '';
-          textLines.push(dayLabel + ': ' + startStr + ' — ' + endStr + ' (' + _hrDecimalHoursText(empH) + lunchTxt + ')');
+          var timeRange = startStr + ' – ' + endStr;
+          var durTxt = _hrDecimalHoursText(empH);
+          var lunchTail = lunchMin ? ('lunch ' + Math.floor(lunchMin/60) + ':' + String(lunchMin%60).padStart(2,'0')) : '';
+          dayRows.push('  ' + dayLabel.padEnd(14) + timeRange.padEnd(16) + durTxt.padEnd(10) + lunchTail);
           csvRows.push([
             _hrCsvField(emp.name || emp.id),
             _hrCsvField(team),
@@ -12327,7 +12337,7 @@ function _buildHoursReport(offset) {
           ].join(','));
         } else if ((startStr && !endStr) || (!startStr && endStr)) {
           // Partial/malformed — show ? in text, empty in CSV
-          textLines.push(dayLabel + ': ? (incomplete clock data)');
+          dayRows.push('  ' + dayLabel.padEnd(14) + '? (incomplete clock data)');
           csvRows.push([
             _hrCsvField(emp.name || emp.id),
             _hrCsvField(team),
@@ -12335,7 +12345,7 @@ function _buildHoursReport(offset) {
             '0:00'
           ].join(','));
         } else {
-          textLines.push(dayLabel + ': OFF');
+          dayRows.push('  ' + dayLabel.padEnd(14) + 'OFF');
           csvRows.push([
             _hrCsvField(emp.name || emp.id),
             _hrCsvField(team),
@@ -12344,16 +12354,21 @@ function _buildHoursReport(offset) {
         }
       });
 
-      textLines.push('Week total: ' + _hrDecimalHoursText(empWeekHours));
-      textLines.push('');
+      // Thin separator between employees (not before the first one)
+      if (empsSeen > 1) textLines.push(SEP_THIN);
+      textLines.push((emp.name || emp.id).toUpperCase() + ' (' + team + ') — ' + _hrDecimalHoursText(empWeekHours));
+      dayRows.forEach(function(row){ textLines.push(row); });
       grandHours += empWeekHours;
     });
   });
 
+  textLines.push('');
   if (empsSeen === 0) {
     textLines.push('No employees found.');
   } else {
-    textLines.push('TOTAL (all staff): ' + _hrDecimalHoursText(grandHours));
+    textLines.push(SEP_HEAVY);
+    textLines.push('  TOTAL · ' + _hrDecimalHoursText(grandHours) + ' · ' + empsSeen + ' employee' + (empsSeen === 1 ? '' : 's'));
+    textLines.push(SEP_HEAVY);
   }
 
   return {
