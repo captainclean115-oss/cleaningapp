@@ -21349,7 +21349,10 @@ function openCalJobCard(el) {
     +'</div></div>'
     +'<div style="padding:16px 20px">'
     +'<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
-    +'<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Address</div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
+    +'<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
+    +(keyStr && keyStr !== '—' ? '<div style="background:rgba(251,191,36,0.18);color:var(--amber);border:1px solid rgba(251,191,36,0.45);border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0">🔑 '+keyStr+'</div>' : '')
+    +'</div>'
     +'<div style="font-size:14px;font-weight:500;margin-bottom:8px">'+addr+'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
     +'<a href="'+mapsUrl+'" target="_blank" style="display:inline-flex;align-items:center;gap:5px;background:#34a853;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">📍 Maps</a>'
@@ -21358,10 +21361,12 @@ function openCalJobCard(el) {
     +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'
     +(timeStr?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;grid-column:span 2"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">⏱ Time</div><div style="display:flex;align-items:center;justify-content:space-between"><button onclick="nudgeJobTime(\''+jobId+'\',-15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">◄ 15m</button><div style="font-size:16px;font-weight:700" id="cjc-time-display">'+timeStr+endTimeStr+'</div><button onclick="nudgeJobTime(\''+jobId+'\',15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">15m ►</button></div></div>':'')
-    +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Key</div><div style="font-size:18px;font-weight:700">'+keyStr+'</div></div>'
-    +(price?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Price</div><div style="font-size:18px;font-weight:700;color:var(--green)">'+price+'</div></div>':'<div></div>')
     +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Next Clean</div><div style="font-size:14px;font-weight:600">'+nextClean+'</div></div>'
-    +(j.phone?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Phone</div><div style="font-size:13px;font-weight:600">'+j.phone+'</div></div>':'<div></div>')
+    +(price?'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Price</div><div style="font-size:18px;font-weight:700;color:var(--green)">'+price+'</div></div>':'<div></div>')
+    +((c && (c.pref_day || c.pref_time)) ? (
+      '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Preferred Day</div><div style="font-size:14px;font-weight:600">'+(c.pref_day ? prefDayFormat(c.pref_day) : '—')+'</div></div>'
+      +'<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Preferred Time</div><div style="font-size:14px;font-weight:600">'+(c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : '—')+'</div></div>'
+    ) : '')
     +'</div>'
     +(perCleanNote?'<div style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:12px;margin-bottom:8px"><div style="font-size:10px;color:var(--amber);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-bottom:4px">&#9888; Today Note</div><div style="font-size:13px;line-height:1.5;color:var(--text)">'+perCleanNote+'</div></div>':'')
     +(permanentNotes?'<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">&#128203; Client Notes</div><div style="font-size:13px;line-height:1.5;color:var(--text)">'+permanentNotes+'</div></div>':'')
