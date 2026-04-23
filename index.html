@@ -3809,11 +3809,24 @@ window.PentaClients = (function() {
     }
   }
 
+  function _hasSupabaseSession() {
+    try {
+      var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+      if (!raw) return false;
+      var parsed = JSON.parse(raw);
+      return !!(parsed && parsed.access_token);
+    } catch (e) {
+      return false;
+    }
+  }
+
   function _runSupabaseFetch(onDone) {
     // onDone({ ok, reason?, rows? }) — called exactly once. Never throws.
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('auth') !== '1') {
-      onDone({ ok: false, reason: 'no_auth_param' });
+    // Gate changed in test-enablement patch: we now fire whenever a Supabase session
+    // is persisted in localStorage, not only when ?auth=1 is in the URL. This lets
+    // Phase 3C query Supabase from the main app after the user tapped "Enter app".
+    if (!_hasSupabaseSession()) {
+      onDone({ ok: false, reason: 'no_session' });
       return;
     }
     var tries = 0;
@@ -21767,8 +21780,8 @@ function phase3cRefresh() {
         btn.textContent = 'Refreshed ✓ (' + r.rows + ' rows)';
       } else if (r && r.ok && r.rows === 0) {
         btn.textContent = 'No rows returned (check auth/RLS)';
-      } else if (r && r.reason === 'no_auth_param') {
-        btn.textContent = 'Skipped — load with ?auth=1';
+      } else if (r && r.reason === 'no_session') {
+        btn.textContent = 'No session — log in via ?auth=1 first';
       } else if (r && r.reason === 'no_client') {
         btn.textContent = 'Supabase client not ready';
       } else {
@@ -23669,9 +23682,22 @@ function _p3cPage(dir) {
 <div id="penta-auth-overlay" style="display:none"></div>
 <script>
 (function(){
-  // GUARD — runs before any Supabase SDK usage. Exits early when ?auth=1 is absent.
+  // GUARD — activate when ?auth=1 is present OR a persisted Supabase session exists.
+  // Phase 3C test enablement: the main app (plain URL) needs PentaAuth.client available
+  // after the user has logged in via ?auth=1 and tapped "Enter app", so Phase 3C can
+  // query Supabase. When the overlay-triggering param is absent we still create the
+  // client but DO NOT render the overlay (SHOW_OVERLAY gates every render() call).
   var params = new URLSearchParams(window.location.search);
-  if (params.get('auth') !== '1') return;
+  var SHOW_OVERLAY = params.get('auth') === '1';
+  function _paHasSession(){
+    try {
+      var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+      if (!raw) return false;
+      var p = JSON.parse(raw);
+      return !!(p && p.access_token);
+    } catch(e) { return false; }
+  }
+  if (!SHOW_OVERLAY && !_paHasSession()) return;
 
   var PROJECT_URL = 'https://wymoezilyjmyibmuqqmr.supabase.co';
   var PUBLISHABLE_KEY = 'sb_publishable_lsRZrYHU00rFbZ7S4Jkc7w_TlI3WvEz';
@@ -23752,11 +23778,13 @@ function _p3cPage(dir) {
       '    <div style="font-size:11px;color:#8b8fa8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Signed in as</div>'+
       '    <div style="font-size:14px;color:#f0f0f5;word-break:break-all">'+ escapeHtml(email) +'</div>'+
       '  </div>'+
+      '  <button id="pa-enter-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:10px;font-family:inherit">Enter app</button>'+
       '  <button id="pa-logout-btn" style="width:100%;background:transparent;color:#f87171;border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;font-family:inherit">Log out</button>'+
       '</div>';
   }
 
   function render(){
+    if (!SHOW_OVERLAY) return;
     var root = document.getElementById('penta-auth-overlay');
     root.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;font-family:\"DM Sans\",sans-serif;color:#f0f0f5;overflow-y:auto';
     var v = window.PentaAuth.view;
@@ -23804,6 +23832,12 @@ function _p3cPage(dir) {
       });
       if (r && r.error) showError(r.error);
       else if (r && r.needsConfirm) showInfo('Check your email to confirm your account.');
+    };
+
+    if (el = document.getElementById('pa-enter-btn')) el.onclick = function(){
+      var url = new URL(window.location.href);
+      url.searchParams.delete('auth');
+      window.location.href = url.toString();
     };
 
     if (el = document.getElementById('pa-logout-btn')) el.onclick = function(){ pa.signOut(); };
