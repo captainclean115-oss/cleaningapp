@@ -5221,6 +5221,13 @@ function renderCal() {
           var safeId = j.id.replace(/['"]/g,'');
           var cl2 = PentaClients.getClient(j.clientId);
           var city = cl2 ? (cl2.city || '') : '';
+          // Visual polish: OMS (one-time-service) cards get iOS green; clients
+          // with an open balance get a small red $ badge. $ hidden when
+          // cancelled/done to avoid collision with CANCELLED / ✓ badges.
+          var isOMS = !!(cl2 && cl2.fc === 'OMS');
+          var hasBal = !!(cl2 && (Number(cl2.bal) || 0) > 0);
+          var omsTextColor = isOMS ? '#FFFFFF' : 'var(--text)';
+          var omsMutedColor = isOMS ? 'rgba(255,255,255,0.85)' : 'var(--muted)';
 
           var blockL, blockW;
           if (startM !== null && startM >= TL_START && startM < TL_END) {
@@ -5242,14 +5249,15 @@ function renderCal() {
             +' ontouchstart="jobDragStart(event,this)" ontouchmove="jobDragMove(event)" ontouchend="jobDragEnd(event)"'
             +' onclick="jobSquareTap(event,this)"'
             +' style="position:absolute;left:'+blockL+'px;top:4px;width:'+blockW+'px;height:64px;'
-            +'background:'+(isCancelled?'rgba(248,113,113,0.08)':'var(--surface)')+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
+            +'background:'+(isCancelled?'rgba(248,113,113,0.08)':(isOMS?'#34C759':'var(--surface)'))+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
             +'border-radius:8px;padding:5px 6px;overflow:hidden;box-sizing:border-box;'
             +'cursor:grab;opacity:'+(isDone||isCancelled?'0.5':'1')+';user-select:none;-webkit-user-select:none;touch-action:auto">'
-            +'<div style="font-size:11px;font-weight:600;color:'+(isCancelled?'var(--red)':'var(--text)')+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
-            +(timeLabel?'<div style="font-size:9px;color:var(--muted);white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
-            +(city&&blockW>80?'<div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
+            +'<div style="font-size:11px;font-weight:600;color:'+(isCancelled?'var(--red)':omsTextColor)+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
+            +(timeLabel?'<div style="font-size:9px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
+            +(city&&blockW>80?'<div style="font-size:9px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
             +(isCancelled?'<div style="font-size:9px;color:var(--red);font-weight:700;position:absolute;bottom:3px;right:5px">CANCELLED</div>':'')
             +(isDone&&!isCancelled?'<div style="font-size:9px;color:var(--green);font-weight:700;position:absolute;bottom:3px;right:5px">✓</div>':'')
+            +(hasBal&&!isCancelled&&!isDone?'<span style="position:absolute;bottom:4px;right:6px;color:#E53935;font-weight:700;font-size:12px;pointer-events:none">$</span>':'')
             +'</div>';
         });
 
