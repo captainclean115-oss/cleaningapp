@@ -3684,7 +3684,7 @@ window.PentaClients = (function() {
   var BUSINESS_ID = '48532f06-0625-415b-9091-2638bed6506d';
   var DIVERGENCE_KEY = 'phase3c_divergences';
   var MAX_DIVERGENCES = 500;
-  var COMPARE_FIELDS = ['fn','ln','addr','city','zip','ph','em','fc','next','bal','pkg','notes'];
+  var COMPARE_FIELDS = ['fn','ln','addr','city','zip','ph','em','fc','next','bal','pkg','notes','pref_day','pref_time'];
 
   // Phase 3D state
   var PENDING_KEY = 'phase3d_pending_writes';
@@ -3728,6 +3728,8 @@ window.PentaClients = (function() {
       bal: r.balance == null ? 0 : Number(r.balance),
       pkg: r.package,
       notes: r.notes,
+      pref_day: r.preferred_day,
+      pref_time: r.preferred_time_window,
       margin: null
     };
   }
@@ -3775,6 +3777,8 @@ window.PentaClients = (function() {
     if (H.call(src, 'bal'))   out.balance           = (src.bal == null || src.bal === '') ? 0 : Number(src.bal);
     if (H.call(src, 'pkg'))   out.package           = src.pkg == null ? null : src.pkg;
     if (H.call(src, 'notes')) out.notes             = src.notes == null ? null : src.notes;
+    if (H.call(src, 'pref_day'))  out.preferred_day         = src.pref_day == null ? null : src.pref_day;
+    if (H.call(src, 'pref_time')) out.preferred_time_window = src.pref_time == null || src.pref_time === '' ? null : src.pref_time;
     return out;
   }
 
@@ -4305,6 +4309,20 @@ window.PentaClients = (function() {
 
 const FREQ_CLASS = {'RMS - WEK':'f-wek','RMS - ETW':'f-etw','RMS - EOW':'f-eow','RMS - EFW':'f-efw','RMS - MON':'f-mon','OMS':'f-oms'};
 const FREQ_LABEL = {'RMS - WEK':'Weekly','RMS - ETW':'Every 3wk','RMS - EOW':'Every 2wk','RMS - EFW':'Monthly+','RMS - MON':'Monthly','OMS':'One-time'};
+const PREF_TIME_LABEL = {
+  'anytime':   'Anytime',
+  'morning':   'Morning',
+  'afternoon': 'Afternoon',
+  'evening':   'Evening',
+  'before_10': 'Before 10am',
+  'before_12': 'Before 12pm',
+  'after_12':  'After 12pm',
+  'after_2':   'After 2pm',
+  '9_to_12':   '9am–12pm',
+  '10_to_1':   '10am–1pm',
+  '12_to_3':   '12pm–3pm',
+  '1_to_4':    '1pm–4pm'
+};
 const AV_COLORS = ['av0','av1','av2','av3','av4'];
 
 let filtered = PentaClients.list();
@@ -4554,6 +4572,7 @@ function render() {
         <div class="card-main">
           <div class="card-name">${name}${(function(){var sc=getClientScores(c),ov=getOverallStars(sc);if(ov===null)return '';var s='';for(var i=1;i<=5;i++)s+='<span style="opacity:'+(i<=ov?'1':'0.2')+';font-size:10px">&#11088;</span>';return '<span data-cid="'+c.id+'" onclick="event.stopPropagation();openScoreCard(this)" style="cursor:pointer;margin-left:4px">'+s+'</span>';})()}</div>
           <div class="card-sub">${c.city}${c.addr ? ' · ' + c.addr : ''}</div>
+          ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[(c.pref_day||'').replace(/</g,'&lt;'), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
         <div class="card-right">
           <span class="freq-pill ${fc}">${fl}</span>
@@ -13616,6 +13635,33 @@ function openClientEdit(clientId) {
       </div>
     </div>
 
+    <!-- SECTION: Preferred Scheduling -->
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Preferred Scheduling</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
+      <div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Preferred day</div>
+        <input id="ce-pref-day" class="field-input" value="${(c.pref_day||'').replace(/"/g,'&quot;')}" maxlength="40" placeholder="e.g., Monday, Tue/Thu, Weekdays" style="width:100%">
+      </div>
+      <div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Preferred time window</div>
+        <select id="ce-pref-time" class="field-input" style="width:100%">
+          <option value=""></option>
+          <option value="anytime" ${c.pref_time==='anytime'?'selected':''}>Anytime</option>
+          <option value="morning" ${c.pref_time==='morning'?'selected':''}>Morning</option>
+          <option value="afternoon" ${c.pref_time==='afternoon'?'selected':''}>Afternoon</option>
+          <option value="evening" ${c.pref_time==='evening'?'selected':''}>Evening</option>
+          <option value="before_10" ${c.pref_time==='before_10'?'selected':''}>Before 10am</option>
+          <option value="before_12" ${c.pref_time==='before_12'?'selected':''}>Before 12pm</option>
+          <option value="after_12" ${c.pref_time==='after_12'?'selected':''}>After 12pm</option>
+          <option value="after_2" ${c.pref_time==='after_2'?'selected':''}>After 2pm</option>
+          <option value="9_to_12" ${c.pref_time==='9_to_12'?'selected':''}>9am–12pm</option>
+          <option value="10_to_1" ${c.pref_time==='10_to_1'?'selected':''}>10am–1pm</option>
+          <option value="12_to_3" ${c.pref_time==='12_to_3'?'selected':''}>12pm–3pm</option>
+          <option value="1_to_4" ${c.pref_time==='1_to_4'?'selected':''}>1pm–4pm</option>
+        </select>
+      </div>
+    </div>
+
     <!-- SECTION: Service -->
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Service</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
@@ -14034,7 +14080,9 @@ function saveClientEdit(clientId) {
     zip: document.getElementById('ce-zip').value.trim(),
     notes: document.getElementById('ce-notes').value.trim(),
     pkg: document.getElementById('ce-pkg').value.trim(),
-    fc: newFreq
+    fc: newFreq,
+    pref_day: (document.getElementById('ce-pref-day').value || '').trim(),
+    pref_time: document.getElementById('ce-pref-time').value || null
   };
   if (newNext) editPatch.next = newNext;
   PentaClients.updateClient(clientId, editPatch);
@@ -14055,7 +14103,8 @@ function saveClientEdit(clientId) {
     fn: c.fn, ln: c.ln, ph: c.ph, em: c.em,
     addr: c.addr, city: c.city, zip: c.zip,
     notes: c.notes, pkg: c.pkg, fc: c.fc,
-    next: c.next
+    next: c.next,
+    pref_day: c.pref_day, pref_time: c.pref_time
   });
 
   // Upsert job entries in cleanco_jobs so employee schedule reflects edits
