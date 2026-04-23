@@ -3672,6 +3672,10 @@ const CLIENTS = [{"id":"10901301","fn":"Nancy","ln":"Suder","addr":"108 Gloucest
 // cache is replaced with Supabase data and a divergence log is written. Supabase is
 // additive, never authoritative — any failure path leaves the cache on CLIENTS so the app
 // behaves identically to Phase 3B.
+// Phase 3D: dual-write. Write methods mutate the cache synchronously (UI stays instant)
+// and fire a Supabase write in the background. On failure, the cache is rolled back,
+// the user is toasted, and the write is queued to localStorage for retry on next boot.
+// Method signatures stay synchronous — no await propagation, no caller changes.
 window.PentaClients = (function() {
   var _cache = CLIENTS;
   var _cacheSource = 'local';   // 'local' | 'supabase'
@@ -3681,6 +3685,13 @@ window.PentaClients = (function() {
   var DIVERGENCE_KEY = 'phase3c_divergences';
   var MAX_DIVERGENCES = 500;
   var COMPARE_FIELDS = ['fn','ln','addr','city','zip','ph','em','fc','next','bal','pkg','notes'];
+
+  // Phase 3D state
+  var PENDING_KEY = 'phase3d_pending_writes';
+  var MAX_PENDING = 100;
+  var MAX_ATTEMPTS = 5;
+  var _lastWriteAt = null;        // ISO timestamp of most recent write attempt
+  var _lastWriteResult = null;    // 'success' | 'failed' | null
 
   // Supabase frequency enum uses compact form ("RMS-ETW"); in-app uses spaced form
   // ("RMS - ETW") as the key into FREQ_CLASS/FREQ_LABEL. Normalize on read so downstream
@@ -3719,6 +3730,52 @@ window.PentaClients = (function() {
       notes: r.notes,
       margin: null
     };
+  }
+
+  // Phase 3D — inverse date/freq transforms for writes.
+  // Empty/null inputs map to null (Supabase column goes to NULL).
+  function _mdyToIso(mdy) {
+    if (mdy == null || mdy === '') return null;
+    var s = String(mdy);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    var parts = s.split('/');
+    if (parts.length !== 3) return null;
+    var mm = parts[0].length === 1 ? '0' + parts[0] : parts[0];
+    var dd = parts[1].length === 1 ? '0' + parts[1] : parts[1];
+    var yyyy = parts[2];
+    if (yyyy.length !== 4) return null;
+    return yyyy + '-' + mm + '-' + dd;
+  }
+  function _stripFreqSpaces(v) {
+    if (v == null || v === '') return null;
+    if (v === 'OMS') return 'OMS';
+    return String(v).replace(/ - /g, '-');
+  }
+
+  // Phase 3D — in-app field → Supabase column, inverse of _transformRow.
+  // Only returns columns that are present as own-properties of `src`.
+  // Unmapped fields (_draft, team, freq, margin, etc.) are silently dropped;
+  // callers treat an empty result as "skip the Supabase write entirely".
+  function _transformRowForWrite(src) {
+    var out = {};
+    if (!src || typeof src !== 'object') return out;
+    var H = Object.prototype.hasOwnProperty;
+    if (H.call(src, 'id'))    out.external_id       = src.id;
+    if (H.call(src, 'fn'))    out.first_name        = src.fn == null ? null : src.fn;
+    if (H.call(src, 'ln'))    out.last_name         = src.ln == null ? null : src.ln;
+    if (H.call(src, 'addr'))  out.address           = src.addr == null ? null : src.addr;
+    if (H.call(src, 'city'))  out.city              = src.city == null ? null : src.city;
+    if (H.call(src, 'zip'))   out.zip_code          = src.zip == null ? null : src.zip;
+    if (H.call(src, 'zone'))  out.zone              = src.zone == null ? null : src.zone;
+    if (H.call(src, 'ph'))    out.phone             = src.ph == null ? null : src.ph;
+    if (H.call(src, 'em'))    out.email             = src.em == null ? null : src.em;
+    if (H.call(src, 'fc'))    out.frequency         = _stripFreqSpaces(src.fc);
+    if (H.call(src, 'last'))  out.last_service_date = _mdyToIso(src.last);
+    if (H.call(src, 'next'))  out.next_service_date = _mdyToIso(src.next);
+    if (H.call(src, 'bal'))   out.balance           = (src.bal == null || src.bal === '') ? 0 : Number(src.bal);
+    if (H.call(src, 'pkg'))   out.package           = src.pkg == null ? null : src.pkg;
+    if (H.call(src, 'notes')) out.notes             = src.notes == null ? null : src.notes;
+    return out;
   }
 
   function _norm(v) {
@@ -3796,7 +3853,7 @@ window.PentaClients = (function() {
                 nFieldMismatch + ' field_mismatch');
   }
 
-  function _triggerRerender() {
+  function _triggerRerender(rolledBackId) {
     try {
       var activeTab = sessionStorage.getItem('cc_tab') || 'home';
       if (activeTab === 'clients' && typeof applyFilters === 'function') {
@@ -3804,9 +3861,195 @@ window.PentaClients = (function() {
       } else if (activeTab === 'cal' && typeof renderCal === 'function') {
         renderCal();
       }
+      // Phase 3D: if the message drawer is open on the rolled-back client,
+      // refresh its title and subtitle so the DOM matches the corrected cache.
+      // The client edit sheet closes on save, so it's not open when a rollback fires.
+      if (rolledBackId && typeof drawerClient !== 'undefined' && drawerClient && drawerClient.id === rolledBackId) {
+        var fresh = _cache.find(function(c){ return c.id === rolledBackId; });
+        if (fresh) {
+          drawerClient = fresh;
+          var titleEl = document.getElementById('drawer-title');
+          var subEl = document.getElementById('drawer-sub');
+          if (titleEl) {
+            titleEl.textContent = (typeof cleanName === 'function')
+              ? cleanName(fresh)
+              : (((fresh.fn || '') + ' ' + (fresh.ln || '')).trim());
+          }
+          if (subEl) {
+            subEl.textContent = (fresh.city || '') + ' · ' + (fresh.freq || fresh.fc || '');
+          }
+        }
+      }
     } catch (e) {
       console.warn('[Phase3C] re-render error', e);
     }
+  }
+
+  // Phase 3D — global toast. Built lazily on first call so the DOM element doesn't
+  // exist when the page is idle. Fades in, holds for 4s, fades out. z-index above modals.
+  function _p3dToast(msg, kind) {
+    try {
+      if (!document.body) return;
+      var host = document.getElementById('p3d-toast-host');
+      if (!host) {
+        host = document.createElement('div');
+        host.id = 'p3d-toast-host';
+        host.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;font-family:'DM Sans',sans-serif";
+        document.body.appendChild(host);
+      }
+      var el = document.createElement('div');
+      var bg = kind === 'error'   ? 'rgba(220,38,38,0.95)'
+             : kind === 'success' ? 'rgba(22,163,74,0.95)'
+                                  : 'rgba(30,33,48,0.95)';
+      el.style.cssText = 'background:' + bg + ';color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,0.3);max-width:340px;text-align:center;opacity:0;transition:opacity 220ms ease';
+      el.textContent = msg;
+      host.appendChild(el);
+      setTimeout(function(){ el.style.opacity = '1'; }, 10);
+      setTimeout(function(){
+        el.style.opacity = '0';
+        setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 250);
+      }, 4000);
+    } catch (e) {
+      console.warn('[Phase3D] toast error', e, msg);
+    }
+  }
+
+  // Phase 3D — retry queue (localStorage-backed, capped, retry on boot only)
+  function _genRetryId() {
+    return 'p3d-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+  function _loadPending() {
+    try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]') || []; }
+    catch (e) { return []; }
+  }
+  function _savePending(q) {
+    try {
+      if (q.length > MAX_PENDING) {
+        var dropped = q.length - MAX_PENDING;
+        console.warn('[Phase3D] pending queue exceeded ' + MAX_PENDING + ', dropping ' + dropped + ' oldest entries');
+        q = q.slice(q.length - MAX_PENDING);
+      }
+      localStorage.setItem(PENDING_KEY, JSON.stringify(q));
+    } catch (e) {
+      console.error('[Phase3D] failed to save pending queue', e);
+    }
+  }
+  function _queueWrite(op, external_id, payload) {
+    var q = _loadPending();
+    q.push({
+      id: _genRetryId(),
+      op: op,
+      external_id: external_id,
+      payload: payload,
+      attempts: 0,
+      first_queued_at: new Date().toISOString(),
+      last_attempt_at: null,
+      last_error: null
+    });
+    _savePending(q);
+  }
+  function _setLastWrite(result) {
+    _lastWriteAt = new Date().toISOString();
+    _lastWriteResult = result;
+  }
+  function _getSbClient() {
+    return (window.PentaAuth && window.PentaAuth.client) || null;
+  }
+
+  // Execute a single Supabase write. Returns a Promise.
+  // Used for both first-attempt writes and retries.
+  function _executeWrite(op, external_id, payload) {
+    var sb = _getSbClient();
+    if (!sb) return Promise.reject(new Error('no_supabase_client'));
+    var nowIso = new Date().toISOString();
+    var q;
+    try {
+      if (op === 'insert') {
+        var row = Object.assign({}, payload, { business_id: BUSINESS_ID, updated_at: nowIso });
+        q = sb.from('clients').insert(row);
+      } else if (op === 'update') {
+        var patch = Object.assign({}, payload, { updated_at: nowIso });
+        q = sb.from('clients').update(patch).eq('external_id', external_id).eq('business_id', BUSINESS_ID);
+      } else if (op === 'soft_delete') {
+        q = sb.from('clients').update({ deleted_at: nowIso, updated_at: nowIso })
+              .eq('external_id', external_id).eq('business_id', BUSINESS_ID);
+      } else {
+        return Promise.reject(new Error('unknown_op:' + op));
+      }
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    return q.then(function(res){
+      if (res && res.error) throw res.error;
+      return res;
+    });
+  }
+
+  function _nameFor(id) {
+    var c = _cache.find(function(x){ return x.id === id; });
+    if (!c) return String(id);
+    var nm = (((c.fn || '') + ' ' + (c.ln || '')).trim());
+    return nm || String(id);
+  }
+
+  // Fire a first-attempt write. On failure: invoke rollback, toast, queue, rerender.
+  function _fireWrite(op, external_id, payload, rollback, label) {
+    _executeWrite(op, external_id, payload).then(function(){
+      _setLastWrite('success');
+    }).catch(function(err){
+      console.error('[Phase3D] write failed (' + op + ' ' + external_id + ')', err);
+      try { rollback(); } catch (e) { console.error('[Phase3D] rollback error', e); }
+      _setLastWrite('failed');
+      _queueWrite(op, external_id, payload);
+      _p3dToast('Save failed for ' + (label || external_id) + ' — reverted. Will retry.', 'error');
+      _triggerRerender(external_id);
+    });
+  }
+
+  // Retry all pending entries sequentially. Stuck entries (>= MAX_ATTEMPTS) are
+  // preserved but skipped. Conflict-skip rules: queued insert for an id already
+  // in cache, or queued update for an id no longer in cache — both are dropped
+  // with a console warning (these happen when the user manually reconciled).
+  function _processRetryQueue() {
+    var q = _loadPending();
+    if (!q.length) return Promise.resolve({ attempted: 0, succeeded: 0, failed: 0, stuck: 0 });
+    var counts = { attempted: 0, succeeded: 0, failed: 0, stuck: 0 };
+    var survivors = [];
+    var chain = Promise.resolve();
+    q.forEach(function(entry){
+      chain = chain.then(function(){
+        if ((entry.attempts || 0) >= MAX_ATTEMPTS) {
+          counts.stuck++;
+          survivors.push(entry);
+          return;
+        }
+        var inCache = !!_cache.find(function(c){ return c.id === entry.external_id; });
+        if (entry.op === 'insert' && inCache) {
+          console.warn('[Phase3D] skipping queued insert (id already in cache): ' + entry.external_id);
+          return;
+        }
+        if (entry.op === 'update' && !inCache) {
+          console.warn('[Phase3D] skipping queued update (client no longer in cache): ' + entry.external_id);
+          return;
+        }
+        counts.attempted++;
+        return _executeWrite(entry.op, entry.external_id, entry.payload).then(function(){
+          counts.succeeded++;
+          _setLastWrite('success');
+        }).catch(function(err){
+          counts.failed++;
+          entry.attempts = (entry.attempts || 0) + 1;
+          entry.last_attempt_at = new Date().toISOString();
+          entry.last_error = (err && err.message) || String(err);
+          survivors.push(entry);
+          _setLastWrite('failed');
+        });
+      });
+    });
+    return chain.then(function(){
+      _savePending(survivors);
+      return counts;
+    });
   }
 
   function _hasSupabaseSession() {
@@ -3882,7 +4125,19 @@ window.PentaClients = (function() {
 
   function _bootLoadFromSupabase() {
     try {
-      _runSupabaseFetch(function(){});
+      _runSupabaseFetch(function(res){
+        // Phase 3D hook: if the boot fetch succeeded (auth+network are working),
+        // drain any writes that failed on a prior session.
+        if (res && res.ok) {
+          _processRetryQueue().then(function(r){
+            if (r && r.attempted) {
+              console.log('[Phase3D] boot retry: ' + JSON.stringify(r));
+            }
+          }).catch(function(err){
+            console.error('[Phase3D] boot retry failed', err);
+          });
+        }
+      });
     } catch (e) {
       console.error('[Phase3C] boot load failed', e);
     }
@@ -3898,29 +4153,100 @@ window.PentaClients = (function() {
     mapClients: function(fn) { return _cache.map(fn); },
     forEachClient: function(fn) { _cache.forEach(fn); },
     getIndex: function(id) { return _cache.findIndex(function(c){ return c.id === id; }); },
-    addClient: function(obj) { _cache.unshift(obj); return obj; },
+    // Phase 3D — write methods. Each mutates the cache sync, returns immediately,
+    // and fires a Supabase write in the background. On failure: rollback, toast, queue.
+    addClient: function(obj) {
+      _cache.unshift(obj);
+      if (!obj || !obj.id) return obj; // malformed — cache-only, no write
+      var payload = _transformRowForWrite(obj);
+      payload.external_id = obj.id;
+      var id = obj.id;
+      var label = _nameFor(id);
+      _fireWrite('insert', id, payload, function(){
+        var idx = _cache.findIndex(function(c){ return c.id === id; });
+        if (idx >= 0) _cache.splice(idx, 1);
+      }, label);
+      return obj;
+    },
     removeClient: function(id) {
       var idx = _cache.findIndex(function(c){ return c.id === id; });
       if (idx < 0) return false;
+      var snapshot = _cache[idx];
+      var label = _nameFor(id);
       _cache.splice(idx, 1);
+      _fireWrite('soft_delete', id, {}, function(){
+        // Restore at original index (or end if the cache shrank below idx)
+        var insertAt = Math.min(idx, _cache.length);
+        _cache.splice(insertAt, 0, snapshot);
+      }, label);
       return true;
     },
     updateClient: function(id, patch) {
       var idx = _cache.findIndex(function(c){ return c.id === id; });
       if (idx < 0) return null;
-      Object.assign(_cache[idx], patch);
-      return _cache[idx];
+      var entry = _cache[idx];
+      var snapshot = Object.assign({}, entry);
+      Object.assign(entry, patch);
+      var payload = _transformRowForWrite(patch);
+      delete payload.external_id; // never write external_id on update
+      if (Object.keys(payload).length === 0) return entry; // patch had only local-only fields
+      var label = _nameFor(id);
+      _fireWrite('update', id, payload, function(){
+        var freshIdx = _cache.findIndex(function(c){ return c.id === id; });
+        if (freshIdx < 0) return;
+        var target = _cache[freshIdx];
+        // Restore only the keys that were in the patch. For keys that existed in
+        // snapshot, copy back. For keys added by the patch, delete.
+        Object.keys(patch).forEach(function(k){
+          if (Object.prototype.hasOwnProperty.call(snapshot, k)) {
+            target[k] = snapshot[k];
+          } else {
+            delete target[k];
+          }
+        });
+      }, label);
+      return entry;
     },
     setField: function(id, field, val) {
       var idx = _cache.findIndex(function(c){ return c.id === id; });
       if (idx < 0) return false;
-      _cache[idx][field] = val;
+      var entry = _cache[idx];
+      var hadField = Object.prototype.hasOwnProperty.call(entry, field);
+      var oldVal = entry[field];
+      entry[field] = val;
+      var patch = {};
+      patch[field] = val;
+      var payload = _transformRowForWrite(patch);
+      delete payload.external_id;
+      if (Object.keys(payload).length === 0) return true; // local-only field
+      var label = _nameFor(id);
+      _fireWrite('update', id, payload, function(){
+        var freshIdx = _cache.findIndex(function(c){ return c.id === id; });
+        if (freshIdx < 0) return;
+        if (hadField) _cache[freshIdx][field] = oldVal;
+        else delete _cache[freshIdx][field];
+      }, label);
       return true;
     },
     clearField: function(id, field) {
       var idx = _cache.findIndex(function(c){ return c.id === id; });
       if (idx < 0) return false;
-      delete _cache[idx][field];
+      var entry = _cache[idx];
+      var hadField = Object.prototype.hasOwnProperty.call(entry, field);
+      var oldVal = entry[field];
+      delete entry[field];
+      var patch = {};
+      patch[field] = null;
+      var payload = _transformRowForWrite(patch);
+      delete payload.external_id;
+      if (Object.keys(payload).length === 0) return true; // local-only field
+      var label = _nameFor(id);
+      _fireWrite('update', id, payload, function(){
+        var freshIdx = _cache.findIndex(function(c){ return c.id === id; });
+        if (freshIdx < 0) return;
+        if (hadField) _cache[freshIdx][field] = oldVal;
+        else delete _cache[freshIdx][field];
+      }, label);
       return true;
     },
     getCacheSource: function() { return _cacheSource; },
@@ -3933,6 +4259,14 @@ window.PentaClients = (function() {
       return new Promise(function(resolve){
         _runSupabaseFetch(resolve);
       });
+    },
+    // Phase 3D public API
+    getPendingWrites: function() { return _loadPending(); },
+    getLastWriteAt: function() { return _lastWriteAt; },
+    getLastWriteResult: function() { return _lastWriteResult; },
+    retryPendingWrites: function() { return _processRetryQueue(); },
+    clearPendingWrites: function() {
+      try { localStorage.removeItem(PENDING_KEY); } catch (e) {}
     }
   };
 
@@ -13317,24 +13651,16 @@ function saveClientEdit(clientId) {
   // that the user has committed a save. closeClientEdit can't clean it up.
   if (c._draft) { PentaClients.clearField(clientId, '_draft'); window._newClientDraftId = null; }
 
-  // Contact info
-  PentaClients.setField(clientId, 'fn', document.getElementById('ce-fn').value.trim());
-  PentaClients.setField(clientId, 'ln', document.getElementById('ce-ln').value.trim());
-  // Phone numbers — pull from dynamic list
+  // Phase 3D: coalesce all field writes into a single updateClient so a mid-save
+  // network drop doesn't leave some fields committed and others rolled back.
+  // _draft clear above and the team setField below stay separate — both are
+  // local-only fields (not in the Supabase mapping) and don't need batching.
   var cleanPhones = (_cePhones || []).map(function(p){
     return { name: (p.name||'').trim(), number: (p.number||'').trim(), primary: !!p.primary };
   }).filter(function(p){ return p.number; });
   if (!cleanPhones.some(function(p){ return p.primary; }) && cleanPhones.length) cleanPhones[0].primary = true;
   var primaryPhone = (cleanPhones.find(function(p){ return p.primary; }) || cleanPhones[0] || {}).number || '';
-  PentaClients.setField(clientId, 'ph', primaryPhone);
-  PentaClients.setField(clientId, 'em', document.getElementById('ce-em').value.trim());
-  PentaClients.setField(clientId, 'addr', document.getElementById('ce-addr').value.trim());
-  PentaClients.setField(clientId, 'city', document.getElementById('ce-city').value.trim());
-  PentaClients.setField(clientId, 'zip', document.getElementById('ce-zip').value.trim());
-  PentaClients.setField(clientId, 'notes', document.getElementById('ce-notes').value.trim());
-  PentaClients.setField(clientId, 'pkg', document.getElementById('ce-pkg').value.trim());
 
-  // Frequency + next date → recalculate schedule
   const newFreq = document.getElementById('ce-freq').value;
   var ceNextRaw = document.getElementById('ce-next').value.trim();
   var newNext = ceNextRaw;
@@ -13343,8 +13669,21 @@ function saveClientEdit(clientId) {
     newNext = p2[1] + '/' + p2[2] + '/' + p2[0];
   }
   const freqChanged = newFreq !== c.fc;
-  PentaClients.setField(clientId, 'fc', newFreq);
-  if (newNext) PentaClients.setField(clientId, 'next', newNext);
+
+  var editPatch = {
+    fn: document.getElementById('ce-fn').value.trim(),
+    ln: document.getElementById('ce-ln').value.trim(),
+    ph: primaryPhone,
+    em: document.getElementById('ce-em').value.trim(),
+    addr: document.getElementById('ce-addr').value.trim(),
+    city: document.getElementById('ce-city').value.trim(),
+    zip: document.getElementById('ce-zip').value.trim(),
+    notes: document.getElementById('ce-notes').value.trim(),
+    pkg: document.getElementById('ce-pkg').value.trim(),
+    fc: newFreq
+  };
+  if (newNext) editPatch.next = newNext;
+  PentaClients.updateClient(clientId, editPatch);
 
   // Update team if changed
   var newTeam = document.getElementById('ce-team') ? document.getElementById('ce-team').value : null;
@@ -21639,7 +21978,8 @@ var DEFAULT_PERMISSIONS = {
     content_icon: true, quote_icon: true, approval_icon: true,
     route_icon: true, files_icon: true, updates_icon: true,
     school_icon: true, crm_icon: true, new_client_icon: true,
-    admin_phase3c: true
+    admin_phase3c: true,
+    admin_phase3d: true
   }
 };
 function getPermissions() {
@@ -21701,6 +22041,7 @@ function openAdminScreen() {
   renderAdminRows();
   try { applyPermissions(); } catch(e){}
   try { updateP3CStatus(); } catch(e){}
+  try { updateP3DStatus(); } catch(e){}
 }
 function closeAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -21884,6 +22225,174 @@ function _renderP3CModalPage() {
 function _p3cPage(dir) {
   P3C_MODAL_PAGE += dir;
   _renderP3CModalPage();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PHASE 3D — Admin UI helpers (Write Status section + pending writes modal)
+// ═══════════════════════════════════════════════════════════════════════
+var P3D_MODAL_PAGE = 0;
+var P3D_MODAL_PER_PAGE = 50;
+
+function updateP3DStatus() {
+  if (!window.PentaClients || !window.PentaClients.getPendingWrites) return;
+  var pending = window.PentaClients.getPendingWrites() || [];
+  var lastAt = window.PentaClients.getLastWriteAt();
+  var lastResult = window.PentaClients.getLastWriteResult();
+  var stuck = 0;
+  for (var i = 0; i < pending.length; i++) {
+    if ((pending[i].attempts || 0) >= 5) stuck++;
+  }
+  var dot = document.getElementById('p3d-status-dot');
+  var pendEl = document.getElementById('p3d-pending-count');
+  var lastEl = document.getElementById('p3d-last-write');
+  var stuckEl = document.getElementById('p3d-stuck-count');
+  if (dot) {
+    var color = '#8a8a8a';
+    if (lastResult === 'success') color = '#34d399';
+    else if (lastResult === 'failed') color = '#f87171';
+    dot.style.background = color;
+    dot.style.boxShadow = '0 0 0 3px ' + (
+      color === '#34d399' ? 'rgba(52,211,153,0.22)'
+      : color === '#f87171' ? 'rgba(248,113,113,0.22)'
+      : 'rgba(138,138,138,0.18)'
+    );
+  }
+  if (pendEl) pendEl.textContent = String(pending.length);
+  if (stuckEl) stuckEl.textContent = String(stuck);
+  if (lastEl) {
+    if (lastAt && lastResult) {
+      var t = new Date(lastAt);
+      var hh = String(t.getHours()).padStart(2,'0');
+      var mm = String(t.getMinutes()).padStart(2,'0');
+      var ss = String(t.getSeconds()).padStart(2,'0');
+      lastEl.textContent = hh + ':' + mm + ':' + ss + ' — ' + lastResult;
+      lastEl.style.color = lastResult === 'success' ? '#34d399' : '#f87171';
+    } else {
+      lastEl.textContent = '—';
+      lastEl.style.color = 'rgba(255,255,255,0.55)';
+    }
+  }
+}
+
+function phase3dRetryNow() {
+  if (!window.PentaClients || !window.PentaClients.retryPendingWrites) return;
+  var btn = document.getElementById('p3d-retry-btn');
+  var orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  window.PentaClients.retryPendingWrites().then(function(r){
+    updateP3DStatus();
+    // If modal is open, refresh it.
+    var modal = document.getElementById('p3d-pending-modal');
+    if (modal && modal.style.display !== 'none') _renderP3DModalPage();
+    if (btn) {
+      btn.disabled = false;
+      if (r && r.attempted === 0 && r.stuck === 0) btn.textContent = 'Queue empty ✓';
+      else if (r && r.failed === 0 && r.attempted > 0) btn.textContent = 'Succeeded ✓ (' + r.succeeded + ')';
+      else if (r && r.stuck > 0 && r.attempted === 0) btn.textContent = 'All stuck (' + r.stuck + ')';
+      else btn.textContent = 'Done: ' + r.succeeded + ' ok, ' + r.failed + ' failed';
+      setTimeout(function(){ if (btn) btn.textContent = orig; }, 2800);
+    }
+  }).catch(function(err){
+    console.error('[Phase3D] retry-now failed', err);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Retry failed — see console';
+      setTimeout(function(){ if (btn) btn.textContent = orig; }, 2800);
+    }
+  });
+}
+
+function phase3dClearQueue() {
+  if (!window.PentaClients || !window.PentaClients.clearPendingWrites) return;
+  if (!confirm('Clear the Phase 3D pending-write queue? Queued writes will NOT be retried. Use only if queue is corrupt.')) return;
+  window.PentaClients.clearPendingWrites();
+  updateP3DStatus();
+  var modal = document.getElementById('p3d-pending-modal');
+  if (modal && modal.style.display !== 'none') _renderP3DModalPage();
+}
+
+function phase3dViewPending() {
+  P3D_MODAL_PAGE = 0;
+  var modal = document.getElementById('p3d-pending-modal');
+  if (!modal) return;
+  modal.style.display = 'block';
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  _renderP3DModalPage();
+}
+
+function phase3dCloseModal() {
+  var modal = document.getElementById('p3d-pending-modal');
+  if (!modal) return;
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+}
+
+function _renderP3DModalPage() {
+  if (!window.PentaClients || !window.PentaClients.getPendingWrites) return;
+  var all = window.PentaClients.getPendingWrites() || [];
+  var reversed = all.slice().reverse();
+  var total = reversed.length;
+  var totalPages = Math.max(1, Math.ceil(total / P3D_MODAL_PER_PAGE));
+  if (P3D_MODAL_PAGE >= totalPages) P3D_MODAL_PAGE = totalPages - 1;
+  if (P3D_MODAL_PAGE < 0) P3D_MODAL_PAGE = 0;
+  var start = P3D_MODAL_PAGE * P3D_MODAL_PER_PAGE;
+  var page = reversed.slice(start, start + P3D_MODAL_PER_PAGE);
+
+  var countEl = document.getElementById('p3d-modal-count');
+  if (countEl) countEl.textContent = String(total);
+
+  var body = document.getElementById('p3d-modal-body');
+  if (body) {
+    if (total === 0) {
+      body.innerHTML = '<div style="padding:40px 8px;text-align:center;color:rgba(255,255,255,0.55);font-size:13px">No pending writes.</div>';
+    } else {
+      body.innerHTML = page.map(function(e){
+        var ts = '';
+        try { ts = new Date(e.first_queued_at).toLocaleString(); } catch(_) { ts = String(e.first_queued_at || ''); }
+        var opColor = e.op === 'insert' ? '#60a5fa'
+                    : e.op === 'update' ? '#fbbf24'
+                    : e.op === 'soft_delete' ? '#f87171'
+                    : '#aaa';
+        var attempts = e.attempts || 0;
+        var isStuck = attempts >= 5;
+        var head = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+                 + '<span style="font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:' + opColor + '">' + _adminEsc(e.op) + '</span>'
+                 + (isStuck ? '<span style="font-size:10px;font-weight:700;color:#f87171;background:rgba(248,113,113,0.15);padding:2px 6px;border-radius:4px">STUCK</span>' : '')
+                 + '<span style="font-size:11px;color:rgba(255,255,255,0.45);margin-left:auto">' + _adminEsc(ts) + '</span>'
+                 + '</div>';
+        var idLine = '<div style="font-size:12px;color:rgba(255,255,255,0.78);font-family:\'DM Mono\',monospace">id: ' + _adminEsc(e.external_id) + '</div>';
+        var attemptsLine = '<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-top:4px">attempts: <span style="color:#fff;font-weight:600">' + attempts + '</span>' + (isStuck ? ' (stopped at ' + 5 + ')' : '') + '</div>';
+        var errLine = '';
+        if (e.last_error) {
+          errLine = '<div style="margin-top:6px;font-size:11px;color:#f87171;background:rgba(248,113,113,0.08);padding:6px 8px;border-radius:6px;font-family:\'DM Mono\',monospace;word-break:break-all">' + _adminEsc(String(e.last_error)) + '</div>';
+        }
+        return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+             + head + idLine + attemptsLine + errLine + '</div>';
+      }).join('');
+    }
+  }
+
+  var pager = document.getElementById('p3d-modal-pager');
+  if (pager) {
+    if (total <= P3D_MODAL_PER_PAGE) {
+      pager.innerHTML = '';
+    } else {
+      var prevDisabled = P3D_MODAL_PAGE <= 0;
+      var nextDisabled = P3D_MODAL_PAGE >= totalPages - 1;
+      var btnStyle = 'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:inherit;font-size:12px;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer';
+      var disStyle = ';opacity:0.4;cursor:not-allowed';
+      pager.innerHTML = '<button style="' + btnStyle + (prevDisabled ? disStyle : '') + '" ' + (prevDisabled ? 'disabled' : '') + ' onclick="_p3dPage(-1)">‹ Prev</button>'
+                     + '<span>Page ' + (P3D_MODAL_PAGE + 1) + ' of ' + totalPages + '</span>'
+                     + '<button style="' + btnStyle + (nextDisabled ? disStyle : '') + '" ' + (nextDisabled ? 'disabled' : '') + ' onclick="_p3dPage(1)">Next ›</button>';
+    }
+  }
+}
+
+function _p3dPage(dir) {
+  P3D_MODAL_PAGE += dir;
+  _renderP3DModalPage();
 }
 
 </script>
@@ -23654,6 +24163,35 @@ function _p3cPage(dir) {
       </div>
     </div>
 
+    <!-- Phase 3D — Write Status. Manager-gated; hidden when admin_phase3d=false. -->
+    <div class="admin-sec" data-permission="admin_phase3d" data-permission-role="manager">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Write Status (Phase 3D)</div>
+      <div class="admin-row" style="align-items:flex-start">
+        <div class="admin-row-label">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="p3d-status-dot" style="width:9px;height:9px;border-radius:50%;background:#8a8a8a;flex-shrink:0;box-shadow:0 0 0 3px rgba(138,138,138,0.18)"></span>
+            <div style="min-width:0;flex:1">
+              <div style="font-size:14px;font-weight:600;line-height:1.3">
+                Pending: <span id="p3d-pending-count" style="color:#fff">0</span>
+                <span style="color:rgba(255,255,255,0.3);margin:0 6px">·</span>
+                Stuck: <span id="p3d-stuck-count" style="color:#fff">0</span>
+              </div>
+              <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:3px">Last write: <span id="p3d-last-write" style="font-weight:600">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="admin-row" style="gap:8px">
+        <button id="p3d-retry-btn" onclick="phase3dRetryNow()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">Retry now</button>
+      </div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="phase3dViewPending()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">View pending writes</button>
+      </div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="phase3dClearQueue()" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.34);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">Clear queue</button>
+      </div>
+    </div>
+
     <div class="admin-footnote">Changes take effect when you return to the home screen. Core features (Clients, Staff, Schedule, Claire, Messages) cannot be disabled.</div>
   </div>
 </div>
@@ -23670,6 +24208,21 @@ function _p3cPage(dir) {
     </div>
     <div id="p3c-div-modal-body" style="max-height:60vh;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>
     <div id="p3c-div-modal-pager" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:12px;color:rgba(255,255,255,0.65)"></div>
+  </div>
+</div>
+
+<!-- Phase 3D — pending writes modal -->
+<div id="p3d-pending-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:280;background:rgba(5,6,14,0.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);padding:24px;overflow-y:auto;font-family:'DM Sans',sans-serif;color:#fff">
+  <div style="max-width:640px;margin:40px auto;background:radial-gradient(ellipse at 30% 10%,rgba(94,92,230,0.35) 0%,transparent 55%),linear-gradient(180deg,#121638 0%,#0d1024 100%);border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <div style="flex:1">
+        <div style="font-size:18px;font-weight:700;letter-spacing:-0.01em">Pending writes</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.55);margin-top:2px"><span id="p3d-modal-count">0</span> entries &middot; most recent first</div>
+      </div>
+      <button onclick="phase3dCloseModal()" aria-label="Close" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;width:34px;height:34px;border-radius:50%;font-size:18px;line-height:1;cursor:pointer;font-family:inherit;padding:0">×</button>
+    </div>
+    <div id="p3d-modal-body" style="max-height:60vh;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>
+    <div id="p3d-modal-pager" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:12px;color:rgba(255,255,255,0.65)"></div>
   </div>
 </div>
 
