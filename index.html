@@ -3958,6 +3958,12 @@ window.PentaClients = (function() {
 
   // Execute a single Supabase write. Returns a Promise.
   // Used for both first-attempt writes and retries.
+  //
+  // .select() on each branch asks PostgREST to return the affected rows so we can
+  // detect the silent-failure case: an UPDATE whose WHERE clause filters everything
+  // out (e.g., RLS blocks the row, stale JWT, row no longer exists) returns
+  // {data: [], error: null}. Without the row-count assert below, the facade would
+  // treat that as success and the cache would diverge from Supabase.
   function _executeWrite(op, external_id, payload) {
     var sb = _getSbClient();
     if (!sb) return Promise.reject(new Error('no_supabase_client'));
@@ -3966,13 +3972,16 @@ window.PentaClients = (function() {
     try {
       if (op === 'insert') {
         var row = Object.assign({}, payload, { business_id: BUSINESS_ID, updated_at: nowIso });
-        q = sb.from('clients').insert(row);
+        q = sb.from('clients').insert(row).select();
       } else if (op === 'update') {
         var patch = Object.assign({}, payload, { updated_at: nowIso });
-        q = sb.from('clients').update(patch).eq('external_id', external_id).eq('business_id', BUSINESS_ID);
+        q = sb.from('clients').update(patch)
+              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .select();
       } else if (op === 'soft_delete') {
         q = sb.from('clients').update({ deleted_at: nowIso, updated_at: nowIso })
-              .eq('external_id', external_id).eq('business_id', BUSINESS_ID);
+              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .select();
       } else {
         return Promise.reject(new Error('unknown_op:' + op));
       }
@@ -3981,6 +3990,23 @@ window.PentaClients = (function() {
     }
     return q.then(function(res){
       if (res && res.error) throw res.error;
+      if (op === 'update' || op === 'soft_delete') {
+        var affected = (res && res.data && res.data.length) || 0;
+        if (affected === 0) {
+          var err = new Error('zero_rows_affected');
+          err.code = 'ZERO_ROWS';
+          err.details = 'RLS filter, stale session, or missing row (external_id=' + external_id + ')';
+          throw err;
+        }
+      } else if (op === 'insert') {
+        var insertedRows = (res && res.data && res.data.length) || 0;
+        if (insertedRows === 0) {
+          var err2 = new Error('zero_rows_inserted');
+          err2.code = 'ZERO_ROWS';
+          err2.details = 'Insert returned no rows — possible RLS block (external_id=' + external_id + ')';
+          throw err2;
+        }
+      }
       return res;
     });
   }
