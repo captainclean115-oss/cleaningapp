@@ -7786,6 +7786,9 @@ var HOME_APPS = [
     } },
   { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
+  { id: 'ratings',    permKey: 'ratings_icon', label: 'Ratings',    grad: 'linear-gradient(135deg,#FBBF24 0%,#F59E0B 100%)',
+    iconHtml: '<span style="font-size:28px;line-height:1">⭐</span>',
+    go: function(){ if (typeof showRatingsReport === 'function') showRatingsReport(); } },
   // Grid row 4
   { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
     iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
@@ -12171,10 +12174,312 @@ function renderHoursTable(days, dayNames) {
     📍 B1/B3/B5/S1/S3 hours from 800 Brockton Ave · M1/M2/M3 from 910 Boston Post Rd
   </div>`;
 
-  // Employee ratings report button
-  html += `<button onclick="showRatingsReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.25);border-radius:10px;color:#fbbf24;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">⭐ Employee Weekly Ratings Report</button>`;
+  // Hours report export (replaces the ratings button — ratings now lives as its own home-screen icon)
+  html += `<button onclick="showHoursReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(108,143,255,0.14);border:1px solid rgba(108,143,255,0.38);border-radius:10px;color:#cbd6ff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">📊 Hours Report</button>`;
 
   document.getElementById('hours-table').innerHTML = html;
+}
+
+
+// ─────────────────────────────────────────
+// HOURS REPORT — export tracked hours
+//
+// Reuses the same iteration logic as renderHoursTable (teams → filtered
+// teamEmployees → per-day cells with empHours_cache overrides) so the
+// export numbers match what the on-screen grid shows, cell for cell.
+//
+// Week shape: Mon–Sun. Team GPS data (weekHours) is Mon–Fri only, so Sat
+// and Sun are OFF unless the employee has a per-day override in
+// empHours_cache for that weekend date. We never fabricate weekend data.
+// ─────────────────────────────────────────
+
+function _hrReportWeekDates(offset) {
+  var off = offset || 0;
+  var today = new Date(); today.setHours(0,0,0,0);
+  var dow = today.getDay(); // 0=Sun
+  var monday = new Date(today);
+  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) + (off * 7));
+  var days = [];
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+
+function _hrTo24hr(d) {
+  if (!d) return '';
+  if (typeof d === 'string') {
+    // Already HH:MM
+    if (/^\d{1,2}:\d{2}$/.test(d)) {
+      var p = d.split(':');
+      return String(parseInt(p[0],10)).padStart(2,'0') + ':' + String(parseInt(p[1],10)).padStart(2,'0');
+    }
+    d = new Date(d);
+  }
+  if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+
+function _hrMinsToHHMM(m) {
+  if (!m || m <= 0) return '00:00';
+  var hh = Math.floor(m / 60);
+  var mm = m % 60;
+  return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+}
+
+function _hrDecimalHoursToHHMM(h) {
+  if (!h || h <= 0) return '00:00';
+  var hh = Math.floor(h);
+  var mm = Math.round((h - hh) * 60);
+  if (mm === 60) { hh++; mm = 0; }
+  return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+}
+
+function _hrDecimalHoursText(h) {
+  if (!h || h <= 0) return '0h 0m';
+  var hh = Math.floor(h);
+  var mm = Math.round((h - hh) * 60);
+  if (mm === 60) { hh++; mm = 0; }
+  return hh + 'h ' + mm + 'm';
+}
+
+function _hrCsvField(s) {
+  s = s == null ? '' : String(s);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// Build the week's report. Returns { text, csv, filename, weekLabel, grandHours }.
+function _buildHoursReport(offset) {
+  var days = _hrReportWeekDates(offset || 0);
+  var dayShort = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var monday = days[0], sunday = days[6];
+  var weekLabel = monday.toLocaleDateString('en-US',{month:'short',day:'numeric'})
+                + '–' + sunday.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  var fnameWeek = monday.toISOString().slice(0,10);
+
+  var textLines = [];
+  textLines.push('Hours Report — Week of ' + weekLabel);
+  textLines.push('Manna Maids');
+  textLines.push('');
+
+  var csvRows = [];
+  csvRows.push('Employee,Team,Date,ClockIn,ClockOut,Lunch,HoursWorked');
+
+  var teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
+  var grandHours = 0;
+  var empsSeen = 0;
+
+  // Mirror renderHoursTable exactly: team-major, filter roster by getEmployeeTeam
+  // or defaultTeam, apply overrides, fall back to team data Mon-Fri only.
+  teams.forEach(function(team) {
+    var data = (typeof weekHours !== 'undefined' && weekHours[team]) ? weekHours[team] : null;
+    var teamEmployees = EMPLOYEE_ROSTER.filter(function(e) {
+      return days.some(function(d){ return getEmployeeTeam(e.id, dateKey(d)) === team; })
+          || e.defaultTeam === team;
+    });
+    if (!data && teamEmployees.length === 0) return;
+
+    teamEmployees.forEach(function(emp) {
+      empsSeen++;
+      textLines.push((emp.name || emp.id).toUpperCase() + ' (' + team + ')');
+      var empWeekHours = 0;
+
+      days.forEach(function(d, i) {
+        var dk = dateKey(d);
+        var dayIdx = i; // 0=Mon..6=Sun
+        var override = getEmpHours(emp.id, dk);
+
+        // Only Mon-Fri (0..4) have team GPS baseline data.
+        var inMonFri = dayIdx <= 4;
+        var teamH = (data && inMonFri) ? (data.days[dayIdx] || 0) : 0;
+        var teamStart = (data && inMonFri) ? data.starts[dayIdx] : null;
+        var teamEnd = (data && inMonFri) ? data.ends[dayIdx] : null;
+        var teamLunchMin = (data && inMonFri && data.lunch && data.lunch[dayIdx]) ? (data.lunch[dayIdx].duration || 0) : 0;
+
+        var empH = override ? (override.hours || 0) : teamH;
+        var startStr = override ? (override.start || '') : _hrTo24hr(teamStart);
+        var endStr = override ? (override.end || '') : _hrTo24hr(teamEnd);
+        var lunchMin = override ? (override.lunch || 0) : teamLunchMin;
+
+        // Day quality: negative/zero duration but with both timestamps → log a warning
+        if ((startStr && endStr) && empH <= 0) {
+          console.warn('[HoursReport] non-positive duration for', emp.name, dk, { startStr: startStr, endStr: endStr, empH: empH });
+          empH = 0;
+        }
+
+        var dateISO = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        var dayLabel = dayShort[dayIdx] + ' ' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+
+        if (empH > 0 && startStr && endStr) {
+          empWeekHours += empH;
+          var lunchTxt = lunchMin ? ', lunch ' + (Math.floor(lunchMin/60)) + ':' + String(lunchMin%60).padStart(2,'0') : '';
+          textLines.push(dayLabel + ': ' + startStr + ' — ' + endStr + ' (' + _hrDecimalHoursText(empH) + lunchTxt + ')');
+          csvRows.push([
+            _hrCsvField(emp.name || emp.id),
+            _hrCsvField(team),
+            dateISO,
+            _hrTo24hr(startStr),
+            _hrTo24hr(endStr),
+            _hrMinsToHHMM(lunchMin),
+            _hrDecimalHoursToHHMM(empH)
+          ].join(','));
+        } else if ((startStr && !endStr) || (!startStr && endStr)) {
+          // Partial/malformed — show ? in text, empty in CSV
+          textLines.push(dayLabel + ': ? (incomplete clock data)');
+          csvRows.push([
+            _hrCsvField(emp.name || emp.id),
+            _hrCsvField(team),
+            dateISO, '', '', '',
+            '0:00'
+          ].join(','));
+        } else {
+          textLines.push(dayLabel + ': OFF');
+          csvRows.push([
+            _hrCsvField(emp.name || emp.id),
+            _hrCsvField(team),
+            dateISO, '', '', '', '0:00'
+          ].join(','));
+        }
+      });
+
+      textLines.push('Week total: ' + _hrDecimalHoursText(empWeekHours));
+      textLines.push('');
+      grandHours += empWeekHours;
+    });
+  });
+
+  if (empsSeen === 0) {
+    textLines.push('No employees found.');
+  } else {
+    textLines.push('TOTAL (all staff): ' + _hrDecimalHoursText(grandHours));
+  }
+
+  return {
+    text: textLines.join('\n'),
+    csv: csvRows.join('\n') + '\n',
+    filename: 'hours-all-staff-' + fnameWeek + '.csv',
+    weekLabel: weekLabel,
+    grandHours: grandHours,
+    empsSeen: empsSeen
+  };
+}
+
+function _hrDownloadCsv(csv, filename) {
+  try {
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'hours-report.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 200);
+  } catch (e) {
+    console.error('[HoursReport] CSV download failed', e);
+    if (typeof showToast === 'function') showToast('CSV download failed — see console', 'error');
+  }
+}
+
+function _hrCopyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function(){
+      if (typeof showToast === 'function') showToast('Copied ✓', 'success');
+    }).catch(function(){
+      if (typeof showToast === 'function') showToast('Copy failed — long-press to select text manually', 'error');
+    });
+  } else {
+    // Fallback: select the pre element so the user can copy manually
+    try {
+      var pre = document.getElementById('hours-report-pre');
+      if (pre && window.getSelection) {
+        var range = document.createRange();
+        range.selectNodeContents(pre);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        if (typeof showToast === 'function') showToast('Select-all ready — tap Copy on your keyboard', 'info');
+      }
+    } catch (e) {}
+  }
+}
+
+// Public global toast — reuses the Phase 3D toast host created lazily by the
+// facade's _p3dToast. If the host exists we share it; if not we create it.
+function showToast(msg, kind) {
+  try {
+    if (!document.body) return;
+    var host = document.getElementById('p3d-toast-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'p3d-toast-host';
+      host.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;font-family:'DM Sans',sans-serif";
+      document.body.appendChild(host);
+    }
+    var el = document.createElement('div');
+    var bg = kind === 'error'   ? 'rgba(220,38,38,0.95)'
+           : kind === 'success' ? 'rgba(22,163,74,0.95)'
+                                : 'rgba(30,33,48,0.95)';
+    el.style.cssText = 'background:' + bg + ';color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,0.3);max-width:340px;text-align:center;opacity:0;transition:opacity 220ms ease';
+    el.textContent = msg;
+    host.appendChild(el);
+    setTimeout(function(){ el.style.opacity = '1'; }, 10);
+    setTimeout(function(){
+      el.style.opacity = '0';
+      setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 250);
+    }, 3200);
+  } catch (e) {
+    console.warn('[toast] error', e, msg);
+  }
+}
+
+function showHoursReport() {
+  var rep;
+  try { rep = _buildHoursReport(0); }
+  catch (e) {
+    console.error('[HoursReport] build failed', e);
+    alert('Hours Report build failed — see console.');
+    return;
+  }
+
+  // Clean up any previous instance
+  var old = document.getElementById('hours-report-overlay');
+  if (old) old.remove();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'hours-report-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end;font-family:\'DM Sans\',sans-serif';
+
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);color:var(--text)';
+  sheet.innerHTML = ''
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    +   '<div>'
+    +     '<div style="font-size:17px;font-weight:600">Hours Report</div>'
+    +     '<div style="font-size:13px;color:var(--muted)">Week of ' + rep.weekLabel + ' · ' + rep.empsSeen + ' employees · ' + _hrDecimalHoursText(rep.grandHours) + ' total</div>'
+    +   '</div>'
+    +   '<button id="hours-report-close" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;line-height:1;cursor:pointer;font-family:inherit;padding:0">×</button>'
+    + '</div>'
+    + '<div style="padding:16px 20px">'
+    +   '<pre id="hours-report-pre" style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:\'DM Mono\',monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:50vh;overflow-y:auto;margin:0;color:var(--text)"></pre>'
+    +   '<div style="display:flex;gap:8px;margin-top:12px">'
+    +     '<button id="hours-report-copy" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:inherit;font-size:13px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Copy to clipboard</button>'
+    +     '<button id="hours-report-csv" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:inherit;font-size:13px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Download CSV</button>'
+    +   '</div>'
+    + '</div>';
+
+  overlay.appendChild(sheet);
+  document.body.appendChild(overlay);
+  document.getElementById('hours-report-pre').textContent = rep.text;
+  document.getElementById('hours-report-close').onclick = function(){ overlay.remove(); };
+  document.getElementById('hours-report-copy').onclick = function(){ _hrCopyText(rep.text); };
+  document.getElementById('hours-report-csv').onclick = function(){ _hrDownloadCsv(rep.csv, rep.filename); };
+  // Tap on overlay backdrop closes
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
 }
 
 
@@ -22012,8 +22317,10 @@ var DEFAULT_PERMISSIONS = {
     content_icon: true, quote_icon: true, approval_icon: true,
     route_icon: true, files_icon: true, updates_icon: true,
     school_icon: true, crm_icon: true, new_client_icon: true,
+    ratings_icon: true,
     admin_phase3c: true,
-    admin_phase3d: true
+    admin_phase3d: true,
+    admin_hours_report: true
   }
 };
 function getPermissions() {
@@ -22064,7 +22371,8 @@ var ADMIN_MANAGER_ROWS = [
   ['updates_icon',   'Updates Icon'],
   ['school_icon',    'School Icon'],
   ['crm_icon',       'CRM Icon'],
-  ['new_client_icon','New Client Icon']
+  ['new_client_icon','New Client Icon'],
+  ['ratings_icon',   'Ratings Icon']
 ];
 function openAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -24170,6 +24478,14 @@ function _p3dPage(dir) {
     </div>
     <div class="admin-sec">
       <div id="admin-rows"></div>
+    </div>
+
+    <!-- Reports. Manager-gated; hidden when admin_hours_report=false. -->
+    <div class="admin-sec" data-permission="admin_hours_report" data-permission-role="manager">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Reports</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="showHoursReport()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📊 Hours Report (All Staff)</button>
+      </div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false. -->
