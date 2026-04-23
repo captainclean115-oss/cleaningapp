@@ -2373,6 +2373,24 @@ body.home-dragging, body.home-dragging * {
 .field-input:focus { border-color: var(--accent); }
 textarea.field-input { resize: none; min-height: 80px; line-height: 1.5; }
 select.field-input { appearance: none; }
+.ce-day-chip {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  min-width: 44px;
+  transition: background .12s, border-color .12s;
+}
+.ce-day-chip[aria-pressed="true"] {
+  background: rgba(108,143,255,0.22);
+  border-color: rgba(108,143,255,0.55);
+  color: #cbd6ff;
+}
 .submit-btn {
   width: 100%; background: var(--accent); border: none; border-radius: var(--radius-sm);
   color: #fff; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 600;
@@ -4323,6 +4341,32 @@ const PREF_TIME_LABEL = {
   '12_to_3':   '12pm–3pm',
   '1_to_4':    '1pm–4pm'
 };
+const PREF_DAY_ORDER = ['mon','tue','wed','thu','fri','sat','sun'];
+const PREF_DAY_LABEL = {
+  'mon':'Mon','tue':'Tue','wed':'Wed','thu':'Thu',
+  'fri':'Fri','sat':'Sat','sun':'Sun'
+};
+
+function prefDayParse(s) {
+  if (!s) return [];
+  var seen = {};
+  String(s).toLowerCase().split(/[,\s]+/).forEach(function(tok){
+    tok = tok.trim();
+    if (PREF_DAY_LABEL[tok]) seen[tok] = true;
+  });
+  return PREF_DAY_ORDER.filter(function(d){ return seen[d]; });
+}
+
+function prefDayFormat(s) {
+  var days = prefDayParse(s);
+  return days.map(function(d){ return PREF_DAY_LABEL[d]; }).join(' · ');
+}
+
+function prefDayPack(arr) {
+  if (!arr || !arr.length) return null;
+  return arr.join(',');
+}
+
 const AV_COLORS = ['av0','av1','av2','av3','av4'];
 
 let filtered = PentaClients.list();
@@ -4572,7 +4616,7 @@ function render() {
         <div class="card-main">
           <div class="card-name">${name}${(function(){var sc=getClientScores(c),ov=getOverallStars(sc);if(ov===null)return '';var s='';for(var i=1;i<=5;i++)s+='<span style="opacity:'+(i<=ov?'1':'0.2')+';font-size:10px">&#11088;</span>';return '<span data-cid="'+c.id+'" onclick="event.stopPropagation();openScoreCard(this)" style="cursor:pointer;margin-left:4px">'+s+'</span>';})()}</div>
           <div class="card-sub">${c.city}${c.addr ? ' · ' + c.addr : ''}</div>
-          ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[(c.pref_day||'').replace(/</g,'&lt;'), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
+          ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[prefDayFormat(c.pref_day), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
         <div class="card-right">
           <span class="freq-pill ${fc}">${fl}</span>
@@ -5245,6 +5289,9 @@ function renderCal() {
           // cancelled/done to avoid collision with CANCELLED / ✓ badges.
           var isOMS = !!(cl2 && cl2.fc === 'OMS');
           var hasBal = !!(cl2 && (Number(cl2.bal) || 0) > 0);
+          var prefDayTxt = cl2 ? prefDayFormat(cl2.pref_day) : '';
+          var prefTimeTxt = cl2 && cl2.pref_time ? (PREF_TIME_LABEL[cl2.pref_time] || cl2.pref_time) : '';
+          var prefLabel = [prefDayTxt, prefTimeTxt].filter(Boolean).join(' · ');
           var omsTextColor = isOMS ? '#FFFFFF' : 'var(--text)';
           var omsMutedColor = isOMS ? 'rgba(255,255,255,0.85)' : 'var(--muted)';
 
@@ -5274,6 +5321,7 @@ function renderCal() {
             +'<div style="font-size:11px;font-weight:600;color:'+(isCancelled?'var(--red)':omsTextColor)+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
             +(timeLabel?'<div style="font-size:9px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
             +(city&&blockW>80?'<div style="font-size:9px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
+            +(prefLabel?'<div class="card-pref-sched" style="font-size:9px;color:rgba(255,255,255,0.65);margin-top:2px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🕐 '+prefLabel+'</div>':'')
             +(isCancelled?'<div style="font-size:9px;color:var(--red);font-weight:700;position:absolute;bottom:3px;right:5px">CANCELLED</div>':'')
             +(isDone&&!isCancelled?'<div style="font-size:9px;color:var(--green);font-weight:700;position:absolute;bottom:3px;right:5px">✓</div>':'')
             +(hasBal&&!isCancelled&&!isDone?'<span style="position:absolute;bottom:4px;right:6px;color:#E53935;font-weight:700;font-size:12px;pointer-events:none">$</span>':'')
@@ -13636,12 +13684,17 @@ function openClientEdit(clientId) {
     </div>
 
     <!-- SECTION: Preferred Scheduling -->
-    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Preferred Scheduling</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
-      <div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Preferred day</div>
-        <input id="ce-pref-day" class="field-input" value="${(c.pref_day||'').replace(/"/g,'&quot;')}" maxlength="40" placeholder="e.g., Monday, Tue/Thu, Weekdays" style="width:100%">
-      </div>
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Preferred Days</div>
+    <div id="ce-pref-day-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+      <button type="button" class="ce-day-chip" data-day="mon">Mon</button>
+      <button type="button" class="ce-day-chip" data-day="tue">Tue</button>
+      <button type="button" class="ce-day-chip" data-day="wed">Wed</button>
+      <button type="button" class="ce-day-chip" data-day="thu">Thu</button>
+      <button type="button" class="ce-day-chip" data-day="fri">Fri</button>
+      <button type="button" class="ce-day-chip" data-day="sat">Sat</button>
+      <button type="button" class="ce-day-chip" data-day="sun">Sun</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:20px">
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Preferred time window</div>
         <select id="ce-pref-time" class="field-input" style="width:100%">
@@ -13802,6 +13855,16 @@ function openClientEdit(clientId) {
   document.getElementById('client-edit-modal').style.display = 'flex';
   // Initialize the dynamic phones list — must happen after innerHTML render
   cePhonesInit(c, ov);
+
+  // Preferred-day chips: populate from c.pref_day, wire toggle behavior
+  var _savedDays = prefDayParse(c.pref_day);
+  document.querySelectorAll('#ce-pref-day-chips .ce-day-chip').forEach(function(btn){
+    btn.setAttribute('aria-pressed', _savedDays.indexOf(btn.getAttribute('data-day')) >= 0 ? 'true' : 'false');
+    btn.onclick = function(){
+      var pressed = btn.getAttribute('aria-pressed') === 'true';
+      btn.setAttribute('aria-pressed', pressed ? 'false' : 'true');
+    };
+  });
 }
 
 // ── DYNAMIC PHONE LIST ──
@@ -14070,6 +14133,14 @@ function saveClientEdit(clientId) {
   }
   const freqChanged = newFreq !== c.fc;
 
+  var _selectedDays = [];
+  document.querySelectorAll('#ce-pref-day-chips .ce-day-chip').forEach(function(btn){
+    if (btn.getAttribute('aria-pressed') === 'true') {
+      _selectedDays.push(btn.getAttribute('data-day'));
+    }
+  });
+  _selectedDays = PREF_DAY_ORDER.filter(function(d){ return _selectedDays.indexOf(d) >= 0; });
+
   var editPatch = {
     fn: document.getElementById('ce-fn').value.trim(),
     ln: document.getElementById('ce-ln').value.trim(),
@@ -14081,7 +14152,7 @@ function saveClientEdit(clientId) {
     notes: document.getElementById('ce-notes').value.trim(),
     pkg: document.getElementById('ce-pkg').value.trim(),
     fc: newFreq,
-    pref_day: (document.getElementById('ce-pref-day').value || '').trim(),
+    pref_day: prefDayPack(_selectedDays),
     pref_time: document.getElementById('ce-pref-time').value || null
   };
   if (newNext) editPatch.next = newNext;
