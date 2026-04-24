@@ -3209,6 +3209,215 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 }
 .penta-staff-preview-btn:active { background: rgba(108,143,255,0.18); }
 
+/* ═══ LEARN — Phrase of the Day v1 ═══ */
+#penta-learn-screen {
+  position: fixed; inset: 0;
+  z-index: 9000;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text);
+}
+.penta-learn-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  padding-top: calc(14px + env(safe-area-inset-top, 0px));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.penta-learn-back, .penta-learn-settings {
+  background: none; border: none;
+  font-size: 22px; line-height: 1;
+  color: var(--text);
+  cursor: pointer; padding: 4px 10px;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.penta-learn-title {
+  font-size: 17px; font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.penta-learn-body {
+  flex: 1;
+  padding: 24px 20px 40px 20px;
+  display: flex; flex-direction: column; align-items: center;
+  max-width: 520px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+.penta-learn-date {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 4px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.penta-learn-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  margin: 0 0 20px 0;
+  letter-spacing: 0.1em;
+}
+.penta-learn-card {
+  width: 100%;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: 0 4px 16px rgba(217, 119, 6, 0.25);
+  text-align: center;
+  box-sizing: border-box;
+}
+.penta-learn-target-lang {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #92400e;
+  margin: 0 0 10px 0;
+}
+.penta-learn-phrase-big {
+  font-size: 24px;
+  font-weight: 600;
+  color: #18181B;
+  line-height: 1.25;
+  margin: 0 0 20px 0;
+  letter-spacing: -0.01em;
+}
+.penta-learn-play {
+  background: #d97706;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 20px;
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.45);
+}
+.penta-learn-play:active { transform: scale(0.96); }
+.penta-learn-play svg { display: block; }
+.penta-learn-divider {
+  height: 1px;
+  background: rgba(146, 64, 14, 0.22);
+  margin: 22px 0 18px 0;
+  width: 100%;
+}
+.penta-learn-native-lang {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #78350f;
+  opacity: 0.75;
+  margin: 0 0 8px 0;
+}
+.penta-learn-phrase-small {
+  font-size: 16px;
+  color: #451a03;
+  line-height: 1.4;
+  margin: 0;
+  opacity: 0.9;
+}
+.penta-learn-gotit {
+  margin-top: 28px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  padding: 12px 28px;
+  border-radius: 999px;
+  font-size: 14px; font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.penta-learn-gotit:active { background: rgba(108,143,255,0.18); }
+.penta-learn-gotit--done {
+  background: rgba(52,211,153,0.15);
+  color: #34d399;
+  border-color: rgba(52,211,153,0.4);
+}
+.penta-learn-footer {
+  margin-top: 32px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+  max-width: 320px;
+}
+
+.penta-learn-settings-overlay {
+  position: fixed; inset: 0; z-index: 11500;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  font-family: 'DM Sans', sans-serif;
+}
+.penta-learn-settings-sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  width: 100%; max-width: 360px;
+  padding: 20px;
+  display: flex; flex-direction: column;
+  gap: 8px;
+  color: var(--text);
+}
+.penta-learn-settings-title {
+  font-size: 16px; font-weight: 700;
+  margin: 0 0 10px 0;
+  color: var(--text);
+  text-align: center;
+  letter-spacing: -0.01em;
+}
+.penta-learn-settings-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 10px;
+  font-weight: 600;
+}
+.penta-learn-settings-select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 16px;
+  background: var(--surface2);
+  color: var(--text);
+  font-family: inherit;
+}
+.penta-learn-settings-actions {
+  display: flex; gap: 10px;
+  margin-top: 18px;
+}
+.penta-learn-settings-cancel, .penta-learn-settings-save {
+  flex: 1; padding: 12px;
+  border-radius: 10px;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+  border: none;
+}
+.penta-learn-settings-cancel {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.penta-learn-settings-save {
+  background: #d97706;
+  color: #fff;
+}
+.penta-learn-settings-save:active { transform: scale(0.98); }
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -3258,6 +3467,36 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <button onclick="appGoApply()" id="app-apply-btn" style="background:none;border:none;color:#8b8fa8;font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer;text-decoration:underline;touch-action:manipulation">
       Interested in joining our team? Apply here
     </button>
+  </div>
+</div>
+
+<!-- ═══ LEARN — Phrase of the Day v1 screen ═══ -->
+<div id="penta-learn-screen" style="display:none">
+  <div class="penta-learn-header">
+    <button class="penta-learn-back" onclick="closePentaLearn()" aria-label="Back">‹</button>
+    <h2 class="penta-learn-title">Learn</h2>
+    <button class="penta-learn-settings" onclick="openPentaLearnSettings()" aria-label="Settings">⚙</button>
+  </div>
+  <div class="penta-learn-body">
+    <p class="penta-learn-date" id="pentaLearnDate"></p>
+    <p class="penta-learn-label">PHRASE OF THE DAY</p>
+    <div class="penta-learn-card">
+      <p class="penta-learn-target-lang" id="pentaLearnTargetLangName"></p>
+      <p class="penta-learn-phrase-big" id="pentaLearnPhraseBig"></p>
+      <button class="penta-learn-play" onclick="pentaLearnSpeak()" aria-label="Play">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="6 3 20 12 6 21 6 3"></polygon>
+        </svg>
+        <span>Listen</span>
+      </button>
+      <div class="penta-learn-divider"></div>
+      <p class="penta-learn-native-lang" id="pentaLearnNativeLangName"></p>
+      <p class="penta-learn-phrase-small" id="pentaLearnPhraseSmall"></p>
+    </div>
+    <button class="penta-learn-gotit" onclick="pentaLearnMarkGotIt()">Got it ✓</button>
+    <p class="penta-learn-footer">
+      More coming soon — full lessons, streaks, and reward points in a future update.
+    </p>
   </div>
 </div>
 
@@ -8169,8 +8408,9 @@ var HOME_APPS = [
     iconHtml: '<span style="font-size:28px;line-height:1">⭐</span>',
     go: function(){ if (typeof showRatingsReport === 'function') showRatingsReport(); } },
   // Grid row 4
-  { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
-    iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
+  { id: 'learn',      permKey: 'learn', label: 'Learn',      grad: 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)',
+    iconHtml: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:white;width:32px;height:32px"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>',
+    go: function(){ openPentaLearn(); } },
   { id: 'admin',      label: 'Admin',      grad: 'linear-gradient(135deg,#64748B 0%,#475569 100%)',
     iconHtml: LUCIDE['sliders-horizontal'], go: function(){ openAdminScreen(); } },
   { id: 'logout',     label: 'Log out',    grad: 'linear-gradient(135deg,#8E8E93 0%,#48484A 100%)',
@@ -8185,6 +8425,8 @@ var HOME_APPS = [
     go: function(){ _launcherComingSoon('Churn'); } },
   { id: 'analytics',  permKey: 'analytics_icon', label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
     iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
+  { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
+    iconHtml: LUCIDE['graduation-cap'], go: function(){ _launcherComingSoon('School'); } },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -16569,6 +16811,195 @@ function pentaExitEmployeePreview() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// LEARN — Phrase of the Day v1
+// ═══════════════════════════════════════════════════════════════════════
+// A single-screen feature: the user picks native + target language once,
+// and every day one of 20 everyday phrases rotates in. Deliberately
+// minimum — no streaks, no scoring, no points. v1 signals to employees
+// that Penta invests in them and lets managers pick up phrases in their
+// team's native languages. Q3 2027 plan adds the full lesson / reward /
+// streak stack on top of this foundation.
+
+const LEARN_PHRASES_V1 = [
+  { id: 1,  en: "Good morning",                              es: "Buenos días",                                    pt: "Bom dia",                                  ko: "좋은 아침입니다" },
+  { id: 2,  en: "Good afternoon",                            es: "Buenas tardes",                                  pt: "Boa tarde",                                ko: "안녕하세요 (오후 인사)" },
+  { id: 3,  en: "Good night",                                es: "Buenas noches",                                  pt: "Boa noite",                                ko: "안녕히 주무세요" },
+  { id: 4,  en: "How are you?",                              es: "¿Cómo estás?",                                   pt: "Como você está?",                          ko: "어떻게 지내세요?" },
+  { id: 5,  en: "Thank you very much",                       es: "Muchas gracias",                                 pt: "Muito obrigado",                           ko: "정말 감사합니다" },
+  { id: 6,  en: "You're welcome",                            es: "De nada",                                        pt: "De nada",                                  ko: "천만에요" },
+  { id: 7,  en: "I'm sorry",                                 es: "Lo siento",                                      pt: "Desculpe",                                 ko: "죄송합니다" },
+  { id: 8,  en: "Excuse me",                                 es: "Disculpe",                                       pt: "Com licença",                              ko: "실례합니다" },
+  { id: 9,  en: "Please",                                    es: "Por favor",                                      pt: "Por favor",                                ko: "부탁합니다" },
+  { id: 10, en: "See you tomorrow",                          es: "Hasta mañana",                                   pt: "Até amanhã",                               ko: "내일 봐요" },
+  { id: 11, en: "Have a great day",                          es: "Que tengas un buen día",                         pt: "Tenha um ótimo dia",                       ko: "좋은 하루 보내세요" },
+  { id: 12, en: "Where is the bathroom?",                    es: "¿Dónde está el baño?",                           pt: "Onde fica o banheiro?",                    ko: "화장실이 어디예요?" },
+  { id: 13, en: "I don't understand, can you repeat?",       es: "No entiendo, ¿puede repetir?",                   pt: "Não entendi, pode repetir?",               ko: "이해하지 못했어요. 다시 말씀해 주시겠어요?" },
+  { id: 14, en: "What's your name?",                         es: "¿Cómo se llama?",                                pt: "Qual é o seu nome?",                       ko: "이름이 어떻게 되세요?" },
+  { id: 15, en: "Nice to meet you",                          es: "Mucho gusto",                                    pt: "Prazer em conhecê-lo",                     ko: "만나서 반갑습니다" },
+  { id: 16, en: "I need help, please",                       es: "Necesito ayuda, por favor",                      pt: "Preciso de ajuda, por favor",              ko: "도와주세요" },
+  { id: 17, en: "Is this your pet? What's their name?",      es: "¿Es esta su mascota? ¿Cómo se llama?",           pt: "Esse é o seu pet? Qual é o nome dele?",    ko: "이 아이가 반려동물인가요? 이름이 뭐예요?" },
+  { id: 18, en: "The weather is nice today",                 es: "Hace buen tiempo hoy",                           pt: "O tempo está bom hoje",                    ko: "오늘 날씨가 좋네요" },
+  { id: 19, en: "How do you say this in English?",           es: "¿Cómo se dice esto en inglés?",                  pt: "Como se diz isso em inglês?",              ko: "이것을 영어로 어떻게 말하나요?" },
+  { id: 20, en: "I am learning, thank you for your patience", es: "Estoy aprendiendo, gracias por su paciencia",   pt: "Estou aprendendo, obrigado pela paciência", ko: "배우는 중이에요, 인내해 주셔서 감사합니다" }
+];
+
+function pentaLearnTodaysPhrase() {
+  const d = new Date();
+  const start = new Date(d.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((d - start) / 86400000);
+  return LEARN_PHRASES_V1[dayOfYear % LEARN_PHRASES_V1.length];
+}
+
+function _pentaLearnKey(suffix) {
+  // Per-role separation: manager previewing an employee must not overwrite
+  // Tom's own settings. appPinRole is 'employee' while inside the portal
+  // (either real employee OR during preview mode).
+  const role = (typeof appPinRole !== 'undefined' && appPinRole === 'employee') ? 'employee' : 'manager';
+  return 'penta_learn_' + suffix + '_' + role;
+}
+
+function _pentaLearnGetLangs() {
+  const appLangFallback = (function(){
+    try {
+      // appSelectedLang is a JS var set by the PIN-pad language picker;
+      // cc_emp_lang is the persisted employee lang in sessionStorage.
+      if (typeof appSelectedLang !== 'undefined' && appSelectedLang) return appSelectedLang;
+      return sessionStorage.getItem('cc_emp_lang') || 'en';
+    } catch(e) { return 'en'; }
+  })();
+  const native = localStorage.getItem(_pentaLearnKey('native_lang')) || appLangFallback;
+  const target = localStorage.getItem(_pentaLearnKey('target_lang')) || (native === 'en' ? 'es' : 'en');
+  return { native: native, target: target };
+}
+
+function _pentaLangName(code) {
+  return ({ en: 'English', es: 'Español', pt: 'Português', ko: '한국어' })[code] || code;
+}
+
+function openPentaLearn() {
+  const screen = document.getElementById('penta-learn-screen');
+  if (!screen) return;
+  renderPentaLearn();
+  screen.style.display = 'flex';
+}
+
+function closePentaLearn() {
+  const screen = document.getElementById('penta-learn-screen');
+  if (screen) screen.style.display = 'none';
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch(e) {}
+}
+
+function renderPentaLearn() {
+  const phrase = pentaLearnTodaysPhrase();
+  const langs = _pentaLearnGetLangs();
+  const native = langs.native;
+  const target = langs.target;
+
+  const dateEl = document.getElementById('pentaLearnDate');
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString(undefined, {
+    weekday: 'long', month: 'long', day: 'numeric'
+  });
+  const tLang = document.getElementById('pentaLearnTargetLangName');
+  if (tLang) tLang.textContent = _pentaLangName(target);
+  const big = document.getElementById('pentaLearnPhraseBig');
+  if (big) big.textContent = phrase[target] || phrase.en;
+  const nLang = document.getElementById('pentaLearnNativeLangName');
+  if (nLang) nLang.textContent = _pentaLangName(native);
+  const small = document.getElementById('pentaLearnPhraseSmall');
+  if (small) small.textContent = phrase[native] || phrase.en;
+
+  const today = (new Date()).toISOString().slice(0, 10);
+  const lastDone = localStorage.getItem(_pentaLearnKey('last_done_date'));
+  const gotitBtn = document.querySelector('.penta-learn-gotit');
+  if (gotitBtn) {
+    if (lastDone === today) {
+      gotitBtn.classList.add('penta-learn-gotit--done');
+      gotitBtn.textContent = 'Done for today ✓';
+    } else {
+      gotitBtn.classList.remove('penta-learn-gotit--done');
+      gotitBtn.textContent = 'Got it ✓';
+    }
+  }
+}
+
+function pentaLearnSpeak() {
+  try {
+    const phrase = pentaLearnTodaysPhrase();
+    const target = _pentaLearnGetLangs().target;
+    const text = phrase[target] || phrase.en;
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const langMap = { en: 'en-US', es: 'es-ES', pt: 'pt-BR', ko: 'ko-KR' };
+    u.lang = langMap[target] || 'en-US';
+    u.rate = 0.88;
+    u.pitch = 1.0;
+    const voices = window.speechSynthesis.getVoices();
+    if (voices && voices.length) {
+      const prefix = u.lang.split('-')[0].toLowerCase();
+      const match = voices.find(function(v){ return v.lang && v.lang.toLowerCase().indexOf(prefix) === 0; });
+      if (match) u.voice = match;
+    }
+    window.speechSynthesis.speak(u);
+  } catch(e) {
+    console.error('[learn] speak failed', e);
+  }
+}
+
+function pentaLearnMarkGotIt() {
+  const today = (new Date()).toISOString().slice(0, 10);
+  localStorage.setItem(_pentaLearnKey('last_done_date'), today);
+  const btn = document.querySelector('.penta-learn-gotit');
+  if (btn) {
+    btn.classList.add('penta-learn-gotit--done');
+    btn.textContent = 'Done for today ✓';
+  }
+}
+
+function openPentaLearnSettings() {
+  const existing = document.getElementById('pentaLearnSettings');
+  if (existing) existing.remove();
+  const langs = _pentaLearnGetLangs();
+  const overlay = document.createElement('div');
+  overlay.id = 'pentaLearnSettings';
+  overlay.className = 'penta-learn-settings-overlay';
+
+  function opts(code) {
+    return ['en','es','pt','ko'].map(function(c){
+      return '<option value="' + c + '"' + (c === code ? ' selected' : '') + '>' + _pentaLangName(c) + '</option>';
+    }).join('');
+  }
+
+  overlay.innerHTML = ''
+    + '<div class="penta-learn-settings-sheet">'
+    +   '<p class="penta-learn-settings-title">Language settings</p>'
+    +   '<label class="penta-learn-settings-label">I speak</label>'
+    +   '<select id="pentaLearnNativeSelect" class="penta-learn-settings-select">' + opts(langs.native) + '</select>'
+    +   '<label class="penta-learn-settings-label">I want to learn</label>'
+    +   '<select id="pentaLearnTargetSelect" class="penta-learn-settings-select">' + opts(langs.target) + '</select>'
+    +   '<div class="penta-learn-settings-actions">'
+    +     '<button type="button" class="penta-learn-settings-cancel" onclick="document.getElementById(\'pentaLearnSettings\').remove()">Cancel</button>'
+    +     '<button type="button" class="penta-learn-settings-save" onclick="pentaLearnSaveSettings()">Save</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+function pentaLearnSaveSettings() {
+  const native = document.getElementById('pentaLearnNativeSelect').value;
+  const target = document.getElementById('pentaLearnTargetSelect').value;
+  if (native === target) {
+    alert('Pick two different languages.');
+    return;
+  }
+  localStorage.setItem(_pentaLearnKey('native_lang'), native);
+  localStorage.setItem(_pentaLearnKey('target_lang'), target);
+  const el = document.getElementById('pentaLearnSettings');
+  if (el) el.remove();
+  renderPentaLearn();
+}
+
 let appSelectedLang = 'en'; // track PIN screen language selection
 
 function appSetLang(lang) {
@@ -23084,15 +23515,25 @@ var DEFAULT_PERMISSIONS = {
     admin_phase3c: true,
     admin_phase3d: true,
     admin_hours_report: true,
-    preview_as_employee: true
+    preview_as_employee: true,
+    learn: true
+  },
+  employee: {
+    learn: true
   }
 };
 function getPermissions() {
   try {
     var stored = JSON.parse(localStorage.getItem('permissions') || '{}') || {};
-    return { manager: Object.assign({}, DEFAULT_PERMISSIONS.manager, stored.manager || {}) };
+    return {
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager,  stored.manager  || {}),
+      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee, stored.employee || {})
+    };
   } catch (e) {
-    return { manager: Object.assign({}, DEFAULT_PERMISSIONS.manager) };
+    return {
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager),
+      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee)
+    };
   }
 }
 function setPermission(role, key, value) {
@@ -23106,15 +23547,16 @@ function isPermitted(role, key) {
   return perms[role] && perms[role][key] !== false;
 }
 function applyPermissions() {
-  // Only touches elements carrying data-permission + manager role.
   var perms = getPermissions();
-  var nodes = document.querySelectorAll('[data-permission][data-permission-role="manager"]');
-  for (var i = 0; i < nodes.length; i++) {
-    var el = nodes[i];
-    var key = el.getAttribute('data-permission');
-    if (perms.manager[key] === false) el.style.display = 'none';
-    else el.style.display = '';
-  }
+  ['manager', 'employee'].forEach(function(role){
+    var nodes = document.querySelectorAll('[data-permission][data-permission-role="' + role + '"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var key = el.getAttribute('data-permission');
+      if (perms[role] && perms[role][key] === false) el.style.display = 'none';
+      else el.style.display = '';
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -23137,7 +23579,8 @@ var ADMIN_MANAGER_ROWS = [
   ['crm_icon',       'CRM Icon'],
   ['new_client_icon','New Client Icon'],
   ['ratings_icon',   'Ratings Icon'],
-  ['preview_as_employee', 'Preview As Employee']
+  ['preview_as_employee', 'Preview As Employee'],
+  ['learn',          'Learn Icon']
 ];
 function openAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -24372,6 +24815,12 @@ function _p3dPage(dir) {
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
         </div>
         <div class="employee-label">Rewards</div>
+      </div>
+      <div class="employee-icon-wrap" data-permission="learn" data-permission-role="employee" onclick="openPentaLearn()">
+        <div class="employee-icon" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+        </div>
+        <div class="employee-label">Learn</div>
       </div>
     </div>
     <div class="employee-today-card" id="employee-today-card" onclick="openEmployeeSchedule()" style="display:none">
