@@ -3226,7 +3226,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-.penta-learn-back, .penta-learn-settings {
+.penta-learn-back, .penta-learn-settings, .penta-learn-home {
   background: none; border: none;
   font-size: 22px; line-height: 1;
   color: var(--text);
@@ -3234,6 +3234,39 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   font-family: inherit;
   -webkit-tap-highlight-color: transparent;
 }
+.penta-learn-header-actions {
+  display: flex; align-items: center; gap: 2px;
+}
+.penta-learn-home { font-size: 18px; }
+.penta-learn-dots {
+  display: flex; justify-content: center; gap: 8px;
+  margin: 0 0 16px 0;
+}
+.penta-learn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: rgba(255,255,255,0.18);
+  transition: background .18s;
+}
+.penta-learn-dot--filled { background: #f59e0b; }
+.penta-learn-finish-big {
+  font-size: 24px; font-weight: 600;
+  color: #18181B;
+  margin: 12px 0 8px 0;
+  letter-spacing: -0.01em;
+}
+.penta-learn-finish-sub {
+  font-size: 14px; color: #78350f;
+  margin: 0 0 18px 0;
+}
+.penta-learn-review-link {
+  background: none; border: none;
+  color: #92400e; font-weight: 600;
+  font-size: 13px; text-decoration: underline;
+  cursor: pointer; font-family: inherit;
+  padding: 4px 8px;
+  -webkit-tap-highlight-color: transparent;
+}
+.penta-learn-review-link:active { opacity: 0.7; }
 .penta-learn-title {
   font-size: 17px; font-weight: 700;
   color: var(--text);
@@ -3475,24 +3508,16 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   <div class="penta-learn-header">
     <button class="penta-learn-back" onclick="closePentaLearn()" aria-label="Back">‹</button>
     <h2 class="penta-learn-title">Learn</h2>
-    <button class="penta-learn-settings" onclick="openPentaLearnSettings()" aria-label="Settings">⚙</button>
+    <div class="penta-learn-header-actions">
+      <button class="penta-learn-settings" onclick="openPentaLearnSettings()" aria-label="Settings">⚙</button>
+      <button class="penta-learn-home" onclick="pentaLearnGoHome()" aria-label="Home">🏠</button>
+    </div>
   </div>
   <div class="penta-learn-body">
     <p class="penta-learn-date" id="pentaLearnDate"></p>
-    <p class="penta-learn-label">PHRASE OF THE DAY</p>
-    <div class="penta-learn-card">
-      <p class="penta-learn-target-lang" id="pentaLearnTargetLangName"></p>
-      <p class="penta-learn-phrase-big" id="pentaLearnPhraseBig"></p>
-      <button class="penta-learn-play" onclick="pentaLearnSpeak()" aria-label="Play">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="6 3 20 12 6 21 6 3"></polygon>
-        </svg>
-        <span>Listen</span>
-      </button>
-      <div class="penta-learn-divider"></div>
-      <p class="penta-learn-native-lang" id="pentaLearnNativeLangName"></p>
-      <p class="penta-learn-phrase-small" id="pentaLearnPhraseSmall"></p>
-    </div>
+    <p class="penta-learn-label" id="pentaLearnCounter">PHRASE 1 OF 5</p>
+    <div class="penta-learn-dots" id="pentaLearnDots"></div>
+    <div class="penta-learn-card" id="pentaLearnCard"></div>
     <button class="penta-learn-gotit" onclick="pentaLearnMarkGotIt()">Got it ✓</button>
     <p class="penta-learn-footer">
       More coming soon — full lessons, streaks, and reward points in a future update.
@@ -16844,11 +16869,93 @@ const LEARN_PHRASES_V1 = [
   { id: 20, en: "I am learning, thank you for your patience", es: "Estoy aprendiendo, gracias por su paciencia",   pt: "Estou aprendendo, obrigado pela paciência", ko: "배우는 중이에요, 인내해 주셔서 감사합니다" }
 ];
 
+// v1.0 API — retained for external callers / backward compat. The in-screen
+// flow now uses pentaLearnGetTodaysPhrases (plural) below.
 function pentaLearnTodaysPhrase() {
   const d = new Date();
   const start = new Date(d.getFullYear(), 0, 0);
   const dayOfYear = Math.floor((d - start) / 86400000);
   return LEARN_PHRASES_V1[dayOfYear % LEARN_PHRASES_V1.length];
+}
+
+// v1.1 — 5 phrases per day, sequential from the library, wrapping at the end.
+// Day N gets phrases [N, N+1, N+2, N+3, N+4] (mod length). Same for everyone.
+const PENTA_LEARN_PHRASES_PER_DAY = 5;
+function pentaLearnGetTodaysPhrases() {
+  const d = new Date();
+  const start = new Date(d.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((d - start) / 86400000);
+  const L = LEARN_PHRASES_V1.length;
+  const out = [];
+  for (var i = 0; i < PENTA_LEARN_PHRASES_PER_DAY; i++) {
+    out.push(LEARN_PHRASES_V1[(dayOfYear + i) % L]);
+  }
+  return out;
+}
+
+function _pentaLearnTodayKey() { return (new Date()).toISOString().slice(0, 10); }
+
+// Progress is stored per-role so manager and employee learn separately.
+// Shape: { date: 'YYYY-MM-DD', currentIndex: 0..5 }. Stale date → reset to 0.
+function pentaLearnGetProgress() {
+  const today = _pentaLearnTodayKey();
+  try {
+    const raw = localStorage.getItem(_pentaLearnKey('progress'));
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && p.date === today && typeof p.currentIndex === 'number') {
+        const idx = Math.max(0, Math.min(PENTA_LEARN_PHRASES_PER_DAY, p.currentIndex));
+        return { date: today, currentIndex: idx };
+      }
+    }
+  } catch(e) {}
+  return { date: today, currentIndex: 0 };
+}
+
+function _pentaLearnSaveProgress(idx) {
+  const bounded = Math.max(0, Math.min(PENTA_LEARN_PHRASES_PER_DAY, idx));
+  localStorage.setItem(_pentaLearnKey('progress'), JSON.stringify({
+    date: _pentaLearnTodayKey(), currentIndex: bounded
+  }));
+}
+
+// Advance one phrase. Hitting PHRASES_PER_DAY (5) triggers the done-for-today
+// marker, which the dashboard / future coaching reads to know the day's set
+// was actually completed (not just phrase 1 tapped).
+function pentaLearnAdvance() {
+  const p = pentaLearnGetProgress();
+  const next = Math.min(PENTA_LEARN_PHRASES_PER_DAY, p.currentIndex + 1);
+  _pentaLearnSaveProgress(next);
+  if (next >= PENTA_LEARN_PHRASES_PER_DAY) {
+    localStorage.setItem(_pentaLearnKey('last_done_date'), _pentaLearnTodayKey());
+  }
+  renderPentaLearn();
+}
+
+// Review rewinds the counter without clearing last_done_date — user has
+// already completed the set, they just want to see the phrases again.
+function pentaLearnResetReview() {
+  _pentaLearnSaveProgress(0);
+  renderPentaLearn();
+}
+
+// Home button: exit Learn, route to role-appropriate home. Employee portal
+// uses showPortalTab; manager main app uses showTab. Falls back to just
+// closing Learn if neither exists.
+function pentaLearnGoHome() {
+  closePentaLearn();
+  try {
+    if (typeof appPinRole !== 'undefined' && appPinRole === 'employee'
+        && typeof showPortalTab === 'function') {
+      showPortalTab('home');
+      return;
+    }
+    if (typeof showTab === 'function') {
+      showTab('home');
+    }
+  } catch(e) {
+    console.error('[learn] go home failed', e);
+  }
 }
 
 function _pentaLearnKey(suffix) {
@@ -16891,41 +16998,81 @@ function closePentaLearn() {
 }
 
 function renderPentaLearn() {
-  const phrase = pentaLearnTodaysPhrase();
+  const phrases = pentaLearnGetTodaysPhrases();
+  const progress = pentaLearnGetProgress();
   const langs = _pentaLearnGetLangs();
   const native = langs.native;
   const target = langs.target;
+  const total = phrases.length;
+  const idx = progress.currentIndex;
+  const done = idx >= total;
 
   const dateEl = document.getElementById('pentaLearnDate');
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString(undefined, {
     weekday: 'long', month: 'long', day: 'numeric'
   });
-  const tLang = document.getElementById('pentaLearnTargetLangName');
-  if (tLang) tLang.textContent = _pentaLangName(target);
-  const big = document.getElementById('pentaLearnPhraseBig');
-  if (big) big.textContent = phrase[target] || phrase.en;
-  const nLang = document.getElementById('pentaLearnNativeLangName');
-  if (nLang) nLang.textContent = _pentaLangName(native);
-  const small = document.getElementById('pentaLearnPhraseSmall');
-  if (small) small.textContent = phrase[native] || phrase.en;
 
-  const today = (new Date()).toISOString().slice(0, 10);
-  const lastDone = localStorage.getItem(_pentaLearnKey('last_done_date'));
-  const gotitBtn = document.querySelector('.penta-learn-gotit');
-  if (gotitBtn) {
-    if (lastDone === today) {
-      gotitBtn.classList.add('penta-learn-gotit--done');
-      gotitBtn.textContent = 'Done for today ✓';
-    } else {
-      gotitBtn.classList.remove('penta-learn-gotit--done');
-      gotitBtn.textContent = 'Got it ✓';
+  const counterEl = document.getElementById('pentaLearnCounter');
+  if (counterEl) {
+    counterEl.textContent = done
+      ? 'DONE — ' + total + ' OF ' + total
+      : 'PHRASE ' + (idx + 1) + ' OF ' + total;
+  }
+
+  const dotsEl = document.getElementById('pentaLearnDots');
+  if (dotsEl) {
+    var dotsHtml = '';
+    for (var i = 0; i < total; i++) {
+      // Dots fill cumulatively — dot i is filled when user has reached phrase i+1.
+      // Current phrase's dot is filled (in-progress). After completion all filled.
+      var filled = done || i <= idx;
+      dotsHtml += '<span class="penta-learn-dot' + (filled ? ' penta-learn-dot--filled' : '') + '"></span>';
     }
+    dotsEl.innerHTML = dotsHtml;
+  }
+
+  const cardEl = document.getElementById('pentaLearnCard');
+  const gotitBtn = document.querySelector('.penta-learn-gotit');
+
+  if (done) {
+    if (cardEl) {
+      cardEl.innerHTML = ''
+        + '<p class="penta-learn-finish-big">Done for today ✓</p>'
+        + '<p class="penta-learn-finish-sub">Come back tomorrow for 5 new phrases.</p>'
+        + '<button type="button" class="penta-learn-review-link" onclick="pentaLearnResetReview()">Review today\'s phrases</button>';
+    }
+    if (gotitBtn) gotitBtn.style.display = 'none';
+    return;
+  }
+
+  const phrase = phrases[idx];
+  if (cardEl) {
+    cardEl.innerHTML = ''
+      + '<p class="penta-learn-target-lang" id="pentaLearnTargetLangName">' + escapeHtml(_pentaLangName(target)) + '</p>'
+      + '<p class="penta-learn-phrase-big" id="pentaLearnPhraseBig">' + escapeHtml(phrase[target] || phrase.en) + '</p>'
+      + '<button class="penta-learn-play" onclick="pentaLearnSpeak()" aria-label="Play">'
+      +   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      +     '<polygon points="6 3 20 12 6 21 6 3"></polygon>'
+      +   '</svg>'
+      +   '<span>Listen</span>'
+      + '</button>'
+      + '<div class="penta-learn-divider"></div>'
+      + '<p class="penta-learn-native-lang" id="pentaLearnNativeLangName">' + escapeHtml(_pentaLangName(native)) + '</p>'
+      + '<p class="penta-learn-phrase-small" id="pentaLearnPhraseSmall">' + escapeHtml(phrase[native] || phrase.en) + '</p>';
+  }
+  if (gotitBtn) {
+    gotitBtn.style.display = '';
+    gotitBtn.classList.remove('penta-learn-gotit--done');
+    gotitBtn.textContent = 'Got it ✓';
   }
 }
 
 function pentaLearnSpeak() {
   try {
-    const phrase = pentaLearnTodaysPhrase();
+    const phrases = pentaLearnGetTodaysPhrases();
+    const progress = pentaLearnGetProgress();
+    if (progress.currentIndex >= phrases.length) return; // in finish state — nothing to read
+    const phrase = phrases[progress.currentIndex];
     const target = _pentaLearnGetLangs().target;
     const text = phrase[target] || phrase.en;
     if (!window.speechSynthesis) return;
@@ -16947,14 +17094,10 @@ function pentaLearnSpeak() {
   }
 }
 
+// v1.1 — delegates to advance so the 5-phrase counter moves forward and
+// last_done_date is only set when the full set is finished.
 function pentaLearnMarkGotIt() {
-  const today = (new Date()).toISOString().slice(0, 10);
-  localStorage.setItem(_pentaLearnKey('last_done_date'), today);
-  const btn = document.querySelector('.penta-learn-gotit');
-  if (btn) {
-    btn.classList.add('penta-learn-gotit--done');
-    btn.textContent = 'Done for today ✓';
-  }
+  pentaLearnAdvance();
 }
 
 function openPentaLearnSettings() {
