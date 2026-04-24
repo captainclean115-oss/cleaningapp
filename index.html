@@ -5469,6 +5469,10 @@ window.addEventListener('DOMContentLoaded', function() {
   if (fs) fs.remove();
   // One-time backfill of activity-log entries' clientId field (v1 schema add).
   try { _backfillActivityLogClientIds(); } catch(e) { console.error('[ActivityLog backfill] failed', e); }
+  // Cleanups run BEFORE the Phase 3D backfill so we don't waste work filling
+  // in placeholder strings on entries we're about to delete.
+  try { _phase3dPrefixCleanup(); } catch(e) { console.error('[Phase3D cleanup] failed', e); }
+  try { _phase3cPrefixCleanup(); } catch(e) { console.error('[Phase3C cleanup] failed', e); }
   try { _backfillPhase3dQueue(); } catch(e) { console.error('[Phase3D backfill] failed', e); }
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
@@ -6505,6 +6509,43 @@ function clearActivityLog() {
   if (!confirm('Clear the entire activity log?')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
+}
+
+// One-time cleanup: clear the Phase 3D pending-writes queue of entries left
+// over from the pre-fix period when Tom was logged in as pentatest1. Those
+// writes were RLS-blocked at Supabase and queued locally; they will never
+// succeed as-is and are not a meaningful observation signal. Gated by
+// phase3d_prefix_cleanup_v1 so it runs exactly once.
+function _phase3dPrefixCleanup() {
+  if (localStorage.getItem('phase3d_prefix_cleanup_v1')) return;
+  try {
+    var q = JSON.parse(localStorage.getItem('phase3d_pending_writes') || '[]');
+    var cleared = Array.isArray(q) ? q.length : 0;
+    localStorage.removeItem('phase3d_pending_writes');
+    localStorage.setItem('phase3d_prefix_cleanup_v1', new Date().toISOString());
+    console.log('[Phase3D cleanup] cleared ' + cleared + ' pre-fix queue entries');
+  } catch (e) {
+    console.warn('[Phase3D cleanup] failed:', e);
+    try { localStorage.setItem('phase3d_prefix_cleanup_v1', 'error:' + String(e)); } catch(_){}
+  }
+}
+
+// One-time cleanup: clear the Phase 3C divergence log of pre-fix noise.
+// Every divergence logged before today's auth fix was comparing local edits
+// (which never landed) against a frozen Supabase state from the backfill,
+// so the log is meaningless. Gated by phase3c_prefix_cleanup_v1.
+function _phase3cPrefixCleanup() {
+  if (localStorage.getItem('phase3c_prefix_cleanup_v1')) return;
+  try {
+    var log = JSON.parse(localStorage.getItem('phase3c_divergences') || '[]');
+    var cleared = Array.isArray(log) ? log.length : 0;
+    localStorage.removeItem('phase3c_divergences');
+    localStorage.setItem('phase3c_prefix_cleanup_v1', new Date().toISOString());
+    console.log('[Phase3C cleanup] cleared ' + cleared + ' pre-fix divergence entries');
+  } catch (e) {
+    console.warn('[Phase3C cleanup] failed:', e);
+    try { localStorage.setItem('phase3c_prefix_cleanup_v1', 'error:' + String(e)); } catch(_){}
+  }
 }
 
 // One-time backfill: scan the Phase 3D pending-writes queue and populate
@@ -27368,56 +27409,11 @@ function _p3dPage(dir) {
 
     client.auth.getSession().then(function(r){
       window.PentaAuth.session = r.data.session;
-      // ── TEMPORARY DIAGNOSTIC (Phase 3D write-path investigation) ──
-      // Fires once per tab. Logs Supabase connection + session so we can
-      // verify the app is actually authed against the expected project
-      // with a user that has write permissions. REMOVE after Tom confirms
-      // the diagnostic is complete.
-      try {
-        if (!window.__p3d_diag) {
-          window.__p3d_diag = true;
-          var sess = r && r.data && r.data.session;
-          var user = sess && sess.user;
-          console.log('[__p3d_diag] project URL:', PROJECT_URL);
-          console.log('[__p3d_diag] anon key prefix:', String(PUBLISHABLE_KEY).slice(0, 20));
-          console.log('[__p3d_diag] session present:', !!sess);
-          console.log('[__p3d_diag] user id:', user && user.id);
-          console.log('[__p3d_diag] user email:', user && user.email);
-          console.log('[__p3d_diag] access_token prefix:', sess && sess.access_token && sess.access_token.slice(0, 20));
-        }
-      } catch(e) { console.error('[__p3d_diag] boot log failed', e); }
     });
 
     client.auth.onAuthStateChange(function(_event, session){
       window.PentaAuth.session = session;
     });
-
-    // ── TEMPORARY DIAGNOSTIC (Phase 3D write-path investigation) ──
-    // Run `await window.__p3d_testWrite()` in the console. Paste the full
-    // response object into the investigation thread. REMOVE after diagnosis.
-    window.__p3d_testWrite = async function() {
-      try {
-        var supa = (window.PentaAuth && window.PentaAuth.client) || client;
-        var testId = '10518233'; // Emily Campbell per investigation prompt
-        var stamp = '__p3d_diag_' + Date.now();
-        var res = await supa
-          .from('clients')
-          .update({ notes: stamp })
-          .eq('external_id', testId)
-          .select();
-        console.log('[__p3d_testWrite] stamp:', stamp);
-        console.log('[__p3d_testWrite] result:', res);
-        console.log('[__p3d_testWrite] data:', res && res.data);
-        console.log('[__p3d_testWrite] error:', res && res.error);
-        console.log('[__p3d_testWrite] status:', res && res.status);
-        console.log('[__p3d_testWrite] statusText:', res && res.statusText);
-        console.log('[__p3d_testWrite] count:', res && res.count);
-        return res;
-      } catch (e) {
-        console.error('[__p3d_testWrite] threw', e);
-        return { error: e };
-      }
-    };
   });
 })();
 </script>
