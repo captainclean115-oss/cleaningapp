@@ -4816,6 +4816,8 @@ window.addEventListener('DOMContentLoaded', function() {
   // Remove the early flash-suppress style — JS now controls screen visibility
   var fs = document.getElementById('auth-flash-suppress');
   if (fs) fs.remove();
+  // One-time backfill of activity-log entries' clientId field (v1 schema add).
+  try { _backfillActivityLogClientIds(); } catch(e) { console.error('[ActivityLog backfill] failed', e); }
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
     var routeBtn = document.getElementById('route-optimizer-btn');
@@ -5637,7 +5639,7 @@ function saveJob() {
     if (oldTime !== newTime) changes.push('Time: ' + oldTime + ' → ' + newTime);
     if (editingJob.clientName !== clientName) changes.push('Client: ' + editingJob.clientName + ' → ' + clientName);
     if (editingJob.team !== team) changes.push('Team: ' + (editingJob.team||'?') + ' → ' + team);
-    if (changes.length > 0) logPendingUpdate('Update job: ' + clientName, changes.join(' · ') + ' on ' + dateDisp);
+    if (changes.length > 0) logPendingUpdate('Update job: ' + clientName, changes.join(' · ') + ' on ' + dateDisp, null, clientId || null);
     editingJob.clientName = clientName;
     editingJob.clientId = clientId;
     editingJob.addr = addr;
@@ -5650,7 +5652,7 @@ function saveJob() {
     editingJob.color = color;
   } else {
     jobs.push({ id: Date.now().toString(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, done: false, team, color });
-    logPendingUpdate('Add job: ' + clientName, (flex ? 'Flexible time' : (time||'No time')) + ' on ' + dateDisp);
+    logPendingUpdate('Add job: ' + clientName, (flex ? 'Flexible time' : (time||'No time')) + ' on ' + dateDisp, null, clientId || null);
   }
   saveJobs();
   closeJobModal();
@@ -5667,7 +5669,7 @@ function deleteJob(id) {
   if (job) {
     const [yr2,mo2,dy2] = job.date.split('-');
     const dateDisp = new Date(+yr2,+mo2-1,+dy2).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    logPendingUpdate('Remove job: ' + job.clientName, 'Originally scheduled ' + (job.flexible?'flexible':(job.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(job.time):'')) + ' on ' + dateDisp);
+    logPendingUpdate('Remove job: ' + job.clientName, 'Originally scheduled ' + (job.flexible?'flexible':(job.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'PM':'AM'; if(h>12)h-=12; if(h===0)h=12; return h+':'+String(m).padStart(2,'0')+' '+ap; })(job.time):'')) + ' on ' + dateDisp, null, job.clientId || null);
   }
   jobs = jobs.filter(j => j.id !== id);
   saveJobs();
@@ -5692,13 +5694,13 @@ function cancelJob(id) {
   if (!job) return;
   if (job.cancelled) {
     job.cancelled = false;
-    logPendingUpdate('Uncancelled job: ' + job.clientName, 'Restored on schedule');
+    logPendingUpdate('Uncancelled job: ' + job.clientName, 'Restored on schedule', null, job.clientId || null);
   } else {
     if (!confirm('Cancel this job?')) return;
     job.cancelled = true;
     const [yr2,mo2,dy2] = job.date.split('-');
     const dateDisp = new Date(+yr2,+mo2-1,+dy2).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    logPendingUpdate('Cancelled job: ' + job.clientName, dateDisp);
+    logPendingUpdate('Cancelled job: ' + job.clientName, dateDisp, null, job.clientId || null);
   }
   saveJobs();
   closeJobModal();
@@ -5744,7 +5746,7 @@ function promptSetActor() {
 }
 
 var _claireActing = false; // set true while Claire runs a tool so logs auto-tag as "Claire"
-function logPendingUpdate(action, details, actor) {
+function logPendingUpdate(action, details, actor, clientId) {
   const now = new Date();
   const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
@@ -5755,21 +5757,22 @@ function logPendingUpdate(action, details, actor) {
     details,
     actor: who,
     time: timeStr,
-    done: false
+    done: false,
+    clientId: clientId || null
   });
   savePending();
   // Also log to permanent activity log
-  logActivity(action, details, who);
+  logActivity(action, details, who, clientId);
 }
 
 // ── PERMANENT ACTIVITY LOG ──
-function logActivity(action, details, actor) {
+function logActivity(action, details, actor, clientId) {
   var now = new Date();
   var timestamp = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'});
   var who = actor || getCurrentActor();
   var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime() });
+  log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime(), clientId: clientId || null });
   // Keep last 500 entries
   if (log.length > 500) log = log.slice(0, 500);
   localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
@@ -5821,6 +5824,70 @@ function clearActivityLog() {
   if (!confirm('Clear the entire activity log?')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
+}
+
+// One-time backfill: scan cleanco_activity_log + cleanco_pending for entries
+// missing clientId, heuristic-match against PentaClients full names, and fill
+// in where a unique match is found. Gated by the activity_log_clientid_backfilled_v1
+// flag so it only runs once. Safe to call on every boot.
+function _backfillActivityLogClientIds() {
+  var FLAG = 'activity_log_clientid_backfilled_v1';
+  try { if (localStorage.getItem(FLAG) === '1') return; } catch(e) { return; }
+
+  var clients;
+  try { clients = (window.PentaClients && window.PentaClients.list) ? PentaClients.list() : []; } catch(e) { clients = []; }
+  if (!clients.length) return; // PentaClients not ready — retry on next boot
+
+  // full-name → id map, with collision detection.
+  var nameToId = {};
+  var nameCount = {};
+  clients.forEach(function(c){
+    if (!c || !c.fn || !c.ln || !c.id) return;
+    var full = (c.fn + ' ' + c.ln).toLowerCase().trim();
+    if (!full) return;
+    nameToId[full] = c.id;
+    nameCount[full] = (nameCount[full] || 0) + 1;
+  });
+  var names = Object.keys(nameToId);
+
+  function findClientId(text) {
+    if (!text) return null;
+    var lower = String(text).toLowerCase();
+    var hits = [];
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i];
+      if (nameCount[n] > 1) continue; // ambiguous — two clients share this name
+      if (lower.indexOf(n) >= 0) hits.push(nameToId[n]);
+    }
+    // Distinct-id check: multiple substrings matching different clients = ambiguous.
+    var uniq = {};
+    hits.forEach(function(id){ uniq[id] = true; });
+    var uniqIds = Object.keys(uniq);
+    return uniqIds.length === 1 ? uniqIds[0] : null;
+  }
+
+  function backfillStore(key) {
+    var filled = 0, skipped = 0;
+    var entries;
+    try { entries = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e) { return [0,0]; }
+    if (!Array.isArray(entries)) return [0,0];
+    entries.forEach(function(e){
+      if (!e || e.clientId) return;
+      var id = findClientId((e.action || '') + ' ' + (e.details || ''));
+      if (id) { e.clientId = id; filled++; } else { skipped++; }
+    });
+    try { localStorage.setItem(key, JSON.stringify(entries)); } catch(e){}
+    return [filled, skipped];
+  }
+
+  var r1 = backfillStore('cleanco_activity_log');
+  var r2 = backfillStore('cleanco_pending');
+
+  console.log('[ActivityLog backfill v1] cleanco_activity_log: '
+    + r1[0] + ' filled, ' + r1[1] + ' skipped. cleanco_pending: '
+    + r2[0] + ' filled, ' + r2[1] + ' skipped.');
+
+  try { localStorage.setItem(FLAG, '1'); } catch(e){}
 }
 
 // ── FILES (Finder-style grid) ──
@@ -8918,7 +8985,9 @@ function paymentsConfirm() {
     logPendingUpdate(
       'Payment: ' + c.fn + ' ' + c.ln,
       '$' + amt.toFixed(2) + ' via ' + method + ' · $' + oldBal + ' → $' + Math.round(c.bal)
-        + (note ? ' · ' + note : '')
+        + (note ? ' · ' + note : ''),
+      null,
+      id
     );
   }
   // Persist client balance update so a refresh retains it.
@@ -9189,7 +9258,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     if (job) {
       job.cancelled = true; saveJobs();
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
       _claireLastToolResult = 'Cancelled '+client2.fn+' '+client2.ln+'\'s '+dayL+' clean. Done.';
       claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
     } else {
@@ -9244,7 +9313,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     if (input.team) job2.team = input.team.toUpperCase();
     saveJobs(); renderCal();
     var newDayL = new Date(_normDate(job2.date)+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL);
+    logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL, null, client3.id);
     recalcTeamTimes(job2.team, job2.date, job2.id);
     var moveMsg = 'Moved '+client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.';
     _claireLastToolResult = moveMsg+' Done.';
@@ -9409,7 +9478,7 @@ function _executeClaireToolCallInner(toolCall, message) {
 
     saveJobs();
     renderCal();
-    logPendingUpdate('Frequency change: '+fClient.fn+' '+fClient.ln, oldFreq+' → '+newFreq.freq);
+    logPendingUpdate('Frequency change: '+fClient.fn+' '+fClient.ln, oldFreq+' → '+newFreq.freq, null, fClient.id);
 
     // Find their next upcoming clean
     var nextClean = jobs.filter(function(j){ return j.clientId === fClient.id && j.date >= todayKey2 && !j.cancelled; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
@@ -9436,7 +9505,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     var fieldName = fieldMap[input.field] || input.field;
     var oldVal = ecClient[input.field] || '(empty)';
     ecClient[input.field] = input.value;
-    logPendingUpdate('Updated '+ecClient.fn+' '+ecClient.ln, fieldName+': '+oldVal+' → '+input.value);
+    logPendingUpdate('Updated '+ecClient.fn+' '+ecClient.ln, fieldName+': '+oldVal+' → '+input.value, null, ecClient.id);
     _claireLastToolResult = 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' from "'+oldVal+'" to "'+input.value+'". Done.';
     claireReply(message || 'Updated '+ecClient.fn+' '+ecClient.ln+'\'s '+fieldName.toLowerCase()+' to "'+input.value+'".');
 
@@ -9454,7 +9523,7 @@ function _executeClaireToolCallInner(toolCall, message) {
       }
     });
     saveJobs(); renderCal();
-    logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)');
+    logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)', null, cpClient.id);
     _claireLastToolResult = 'Set '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+' and updated '+updated+' future cleans. Done.';
     claireReply(message || 'Changed '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+'. Updated '+updated+' future cleans.');
 
@@ -9469,9 +9538,9 @@ function _executeClaireToolCallInner(toolCall, message) {
     var now2 = new Date();
     var ts2 = now2.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     var pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-    pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method });
+    pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method, clientId: rpClient.id });
     localStorage.setItem('cleanco_pending', JSON.stringify(pending));
-    logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method);
+    logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method, null, rpClient.id);
     _claireLastToolResult = 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance: $'+Math.round(oldBal)+' -> $'+Math.round(rpClient.bal)+'. Done.';
     claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
 
@@ -9562,7 +9631,7 @@ function _executeClaireToolCallInner(toolCall, message) {
     if (!nClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     var oldNotes = nClient.notes || '';
     PentaClients.setField(nClient.id, 'notes', oldNotes ? oldNotes + ' | ' + input.notes : input.notes);
-    logPendingUpdate('Notes updated: '+nClient.fn+' '+nClient.ln, input.notes);
+    logPendingUpdate('Notes updated: '+nClient.fn+' '+nClient.ln, input.notes, null, nClient.id);
     _claireLastToolResult = 'Appended note to '+nClient.fn+' '+nClient.ln+': "'+input.notes+'". Done.';
     claireReply(message || 'Updated notes for '+nClient.fn+' '+nClient.ln+': "'+input.notes+'"');
 
@@ -9635,7 +9704,7 @@ function _executeClaire_legacy(action, message) {
     if (job) {
       job.cancelled = true; saveJobs();
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal();
+      logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
       claireReply(message || 'Done! I cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
     } else {
       // Find their next scheduled job to be helpful
@@ -9738,7 +9807,7 @@ function claireSendSms(clientId, msgText) {
   // Log the send under Claire's name (she drafted it and queued the send).
   // Include first ~60 chars of the message so the audit trail shows what went out.
   var preview = msgText.length > 60 ? msgText.slice(0, 57) + '...' : msgText;
-  logPendingUpdate('SMS sent to '+c.fn+' '+c.ln, preview, 'Claire');
+  logPendingUpdate('SMS sent to '+c.fn+' '+c.ln, preview, 'Claire', clientId);
   if (typeof _claireAmendLastToolResult === 'function') {
     _claireAmendLastToolResult('Tom sent the SMS to '+c.fn+' '+c.ln+'.');
   }
@@ -9780,7 +9849,7 @@ function processVoiceCommandLocal(text) {
     if (result2.client) {
       var targetDate = result2.date || dateKey(new Date());
       var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
-      if (job) { job.cancelled = true; saveJobs(); var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.'); return; }
+      if (job) { job.cancelled = true; saveJobs(); var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL, null, result2.client.id); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.'); return; }
     }
     claireReply('Couldn\'t find that job to cancel.');
     return;
@@ -9834,7 +9903,7 @@ function executeScheduleCmd() {
   saveJobs();
 
   var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : (cmd.viaClaire ? 'Claire' : undefined));
+  logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : (cmd.viaClaire ? 'Claire' : undefined), cmd.client ? cmd.client.id : null);
   renderCal();
 
   claireReply('All set! '+cmd.clientName+' is booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
@@ -10832,7 +10901,7 @@ function saveCustomerForm() {
     }
 
     // Log to updates
-    logPendingUpdate('New customer added: ' + fn + ' ' + ln, addr + ' · ' + freq + ' · ' + (team||'Unassigned'));
+    logPendingUpdate('New customer added: ' + fn + ' ' + ln, addr + ' · ' + freq + ' · ' + (team||'Unassigned'), null, newId);
     alert('✓ ' + fn + ' ' + ln + ' added successfully!');
 
   } else {
@@ -10863,7 +10932,7 @@ function saveCustomerForm() {
       });
       saveJobs();
     }
-    logPendingUpdate('Client updated: ' + fn + ' ' + ln, 'Profile changes saved');
+    logPendingUpdate('Client updated: ' + fn + ' ' + ln, 'Profile changes saved', null, clientId);
     alert('✓ ' + fn + ' ' + ln + ' updated successfully!');
   }
 
@@ -10886,7 +10955,7 @@ function deleteCustomer() {
   localStorage.setItem('client_extras', JSON.stringify(clientExtras));
 
   // Log update
-  logPendingUpdate('Customer deleted: ' + c.fn + ' ' + c.ln, 'Removed from client list');
+  logPendingUpdate('Customer deleted: ' + c.fn + ' ' + c.ln, 'Removed from client list', null, clientId);
 
   closeCustomerForm();
   render();
@@ -11457,7 +11526,7 @@ function recordPayment(clientId, e) {
   }
 
   // Log to updates tab
-  logPendingUpdate('Payment received: ' + name, '$' + parseFloat(amount).toFixed(2) + ' via ' + payMethod);
+  logPendingUpdate('Payment received: ' + name, '$' + parseFloat(amount).toFixed(2) + ' via ' + payMethod, null, clientId);
 
   alert('✓ Payment of $' + parseFloat(amount).toFixed(2) + ' recorded for ' + name);
   render();
