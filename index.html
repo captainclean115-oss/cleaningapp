@@ -3276,7 +3276,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   margin: 16px 14px 14px 14px;
   padding: 18px 20px 16px 20px;
   border-radius: 18px;
-  background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%);
+  background: linear-gradient(135deg, #10b981, #14b8a6, #0ea5e9, #14b8a6, #10b981);
+  background-size: 300% 300%;
+  animation: pentaBannerDrift 14s ease infinite;
   box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25), 0 2px 4px rgba(16, 185, 129, 0.15);
   position: relative;
   overflow: hidden;
@@ -3325,7 +3327,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
 /* Manager message — Claire purple gradient */
 .penta-recognition--manager {
-  background: linear-gradient(135deg, #5E5CE6 0%, #7B68EE 100%);
+  background: linear-gradient(135deg, #5E5CE6, #7B68EE, #8B5CF6, #7B68EE, #5E5CE6);
+  background-size: 300% 300%;
+  animation: pentaBannerDrift 16s ease infinite;
   box-shadow: 0 8px 24px rgba(94, 92, 230, 0.3);
 }
 .penta-manager-card { padding: 18px 20px 16px 20px; }
@@ -3348,7 +3352,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
 /* Birthday — pink/amber photo spotlight */
 .penta-recognition--birthday {
-  background: linear-gradient(135deg, #ec4899 0%, #f59e0b 100%);
+  background: linear-gradient(135deg, #ec4899, #f59e0b, #fb923c, #f59e0b, #ec4899);
+  background-size: 300% 300%;
+  animation: pentaBannerDrift 18s ease infinite;
   box-shadow: 0 8px 24px rgba(236, 72, 153, 0.3);
 }
 .penta-birthday-card { padding: 28px 20px 24px 20px; text-align: center; }
@@ -3394,7 +3400,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
 /* Holiday — amber/orange with flag label */
 .penta-recognition--holiday {
-  background: linear-gradient(135deg, #f59e0b 0%, #fb923c 100%);
+  background: linear-gradient(135deg, #f59e0b, #fb923c, #f97316, #fb923c, #f59e0b);
+  background-size: 300% 300%;
+  animation: pentaBannerDrift 15s ease infinite;
   box-shadow: 0 8px 24px rgba(245, 158, 11, 0.3);
 }
 .penta-holiday-card { padding: 18px 20px 16px 20px; }
@@ -3420,6 +3428,20 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   color: rgba(255, 255, 255, 0.92);
   margin: 0;
   line-height: 1.4;
+}
+
+/* Slow gradient drift — makes the banners feel alive without being distracting. */
+@keyframes pentaBannerDrift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .penta-motivational-banner,
+  .penta-recognition--manager,
+  .penta-recognition--birthday,
+  .penta-recognition--holiday {
+    animation: none !important;
+  }
 }
 
 /* Admin composer */
