@@ -23592,6 +23592,8 @@ function openAdminScreen() {
   try { applyPermissions(); } catch(e){}
   try { updateP3CStatus(); } catch(e){}
   try { updateP3DStatus(); } catch(e){}
+  try { renderPhase3cDashboard(); } catch(e){}
+  try { _p3cDashStartAutoRefresh(); } catch(e){}
 }
 function closeAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -23601,6 +23603,7 @@ function closeAdminScreen() {
   document.body.classList.remove('overlay-open');
   // Re-apply on return so changes take effect without a reload.
   try { applyPermissions(); } catch(e){}
+  try { _p3cDashStopAutoRefresh(); } catch(e){}
 }
 function renderAdminRows() {
   var body = document.getElementById('admin-rows');
@@ -23665,6 +23668,7 @@ function phase3cRefresh() {
   if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
   window.PentaClients.refreshFromSupabase().then(function(r){
     updateP3CStatus();
+    try { renderPhase3cDashboard(); } catch(e){}
     if (btn) {
       btn.disabled = false;
       if (r && r.ok && r.rows > 0) {
@@ -23688,7 +23692,10 @@ function phase3cClearDivergences() {
   if (!confirm('Clear the Phase 3C divergence log? This cannot be undone.')) return;
   window.PentaClients.clearDivergences();
   updateP3CStatus();
-  // If modal is open, refresh it.
+  // Re-render the whole dashboard so the user sees the empty-state immediately.
+  // Prior version only bumped the count badge; the main admin panel looked
+  // unchanged after clearing, which is why Tom flagged it as "broken wiring."
+  try { if (typeof renderPhase3cDashboard === 'function') renderPhase3cDashboard(); } catch(e){}
   var modal = document.getElementById('p3c-div-modal');
   if (modal && modal.style.display !== 'none') _renderP3CModalPage();
 }
@@ -23776,6 +23783,319 @@ function _p3cPage(dir) {
   P3C_MODAL_PAGE += dir;
   _renderP3CModalPage();
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// PHASE 3C — Divergence Dashboard (summary, by-field, by-day, health tier)
+// ═══════════════════════════════════════════════════════════════════════
+// Pure read over localStorage['phase3c_divergences']. Tells Tom at a glance
+// whether the Phase 3E cutover is safe: clean-day streak, divergence trend,
+// top-disagreeing fields. Re-renders on Admin open + 30s interval.
+var OBSERVATION_START = '2026-04-23';  // first full day Phase 3D dual-write was live
+var _p3cDashInterval = null;
+
+function _p3cDayKey(tsLike) {
+  try {
+    var d = new Date(tsLike);
+    if (isNaN(d.getTime())) return '';
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var dd = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + dd;
+  } catch(e) { return ''; }
+}
+
+function _p3cAdminEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+// Pure compute — divergence array → stats object.
+// Field names read the actual on-disk shape: {type, external_id, field,
+// local_value, supabase_value, timestamp}. missing_supabase / missing_local
+// entries are bucketed under synthetic field labels so the by-field view
+// doesn't drop them.
+function _phase3cComputeStats(divergences) {
+  var arr = Array.isArray(divergences) ? divergences : [];
+  var todayKey = _p3cDayKey(new Date());
+  var now = Date.now();
+  var msIn7 = 7 * 86400000;
+
+  var total = arr.length;
+  var today = 0;
+  var last7 = 0;
+  var fieldMap = Object.create(null);
+  var dayMap = Object.create(null);
+
+  for (var i = 0; i < arr.length; i++) {
+    var e = arr[i];
+    if (!e) continue;
+    var ts = e.timestamp || e.ts;
+    var key = _p3cDayKey(ts);
+    var t = ts ? new Date(ts).getTime() : NaN;
+    if (key === todayKey) today++;
+    if (!isNaN(t) && (now - t) <= msIn7) last7++;
+
+    var bucket;
+    if (e.type === 'missing_supabase') bucket = '(row missing from Supabase)';
+    else if (e.type === 'missing_local') bucket = '(row missing from local)';
+    else bucket = e.field || '(unknown)';
+    fieldMap[bucket] = (fieldMap[bucket] || 0) + 1;
+
+    if (key) dayMap[key] = (dayMap[key] || 0) + 1;
+  }
+
+  var byField = Object.keys(fieldMap).map(function(f){
+    return { field: f, count: fieldMap[f] };
+  }).sort(function(a,b){ return b.count - a.count; });
+
+  // Produce last-7-day array including zero days, oldest → newest.
+  var byDay = [];
+  var base = new Date();
+  base.setHours(0,0,0,0);
+  for (var d = 6; d >= 0; d--) {
+    var dt = new Date(base.getTime() - d * 86400000);
+    var k = _p3cDayKey(dt);
+    byDay.push({ date: k, count: dayMap[k] || 0 });
+  }
+
+  return { total: total, today: today, last7: last7, byField: byField, byDay: byDay, dayMap: dayMap };
+}
+
+// Pure compute — stats + pending/stuck counts → health tier.
+// Rules (per spec):
+//   GREEN  — 3+ consecutive clean days ending yesterday, observation ≥ 3 days
+//            old, pending writes empty.
+//   RED    — today has divergences AND today's count > 7-day average × 2.
+//   YELLOW — everything else (streak short, observation just started, etc).
+function _phase3cComputeHealth(stats, pendingWrites, stuckWrites) {
+  var obsStart = new Date(OBSERVATION_START + 'T00:00:00');
+  var today = new Date(); today.setHours(0,0,0,0);
+  var yesterday = new Date(today.getTime() - 86400000);
+  var obsDays = Math.max(0, Math.floor((today - obsStart) / 86400000));
+
+  // Clean streak: count back from yesterday while dayMap[key] is 0 or absent.
+  // Today in progress doesn't advance the counter.
+  var streak = 0;
+  var lastCleanDate = null;
+  for (var i = 0; i < 14; i++) {
+    var dt = new Date(yesterday.getTime() - i * 86400000);
+    if (dt < obsStart) break;
+    var k = _p3cDayKey(dt);
+    var c = stats.dayMap[k] || 0;
+    if (c === 0) { streak++; lastCleanDate = k; }
+    else break;
+  }
+
+  // Red check: divergence spike in last 24h.
+  var avg7 = stats.last7 / 7;
+  if (stats.today > 0 && stats.today > Math.max(2, avg7 * 2)) {
+    return {
+      tier: 'red',
+      label: 'RED — regression',
+      explanation: 'Divergence spike in the last 24 hours. ' + stats.today
+        + ' today vs 7-day average of ' + avg7.toFixed(1) + '. Investigate before continuing.',
+      cleanStreak: streak,
+      obsDays: obsDays
+    };
+  }
+
+  var pendingEmpty = (pendingWrites || 0) === 0;
+
+  if (obsDays >= 3 && streak >= 3 && pendingEmpty) {
+    return {
+      tier: 'green',
+      label: 'GREEN — ready for Phase 3E',
+      explanation: 'Ready for Phase 3E cutover — ' + streak + ' clean day' + (streak === 1 ? '' : 's')
+        + ', no pending writes.',
+      cleanStreak: streak,
+      obsDays: obsDays
+    };
+  }
+
+  if (obsDays < 3) {
+    return {
+      tier: 'yellow',
+      label: 'YELLOW — in progress',
+      explanation: 'Observation just started. Minimum 3 full clean days before cutover ('
+        + obsDays + ' day' + (obsDays === 1 ? '' : 's') + ' in).',
+      cleanStreak: streak,
+      obsDays: obsDays
+    };
+  }
+
+  var needed = Math.max(0, 3 - streak);
+  var tail = lastCleanDate
+    ? 'Last clean day: ' + _p3cFormatDateShort(lastCleanDate) + '. Current streak: ' + streak + ' day' + (streak === 1 ? '' : 's') + '.'
+    : 'No clean days yet in observation window.';
+  var note = !pendingEmpty ? ' Pending writes outstanding — resolve before cutover.' : '';
+  return {
+    tier: 'yellow',
+    label: 'YELLOW — in progress',
+    explanation: 'Need ' + needed + ' more clean day' + (needed === 1 ? '' : 's') + '. ' + tail + note,
+    cleanStreak: streak,
+    obsDays: obsDays
+  };
+}
+
+function _p3cFormatDateShort(isoKey) {
+  try {
+    var p = isoKey.split('-');
+    var d = new Date(+p[0], +p[1]-1, +p[2]);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch(e) { return isoKey; }
+}
+
+function renderPhase3cDashboard() {
+  var container = document.getElementById('p3c-dashboard');
+  if (!container) return;
+  if (!window.PentaClients || !window.PentaClients.getDivergences) {
+    container.innerHTML = '';
+    return;
+  }
+  var divs = window.PentaClients.getDivergences() || [];
+  var stats = _phase3cComputeStats(divs);
+
+  var pending = [];
+  try { pending = JSON.parse(localStorage.getItem('phase3d_pending_writes') || '[]') || []; } catch(e) {}
+  var stuck = pending.filter(function(p){ return (p && p.attempts >= 5); }).length;
+  var health = _phase3cComputeHealth(stats, pending.length, stuck);
+
+  var tierColor = health.tier === 'green' ? '#34d399' : health.tier === 'red' ? '#f87171' : '#fbbf24';
+  var tierShadow = health.tier === 'green' ? 'rgba(52,211,153,0.28)' : health.tier === 'red' ? 'rgba(248,113,113,0.3)' : 'rgba(251,191,36,0.3)';
+
+  var cardsHtml = ''
+    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">'
+    +   '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 8px;text-align:center">'
+    +     '<div style="font-size:20px;font-weight:700;color:#fff">' + stats.total + '</div>'
+    +     '<div style="font-size:10px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;margin-top:2px">Total</div>'
+    +   '</div>'
+    +   '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 8px;text-align:center">'
+    +     '<div style="font-size:20px;font-weight:700;color:#fff">' + stats.today + '</div>'
+    +     '<div style="font-size:10px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;margin-top:2px">Today</div>'
+    +   '</div>'
+    +   '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 8px;text-align:center">'
+    +     '<div style="font-size:20px;font-weight:700;color:#fff">' + stats.last7 + '</div>'
+    +     '<div style="font-size:10px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;margin-top:2px">Last 7 days</div>'
+    +   '</div>'
+    + '</div>';
+
+  var healthHtml = ''
+    + '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;margin-top:10px">'
+    +   '<div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-bottom:6px">Observation Health</div>'
+    +   '<div style="display:flex;align-items:center;gap:10px">'
+    +     '<span style="width:10px;height:10px;border-radius:50%;background:' + tierColor + ';box-shadow:0 0 0 3px ' + tierShadow + ';flex-shrink:0"></span>'
+    +     '<div style="font-size:13px;font-weight:700;color:' + tierColor + '">' + _p3cAdminEsc(health.label) + '</div>'
+    +   '</div>'
+    +   '<div style="font-size:12px;color:rgba(255,255,255,0.75);margin-top:6px;line-height:1.45">' + _p3cAdminEsc(health.explanation) + '</div>'
+    + '</div>';
+
+  var byFieldHtml = '';
+  if (stats.total === 0) {
+    byFieldHtml = '<div style="margin-top:14px;padding:16px;text-align:center;background:rgba(52,211,153,0.06);border:1px solid rgba(52,211,153,0.25);border-radius:10px;color:#34d399;font-size:13px;font-weight:600">No divergences detected. Clean sync.</div>';
+  } else {
+    var topFields = stats.byField.slice(0, 5);
+    var maxCount = topFields[0] ? topFields[0].count : 1;
+    byFieldHtml = '<div style="margin-top:14px">'
+      + '<div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-bottom:8px">By field (top 5)</div>'
+      + topFields.map(function(row){
+          var pct = Math.max(4, Math.round((row.count / maxCount) * 100));
+          return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:12px">'
+               +   '<div style="flex:0 0 96px;color:rgba(255,255,255,0.75);font-family:\'DM Mono\',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _p3cAdminEsc(row.field) + '</div>'
+               +   '<div style="flex:1;height:10px;background:rgba(255,255,255,0.05);border-radius:4px;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:#f87171;border-radius:4px"></div></div>'
+               +   '<div style="flex:0 0 28px;text-align:right;font-weight:600;color:#fff">' + row.count + '</div>'
+               + '</div>';
+        }).join('')
+      + '</div>';
+  }
+
+  var byDayMax = Math.max(1, stats.byDay.reduce(function(m,r){ return r.count > m ? r.count : m; }, 0));
+  var byDayHtml = '<div style="margin-top:14px">'
+    + '<div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-bottom:8px">By day (last 7 days)</div>'
+    + stats.byDay.map(function(row){
+        var pct = row.count > 0 ? Math.max(4, Math.round((row.count / byDayMax) * 100)) : 0;
+        var isObsStart = row.date === OBSERVATION_START;
+        var barColor = row.count === 0 ? 'rgba(255,255,255,0.12)' : '#f87171';
+        var barWidth = row.count === 0 ? '100%' : pct + '%';
+        return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;font-size:12px">'
+             +   '<div style="flex:0 0 72px;color:rgba(255,255,255,0.75);font-family:\'DM Mono\',monospace">' + _p3cAdminEsc(_p3cFormatDateShort(row.date)) + '</div>'
+             +   '<div style="flex:1;height:10px;background:rgba(255,255,255,0.05);border-radius:4px;overflow:hidden">'
+             +     (row.count === 0
+                   ? '<div style="width:100%;height:100%;background:rgba(255,255,255,0.08);border-radius:4px"></div>'
+                   : '<div style="width:' + barWidth + ';height:100%;background:' + barColor + ';border-radius:4px"></div>')
+             +   '</div>'
+             +   '<div style="flex:0 0 28px;text-align:right;font-weight:600;color:#fff">' + row.count + '</div>'
+             +   (isObsStart ? '<div style="flex:0 0 auto;font-size:10px;color:rgba(255,255,255,0.45);font-style:italic;white-space:nowrap">← obs start</div>' : '')
+             + '</div>';
+      }).join('')
+    + '</div>';
+
+  container.innerHTML = cardsHtml + healthHtml + byFieldHtml + byDayHtml;
+}
+
+// CSV export of the divergence log — copies to clipboard using the same
+// pattern as the Hours Report export (commit 5735ca6).
+function phase3cExportCsv() {
+  if (!window.PentaClients || !window.PentaClients.getDivergences) return;
+  var divs = window.PentaClients.getDivergences() || [];
+  var header = 'timestamp,type,external_id,field,local_value,supabase_value';
+  function csvEscape(v) {
+    if (v == null) return '';
+    var s = String(v);
+    if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+  var rows = divs.map(function(e){
+    return [
+      csvEscape(e.timestamp || ''),
+      csvEscape(e.type || ''),
+      csvEscape(e.external_id || ''),
+      csvEscape(e.field || ''),
+      csvEscape(e.local_value == null ? '' : e.local_value),
+      csvEscape(e.supabase_value == null ? '' : e.supabase_value)
+    ].join(',');
+  });
+  var csv = header + '\n' + rows.join('\n');
+  try {
+    navigator.clipboard.writeText(csv).then(function(){
+      if (typeof showToast === 'function') showToast('Divergence log copied as CSV (' + divs.length + ' rows)', 'success');
+      else alert('Copied ' + divs.length + ' rows to clipboard.');
+    }).catch(function(){
+      if (typeof showToast === 'function') showToast('Clipboard copy failed — see console', 'error');
+      console.log(csv);
+    });
+  } catch(e) {
+    console.log(csv);
+    alert('Clipboard unavailable. Full CSV logged to console.');
+  }
+}
+
+// Start/stop a 30s auto-refresh while Admin is open. Invoked from
+// openAdminScreen / closeAdminScreen.
+function _p3cDashStartAutoRefresh() {
+  _p3cDashStopAutoRefresh();
+  _p3cDashInterval = setInterval(function(){
+    try { renderPhase3cDashboard(); } catch(e){}
+  }, 30000);
+}
+function _p3cDashStopAutoRefresh() {
+  if (_p3cDashInterval) { clearInterval(_p3cDashInterval); _p3cDashInterval = null; }
+}
+
+// Public API — Claire / coach-Claire can surface the health tier later.
+try {
+  if (window.PentaClients) {
+    window.PentaClients.getObservationHealth = function() {
+      var divergences = [];
+      var pending = [];
+      try { divergences = JSON.parse(localStorage.getItem('phase3c_divergences') || '[]') || []; } catch(e) {}
+      try { pending     = JSON.parse(localStorage.getItem('phase3d_pending_writes') || '[]') || []; } catch(e) {}
+      var stats = _phase3cComputeStats(divergences);
+      var stuck = pending.filter(function(p){ return p && p.attempts >= 5; }).length;
+      return _phase3cComputeHealth(stats, pending.length, stuck);
+    };
+  }
+} catch(e) {}
 
 // ═══════════════════════════════════════════════════════════════════════
 // PHASE 3D — Admin UI helpers (Write Status section + pending writes modal)
@@ -25702,9 +26022,13 @@ function _p3dPage(dir) {
       </div>
     </div>
 
-    <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false. -->
+    <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.
+         Rebuilt as a dashboard: summary cards + observation health + by-field bars
+         + by-day trend + action buttons. Container id drives renderPhase3cDashboard. -->
     <div class="admin-sec" data-permission="admin_phase3c" data-permission-role="manager">
       <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Client Data Sync (Phase 3C)</div>
+
+      <!-- Source row (reused from prior build so updateP3CStatus / phase3cRefresh still work) -->
       <div class="admin-row" style="align-items:flex-start">
         <div class="admin-row-label">
           <div style="display:flex;align-items:center;gap:10px">
@@ -25716,11 +26040,17 @@ function _p3dPage(dir) {
           </div>
         </div>
       </div>
+
       <div class="admin-row" style="gap:8px">
         <button id="p3c-refresh-btn" onclick="phase3cRefresh()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">Refresh from Supabase</button>
       </div>
-      <div class="admin-row" style="gap:8px">
-        <button onclick="phase3cViewDivergences()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">View divergences</button>
+
+      <!-- Dashboard container — populated by renderPhase3cDashboard() -->
+      <div id="p3c-dashboard" style="padding:0 14px 14px"></div>
+
+      <div class="admin-row" style="gap:8px;padding-top:8px">
+        <button onclick="phase3cViewDivergences()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">View raw log</button>
+        <button onclick="phase3cExportCsv()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">Export CSV</button>
       </div>
       <div class="admin-row" style="gap:8px">
         <button onclick="phase3cClearDivergences()" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.34);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 12px;border-radius:10px;cursor:pointer">Clear divergence log</button>
