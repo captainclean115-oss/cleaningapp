@@ -3268,120 +3268,158 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 }
 .penta-learn-review-link:active { opacity: 0.7; }
 
-/* ═══ BANNER SYSTEM v2 — motivational banner + recognition card ═══ */
+/* ═══ BANNER SYSTEM v2 — motivational banner + recognition card ═══
+   Full-gradient treatment (2026-04-24): each banner type fills the card
+   with its color identity and uses white text, bigger body, soft colored
+   lift shadow. Replaces the earlier thin-stripe-on-dark treatment. */
 .penta-motivational-banner {
-  margin: 16px 16px 12px 16px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+  margin: 16px 14px 14px 14px;
+  padding: 18px 20px 16px 20px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #10b981 0%, #14b8a6 100%);
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.25), 0 2px 4px rgba(16, 185, 129, 0.15);
   position: relative;
   overflow: hidden;
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
-  border-left: 4px solid #10b981;
+  border: none;
 }
-.penta-motivational-banner__body {
-  font-size: 14px; color: var(--text);
-  line-height: 1.45; margin: 0;
+.penta-motivational-banner__label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.85);
+  margin: 0 0 10px 0;
+  display: flex; align-items: center; gap: 6px;
 }
+.penta-motivational-banner__body,
 .penta-motivational-banner__sub {
-  font-size: 12px; color: var(--muted);
-  margin-top: 8px; font-style: italic;
-  display: none; line-height: 1.4;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 500;
+  color: #fff;
+  margin: 0;
 }
-.penta-motivational-banner--show-sub .penta-motivational-banner__sub { display: block; }
+.penta-motivational-banner__sub { display: none; }
+.penta-motivational-banner--show-sub .penta-motivational-banner__body { display: none; }
+.penta-motivational-banner--show-sub .penta-motivational-banner__sub  { display: block; }
 .penta-motivational-banner__hint {
   font-family: 'DM Mono', monospace;
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--muted);
-  margin-top: 6px; opacity: 0.7;
+  color: rgba(255, 255, 255, 0.65);
+  margin-top: 10px;
 }
 
 .penta-recognition {
-  margin: 20px 16px 24px 16px;
-  border-radius: 16px;
+  margin: 16px 14px 24px 14px;
+  border-radius: 18px;
   overflow: hidden;
   background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+  border: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
-/* Birthday — warm pink/amber photo spotlight */
-.penta-recognition--birthday {
-  background: linear-gradient(135deg, #fdf2f8 0%, #fef3c7 100%);
-  border: 1px solid rgba(236, 72, 153, 0.3);
-}
-.penta-birthday-card { padding: 24px 20px 20px 20px; text-align: center; }
-.penta-birthday-card__photo-wrap { display: inline-block; margin-bottom: 12px; }
-.penta-birthday-card__photo,
-.penta-birthday-card__photo-fallback {
-  width: 80px; height: 80px;
-  border-radius: 50%;
-  object-fit: cover;
-  border: 3px solid #ec4899;
-  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.25);
-  display: block;
-}
-.penta-birthday-card__photo-fallback {
-  background: #ec4899; color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'DM Sans', sans-serif;
-  font-size: 32px; font-weight: 700;
-}
-.penta-birthday-card__greeting {
-  font-size: 14px; color: #78350f;
-  margin: 0; font-style: italic;
-}
-.penta-birthday-card__name {
-  font-size: 26px; font-weight: 700;
-  color: #18181B;
-  margin: 2px 0 8px 0; line-height: 1.1;
-  letter-spacing: -0.01em;
-}
-.penta-birthday-card__subtext {
-  font-size: 13px; color: #555;
-  margin: 0; line-height: 1.4;
-}
-
-/* Holiday — warm amber, quiet */
-.penta-recognition--holiday {
-  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-}
-.penta-holiday-card { padding: 16px 20px; text-align: center; }
-.penta-holiday-card__name {
-  font-size: 16px; font-weight: 700;
-  color: #18181B;
-  margin: 0 0 4px 0;
-}
-.penta-holiday-card__body {
-  font-size: 14px; color: #555;
-  margin: 0; line-height: 1.4;
-}
-
-/* Manager message — Claire-purple left accent */
+/* Manager message — Claire purple gradient */
 .penta-recognition--manager {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid #5E5CE6;
+  background: linear-gradient(135deg, #5E5CE6 0%, #7B68EE 100%);
+  box-shadow: 0 8px 24px rgba(94, 92, 230, 0.3);
 }
-.penta-manager-card { padding: 14px 16px 14px 18px; }
+.penta-manager-card { padding: 18px 20px 16px 20px; }
 .penta-manager-card__label {
   font-family: 'DM Mono', monospace;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  margin: 0 0 6px 0;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 10px 0;
+  display: flex; align-items: center; gap: 6px;
 }
 .penta-manager-card__body {
-  font-size: 14px; color: var(--text);
-  margin: 0; line-height: 1.4;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 500;
+  color: #fff;
+  margin: 0;
+}
+
+/* Birthday — pink/amber photo spotlight */
+.penta-recognition--birthday {
+  background: linear-gradient(135deg, #ec4899 0%, #f59e0b 100%);
+  box-shadow: 0 8px 24px rgba(236, 72, 153, 0.3);
+}
+.penta-birthday-card { padding: 28px 20px 24px 20px; text-align: center; }
+.penta-birthday-card__photo-wrap { display: inline-block; margin-bottom: 14px; }
+.penta-birthday-card__photo,
+.penta-birthday-card__photo-fallback {
+  width: 100px; height: 100px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  display: block;
+}
+.penta-birthday-card__photo-fallback {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 40px;
+  font-weight: 600;
+}
+.penta-birthday-card__greeting {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+  margin: 0;
+  font-style: italic;
+}
+.penta-birthday-card__name {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 26px;
+  font-weight: 600;
+  color: #fff;
+  margin: 2px 0 10px 0;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+.penta-birthday-card__subtext {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Holiday — amber/orange with flag label */
+.penta-recognition--holiday {
+  background: linear-gradient(135deg, #f59e0b 0%, #fb923c 100%);
+  box-shadow: 0 8px 24px rgba(245, 158, 11, 0.3);
+}
+.penta-holiday-card { padding: 18px 20px 16px 20px; }
+.penta-holiday-card__label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 10px 0;
+  display: flex; align-items: center; gap: 6px;
+}
+.penta-holiday-card__name {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0 0 6px 0;
+  letter-spacing: -0.01em;
+}
+.penta-holiday-card__body {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.92);
+  margin: 0;
+  line-height: 1.4;
 }
 
 /* Admin composer */
@@ -8023,14 +8061,35 @@ function renderMotivationalBanner() {
   if (!b) { el.style.display = 'none'; return; }
   el.style.display = 'block';
   el.classList.remove('penta-motivational-banner--show-sub');
+
+  // Name the secondary language for the "TRANSLATION · X" label on tap.
+  // Mirrors the primary/secondary logic in PentaBanners.getMotivationalBanner.
+  var secondaryLangName = 'Translation';
+  try {
+    var valid = ['en','es','pt','ko'];
+    var stored = localStorage.getItem('penta_motivational_lang_pref');
+    var appLang = (typeof appSelectedLang !== 'undefined' && appSelectedLang)
+      ? appSelectedLang
+      : (sessionStorage.getItem('cc_emp_lang') || 'en');
+    var primary = valid.indexOf(stored) >= 0 ? stored : (valid.indexOf(appLang) >= 0 ? appLang : 'en');
+    var secondary = primary === 'en' ? 'es' : 'en';
+    if (typeof _pentaLangName === 'function') secondaryLangName = _pentaLangName(secondary);
+  } catch(e) {}
+
+  var defaultLabel = '✨ Phrase of the day';
+  var translatedLabel = 'TRANSLATION · ' + secondaryLangName;
+
   el.innerHTML = ''
+    + '<p class="penta-motivational-banner__label">' + escapeHtml(defaultLabel) + '</p>'
     + '<p class="penta-motivational-banner__body">' + escapeHtml(b.body) + '</p>'
     + '<p class="penta-motivational-banner__sub">' + escapeHtml(b.subBody) + '</p>'
     + '<p class="penta-motivational-banner__hint">Tap to translate</p>';
   el.onclick = function(){
     var shown = el.classList.toggle('penta-motivational-banner--show-sub');
+    var lbl = el.querySelector('.penta-motivational-banner__label');
     var hint = el.querySelector('.penta-motivational-banner__hint');
-    if (hint) hint.textContent = shown ? 'Tap to hide' : 'Tap to translate';
+    if (lbl)  lbl.textContent  = shown ? translatedLabel : defaultLabel;
+    if (hint) hint.textContent = shown ? 'Tap to go back' : 'Tap to translate';
   };
 }
 
@@ -8050,14 +8109,30 @@ function renderRecognitionCard(employeeId) {
     el.innerHTML = ''
       + '<div class="penta-birthday-card">'
       +   '<div class="penta-birthday-card__photo-wrap">' + photo + '</div>'
-      +   '<p class="penta-birthday-card__greeting">Happy Birthday,</p>'
-      +   '<p class="penta-birthday-card__name">' + escapeHtml(r.person.name) + '</p>'
-      +   '<p class="penta-birthday-card__subtext">Wishing you an amazing day — from the whole team 🎂</p>'
+      +   '<p class="penta-birthday-card__greeting">Happy birthday,</p>'
+      +   '<p class="penta-birthday-card__name">' + escapeHtml(r.person.name) + ' 🎉</p>'
+      +   '<p class="penta-birthday-card__subtext">Wishing you an amazing day — from the whole team</p>'
       + '</div>';
   } else if (r.type === 'holiday') {
     el.classList.add('penta-recognition--holiday');
+    // Flag emoji per viewer's culture tag. Look up the currently-viewing
+    // employee's cultureTag since the recognition result doesn't carry it.
+    var flagMap = { us: '🇺🇸', mx: '🇲🇽', br: '🇧🇷', kr: '🇰🇷', generic: '' };
+    var culture = 'generic';
+    try {
+      var emps = (typeof getStaffList === 'function')
+        ? getStaffList()
+        : JSON.parse(localStorage.getItem('emp_roster') || '[]');
+      var emp = (emps || []).find(function(e){
+        return e && (e.id === employeeId || e.name === employeeId);
+      });
+      if (emp && emp.cultureTag) culture = emp.cultureTag;
+    } catch(e) {}
+    var flag = flagMap[culture] || '';
+    var labelTxt = (flag ? flag + ' ' : '') + 'Holiday';
     el.innerHTML = ''
       + '<div class="penta-holiday-card">'
+      +   '<p class="penta-holiday-card__label">' + escapeHtml(labelTxt) + '</p>'
       +   '<p class="penta-holiday-card__name">' + escapeHtml(r.name) + '</p>'
       +   '<p class="penta-holiday-card__body">' + escapeHtml(r.body) + '</p>'
       + '</div>';
@@ -8065,7 +8140,7 @@ function renderRecognitionCard(employeeId) {
     el.classList.add('penta-recognition--manager');
     el.innerHTML = ''
       + '<div class="penta-manager-card">'
-      +   '<p class="penta-manager-card__label">A message from ' + escapeHtml(r.authorLabel) + '</p>'
+      +   '<p class="penta-manager-card__label">💬 A message from ' + escapeHtml(r.authorLabel) + '</p>'
       +   '<p class="penta-manager-card__body">' + escapeHtml(r.body) + '</p>'
       + '</div>';
   }
