@@ -4861,6 +4861,12 @@ window.addEventListener('DOMContentLoaded', function() {
   //   Supabase session present → manager app.
   //   ?emp=1 in URL            → employee PIN pad.
   //   otherwise                → manager login form.
+  // NOTE: the head flash-suppress <style> is removed just above, so each
+  // branch MUST explicitly set display on both auth screens. Don't rely on
+  // the suppress persisting into this handler.
+  var _pentaLogin = document.getElementById('penta-login-screen');
+  var _appPin     = document.getElementById('app-pin-screen');
+
   var _hasSbSession = false;
   try {
     var _sbRaw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
@@ -4871,6 +4877,8 @@ window.addEventListener('DOMContentLoaded', function() {
   } catch(e) {}
 
   if (_hasSbSession) {
+    if (_pentaLogin) _pentaLogin.style.display = 'none';
+    if (_appPin)     _appPin.style.display     = 'none';
     appUnlockManager();
     return;
   }
@@ -4881,6 +4889,8 @@ window.addEventListener('DOMContentLoaded', function() {
   if (_isEmp) {
     // Employee PIN path. Restore prior employee within this session if the
     // PIN was already entered and a matching roster entry is present.
+    if (_pentaLogin) _pentaLogin.style.display = 'none';
+    if (_appPin)     _appPin.style.display     = 'flex';
     var _empId = sessionStorage.getItem('cc_emp_id');
     var _empLang = sessionStorage.getItem('cc_emp_lang') || 'en';
     appSelectedLang = _empLang;
@@ -4891,7 +4901,6 @@ window.addEventListener('DOMContentLoaded', function() {
         if (emp) { appUnlockEmployee(emp); return; }
       } catch(e) {}
     }
-    // No active employee — keep PIN pad visible.
     try { buildFilters(); } catch(e) {}
     try { applyFilters(); } catch(e) {}
     try { updateTaskBadge(); } catch(e) {}
@@ -4903,6 +4912,8 @@ window.addEventListener('DOMContentLoaded', function() {
   }
 
   // No session, no ?emp=1 → manager login.
+  if (_pentaLogin) _pentaLogin.style.display = 'flex';
+  if (_appPin)     _appPin.style.display     = 'none';
   try { buildFilters(); } catch(e) {}
   try { applyFilters(); } catch(e) {}
   try { updateTaskBadge(); } catch(e) {}
@@ -4910,7 +4921,6 @@ window.addEventListener('DOMContentLoaded', function() {
   const nav = document.querySelector('.bottom-nav');
   if (tb) tb.style.display = 'none';
   if (nav) nav.style.display = 'none';
-  // Wire login form handlers (form is rendered in HTML).
   pentaWireLoginForm();
 });
 
