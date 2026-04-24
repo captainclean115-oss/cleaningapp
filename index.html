@@ -3086,6 +3086,129 @@ body.in-portal .bottom-nav { display: none !important; }
   text-align: center; padding: 14px 10px; line-height: 1.6;
 }
 
+/* ═══ VIEW AS EMPLOYEE — preview chip + picker overlay + staff eye button ═══ */
+.penta-preview-chip {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 10000;
+  background: #fde68a;
+  border-bottom: 1px solid #f59e0b;
+  padding: 8px 14px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.18);
+}
+.penta-preview-chip__label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #92400e;
+  background: rgba(146, 64, 14, 0.12);
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+.penta-preview-chip__body { color: #78350f; flex: 1; }
+.penta-preview-chip__body strong { color: #451a03; font-weight: 600; }
+.penta-preview-chip__exit {
+  background: #92400e;
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+.penta-preview-chip__exit:active { transform: scale(0.96); }
+/* Push employee portal down while chip is present so nothing hides behind it */
+body:has(#pentaPreviewChip) #portal-screen,
+body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-area-inset-top, 0px)); }
+
+.penta-emp-picker-overlay {
+  position: fixed; inset: 0; z-index: 11000;
+  background: rgba(15, 15, 20, 0.72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  font-family: 'DM Sans', sans-serif;
+}
+.penta-emp-picker__sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  width: 100%;
+  max-width: 360px;
+  max-height: 70vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  color: var(--text);
+}
+.penta-emp-picker__title {
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  margin: 0;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.penta-emp-picker__list { overflow-y: auto; flex: 1; }
+.penta-emp-picker__row {
+  display: flex; width: 100%;
+  align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  background: none; border: none;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.penta-emp-picker__row:active { background: rgba(108,143,255,0.14); }
+.penta-emp-picker__row:last-child { border-bottom: none; }
+.penta-emp-picker__name { font-weight: 500; }
+.penta-emp-picker__team {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.penta-emp-picker__cancel {
+  padding: 14px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.penta-staff-preview-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 20px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.penta-staff-preview-btn:active { background: rgba(108,143,255,0.18); }
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -4883,8 +5006,37 @@ window.addEventListener('DOMContentLoaded', function() {
     if (_pentaLogin) _pentaLogin.style.display = 'none';
     if (_appPin)     _appPin.style.display     = 'none';
     appUnlockManager();
+
+    // If the manager was in "View as employee" preview before a refresh,
+    // restore it after the manager app is initialized. Requires a live
+    // Supabase session (already confirmed above). If the employee record
+    // is missing/inactive, clear the flag and stay in manager view.
+    try {
+      var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
+      if (_previewId) {
+        var _roster = [];
+        try { _roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
+        var _emp = _roster.find(function(e){
+          return (e.id === _previewId || e.name === _previewId) && e.status === 'active';
+        });
+        if (_emp) {
+          setTimeout(function(){
+            try { pentaEnterEmployeePreview(_emp); } catch(e) { console.error('[preview restore] failed', e); }
+          }, 50);
+        } else {
+          sessionStorage.removeItem('penta_preview_as_employee_id');
+          sessionStorage.removeItem('penta_preview_return_from_admin');
+        }
+      }
+    } catch(e) {}
     return;
   }
+
+  // Manager session missing — any stale preview flag is orphaned; clear it.
+  try {
+    sessionStorage.removeItem('penta_preview_as_employee_id');
+    sessionStorage.removeItem('penta_preview_return_from_admin');
+  } catch(e) {}
 
   var _urlParams = new URLSearchParams(window.location.search);
   var _isEmp = _urlParams.get('emp') === '1';
@@ -16281,6 +16433,142 @@ function appUnlockEmployee(emp) {
   if (typeof showPortalTab === 'function') showPortalTab('home');
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// VIEW AS EMPLOYEE — manager-only preview of the employee portal
+// ═══════════════════════════════════════════════════════════════════════
+// Tom uses this to verify the employee view (Schedule / Hours / Chat / Forms
+// / Content / Rewards, plus future banners) without signing out or using a
+// second device. Two entry points: the Admin button + the 👁️ on a Staff
+// detail card. Reuses appUnlockEmployee for the actual screen swap; wraps
+// it with a persistent amber chip so the manager can never forget they're
+// in preview mode. Session-scoped; cleared on Exit. Sprint 4 will replace
+// this with real employee auth — preview remains as a demo/testing tool.
+
+function pentaOpenEmpPreviewPicker() {
+  var existing = document.getElementById('pentaEmpPreviewPicker');
+  if (existing) existing.remove();
+
+  var roster = [];
+  try { roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
+  var active = roster.filter(function(e){ return e && e.status === 'active'; });
+  active.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
+
+  if (!active.length) {
+    alert('No active employees to preview.');
+    return;
+  }
+
+  var overlay = document.createElement('div');
+  overlay.id = 'pentaEmpPreviewPicker';
+  overlay.className = 'penta-emp-picker-overlay';
+  var rowsHtml = active.map(function(e){
+    var nm = e.name || e.firstName || 'Employee';
+    var team = e.team || '';
+    return ''
+      + '<button type="button" class="penta-emp-picker__row" data-emp-id="' + escapeHtml(e.id || e.name) + '">'
+      +   '<span class="penta-emp-picker__name">' + escapeHtml(nm) + '</span>'
+      +   (team ? '<span class="penta-emp-picker__team">' + escapeHtml(team) + '</span>' : '')
+      + '</button>';
+  }).join('');
+
+  overlay.innerHTML = ''
+    + '<div class="penta-emp-picker__sheet">'
+    +   '<p class="penta-emp-picker__title">Preview as which employee?</p>'
+    +   '<div class="penta-emp-picker__list">' + rowsHtml + '</div>'
+    +   '<button type="button" class="penta-emp-picker__cancel" onclick="document.getElementById(\'pentaEmpPreviewPicker\').remove()">Cancel</button>'
+    + '</div>';
+
+  document.body.appendChild(overlay);
+
+  overlay.querySelectorAll('.penta-emp-picker__row').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var id = btn.getAttribute('data-emp-id');
+      var emp = active.find(function(e){ return (e.id || e.name) === id; });
+      overlay.remove();
+      if (emp) pentaEnterEmployeePreview(emp);
+    });
+  });
+}
+
+function pentaRenderPreviewChip(emp) {
+  var existing = document.getElementById('pentaPreviewChip');
+  if (existing) existing.remove();
+  var bar = document.createElement('div');
+  bar.id = 'pentaPreviewChip';
+  bar.className = 'penta-preview-chip';
+  var name = (emp && (emp.name || emp.firstName)) || 'employee';
+  bar.innerHTML = ''
+    + '<span class="penta-preview-chip__label">PREVIEW</span>'
+    + '<span class="penta-preview-chip__body">viewing as <strong>' + escapeHtml(name) + '</strong></span>'
+    + '<button type="button" class="penta-preview-chip__exit" onclick="pentaExitEmployeePreview()">Exit preview</button>';
+  document.body.appendChild(bar);
+}
+
+function pentaEnterEmployeePreview(emp) {
+  if (!emp) return;
+
+  // Capture where the manager came from so exit can return cleanly.
+  try {
+    var adminActive = !!(document.getElementById('admin-view') && document.getElementById('admin-view').classList.contains('active'));
+    sessionStorage.setItem('penta_preview_return_from_admin', adminActive ? '1' : '');
+  } catch(e) {}
+
+  // Mark preview mode in session so a refresh can restore state.
+  sessionStorage.setItem('penta_preview_as_employee_id', emp.id || emp.name);
+
+  // Close any Admin overlay / staff modal that might be open.
+  try { if (typeof closeAdminScreen === 'function') closeAdminScreen(); } catch(e) {}
+  try { if (typeof closeEditStaff === 'function') closeEditStaff(); } catch(e) {}
+  try {
+    var staffModal = document.getElementById('staff-modal');
+    if (staffModal) staffModal.style.display = 'none';
+  } catch(e) {}
+
+  // Inject preview chip first so it's visible immediately.
+  pentaRenderPreviewChip(emp);
+
+  try { appUnlockEmployee(emp); }
+  catch(e) {
+    console.error('[preview] appUnlockEmployee failed', e);
+    pentaExitEmployeePreview();
+  }
+}
+
+function pentaExitEmployeePreview() {
+  var fromAdmin = sessionStorage.getItem('penta_preview_return_from_admin') === '1';
+  sessionStorage.removeItem('penta_preview_as_employee_id');
+  sessionStorage.removeItem('penta_preview_return_from_admin');
+
+  var chip = document.getElementById('pentaPreviewChip');
+  if (chip) chip.remove();
+
+  try { appPinRole = 'manager'; } catch(e) {}
+  try { currentEmployee = null; } catch(e) {}
+
+  try {
+    var portal = document.getElementById('portal-screen');
+    if (portal) { portal.style.display = 'none'; portal.classList.remove('active'); }
+    var staffPanel = document.getElementById('staff-panel');
+    if (staffPanel) { staffPanel.classList.remove('active'); staffPanel.style.display = ''; }
+    document.body.classList.remove('in-portal');
+  } catch(e) {}
+
+  try {
+    var tb = document.querySelector('.topbar'); if (tb) tb.style.display = '';
+    var nav = document.querySelector('.bottom-nav'); if (nav) nav.style.display = '';
+  } catch(e) {}
+
+  try {
+    if (fromAdmin && typeof openAdminScreen === 'function') {
+      openAdminScreen();
+    } else if (typeof showTab === 'function') {
+      showTab(sessionStorage.getItem('cc_tab') || 'home');
+    }
+  } catch(e) {
+    console.error('[preview] exit nav failed', e);
+  }
+}
+
 let appSelectedLang = 'en'; // track PIN screen language selection
 
 function appSetLang(lang) {
@@ -16691,6 +16979,7 @@ function renderStaffView() {
       </div>
       <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
         <button onclick="openContentViewAsEmployee('${emp.id||emp.name}', '${(emp.name||'').replace(/'/g,'&#39;')}')" style="background:linear-gradient(135deg,#6c8fff,#a78bfa);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">📸 Share</button>
+        ${(emp.status === 'active' && (typeof isPermitted !== 'function' || isPermitted('manager','preview_as_employee'))) ? `<button class="penta-staff-preview-btn" title="Preview as this employee" onclick="pentaEnterEmployeePreview(getStaffList()[${idx}])">👁️ Preview</button>` : ''}
         <button onclick="showStaffTab('edit')" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">✏ Edit</button>
       </div>
     </div>
@@ -22794,7 +23083,8 @@ var DEFAULT_PERMISSIONS = {
     ratings_icon: true,
     admin_phase3c: true,
     admin_phase3d: true,
-    admin_hours_report: true
+    admin_hours_report: true,
+    preview_as_employee: true
   }
 };
 function getPermissions() {
@@ -22846,7 +23136,8 @@ var ADMIN_MANAGER_ROWS = [
   ['school_icon',    'School Icon'],
   ['crm_icon',       'CRM Icon'],
   ['new_client_icon','New Client Icon'],
-  ['ratings_icon',   'Ratings Icon']
+  ['ratings_icon',   'Ratings Icon'],
+  ['preview_as_employee', 'Preview As Employee']
 ];
 function openAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -25016,7 +25307,15 @@ function _p3dPage(dir) {
       </div>
     </div>
 
-    <div style="padding:16px;border-top:1px solid var(--border);margin-top:20px">
+    <div data-permission="preview_as_employee" data-permission-role="manager" style="padding:16px;border-top:1px solid var(--border);margin-top:20px">
+      <button onclick="pentaOpenEmpPreviewPicker()"
+        style="width:100%;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
+        👁️ Preview as employee
+      </button>
+      <div style="margin-top:8px;text-align:center;font-size:11px;color:var(--muted)">Testing / demo tool · no sign-out required</div>
+    </div>
+
+    <div style="padding:16px;border-top:1px solid var(--border);margin-top:4px">
       <button onclick="pentaSignOut()"
         style="width:100%;padding:12px;background:transparent;border:1px solid rgba(220,38,38,0.4);border-radius:10px;color:#f87171;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
         Sign out
