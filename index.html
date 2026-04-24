@@ -4646,6 +4646,7 @@ function render() {
           ${c.ph ? `<a class="action-btn btn-call" href="glip://r/call?number=${toE164(c.ph)}" onclick="event.stopPropagation()">📞 Call</a>` : ''}
           ${c.ph ? `<button class="action-btn btn-sms" onclick="event.stopPropagation();openClientMessages('${c.id}','${c.ph}','${c.fn} ${c.ln}')">✉ SMS</button>` : ''}
           <button class="action-btn btn-msg" onclick="event.stopPropagation();openDrawer(event,'${c.id}')">✦ Draft msg</button>
+          <button class="action-btn" style="background:var(--surface2);color:var(--muted);border:1px solid var(--muted)" onclick="event.stopPropagation();openClientActivityLog('${c.id}')">📋 Activity</button>
           <button class="action-btn" style="background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
         </div>
         ${c.bal > 0 ? `<div onclick="event.stopPropagation()" style="margin-top:8px">
@@ -13739,6 +13740,97 @@ function applyClientEdits() {
       Object.assign(c, edits);
     }
   });
+}
+
+// Client Activity Log viewer. Read-only sheet that filters the two activity
+// stores (cleanco_activity_log + cleanco_pending) by clientId and renders
+// them newest-first. De-duped on ts+action because logPendingUpdate writes
+// to both stores.
+function openClientActivityLog(clientId) {
+  var c = PentaClients.getClient(clientId);
+  if (!c) {
+    if (typeof showToast === 'function') showToast('Client not found', 'error');
+    else alert('Client not found');
+    return;
+  }
+
+  var log = [];
+  try {
+    var perm = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
+    var pend = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
+    var seen = {};
+    perm.forEach(function(e){
+      if (e && e.clientId === clientId) {
+        var k = (e.ts || 0) + '|' + (e.action || '');
+        if (!seen[k]) { seen[k] = true; log.push(e); }
+      }
+    });
+    pend.forEach(function(e){
+      if (e && e.clientId === clientId) {
+        var k = (e.ts || 0) + '|' + (e.action || '');
+        if (!seen[k]) { seen[k] = true; log.push(e); }
+      }
+    });
+  } catch (err) {
+    console.error('[ClientActivityLog] read failed', err);
+  }
+
+  log.sort(function(a, b){ return (b.ts || 0) - (a.ts || 0); });
+
+  var old = document.getElementById('client-activity-overlay');
+  if (old) old.remove();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'client-activity-overlay';
+  overlay.style.cssText = "position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end;font-family:'DM Sans',sans-serif";
+
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);color:var(--text)';
+
+  var nameStr = ((c.fn || '') + ' ' + (c.ln || '')).trim() || 'Client';
+
+  var headerHtml = ''
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    +   '<div>'
+    +     '<div style="font-size:17px;font-weight:600">' + nameStr.replace(/</g, '&lt;') + '</div>'
+    +     '<div style="font-size:13px;color:var(--muted)">Activity log · ' + log.length + (log.length === 1 ? ' entry' : ' entries') + '</div>'
+    +   '</div>'
+    +   '<button id="client-activity-close" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;line-height:1;cursor:pointer;font-family:inherit;padding:0">×</button>'
+    + '</div>';
+
+  var bodyHtml;
+  if (log.length === 0) {
+    bodyHtml = '<div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:14px">No activity recorded for this client yet.</div>';
+  } else {
+    bodyHtml = '<div style="padding:8px 20px 20px">';
+    log.forEach(function(entry) {
+      var timeStr = entry.time || '';
+      if (!timeStr && entry.ts) {
+        timeStr = new Date(entry.ts).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+      }
+      var actionStr  = (entry.action  || '').replace(/</g, '&lt;');
+      var detailsStr = (entry.details || '').replace(/</g, '&lt;');
+      var actorStr   = (entry.actor   || '').replace(/</g, '&lt;');
+
+      bodyHtml += ''
+        + '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;gap:12px">'
+        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + actionStr + '</div>'
+        +     '<div style="font-size:11px;color:var(--muted);white-space:nowrap">' + timeStr + '</div>'
+        +   '</div>'
+        +   (detailsStr ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + detailsStr + '</div>' : '')
+        +   (actorStr   ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr + '</div>' : '')
+        + '</div>';
+    });
+    bodyHtml += '</div>';
+  }
+
+  sheet.innerHTML = headerHtml + bodyHtml;
+  overlay.appendChild(sheet);
+  document.body.appendChild(overlay);
+
+  document.getElementById('client-activity-close').onclick = function(){ overlay.remove(); };
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
 }
 
 function openClientEdit(clientId) {
