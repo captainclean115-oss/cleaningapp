@@ -18098,15 +18098,21 @@ function updateLoginText() {
 function updatePortalText() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? t('goodMorning') : hour < 17 ? t('goodAfternoon') : t('goodEvening');
-  const firstName = (currentEmployee.name || 'Employee').split(' ')[0];
-  document.getElementById('portal-greeting').textContent = greeting + ', ' + firstName + '!';
-  document.getElementById('logout-text').textContent = t('logout');
+  const firstName = ((currentEmployee && currentEmployee.name) || 'Employee').split(' ')[0];
+  // Every element below is optional — the employee portal shell can render
+  // with any subset depending on which tabs are live (ptab-handbook was
+  // removed in a prior cleanup; this kept crashing updatePortalText until
+  // the "View as employee" preview flow surfaced it). Match the defensive
+  // pattern used for portal-share-text below instead of assuming presence.
+  var el;
+  el = document.getElementById('portal-greeting'); if (el) el.textContent = greeting + ', ' + firstName + '!';
+  el = document.getElementById('logout-text');     if (el) el.textContent = t('logout');
   var shareEl = document.getElementById('portal-share-text');
   if (shareEl) shareEl.textContent = currentLang === 'es' ? 'Compartir' : currentLang === 'pt' ? 'Partilhar' : currentLang === 'cv' ? 'Partilha' : 'Share';
-  document.getElementById('ptab-schedule').textContent = '📅 ' + (currentLang === 'en' ? 'Schedule' : currentLang === 'es' ? 'Horario' : currentLang === 'pt' ? 'Horário' : 'Orario');
-  document.getElementById('ptab-hours').textContent = '⏱ ' + (currentLang === 'en' ? 'Hours' : currentLang === 'es' ? 'Horas' : currentLang === 'pt' ? 'Horas' : 'Oras');
-  document.getElementById('ptab-forms').textContent = '📋 ' + (currentLang === 'en' ? 'Forms' : currentLang === 'es' ? 'Formularios' : currentLang === 'pt' ? 'Formulários' : 'Formularius');
-  document.getElementById('ptab-handbook').textContent = '📖 ' + (currentLang === 'en' ? 'Handbook' : currentLang === 'es' ? 'Manual' : currentLang === 'pt' ? 'Manual' : 'Manual');
+  el = document.getElementById('ptab-schedule'); if (el) el.textContent = '📅 ' + (currentLang === 'en' ? 'Schedule' : currentLang === 'es' ? 'Horario' : currentLang === 'pt' ? 'Horário' : 'Orario');
+  el = document.getElementById('ptab-hours');    if (el) el.textContent = '⏱ ' + (currentLang === 'en' ? 'Hours' : currentLang === 'es' ? 'Horas' : currentLang === 'pt' ? 'Horas' : 'Oras');
+  el = document.getElementById('ptab-forms');    if (el) el.textContent = '📋 ' + (currentLang === 'en' ? 'Forms' : currentLang === 'es' ? 'Formularios' : currentLang === 'pt' ? 'Formulários' : 'Formularius');
+  el = document.getElementById('ptab-handbook'); if (el) el.textContent = '📖 ' + (currentLang === 'en' ? 'Handbook' : currentLang === 'es' ? 'Manual' : currentLang === 'pt' ? 'Manual' : 'Manual');
 }
 
 // ─────────────────────────────────────────
