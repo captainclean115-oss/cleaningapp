@@ -4640,17 +4640,40 @@ window.PentaClients = (function() {
       console.error('[Phase3D] failed to save pending queue', e);
     }
   }
-  function _queueWrite(op, external_id, payload) {
+  // Format a Supabase / JS error into a single readable diagnostic string.
+  // Captures code + message + details when available. Special-cases the
+  // ZERO_ROWS synthetic throw we raise when .select() returns no affected
+  // rows (typically RLS blocking the write).
+  function _formatWriteError(err) {
+    if (!err) return '';
+    try {
+      if (err.code === 'ZERO_ROWS') {
+        var extra = err.details ? ' (' + err.details + ')' : '';
+        return 'ZERO_ROWS — RLS blocked or row not found' + extra;
+      }
+      var parts = [];
+      if (err.code) parts.push(String(err.code));
+      if (err.message) parts.push(String(err.message));
+      if (err.details && err.details !== err.message) parts.push(String(err.details));
+      if (err.hint) parts.push('hint: ' + String(err.hint));
+      if (parts.length) return parts.join(' · ');
+      return String(err);
+    } catch (e) {
+      try { return String(err); } catch (_) { return '(error not stringifiable)'; }
+    }
+  }
+  function _queueWrite(op, external_id, payload, err) {
     var q = _loadPending();
+    var nowIso = new Date().toISOString();
     q.push({
       id: _genRetryId(),
       op: op,
       external_id: external_id,
       payload: payload,
       attempts: 0,
-      first_queued_at: new Date().toISOString(),
-      last_attempt_at: null,
-      last_error: null
+      first_queued_at: nowIso,
+      last_attempt_at: err ? nowIso : null,
+      last_error: err ? _formatWriteError(err) : null
     });
     _savePending(q);
   }
@@ -4732,7 +4755,7 @@ window.PentaClients = (function() {
       console.error('[Phase3D] write failed (' + op + ' ' + external_id + ')', err);
       try { rollback(); } catch (e) { console.error('[Phase3D] rollback error', e); }
       _setLastWrite('failed');
-      _queueWrite(op, external_id, payload);
+      _queueWrite(op, external_id, payload, err);
       _p3dToast('Save failed for ' + (label || external_id) + ' — reverted. Will retry.', 'error');
       _triggerRerender(external_id);
     });
@@ -4772,7 +4795,7 @@ window.PentaClients = (function() {
           counts.failed++;
           entry.attempts = (entry.attempts || 0) + 1;
           entry.last_attempt_at = new Date().toISOString();
-          entry.last_error = (err && err.message) || String(err);
+          entry.last_error = _formatWriteError(err) || String(err);
           survivors.push(entry);
           _setLastWrite('failed');
         });
@@ -5446,6 +5469,7 @@ window.addEventListener('DOMContentLoaded', function() {
   if (fs) fs.remove();
   // One-time backfill of activity-log entries' clientId field (v1 schema add).
   try { _backfillActivityLogClientIds(); } catch(e) { console.error('[ActivityLog backfill] failed', e); }
+  try { _backfillPhase3dQueue(); } catch(e) { console.error('[Phase3D backfill] failed', e); }
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
     var routeBtn = document.getElementById('route-optimizer-btn');
@@ -6481,6 +6505,32 @@ function clearActivityLog() {
   if (!confirm('Clear the entire activity log?')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
+}
+
+// One-time backfill: scan the Phase 3D pending-writes queue and populate
+// placeholder strings for entries queued before the viewer upgrade captured
+// payload + lastError. Gated by phase3d_queue_backfilled_v1. Existing entries
+// with real data are not touched.
+function _backfillPhase3dQueue() {
+  var FLAG = 'phase3d_queue_backfilled_v1';
+  try { if (localStorage.getItem(FLAG) === '1') return; } catch(e) { return; }
+  try {
+    var raw = localStorage.getItem('phase3d_pending_writes');
+    if (!raw) { localStorage.setItem(FLAG, '1'); return; }
+    var q = JSON.parse(raw);
+    if (!Array.isArray(q)) { localStorage.setItem(FLAG, '1'); return; }
+    var touched = 0;
+    q.forEach(function(e){
+      if (!e) return;
+      if (e.payload == null) { e.payload = '(not captured — queued before viewer upgrade)'; touched++; }
+      if (e.last_error == null || e.last_error === '') { e.last_error = '(unknown — pre-upgrade entry)'; touched++; }
+    });
+    localStorage.setItem('phase3d_pending_writes', JSON.stringify(q));
+    localStorage.setItem(FLAG, '1');
+    console.log('[Phase3D backfill v1] placeholder fields added to ' + q.length + ' queue entries (' + touched + ' field writes).');
+  } catch(e) {
+    console.error('[Phase3D backfill v1] failed', e);
+  }
 }
 
 // One-time backfill: scan cleanco_activity_log + cleanco_pending for entries
@@ -25211,6 +25261,26 @@ function phase3dViewPending() {
   _renderP3DModalPage();
 }
 
+function phase3dCopyDiagnostics() {
+  var q = [];
+  try { q = JSON.parse(localStorage.getItem('phase3d_pending_writes') || '[]') || []; } catch(e) {}
+  var json;
+  try { json = JSON.stringify(q, null, 2); } catch(e) { json = '[]'; }
+  try {
+    navigator.clipboard.writeText(json).then(function(){
+      if (typeof showToast === 'function') showToast('Copied ✓ (' + q.length + ' entries)', 'success');
+      else alert('Copied ' + q.length + ' queue entries.');
+    }).catch(function(err){
+      console.error('[Phase3D] copy diagnostics failed', err);
+      if (typeof showToast === 'function') showToast('Clipboard copy failed — see console', 'error');
+      console.log(json);
+    });
+  } catch(e) {
+    console.log(json);
+    alert('Clipboard unavailable. Full queue logged to console.');
+  }
+}
+
 function phase3dCloseModal() {
   var modal = document.getElementById('p3d-pending-modal');
   if (!modal) return;
@@ -25254,12 +25324,24 @@ function _renderP3DModalPage() {
                  + '</div>';
         var idLine = '<div style="font-size:12px;color:rgba(255,255,255,0.78);font-family:\'DM Mono\',monospace">id: ' + _adminEsc(e.external_id) + '</div>';
         var attemptsLine = '<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-top:4px">attempts: <span style="color:#fff;font-weight:600">' + attempts + '</span>' + (isStuck ? ' (stopped at ' + 5 + ')' : '') + '</div>';
-        var errLine = '';
-        if (e.last_error) {
-          errLine = '<div style="margin-top:6px;font-size:11px;color:#f87171;background:rgba(248,113,113,0.08);padding:6px 8px;border-radius:6px;font-family:\'DM Mono\',monospace;word-break:break-all">' + _adminEsc(String(e.last_error)) + '</div>';
-        }
+        // Last error — always show the label so "(none captured)" is a
+        // signal that the viewer ran on an entry that predates capture.
+        var errTxt = e.last_error ? String(e.last_error) : '(none captured)';
+        var errLine = '<div style="margin-top:8px">'
+                    + '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:rgba(255,255,255,0.5);margin-bottom:3px">last error</div>'
+                    + '<div style="font-size:11px;color:' + (e.last_error ? '#fca5a5' : 'rgba(255,255,255,0.5)') + ';background:rgba(248,113,113,' + (e.last_error ? '0.08' : '0.02') + ');padding:6px 8px;border-radius:6px;font-family:\'DM Mono\',monospace;word-break:break-all;white-space:pre-wrap">' + _adminEsc(errTxt) + '</div>'
+                    + '</div>';
+        // Payload — pretty-printed JSON in a scrollable monospace block.
+        var payloadTxt;
+        if (e.payload == null) payloadTxt = '(none captured)';
+        else if (typeof e.payload === 'string') payloadTxt = e.payload;
+        else { try { payloadTxt = JSON.stringify(e.payload, null, 2); } catch(_) { payloadTxt = String(e.payload); } }
+        var payloadLine = '<div style="margin-top:8px">'
+                        + '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:rgba(255,255,255,0.5);margin-bottom:3px">payload</div>'
+                        + '<pre style="margin:0;font-size:11px;color:rgba(255,255,255,0.85);background:rgba(255,255,255,0.04);padding:8px 10px;border-radius:6px;font-family:\'DM Mono\',monospace;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word">' + _adminEsc(payloadTxt) + '</pre>'
+                        + '</div>';
         return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
-             + head + idLine + attemptsLine + errLine + '</div>';
+             + head + idLine + attemptsLine + errLine + payloadLine + '</div>';
       }).join('');
     }
   }
@@ -27232,6 +27314,7 @@ function _p3dPage(dir) {
         <div style="font-size:18px;font-weight:700;letter-spacing:-0.01em">Pending writes</div>
         <div style="font-size:12px;color:rgba(255,255,255,0.55);margin-top:2px"><span id="p3d-modal-count">0</span> entries &middot; most recent first</div>
       </div>
+      <button onclick="phase3dCopyDiagnostics()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:inherit;font-size:12px;font-weight:600;padding:7px 10px;border-radius:8px;cursor:pointer;white-space:nowrap">Copy diagnostics</button>
       <button onclick="phase3dCloseModal()" aria-label="Close" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;width:34px;height:34px;border-radius:50%;font-size:18px;line-height:1;cursor:pointer;font-family:inherit;padding:0">×</button>
     </div>
     <div id="p3d-modal-body" style="max-height:60vh;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>
