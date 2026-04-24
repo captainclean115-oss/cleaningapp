@@ -21987,16 +21987,9 @@ function renderEmployeeHome() {
   setBadge('emp-badge-chat',     _empUnreadChatCount());
   setBadge('emp-badge-forms',    _empPendingForms());
 
-  // Today's Jobs preview card below the grid.
-  var card = document.getElementById('employee-today-card');
-  var label = document.getElementById('employee-today-summary');
-  if (card && label) {
-    var n = _empTodayJobsCount();
-    label.textContent = n > 0
-      ? (n + ' job' + (n === 1 ? '' : 's') + ' today · tap to view')
-      : 'No jobs scheduled today';
-    card.style.display = 'flex';
-  }
+  // Today's Jobs preview card removed 2026-04-24 — Schedule icon above is the
+  // single entry point now. Report Low Supplies home shortcut removed same
+  // commit; supply-reporting continues on individual job cards.
 
   // Banner system v2 — top motivational + bottom recognition card.
   try { renderMotivationalBanner(); } catch(e) { console.error('[banner] motivational render failed', e); }
@@ -26126,14 +26119,6 @@ function _p3dPage(dir) {
         <div class="employee-label">Learn</div>
       </div>
     </div>
-    <div class="employee-today-card" id="employee-today-card" onclick="openEmployeeSchedule()" style="display:none">
-      <div>
-        <div class="employee-today-label">Today's Jobs</div>
-        <div class="employee-today-summary" id="employee-today-summary"></div>
-      </div>
-      <div class="employee-today-chev">›</div>
-    </div>
-    <button class="emp-sup-report-link" id="emp-sup-report-link" onclick="openEmpSupplies()">⚠ Report Low Supplies</button>
     <!-- Recognition card (bottom). Populated by renderRecognitionCard(). -->
     <div id="pentaRecognitionCard" class="penta-recognition" style="display:none"></div>
   </div>
