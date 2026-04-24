@@ -9,18 +9,37 @@
 <meta name="theme-color" content="#0a0a20">
 <title>My Clients</title>
 <script>
-// Suppress PIN-screen flash on pull-to-refresh: if user already unlocked this
-// session, hide the lock screen synchronously before it ever paints.
+// Synchronous auth-flash suppression: decide which auth screen (if any) to
+// show BEFORE any paint, so the user never glimpses the wrong one on reload.
+//   Supabase session present → hide both auth screens (manager app paints).
+//   ?emp=1 in URL            → hide login screen, show #app-pin-screen.
+//   otherwise                → hide #app-pin-screen, show login screen.
+// Topbar + bottom-nav are also hidden when no session so the login/PIN screens
+// occupy the viewport cleanly.
 (function(){
   try {
-    var s = sessionStorage.getItem('cc_unlocked');
-    var lo = sessionStorage.getItem('cc_logged_out');
-    if (s && !lo) {
-      var st = document.createElement('style');
-      st.id = 'pin-flash-suppress';
-      st.textContent = '#app-pin-screen{display:none!important}';
-      document.documentElement.appendChild(st);
+    var hasSession = false;
+    try {
+      var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+      if (raw) {
+        var p = JSON.parse(raw);
+        hasSession = !!(p && p.access_token);
+      }
+    } catch(e){}
+    var isEmp = false;
+    try { isEmp = new URLSearchParams(window.location.search).get('emp') === '1'; } catch(e){}
+    var css;
+    if (hasSession) {
+      css = '#penta-login-screen{display:none!important}#app-pin-screen{display:none!important}';
+    } else if (isEmp) {
+      css = '#penta-login-screen{display:none!important}.topbar{display:none!important}.bottom-nav{display:none!important}';
+    } else {
+      css = '#app-pin-screen{display:none!important}.topbar{display:none!important}.bottom-nav{display:none!important}';
     }
+    var st = document.createElement('style');
+    st.id = 'auth-flash-suppress';
+    st.textContent = css;
+    document.documentElement.appendChild(st);
   } catch(e){}
 })();
 </script>
@@ -3070,7 +3089,7 @@ body.in-portal .bottom-nav { display: none !important; }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- Penta Auth: Supabase JS SDK. SDK is loaded for use by the ?auth=1 path only; when ?auth=1 is NOT present, no client is created and no auth code runs. -->
+<!-- Supabase JS SDK. The PentaAuth IIFE near the bottom of the body creates the client and exposes signIn/signOut/resetPassword for the #penta-login-screen form. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body style="touch-action:manipulation">
@@ -3116,6 +3135,44 @@ body.in-portal .bottom-nav { display: none !important; }
     <button onclick="appGoApply()" id="app-apply-btn" style="background:none;border:none;color:#8b8fa8;font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer;text-decoration:underline;touch-action:manipulation">
       Interested in joining our team? Apply here
     </button>
+  </div>
+</div>
+
+<!-- ═══ MANAGER LOGIN SCREEN ═══ -->
+<div id="penta-login-screen" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);position:fixed;inset:0;z-index:9998;overflow-y:auto">
+  <div style="max-width:380px;width:100%;background:var(--surface);border-radius:20px;padding:32px;border:1px solid var(--border)">
+    <div style="text-align:center;margin-bottom:28px">
+      <div style="font-size:28px;font-weight:700;color:var(--text)">Penta</div>
+      <div style="font-size:14px;color:var(--muted);margin-top:4px">Sign in to continue</div>
+    </div>
+
+    <form id="penta-login-form" autocomplete="on">
+      <div style="margin-bottom:14px">
+        <label for="penta-login-email" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Email</label>
+        <input id="penta-login-email" type="email" name="email" autocomplete="email" required
+          style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
+      </div>
+
+      <div style="margin-bottom:20px">
+        <label for="penta-login-password" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Password</label>
+        <input id="penta-login-password" type="password" name="password" autocomplete="current-password" required
+          style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
+      </div>
+
+      <button type="submit" id="penta-login-submit"
+        style="width:100%;padding:13px;background:#5E5CE6;border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit">
+        Sign in
+      </button>
+
+      <div id="penta-login-error" style="display:none;margin-top:12px;padding:10px;background:rgba(220,38,38,0.12);border:1px solid rgba(220,38,38,0.35);border-radius:8px;color:#fca5a5;font-size:13px"></div>
+    </form>
+
+    <div style="margin-top:20px;text-align:center;display:flex;flex-direction:column;gap:10px">
+      <a href="#" id="penta-login-forgot-link" style="color:var(--muted);font-size:13px;text-decoration:none">Forgot password?</a>
+      <button onclick="appGoApply()" style="background:none;border:none;color:var(--muted);font-family:inherit;font-size:13px;cursor:pointer;text-decoration:underline">
+        Interested in joining our team? Apply here
+      </button>
+    </div>
   </div>
 </div>
 
@@ -4113,9 +4170,9 @@ window.PentaClients = (function() {
 
   function _runSupabaseFetch(onDone) {
     // onDone({ ok, reason?, rows? }) — called exactly once. Never throws.
-    // Gate changed in test-enablement patch: we now fire whenever a Supabase session
-    // is persisted in localStorage, not only when ?auth=1 is in the URL. This lets
-    // Phase 3C query Supabase from the main app after the user tapped "Enter app".
+    // Gate: fire whenever a Supabase session is persisted in localStorage.
+    // The boot loader only reaches here once the user has signed in via
+    // #penta-login-screen, so the session is guaranteed present on manager paths.
     if (!_hasSupabaseSession()) {
       onDone({ ok: false, reason: 'no_session' });
       return;
@@ -4756,8 +4813,8 @@ if (searchEl) ['input','keyup','change','paste','compositionend'].forEach(evt =>
 
 // All init deferred to DOMContentLoaded so full JS is parsed first
 window.addEventListener('DOMContentLoaded', function() {
-  // Remove the early flash-suppress style — JS now controls the pin screen
-  var fs = document.getElementById('pin-flash-suppress');
+  // Remove the early flash-suppress style — JS now controls screen visibility
+  var fs = document.getElementById('auth-flash-suppress');
   if (fs) fs.remove();
   // Hide route optimizer if not on schedule tab
   setTimeout(function() {
@@ -4800,29 +4857,52 @@ window.addEventListener('DOMContentLoaded', function() {
     if (changed) localStorage.setItem('emp_roster', JSON.stringify(existing));
   } catch(e) {}
 
-  // Restore session on pull-to-refresh, but not if user logged out
-  const session = sessionStorage.getItem('cc_unlocked');
-  const loggedOut = sessionStorage.getItem('cc_logged_out');
+  // Auth routing:
+  //   Supabase session present → manager app.
+  //   ?emp=1 in URL            → employee PIN pad.
+  //   otherwise                → manager login form.
+  var _hasSbSession = false;
+  try {
+    var _sbRaw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+    if (_sbRaw) {
+      var _sbParsed = JSON.parse(_sbRaw);
+      _hasSbSession = !!(_sbParsed && _sbParsed.access_token);
+    }
+  } catch(e) {}
 
-  if (session === 'manager' && !loggedOut) {
+  if (_hasSbSession) {
     appUnlockManager();
     return;
   }
-  if (session === 'employee' && !loggedOut) {
-    const pin = sessionStorage.getItem('cc_emp_pin');
-    const lang = sessionStorage.getItem('cc_emp_lang') || 'en';
-    appSelectedLang = lang;
-    try {
-      const roster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-      const emp = roster.find(e => String(e.pin) === String(pin) && e.status === 'active');
-      if (emp) { appUnlockEmployee(emp); return; }
-    } catch(e) {}
+
+  var _urlParams = new URLSearchParams(window.location.search);
+  var _isEmp = _urlParams.get('emp') === '1';
+
+  if (_isEmp) {
+    // Employee PIN path. Restore prior employee within this session if the
+    // PIN was already entered and a matching roster entry is present.
+    var _empId = sessionStorage.getItem('cc_emp_id');
+    var _empLang = sessionStorage.getItem('cc_emp_lang') || 'en';
+    appSelectedLang = _empLang;
+    if (_empId) {
+      try {
+        var roster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
+        var emp = roster.find(function(e){ return (e.id || e.name) === _empId && e.status === 'active'; });
+        if (emp) { appUnlockEmployee(emp); return; }
+      } catch(e) {}
+    }
+    // No active employee — keep PIN pad visible.
+    try { buildFilters(); } catch(e) {}
+    try { applyFilters(); } catch(e) {}
+    try { updateTaskBadge(); } catch(e) {}
+    const tb = document.querySelector('.topbar');
+    const nav = document.querySelector('.bottom-nav');
+    if (tb) tb.style.display = 'none';
+    if (nav) nav.style.display = 'none';
+    return;
   }
-  // No valid session — show PIN screen
-  sessionStorage.removeItem('cc_unlocked');
-  sessionStorage.removeItem('cc_emp_pin');
-  sessionStorage.removeItem('cc_emp_lang');
-  sessionStorage.removeItem('cc_logged_out');
+
+  // No session, no ?emp=1 → manager login.
   try { buildFilters(); } catch(e) {}
   try { applyFilters(); } catch(e) {}
   try { updateTaskBadge(); } catch(e) {}
@@ -4830,6 +4910,8 @@ window.addEventListener('DOMContentLoaded', function() {
   const nav = document.querySelector('.bottom-nav');
   if (tb) tb.style.display = 'none';
   if (nav) nav.style.display = 'none';
+  // Wire login form handlers (form is rendered in HTML).
+  pentaWireLoginForm();
 });
 
 // ─────────────────────────────────────────
@@ -9851,13 +9933,15 @@ function parseScheduleCommand(lower, original) {
   return { client: client, clientName: clientName, date: date, time: time, timeDisplay: timeDisplay, team: team };
 }
 
-// Main app init deferred until PIN unlock (see appUnlockManager)
-// updateTaskBadge/rcInit/initSheets called after PIN entry
+// Main app init deferred until login (see appUnlockManager)
 // RC OAuth callback check must run on page load
 if (window.location.search.includes('code=')) {
-  // OAuth redirect — unlock manager view and handle token
-  document.getElementById('app-pin-screen').style.display = 'none';
-  // (PIN screen z-index handles visibility)
+  // RingCentral OAuth redirect — caller already has a Supabase session, so treat
+  // as a manager unlock, handle the RC token, then init.
+  var _plogin = document.getElementById('penta-login-screen');
+  if (_plogin) _plogin.style.display = 'none';
+  var _ppin = document.getElementById('app-pin-screen');
+  if (_ppin) _ppin.style.display = 'none';
   buildFilters(); applyFilters(); updateTaskBadge();
   rcInit(); initSheets();
   appPinRole = 'manager';
@@ -15842,15 +15926,15 @@ function updateNavBadge() {
 
 
 // ═══════════════════════════════════════
-// APP-LEVEL PIN GATE
+// APP-LEVEL AUTH GATE
 // ═══════════════════════════════════════
-const MANAGER_PIN = '4444';
+// Manager: email + password via Supabase (#login-screen). No PIN.
+// Employee: legacy 4-digit PIN pad (#app-pin-screen) gated by ?emp=1 URL param.
+// Sprint 4 will replace the employee PIN with proper Supabase auth.
 let appPinCurrent = '';
 let appPinRole = null; // 'manager' or 'employee'
 
-let _pinLastTouch = 0;
 function appPinPress(digit, btn) {
-  // Visual flash
   if (btn) {
     btn.style.background = '#4f8ef7';
     btn.style.color = '#fff';
@@ -15897,13 +15981,7 @@ function appCheckPin() {
   appPinCurrent = '';
   appUpdatePinDots();
 
-  // Check manager PIN first
-  if (pin === MANAGER_PIN) {
-    appUnlockManager();
-    return;
-  }
-
-  // Check employee PINs
+  // Employee-only PIN gate (?emp=1). No manager PIN anymore.
   try {
     const roster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
     const emp = roster.find(e => String(e.pin) === String(pin) && e.status === 'active');
@@ -15913,10 +15991,9 @@ function appCheckPin() {
     }
   } catch(e) {}
 
-  // Wrong PIN
   const card = document.getElementById('app-pin-card');
   card.classList.remove('shake');
-  card.offsetHeight; // reflow
+  card.offsetHeight;
   card.classList.add('shake');
   document.getElementById('app-pin-error').textContent = 'Incorrect PIN. Please try again.';
   setTimeout(() => card.classList.remove('shake'), 500);
@@ -15924,14 +16001,25 @@ function appCheckPin() {
 
 function appUnlockManager() {
   appPinRole = 'manager';
-  sessionStorage.setItem('cc_unlocked', 'manager');
-  sessionStorage.removeItem('cc_logged_out');
-  document.getElementById('app-pin-screen').style.display = 'none';
+  const mlogin = document.getElementById('penta-login-screen');
+  if (mlogin) mlogin.style.display = 'none';
+  const pinScreen = document.getElementById('app-pin-screen');
+  if (pinScreen) pinScreen.style.display = 'none';
   // Restore topbar and nav
   const tb = document.querySelector('.topbar');
   const nav = document.querySelector('.bottom-nav');
   if (tb) tb.style.display = '';
   if (nav) nav.style.display = '';
+  // Populate "Signed in as" in the Admin sign-out block
+  try {
+    var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      var email = parsed && parsed.user && parsed.user.email;
+      var el = document.getElementById('signed-in-as');
+      if (email && el) el.textContent = 'Signed in as ' + email;
+    }
+  } catch(e) {}
   // Init the main app
   buildFilters();
   applyFilters();
@@ -15965,12 +16053,11 @@ function appUnlockManager() {
 
 function appUnlockEmployee(emp) {
   appPinRole = 'employee';
-  sessionStorage.setItem('cc_unlocked', 'employee');
-  sessionStorage.setItem('cc_emp_pin', emp.pin);
+  // Persist employee identity so pull-to-refresh on the employee portal restores
+  // the same employee without re-entering the PIN during this browser session.
+  sessionStorage.setItem('cc_emp_id', emp.id || emp.name);
   sessionStorage.setItem('cc_emp_lang', appSelectedLang || emp.lang || 'en');
-  sessionStorage.removeItem('cc_logged_out');
   document.getElementById('app-pin-screen').style.display = 'none';
-  // (PIN screen z-index handles visibility)
 
   // Show staff panel full screen, hide manager chrome
   const panel = document.getElementById('staff-panel');
@@ -15980,14 +16067,11 @@ function appUnlockEmployee(emp) {
   const topbar = document.querySelector('.topbar');
   if (topbar) topbar.style.display = 'none';
 
-  // Set employee state in portal
-  // Use lang selected on PIN screen, fall back to employee's preferred lang
   currentEmployee = emp;
-  // Use language selected on PIN screen (or employee's preferred lang)
   currentLang = appSelectedLang || emp.lang || 'en';
 
-  // Show portal screen, hide login screen
-  document.getElementById('login-screen').style.display = 'none';
+  var loginScreen = document.getElementById('login-screen');
+  if (loginScreen) loginScreen.style.display = 'none';
   document.getElementById('portal-screen').style.display = 'block';
   document.body.classList.add('in-portal');
   // Refresh submitted forms with latest manager decisions
@@ -16060,7 +16144,8 @@ function appSetLang(lang) {
 
 function appGoApply() {
   document.getElementById('app-pin-screen').style.display = 'none';
-  // (PIN screen z-index handles visibility)
+  var pl = document.getElementById('penta-login-screen');
+  if (pl) pl.style.display = 'none';
   const panel = document.getElementById('staff-panel');
   if (panel) panel.classList.add('active');
   document.getElementById('login-screen').style.display = 'none';
@@ -16077,23 +16162,109 @@ function appGoApply() {
 
 function appBackFromApply() {
   document.getElementById('application-screen').style.display = 'none';
-  document.getElementById('login-screen').style.display = 'flex';
-  const inner = document.getElementById('staff-panel-inner');
-  if (inner) { inner.style.justifyContent = 'center'; inner.style.alignItems = 'center'; inner.style.padding = '24px'; }
+  // Return to whichever auth screen the user came from.
+  var isEmp = false;
+  try { isEmp = new URLSearchParams(window.location.search).get('emp') === '1'; } catch(e){}
+  if (isEmp) {
+    var pin = document.getElementById('app-pin-screen');
+    if (pin) pin.style.display = 'flex';
+    document.getElementById('login-screen').style.display = 'flex';
+    const inner = document.getElementById('staff-panel-inner');
+    if (inner) { inner.style.justifyContent = 'center'; inner.style.alignItems = 'center'; inner.style.padding = '24px'; }
+  } else {
+    var pl = document.getElementById('penta-login-screen');
+    if (pl) pl.style.display = 'flex';
+  }
 }
 
+// Manager sign-out. Clears Supabase session + reloads into #penta-login-screen.
+async function pentaSignOut() {
+  if (!confirm('Sign out?')) return;
+  try {
+    if (window.PentaAuth && window.PentaAuth.signOut) {
+      await window.PentaAuth.signOut();
+    }
+  } catch (e) {
+    console.error('signout error', e);
+  }
+  try { localStorage.removeItem('sb-wymoezilyjmyibmuqqmr-auth-token'); } catch (e) {}
+  window.location.reload();
+}
+
+// Wire manager login form handlers. Called once on boot when no session exists.
+function pentaWireLoginForm() {
+  var form = document.getElementById('penta-login-form');
+  if (!form) return;
+  var errEl = document.getElementById('penta-login-error');
+  var pwEl  = document.getElementById('penta-login-password');
+  var emEl  = document.getElementById('penta-login-email');
+  var btn   = document.getElementById('penta-login-submit');
+
+  function showErr(msg) {
+    if (!errEl) return;
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+    errEl.style.color = '#fca5a5';
+    errEl.style.background = 'rgba(220,38,38,0.12)';
+    errEl.style.borderColor = 'rgba(220,38,38,0.35)';
+  }
+  function showOk(msg) {
+    if (!errEl) return;
+    errEl.textContent = msg || '';
+    errEl.style.display = msg ? 'block' : 'none';
+    errEl.style.color = '#34d399';
+    errEl.style.background = 'rgba(52,211,153,0.12)';
+    errEl.style.borderColor = 'rgba(52,211,153,0.35)';
+  }
+
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    showErr('');
+    var email = (emEl.value || '').trim();
+    var password = pwEl.value || '';
+    if (!email || !password) { showErr('Enter email and password.'); return; }
+    if (!window.PentaAuth || !window.PentaAuth.signIn) {
+      showErr('Auth not ready — refresh and try again.'); return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+    var r = await window.PentaAuth.signIn(email, password);
+    if (r && r.error) {
+      showErr(r.error);
+      if (pwEl) pwEl.value = '';
+      if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+      return;
+    }
+    // Supabase client has persisted the session. Reload so the full app
+    // boots with an authenticated session (Phase 3C/3D activate cleanly).
+    window.location.reload();
+  });
+
+  var forgot = document.getElementById('penta-login-forgot-link');
+  if (forgot) forgot.addEventListener('click', async function(e){
+    e.preventDefault();
+    var email = (emEl.value || '').trim();
+    if (!email) { showErr('Enter your email first.'); return; }
+    if (!window.PentaAuth || !window.PentaAuth.resetPassword) {
+      showErr('Auth not ready — refresh and try again.'); return;
+    }
+    var r = await window.PentaAuth.resetPassword(email);
+    if (r && r.error) { showErr(r.error); return; }
+    showOk('Password reset email sent. Check your inbox.');
+  });
+}
+
+// Employee portal exit — called from the in-portal logout button.
+// Returns the employee to the PIN pad (?emp=1 path) without touching Supabase.
 function logout() {
-  sessionStorage.removeItem('cc_unlocked');
-  sessionStorage.removeItem('cc_emp_pin');
+  sessionStorage.removeItem('cc_emp_id');
   sessionStorage.removeItem('cc_emp_lang');
   sessionStorage.removeItem('cc_tab');
-  sessionStorage.setItem('cc_logged_out', '1');
   appPinRole = null;
   currentEmployee = null;
   appPinCurrent = '';
   appUpdatePinDots();
-  document.getElementById('app-pin-error').textContent = '';
-  // Hide staff panel and portal
+  var err = document.getElementById('app-pin-error');
+  if (err) err.textContent = '';
   const panel = document.getElementById('staff-panel');
   if (panel) { panel.classList.remove('active'); panel.style.display = ''; }
   const portalScreen = document.getElementById('portal-screen');
@@ -16101,17 +16272,8 @@ function logout() {
   document.body.classList.remove('in-portal');
   const loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'flex';
-  // Restore manager chrome
-  const nav = document.querySelector('.bottom-nav');
-  if (nav) nav.style.display = '';
-  const topbar = document.querySelector('.topbar');
-  if (topbar) topbar.style.display = '';
-  // Reset PIN dots and show PIN screen
-  appPinCurrent = '';
-  appUpdatePinDots();
   const pinScreen = document.getElementById('app-pin-screen');
   if (pinScreen) pinScreen.style.display = 'flex';
-  // (PIN screen z-index handles visibility)
 }
 
 
@@ -22604,7 +22766,7 @@ function phase3cRefresh() {
       } else if (r && r.ok && r.rows === 0) {
         btn.textContent = 'No rows returned (check auth/RLS)';
       } else if (r && r.reason === 'no_session') {
-        btn.textContent = 'No session — log in via ?auth=1 first';
+        btn.textContent = 'No session — sign in first';
       } else if (r && r.reason === 'no_client') {
         btn.textContent = 'Supabase client not ready';
       } else {
@@ -24682,7 +24844,13 @@ function _p3dPage(dir) {
       </div>
     </div>
 
-    <div class="admin-footnote">Changes take effect when you return to the home screen. Core features (Clients, Staff, Schedule, Claire, Messages) cannot be disabled.</div>
+    <div style="padding:16px;border-top:1px solid var(--border);margin-top:20px">
+      <button onclick="pentaSignOut()"
+        style="width:100%;padding:12px;background:transparent;border:1px solid rgba(220,38,38,0.4);border-radius:10px;color:#f87171;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">
+        Sign out
+      </button>
+      <div id="signed-in-as" style="margin-top:10px;text-align:center;font-size:12px;color:var(--muted)"></div>
+    </div>
   </div>
 </div>
 
@@ -24717,173 +24885,17 @@ function _p3dPage(dir) {
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════════
-     PENTA AUTH — parallel auth path, ONLY activates when ?auth=1 is present.
-     When ?auth=1 is NOT in the URL, the IIFE returns immediately (line 3)
-     before touching window.supabase, so the existing localStorage app boots
-     identically. No PentaAuth global is created; no overlay is rendered.
+     PENTA AUTH — Supabase SDK client + method shims. The login UI lives in
+     #login-screen; this IIFE only exposes the client + signIn/signOut/etc.
      ═══════════════════════════════════════════════════════════════════════ -->
-<div id="penta-auth-overlay" style="display:none"></div>
 <script>
 (function(){
-  // GUARD — activate when ?auth=1 is present OR a persisted Supabase session exists.
-  // Phase 3C test enablement: the main app (plain URL) needs PentaAuth.client available
-  // after the user has logged in via ?auth=1 and tapped "Enter app", so Phase 3C can
-  // query Supabase. When the overlay-triggering param is absent we still create the
-  // client but DO NOT render the overlay (SHOW_OVERLAY gates every render() call).
-  var params = new URLSearchParams(window.location.search);
-  var SHOW_OVERLAY = params.get('auth') === '1';
-  function _paHasSession(){
-    try {
-      var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
-      if (!raw) return false;
-      var p = JSON.parse(raw);
-      return !!(p && p.access_token);
-    } catch(e) { return false; }
-  }
-  if (!SHOW_OVERLAY && !_paHasSession()) return;
-
   var PROJECT_URL = 'https://wymoezilyjmyibmuqqmr.supabase.co';
   var PUBLISHABLE_KEY = 'sb_publishable_lsRZrYHU00rFbZ7S4Jkc7w_TlI3WvEz';
 
-  // Wait for SDK (loaded in <head>) to be parsed.
   function waitForSDK(cb){
     if (window.supabase && window.supabase.createClient) return cb();
     setTimeout(function(){ waitForSDK(cb); }, 30);
-  }
-
-  function escapeHtml(s){
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
-      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
-    });
-  }
-
-  function showError(msg){
-    var el = document.getElementById('pa-error');
-    if (el) el.textContent = msg || '';
-  }
-
-  function showInfo(msg){
-    var el = document.getElementById('pa-error');
-    if (el) { el.textContent = msg || ''; el.style.color = '#34d399'; }
-  }
-
-  function loginHTML(){
-    return ''+
-      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
-      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Welcome back</div>'+
-      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">Sign in to continue</div>'+
-      '  <button id="pa-google-btn" style="width:100%;background:#fff;color:#333;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:16px;font-family:inherit">Sign in with Google</button>'+
-      '  <div style="text-align:center;color:#8b8fa8;font-size:12px;margin-bottom:16px">— or —</div>'+
-      '  <input id="pa-email" type="email" placeholder="Email" autocomplete="email" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <input id="pa-password" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <button id="pa-signin-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:14px;font-family:inherit">Sign in</button>'+
-      '  <div id="pa-error" style="color:#f87171;font-size:12px;min-height:16px;margin-bottom:10px"></div>'+
-      '  <div style="display:flex;justify-content:space-between;font-size:12px">'+
-      '    <a id="pa-forgot-link" href="#" style="color:#6c8fff;text-decoration:none">Forgot password?</a>'+
-      '    <a id="pa-signup-link" href="#" style="color:#6c8fff;text-decoration:none">Sign up</a>'+
-      '  </div>'+
-      '</div>';
-  }
-
-  function signupHTML(){
-    return ''+
-      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
-      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Create account</div>'+
-      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">Set up your business</div>'+
-      '  <div style="display:flex;gap:8px;margin-bottom:10px">'+
-      '    <input id="pa-first-name" type="text" placeholder="First name" autocomplete="given-name" style="flex:1;min-width:0;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;font-family:inherit">'+
-      '    <input id="pa-last-name" type="text" placeholder="Last name" autocomplete="family-name" style="flex:1;min-width:0;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;font-family:inherit">'+
-      '  </div>'+
-      '  <input id="pa-business-name" type="text" placeholder="Business name" autocomplete="organization" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <input id="pa-email" type="email" placeholder="Email" autocomplete="email" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <input id="pa-password" type="password" placeholder="Password" autocomplete="new-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <input id="pa-confirm-password" type="password" placeholder="Confirm password" autocomplete="new-password" style="width:100%;background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:12px;color:#f0f0f5;font-size:14px;margin-bottom:10px;font-family:inherit">'+
-      '  <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#8b8fa8;margin-bottom:14px;cursor:pointer">'+
-      '    <input id="pa-terms" type="checkbox" style="width:16px;height:16px;cursor:pointer;flex-shrink:0">'+
-      '    <span>I agree to the Terms of Service</span>'+
-      '  </label>'+
-      '  <button id="pa-signup-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:14px;font-family:inherit">Create account</button>'+
-      '  <div id="pa-error" style="font-size:12px;min-height:16px;margin-bottom:10px;color:#f87171"></div>'+
-      '  <div style="text-align:center;font-size:12px">'+
-      '    <a id="pa-login-link" href="#" style="color:#6c8fff;text-decoration:none">Already have an account? Sign in</a>'+
-      '  </div>'+
-      '</div>';
-  }
-
-  function accountHTML(){
-    var s = window.PentaAuth && window.PentaAuth.session;
-    var email = (s && s.user && s.user.email) || '';
-    return ''+
-      '<div style="max-width:380px;width:100%;background:#1a1d27;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:28px">'+
-      '  <div style="font-size:22px;font-weight:700;margin-bottom:4px">Account</div>'+
-      '  <div style="font-size:13px;color:#8b8fa8;margin-bottom:22px">You are signed in</div>'+
-      '  <div style="background:#22263a;border:1px solid rgba(255,255,255,0.14);border-radius:10px;padding:14px;margin-bottom:16px">'+
-      '    <div style="font-size:11px;color:#8b8fa8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Signed in as</div>'+
-      '    <div style="font-size:14px;color:#f0f0f5;word-break:break-all">'+ escapeHtml(email) +'</div>'+
-      '  </div>'+
-      '  <button id="pa-enter-btn" style="width:100%;background:#6c8fff;color:#fff;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;margin-bottom:10px;font-family:inherit">Enter app</button>'+
-      '  <button id="pa-logout-btn" style="width:100%;background:transparent;color:#f87171;border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:12px;font-weight:600;font-size:14px;cursor:pointer;font-family:inherit">Log out</button>'+
-      '</div>';
-  }
-
-  function render(){
-    if (!SHOW_OVERLAY) return;
-    var root = document.getElementById('penta-auth-overlay');
-    root.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;font-family:\"DM Sans\",sans-serif;color:#f0f0f5;overflow-y:auto';
-    var v = window.PentaAuth.view;
-    root.innerHTML = v === 'signup' ? signupHTML() : v === 'account' ? accountHTML() : loginHTML();
-    wireHandlers();
-  }
-
-  function wireHandlers(){
-    var pa = window.PentaAuth;
-    var el;
-
-    if (el = document.getElementById('pa-signin-btn')) el.onclick = async function(){
-      showError('');
-      var r = await pa.signIn(
-        (document.getElementById('pa-email').value || '').trim(),
-        document.getElementById('pa-password').value || ''
-      );
-      if (r && r.error) showError(r.error);
-    };
-
-    if (el = document.getElementById('pa-google-btn')) el.onclick = function(){ pa.signInGoogle(); };
-
-    if (el = document.getElementById('pa-signup-link')) el.onclick = function(e){ e.preventDefault(); pa.view = 'signup'; render(); };
-    if (el = document.getElementById('pa-login-link')) el.onclick = function(e){ e.preventDefault(); pa.view = 'login'; render(); };
-
-    if (el = document.getElementById('pa-forgot-link')) el.onclick = async function(e){
-      e.preventDefault(); showError('');
-      var email = (document.getElementById('pa-email').value || '').trim();
-      if (!email) return showError('Enter your email above first');
-      var r = await pa.forgotPassword(email);
-      if (r && r.error) showError(r.error);
-      else showInfo('Check your email for a reset link.');
-    };
-
-    if (el = document.getElementById('pa-signup-btn')) el.onclick = async function(){
-      showError('');
-      var r = await pa.signUp({
-        email: (document.getElementById('pa-email').value || '').trim(),
-        password: document.getElementById('pa-password').value || '',
-        confirmPassword: document.getElementById('pa-confirm-password').value || '',
-        terms: document.getElementById('pa-terms').checked,
-        firstName: (document.getElementById('pa-first-name').value || '').trim(),
-        lastName: (document.getElementById('pa-last-name').value || '').trim(),
-        businessName: (document.getElementById('pa-business-name').value || '').trim()
-      });
-      if (r && r.error) showError(r.error);
-      else if (r && r.needsConfirm) showInfo('Check your email to confirm your account.');
-    };
-
-    if (el = document.getElementById('pa-enter-btn')) el.onclick = function(){
-      var url = new URL(window.location.href);
-      url.searchParams.delete('auth');
-      window.location.href = url.toString();
-    };
-
-    if (el = document.getElementById('pa-logout-btn')) el.onclick = function(){ pa.signOut(); };
   }
 
   waitForSDK(function(){
@@ -24893,69 +24905,35 @@ function _p3dPage(dir) {
 
     window.PentaAuth = {
       client: client,
-      view: 'login',
       session: null,
 
       signIn: async function(email, password){
         var r = await client.auth.signInWithPassword({ email: email, password: password });
         if (r.error) return { error: r.error.message };
         this.session = r.data.session;
-        this.view = 'account';
-        render();
         return { ok: true };
       },
 
-      signInGoogle: async function(){
-        var redirect = window.location.origin + window.location.pathname + '?auth=1';
-        return client.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: redirect } });
-      },
-
-      signUp: async function(o){
-        if (!o.email || !o.password) return { error: 'Email and password required' };
-        if (o.password !== o.confirmPassword) return { error: 'Passwords do not match' };
-        if (!o.terms) return { error: 'You must accept the Terms of Service' };
-        var r = await client.auth.signUp({
-          email: o.email,
-          password: o.password,
-          options: {
-            data: {
-              first_name: o.firstName,
-              last_name: o.lastName,
-              business_name: o.businessName
-            },
-            emailRedirectTo: window.location.origin + window.location.pathname + '?auth=1'
-          }
-        });
-        if (r.error) return { error: r.error.message };
-        return { ok: true, needsConfirm: !r.data.session };
-      },
-
-      forgotPassword: async function(email){
+      resetPassword: async function(email){
         var r = await client.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin + window.location.pathname + '?auth=1'
+          redirectTo: window.location.origin + window.location.pathname
         });
         if (r.error) return { error: r.error.message };
         return { ok: true };
       },
 
       signOut: async function(){
-        await client.auth.signOut();
+        try { await client.auth.signOut(); } catch(e) {}
         this.session = null;
-        this.view = 'login';
-        render();
       }
     };
 
     client.auth.getSession().then(function(r){
       window.PentaAuth.session = r.data.session;
-      window.PentaAuth.view = r.data.session ? 'account' : 'login';
-      render();
     });
 
     client.auth.onAuthStateChange(function(_event, session){
       window.PentaAuth.session = session;
-      window.PentaAuth.view = session ? 'account' : 'login';
-      render();
     });
   });
 })();
