@@ -4893,6 +4893,8 @@ window.PentaClients = (function() {
           }).catch(function(err){
             console.error('[Phase3D] boot retry failed', err);
           });
+          // Migration 007 follow-up: one-time next-from-projection backfill.
+          if (res.rows > 0) _runNextBackfill();
         }
       });
     } catch (e) {
@@ -5028,8 +5030,50 @@ window.PentaClients = (function() {
     retryPendingWrites: function() { return _processRetryQueue(); },
     clearPendingWrites: function() {
       try { localStorage.removeItem(PENDING_KEY); } catch (e) {}
+    },
+    // Migration 007 follow-up: re-derive c.next from the canonical first
+    // anchor-projected date and persist via the Phase 3D dual-write path
+    // (setField → Supabase update). Caller is saveClientEdit (after anchor/fc
+    // change) and the one-time boot backfill. The probe trick swaps next←anchor
+    // so buildSchedule's override-prepend is bypassed: we want the FRESH first
+    // anchor projection, not the prior c.next override echoing back unchanged.
+    _recomputeClientNext: function(clientId) {
+      var c = _cache.find(function(x){ return x.id === clientId; });
+      if (!c) return null;
+      var probe = (c.anchor && typeof buildSchedule === 'function')
+        ? Object.assign({}, c, { next: c.anchor })
+        : c;
+      var sched = (typeof buildSchedule === 'function') ? buildSchedule(probe) : [];
+      var newNext = (sched && sched.length) ? sched[0].date : (c.next || null);
+      if (newNext === (c.next || null)) return newNext;
+      if (newNext == null || newNext === '') api.clearField(clientId, 'next');
+      else api.setField(clientId, 'next', newNext);
+      return newNext;
     }
   };
+
+  // Migration 007 follow-up: one-time backfill so existing rows stop carrying
+  // a stale next that diverges from the anchor projection. Gated by a
+  // localStorage flag so it runs exactly once per browser. Skipped when the
+  // cache wasn't replaced by Supabase data (no point writing back to seed
+  // CLIENTS with possibly non-Supabase ids).
+  function _runNextBackfill() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      if (localStorage.getItem('phase3d_next_derived_v1') === '1') return;
+      if (_cacheSource !== 'supabase') return;
+      var n = 0;
+      for (var i = 0; i < _cache.length; i++) {
+        var cl = _cache[i];
+        if (!cl || !cl.id) continue;
+        try { api._recomputeClientNext(cl.id); n++; } catch (e) {}
+      }
+      localStorage.setItem('phase3d_next_derived_v1', '1');
+      console.log('[Phase3D] next-derived backfill complete: ' + n + ' clients processed; flag phase3d_next_derived_v1 set');
+    } catch (e) {
+      console.error('[Phase3D] next-derived backfill failed', e);
+    }
+  }
 
   // Fire-and-forget boot load. Runs on next tick so the rest of the script block
   // (applyFilters, renderCal, etc.) finishes parsing first.
@@ -15345,13 +15389,11 @@ function openClientEdit(clientId) {
         </select>
       </div>
       <div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Next Clean Date</div>
-        <input id="ce-next" type="date" class="field-input" value="${(function(){ var d=c.next||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" style="width:100%" onchange="syncNextDateFromField(this.value)">
-        <div style="font-size:13px;color:var(--muted);margin:10px 0 4px;font-weight:500;display:flex;align-items:center;gap:6px">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500;display:flex;align-items:center;gap:6px">
           <span>Anchor Date</span>
           <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:11px;cursor:help" title="The date your client's regular pattern is anchored on. Leave blank if same as next clean. Only change this if you want to permanently shift their recurring schedule.">?</span>
         </div>
-        <input id="ce-anchor" type="date" class="field-input" value="${(function(){ var d=c.anchor||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" placeholder="${(function(){ var d=c.next||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" style="width:100%">
+        <input id="ce-anchor" type="date" class="field-input" value="${(function(){ var d=c.anchor||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" placeholder="—" style="width:100%">
       </div>
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Package</div>
@@ -15751,12 +15793,10 @@ function saveClientEdit(clientId) {
   var primaryPhone = (cleanPhones.find(function(p){ return p.primary; }) || cleanPhones[0] || {}).number || '';
 
   const newFreq = document.getElementById('ce-freq').value;
-  var ceNextRaw = document.getElementById('ce-next').value.trim();
-  var newNext = ceNextRaw;
-  if (ceNextRaw && ceNextRaw.includes('-') && ceNextRaw.length === 10) {
-    var p2 = ceNextRaw.split('-');
-    newNext = p2[1] + '/' + p2[2] + '/' + p2[0];
-  }
+  // Migration 007 follow-up: Next Clean Date is no longer manually set in the
+  // form — it's auto-derived from the schedule projection (see PentaClients
+  // ._recomputeClientNext, called below). Anchor is the only date the user
+  // manages here. Compare new anchor against the currently-stored c.next.
   var ceAnchorEl = document.getElementById('ce-anchor');
   var ceAnchorRaw = ceAnchorEl ? ceAnchorEl.value.trim() : '';
   var newAnchor = ceAnchorRaw;
@@ -15764,10 +15804,8 @@ function saveClientEdit(clientId) {
     var pA = ceAnchorRaw.split('-');
     newAnchor = pA[1] + '/' + pA[2] + '/' + pA[0];
   }
-  if (!newAnchor || newAnchor === newNext) newAnchor = null;
-  // Migration 007: new-client save flow — if user didn't explicitly enter
-  // an anchor, lock it to next so future next-changes don't shift the pattern.
-  if (wasDraft && newAnchor === null && newNext) newAnchor = newNext;
+  if (!newAnchor || newAnchor === c.next) newAnchor = null;
+  var oldAnchor = c.anchor || null;
   const freqChanged = newFreq !== c.fc;
 
   var _selectedDays = [];
@@ -15792,9 +15830,15 @@ function saveClientEdit(clientId) {
     pref_day: prefDayPack(_selectedDays),
     pref_time: document.getElementById('ce-pref-time').value || null
   };
-  if (newNext) editPatch.next = newNext;
   editPatch.anchor = newAnchor;
   PentaClients.updateClient(clientId, editPatch);
+  // Migration 007 follow-up: re-derive next from the (possibly new) anchor/fc
+  // projection. Helper is a no-op when nothing changed; for new drafts with no
+  // c.next yet, this seeds c.next from anchor.
+  var anchorChanged = (newAnchor || null) !== oldAnchor;
+  if ((anchorChanged || freqChanged) && PentaClients._recomputeClientNext) {
+    PentaClients._recomputeClientNext(clientId);
+  }
 
   // Update team if changed
   var newTeam = document.getElementById('ce-team') ? document.getElementById('ce-team').value : null;
@@ -15916,6 +15960,10 @@ function saveClientEdit(clientId) {
         if (i === 0) {
           PentaClients.setField(clientId, 'next', dateEl.value);
           saveClientEdits(clientId, { next: c.next });
+          // TODO Sprint 5: when job-level overrides move to a per-job table,
+          // call PentaClients._recomputeClientNext(clientId) here so c.next
+          // stays in sync with the new override storage. Today the override
+          // IS c.next, so calling recompute now would clobber the move.
         }
       }
       if (priceEl && priceEl.value) {
