@@ -10471,7 +10471,8 @@ async function processVoiceCommand(text) {
   var systemPrompt = 'You are Claire, Tom\'s strategic business advisor for Penta — the field-service SaaS he\'s building, currently running his cleaning business Manna Maids in Massachusetts (8 teams, ~330 clients).\n'
     +'Today is '+todayStr+' ('+todayKey+').\n\n'
     +'YOUR ROLE\n'
-    +'Think with Tom about his business. Answer any question grounded in his actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n\n'
+    +'Think with Tom about his business. Answer any question grounded in his actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
+    +'If Tom asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
     +'DATA YOU CAN SEE\n'
     +'You have full access to Tom\'s operating data: clients (profiles, frequencies, balances, anchor dates, notes, preferences, scores), the schedule, payments, the activity log, teams, and employees. Use the lookup_client, lookup_schedule, lookup_balance, lookup_employee, count_jobs, get_revenue, and locate_team tools whenever a question would be better answered with real numbers — never guess when you can look it up. When you ground a claim in data, cite the specific clients/teams/months you pulled from. When you DON\'T have data to ground a claim, say so. No vibes-based advice. If a question needs market data or external context you don\'t have, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
@@ -10505,6 +10506,7 @@ async function processVoiceCommand(text) {
   // text reply) or we hit the safety cap.
   var MAX_TOOL_ROUNDS = 6;
   var didAnyToolCall = false;
+  var toolsCalledCount = 0;
   // Run the entire tool loop in silent mode so individual tool handlers
   // don't render intermediate bubbles or trigger intermediate D-ID videos.
   // Only the final wrap-up reply gets rendered + spoken — ONE bubble, ONE
@@ -10547,6 +10549,7 @@ async function processVoiceCommand(text) {
 
       if (toolCall) {
         didAnyToolCall = true;
+        toolsCalledCount++;
         // Tool runs silently (_claireSilent=true suppresses its bubble/speech).
         // We still get the factual summary back for memory + the wrap-up call.
         var toolResult = executeClaireToolCall(toolCall, textReply);
@@ -10570,10 +10573,18 @@ async function processVoiceCommand(text) {
       }
       return;
     }
-    // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
+    // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging. Recap line is
+    // for genuine multi-action batches that exceeded the cap; if Claude
+    // burned the budget speculatively (one or zero real tools, e.g. an
+    // advisory question that got mis-routed), don't insult Tom with the
+    // "that was a lot" line — give a non-recap fallback instead.
     _claireSilent = false;
     claireHideTyping();
-    claireReply('That was a lot — anything still left to handle?');
+    if (toolsCalledCount >= 2) {
+      claireReply('That was a lot — anything still left to handle?');
+    } else {
+      claireReply('Hmm, I got tangled up looking that up — can you ask again, or rephrase?');
+    }
   } catch(e) {
     _claireSilent = false;
     claireHideTyping();
