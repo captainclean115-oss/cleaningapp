@@ -5201,7 +5201,7 @@ function buildSchedule(c) {
   return results;
 }
 
-function applyFilters() {
+function applyFilters(force) {
   const q = searchVal.toLowerCase();
   filtered = PentaClients.filterClients(c => {
     const name = cleanName(c).toLowerCase();
@@ -5222,12 +5222,14 @@ function applyFilters() {
     }
     return true;
   });
-  render();
+  render(force);
 }
 
-function render() {
-  // Don't re-render while a card is expanded - prevents scroll jump when buttons are tapped
-  if (expandedId && document.querySelector('.client-card.expanded')) {
+function render(force) {
+  // Don't re-render while a card is expanded - prevents scroll jump when buttons are tapped.
+  // `force` overrides this (used by saveClientEdit to invalidate the cached card detail
+  // HTML — including stale buildSchedule output — after the underlying client changes).
+  if (!force && expandedId && document.querySelector('.client-card.expanded')) {
     return;
   }
   const totalBadge = document.getElementById('total-badge');
@@ -10779,7 +10781,8 @@ function _executeClaireToolCallInner(toolCall, message) {
 
     // Generate new future cleans (6 months out)
     if (newFreq.days > 0) {
-      var nextDate = fClient.next ? (function(s){ var p=s.split('/'); return new Date(+p[2],+p[0]-1,+p[1]); })(fClient.next) : new Date();
+      var _projBase = fClient.anchor || fClient.next;
+      var nextDate = _projBase ? (function(s){ var p=s.split('/'); return new Date(+p[2],+p[0]-1,+p[1]); })(_projBase) : new Date();
       if (nextDate < new Date()) nextDate = new Date();
       var endDate = new Date(); endDate.setMonth(endDate.getMonth() + 6);
       var genCount = 0;
@@ -15925,7 +15928,7 @@ function saveClientEdit(clientId) {
   } catch(e) {}
 
   closeClientEdit();
-  applyFilters(); // re-render client list
+  applyFilters(true); // re-render client list — force, to invalidate stale card detail HTML (incl. schedHtml from buildSchedule)
   alert('Changes saved for ' + c.fn + ' ' + c.ln + (freqChanged ? '\nFrequency changed — upcoming cleans recalculated.' : ''));
 }
 
