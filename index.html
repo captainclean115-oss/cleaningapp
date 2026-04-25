@@ -4427,6 +4427,7 @@ window.PentaClients = (function() {
       fc: _normalizeFreqCode(r.frequency),
       last: _isoToMDY(r.last_service_date),
       next: _isoToMDY(r.next_service_date),
+      anchor: _isoToMDY(r.anchor_date),
       bal: r.balance == null ? 0 : Number(r.balance),
       pkg: r.package,
       notes: r.notes,
@@ -4476,6 +4477,7 @@ window.PentaClients = (function() {
     if (H.call(src, 'fc'))    out.frequency         = _stripFreqSpaces(src.fc);
     if (H.call(src, 'last'))  out.last_service_date = _mdyToIso(src.last);
     if (H.call(src, 'next'))  out.next_service_date = _mdyToIso(src.next);
+    if (H.call(src, 'anchor')) out.anchor_date      = _mdyToIso(src.anchor);
     if (H.call(src, 'bal'))   out.balance           = (src.bal == null || src.bal === '') ? 0 : Number(src.bal);
     if (H.call(src, 'pkg'))   out.package           = src.pkg == null ? null : src.pkg;
     if (H.call(src, 'notes')) out.notes             = src.notes == null ? null : src.notes;
@@ -4911,6 +4913,10 @@ window.PentaClients = (function() {
     // Phase 3D — write methods. Each mutates the cache sync, returns immediately,
     // and fires a Supabase write in the background. On failure: rollback, toast, queue.
     addClient: function(obj) {
+      // Migration 007: anchor defaults to next when not explicitly entered.
+      if (obj && typeof obj === 'object' && !Object.prototype.hasOwnProperty.call(obj, 'anchor')) {
+        obj.anchor = obj.next || null;
+      }
       _cache.unshift(obj);
       if (!obj || !obj.id) return obj; // malformed — cache-only, no write
       var payload = _transformRowForWrite(obj);
@@ -5163,7 +5169,8 @@ function buildSchedule(c) {
   if (!c.next || c.fc === 'OMS') return [];
   const intervalDays = {'RMS - WEK':7,'RMS - EOW':14,'RMS - ETW':21,'RMS - EFW':28,'RMS - MON':28}[c.fc];
   if (!intervalDays) return [];
-  const parts = c.next.split('/');
+  const baseDate = c.anchor || c.next;
+  const parts = baseDate.split('/');
   if (parts.length !== 3) return [];
   let d = new Date(+parts[2], +parts[0]-1, +parts[1]);
   if (isNaN(d)) return [];
@@ -5273,7 +5280,7 @@ function render() {
 
           <div class="detail-item"><div class="d-label">Key</div><div class="d-val">${(function(){var k=getClientKey(c.ln);return k&&k.key?k.key:'—';})()}</div></div>
           <div class="detail-item"><div class="d-label">Last service</div><div class="d-val">${c.last||'—'}</div></div>
-          <div class="detail-item" onclick="toggleSchedList('${schedId}')" style="cursor:pointer"><div class="d-label">Upcoming cleans</div><div class="d-val" style="color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--text)'}">${c.next||'—'}</div></div>
+          <div class="detail-item" onclick="toggleSchedList('${schedId}')" style="cursor:pointer"><div class="d-label">Upcoming cleans</div><div class="d-val" style="color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--text)'}">${c.next||'—'}</div>${(c.anchor && c.anchor !== c.next) ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">Pattern anchor: ${c.anchor} (one-off shifted)</div>` : ''}</div>
           <div class="detail-item"><div class="d-label">Package</div><div class="d-val">${c.pkg||'—'}</div></div>
           <div class="detail-item"><div class="d-label">Margin</div><div class="d-val" style="font-family:'DM Mono',monospace;font-size:12px">${c.margin||'—'}</div></div>
           ${(()=>{
@@ -15306,6 +15313,11 @@ function openClientEdit(clientId) {
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Next Clean Date</div>
         <input id="ce-next" type="date" class="field-input" value="${(function(){ var d=c.next||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" style="width:100%" onchange="syncNextDateFromField(this.value)">
+        <div style="font-size:13px;color:var(--muted);margin:10px 0 4px;font-weight:500;display:flex;align-items:center;gap:6px">
+          <span>Anchor Date</span>
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:11px;cursor:help" title="The date your client's regular pattern is anchored on. Leave blank if same as next clean. Only change this if you want to permanently shift their recurring schedule.">?</span>
+        </div>
+        <input id="ce-anchor" type="date" class="field-input" value="${(function(){ var d=c.anchor||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" placeholder="${(function(){ var d=c.next||''; if(d&&d.includes('/')) { var p=d.split('/'); return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0'); } return d; })()}" style="width:100%">
       </div>
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Package</div>
@@ -15691,6 +15703,7 @@ function saveClientEdit(clientId) {
   if (!c) return;
   // Promote drafts: if this was a new-client draft, flip it to real now
   // that the user has committed a save. closeClientEdit can't clean it up.
+  var wasDraft = !!c._draft;
   if (c._draft) { PentaClients.clearField(clientId, '_draft'); window._newClientDraftId = null; }
 
   // Phase 3D: coalesce all field writes into a single updateClient so a mid-save
@@ -15710,6 +15723,17 @@ function saveClientEdit(clientId) {
     var p2 = ceNextRaw.split('-');
     newNext = p2[1] + '/' + p2[2] + '/' + p2[0];
   }
+  var ceAnchorEl = document.getElementById('ce-anchor');
+  var ceAnchorRaw = ceAnchorEl ? ceAnchorEl.value.trim() : '';
+  var newAnchor = ceAnchorRaw;
+  if (ceAnchorRaw && ceAnchorRaw.includes('-') && ceAnchorRaw.length === 10) {
+    var pA = ceAnchorRaw.split('-');
+    newAnchor = pA[1] + '/' + pA[2] + '/' + pA[0];
+  }
+  if (!newAnchor || newAnchor === newNext) newAnchor = null;
+  // Migration 007: new-client save flow — if user didn't explicitly enter
+  // an anchor, lock it to next so future next-changes don't shift the pattern.
+  if (wasDraft && newAnchor === null && newNext) newAnchor = newNext;
   const freqChanged = newFreq !== c.fc;
 
   var _selectedDays = [];
@@ -15735,6 +15759,7 @@ function saveClientEdit(clientId) {
     pref_time: document.getElementById('ce-pref-time').value || null
   };
   if (newNext) editPatch.next = newNext;
+  editPatch.anchor = newAnchor;
   PentaClients.updateClient(clientId, editPatch);
 
   // Update team if changed
@@ -15753,7 +15778,7 @@ function saveClientEdit(clientId) {
     fn: c.fn, ln: c.ln, ph: c.ph, em: c.em,
     addr: c.addr, city: c.city, zip: c.zip,
     notes: c.notes, pkg: c.pkg, fc: c.fc,
-    next: c.next,
+    next: c.next, anchor: c.anchor,
     pref_day: c.pref_day, pref_time: c.pref_time
   });
 
