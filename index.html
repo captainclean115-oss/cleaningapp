@@ -5177,26 +5177,57 @@ function buildSchedule(c) {
   const today = new Date(); today.setHours(0,0,0,0);
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // Migration 007 follow-up: when next ≠ anchor (one-off shift), the literal
+  // next clean is the FIRST list item; anchor-projected dates only appear if
+  // they fall strictly after next (so we don't show the projection that next
+  // displaced, and we don't duplicate when next equals a projection).
+  const hasOverride = c.anchor && c.anchor !== c.next;
+  let nextDateObj = null;
+  if (hasOverride) {
+    const np = c.next.split('/');
+    if (np.length === 3) {
+      const nd = new Date(+np[2], +np[0]-1, +np[1]);
+      if (!isNaN(nd)) nextDateObj = nd;
+    }
+  }
   const results = [];
   for (let i = 0; i < 8; i++) {
-    const diff = Math.round((d - today) / 86400000);
-    let rel;
-    if (diff < 0) rel = `${Math.abs(diff)}d ago`;
-    else if (diff === 0) rel = 'Today';
-    else if (diff === 1) rel = 'Tomorrow';
-    else if (diff < 7) rel = `in ${diff}d`;
-    else if (diff < 14) rel = `next week`;
-    else rel = `in ${Math.round(diff/7)}wk`;
-    const mm = String(d.getMonth()+1).padStart(2,'0');
-    const dd = String(d.getDate()).padStart(2,'0');
-    const yyyy = d.getFullYear();
-    results.push({
-      label: `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}`,
-      date: `${mm}/${dd}/${yyyy}`,
-      rel,
-      diff
-    });
+    if (!hasOverride || !nextDateObj || d > nextDateObj) {
+      const diff = Math.round((d - today) / 86400000);
+      let rel;
+      if (diff < 0) rel = `${Math.abs(diff)}d ago`;
+      else if (diff === 0) rel = 'Today';
+      else if (diff === 1) rel = 'Tomorrow';
+      else if (diff < 7) rel = `in ${diff}d`;
+      else if (diff < 14) rel = `next week`;
+      else rel = `in ${Math.round(diff/7)}wk`;
+      const mm = String(d.getMonth()+1).padStart(2,'0');
+      const dd = String(d.getDate()).padStart(2,'0');
+      const yyyy = d.getFullYear();
+      results.push({
+        label: `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}`,
+        date: `${mm}/${dd}/${yyyy}`,
+        rel,
+        diff
+      });
+    }
     d = new Date(d.getTime() + intervalDays * 86400000);
+  }
+  if (hasOverride && nextDateObj) {
+    const nDiff = Math.round((nextDateObj - today) / 86400000);
+    let nRel;
+    if (nDiff < 0) nRel = `${Math.abs(nDiff)}d ago`;
+    else if (nDiff === 0) nRel = 'Today';
+    else if (nDiff === 1) nRel = 'Tomorrow';
+    else if (nDiff < 7) nRel = `in ${nDiff}d`;
+    else if (nDiff < 14) nRel = `next week`;
+    else nRel = `in ${Math.round(nDiff/7)}wk`;
+    results.unshift({
+      label: `${days[nextDateObj.getDay()]} ${months[nextDateObj.getMonth()]} ${nextDateObj.getDate()}`,
+      date: c.next,
+      rel: nRel,
+      diff: nDiff
+    });
   }
   return results;
 }
