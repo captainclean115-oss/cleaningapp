@@ -3847,6 +3847,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div style="font-size:19px;font-weight:700;letter-spacing:-0.01em">Clients</div>
       <button data-permission="new_client_icon" data-permission-role="manager" onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
     </div>
+    <div id="client-status-segment" style="padding:0 16px 10px;display:flex;gap:6px;overflow-x:auto"></div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
     </div>
@@ -4433,6 +4434,11 @@ window.PentaClients = (function() {
       notes: r.notes,
       pref_day: r.preferred_day,
       pref_time: r.preferred_time_window,
+      status: r.status || 'active',
+      pause_start: _isoToMDY(r.pause_start),
+      pause_end: _isoToMDY(r.pause_end),
+      pause_reason: r.pause_reason,
+      status_changed_at: r.status_changed_at,
       margin: null
     };
   }
@@ -4483,6 +4489,11 @@ window.PentaClients = (function() {
     if (H.call(src, 'notes')) out.notes             = src.notes == null ? null : src.notes;
     if (H.call(src, 'pref_day'))  out.preferred_day         = src.pref_day == null ? null : src.pref_day;
     if (H.call(src, 'pref_time')) out.preferred_time_window = src.pref_time == null || src.pref_time === '' ? null : src.pref_time;
+    if (H.call(src, 'status'))       out.status            = src.status == null || src.status === '' ? 'active' : src.status;
+    if (H.call(src, 'pause_start'))  out.pause_start       = _mdyToIso(src.pause_start);
+    if (H.call(src, 'pause_end'))    out.pause_end         = _mdyToIso(src.pause_end);
+    if (H.call(src, 'pause_reason')) out.pause_reason      = src.pause_reason == null || src.pause_reason === '' ? null : src.pause_reason;
+    if (H.call(src, 'status_changed_at')) out.status_changed_at = src.status_changed_at == null || src.status_changed_at === '' ? null : src.status_changed_at;
     return out;
   }
 
@@ -4895,6 +4906,8 @@ window.PentaClients = (function() {
           });
           // Migration 007 follow-up: one-time next-from-projection backfill.
           if (res.rows > 0) _runNextBackfill();
+          // Migration 008: auto-resume paused clients whose pause_end has passed.
+          if (res.rows > 0) _runStatusAutoResume();
         }
       });
     } catch (e) {
@@ -5052,6 +5065,39 @@ window.PentaClients = (function() {
     }
   };
 
+  // Migration 008: auto-resume paused clients whose pause_end has passed.
+  // Module-level guard (no localStorage) — runs once per boot if needed.
+  var _statusAutoResumeRan = false;
+  function _runStatusAutoResume() {
+    if (_statusAutoResumeRan) return;
+    _statusAutoResumeRan = true;
+    if (_cacheSource !== 'supabase') return;
+    var todayIso = new Date().toISOString().slice(0, 10);
+    var n = 0;
+    for (var i = 0; i < _cache.length; i++) {
+      var cl = _cache[i];
+      if (!cl || cl.status !== 'paused') continue;
+      var endIso = _mdyToIso(cl.pause_end);
+      if (!endIso) continue;
+      if (endIso >= todayIso) continue;
+      var label = (cl.fn || '') + ' ' + (cl.ln || '');
+      try {
+        api.updateClient(cl.id, {
+          status: 'active',
+          pause_start: null,
+          pause_end: null,
+          pause_reason: null,
+          status_changed_at: new Date().toISOString()
+        });
+        console.log('[Status] Auto-resumed client ' + cl.id + ' (' + label.trim() + ') — pause ended ' + cl.pause_end);
+        n++;
+      } catch (e) {
+        console.error('[Status] Auto-resume failed for ' + cl.id, e);
+      }
+    }
+    if (n > 0) console.log('[Status] Auto-resume complete: ' + n + ' client(s) flipped active');
+  }
+
   // Migration 007 follow-up: one-time backfill so existing rows stop carrying
   // a stale next that diverges from the anchor projection. Gated by a
   // localStorage flag so it runs exactly once per browser. Skipped when the
@@ -5130,6 +5176,7 @@ let filtered = PentaClients.list();
 let expandedId = null;
 let activeFilters = new Set();
 let searchVal = '';
+let clientStatusFilter = 'active'; // Migration 008: 'active' | 'paused' | 'inactive' | 'all'
 let drawerClient = null;
 let drawerType = null;
 
@@ -5211,6 +5258,7 @@ function toggleFilters() {
 
 function buildSchedule(c) {
   if (!c.next || c.fc === 'OMS') return [];
+  if (c.status === 'paused' || c.status === 'inactive') return [];
   const intervalDays = {'RMS - WEK':7,'RMS - EOW':14,'RMS - ETW':21,'RMS - EFW':28,'RMS - MON':28}[c.fc];
   if (!intervalDays) return [];
   const baseDate = c.anchor || c.next;
@@ -5276,9 +5324,40 @@ function buildSchedule(c) {
   return results;
 }
 
+function renderClientStatusSegment() {
+  const wrap = document.getElementById('client-status-segment');
+  if (!wrap) return;
+  const all = PentaClients.list();
+  let nA = 0, nP = 0, nI = 0;
+  for (var i = 0; i < all.length; i++) {
+    var s = all[i].status || 'active';
+    if (s === 'paused') nP++;
+    else if (s === 'inactive') nI++;
+    else nA++;
+  }
+  const segs = [
+    { id: 'active', label: 'Active', n: nA },
+    { id: 'paused', label: 'Paused', n: nP },
+    { id: 'inactive', label: 'Inactive', n: nI },
+    { id: 'all', label: 'All', n: nA + nP + nI }
+  ];
+  wrap.innerHTML = segs.map(function(s){
+    var on = clientStatusFilter === s.id;
+    return '<button onclick="setClientStatusFilter(\'' + s.id + '\')" style="background:' + (on ? 'var(--accent)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + ';border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:16px;padding:6px 12px;font-size:12px;font-weight:600;font-family:\'DM Sans\',sans-serif;white-space:nowrap;cursor:pointer">' + s.label + ' (' + s.n + ')</button>';
+  }).join('');
+}
+
+function setClientStatusFilter(id) {
+  clientStatusFilter = id;
+  applyFilters(true);
+}
+
 function applyFilters(force) {
   const q = searchVal.toLowerCase();
   filtered = PentaClients.filterClients(c => {
+    // Migration 008: status filter (segmented control)
+    var cs = c.status || 'active';
+    if (clientStatusFilter !== 'all' && cs !== clientStatusFilter) return false;
     const name = cleanName(c).toLowerCase();
     if (q && !name.includes(q) && !c.city.toLowerCase().includes(q) && !c.ph.includes(q) && !c.addr.toLowerCase().includes(q)) return false;
     for (const f of activeFilters) {
@@ -5297,6 +5376,7 @@ function applyFilters(force) {
     }
     return true;
   });
+  renderClientStatusSegment();
   render(force);
 }
 
@@ -5343,7 +5423,23 @@ function render(force) {
       const sched = buildSchedule(c);
       const schedId = 'sched-' + c.id;
       const schedHtml = sched.length ? '<div class="sched-section"><div class="sched-list" id="' + schedId + '" style="display:none">' + sched.map((s,i) => '<div class="sched-row' + (i===0?' sched-next':'') + '"><span class="sched-dot' + (i===0?' sched-dot-next':'') + '"></span><span class="sched-date">' + s.label + '</span><span class="sched-rel">' + s.rel + '</span></div>').join('') + '</div></div>' : '';
+      const statusLine = (function(){
+        if (c.status === 'paused') {
+          var hasEnd = !!c.pause_end;
+          var reason = c.pause_reason ? ' (' + c.pause_reason + ')' : '';
+          var txt = hasEnd
+            ? 'Paused ' + (c.pause_start || '') + ' → ' + c.pause_end + reason
+            : 'Paused ' + (c.pause_start || '') + ' (indefinite)' + reason;
+          return '<div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:8px 12px;margin:0 0 10px 0;font-size:12px;color:#f59e0b;font-weight:600">⏸ ' + txt + '</div>';
+        }
+        if (c.status === 'inactive') {
+          var since = c.status_changed_at ? new Date(c.status_changed_at).toLocaleDateString() : '';
+          return '<div style="background:rgba(107,114,128,0.12);border:1px solid rgba(107,114,128,0.3);border-radius:8px;padding:8px 12px;margin:0 0 10px 0;font-size:12px;color:var(--muted);font-weight:600">💤 Inactive' + (since ? ' since ' + since : '') + '</div>';
+        }
+        return '';
+      })();
       detail = `<div class="card-detail">
+        ${statusLine}
         <div style="position:relative">
           <div style="position:absolute;top:0;right:0;display:flex;flex-direction:column;gap:5px;z-index:1">
             ${(function(){ var za=encodeURIComponent((c.addr||'')+' '+(c.city||'')+' '+(c.zip||''));
@@ -5402,7 +5498,7 @@ function render(force) {
       </div>`;
     }
 
-    return `<div class="client-card${isExp?' expanded':''}" data-id="${c.id}">
+    return `<div class="client-card${isExp?' expanded':''}" data-id="${c.id}" style="${c.status==='paused'?'opacity:0.75':c.status==='inactive'?'opacity:0.5':''}">
       <div class="card-top" onclick="toggleCard('${c.id}',event)" style="cursor:pointer">
         <div class="avatar ${av}">${ini}</div>
         <div class="card-main">
@@ -5411,9 +5507,11 @@ function render(force) {
           ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[prefDayFormat(c.pref_day), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
         <div class="card-right">
+          ${c.status === 'paused' ? '<span class="freq-pill" style="background:#f59e0b;color:#000">PAUSED</span>' : ''}
+          ${c.status === 'inactive' ? '<span class="freq-pill" style="background:#6b7280;color:#fff">INACTIVE</span>' : ''}
           <span class="freq-pill ${fc}">${fl}</span>
           ${balStr}
-          ${dStr ? `<span style="font-size:10px;color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--muted)'}">${dStr}</span>` : ''}
+          ${dStr && c.status !== 'paused' && c.status !== 'inactive' ? `<span style="font-size:10px;color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--muted)'}">${dStr}</span>` : ''}
         </div>
       </div>
       ${detail}
@@ -10520,7 +10618,7 @@ var CLAIRE_TOOLS = [
   { name: 'add_reminder', description: 'Add a reminder/note/to-do for Tom to remember', input_schema: { type:'object', properties: { text:{type:'string',description:'The reminder text'} }, required:['text'] } },
   { name: 'lookup_client', description: 'Look up client info — address, phone, balance, frequency, next clean date, notes', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name to search for'} }, required:['client'] } },
   { name: 'lookup_schedule', description: 'Look up what jobs are scheduled for a specific date, team, or client', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'}, client:{type:'string',description:'Client name (optional)'} } } },
-  { name: 'lookup_balance', description: 'Look up outstanding balances — all clients or a specific client', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name (optional, omit for all balances)'} } } },
+  { name: 'lookup_balance', description: 'Look up outstanding balances — all clients or a specific client. When omitting client, defaults to active clients only; pass client_status="all" for full picture incl. paused/inactive.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client name (optional, omit for all balances)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
   { name: 'lookup_employee', description: 'Look up employee info — what team they are on, their role', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name'} }, required:['employee'] } },
   { name: 'count_jobs', description: 'Count how many jobs/cleans are scheduled for a date or date range', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'}, team:{type:'string',description:'Team code (optional)'} } } },
   { name: 'get_revenue', description: 'Get revenue/income for a specific date or the current day', input_schema: { type:'object', properties: { date:{type:'string',description:'Date YYYY-MM-DD'} } } },
@@ -10537,12 +10635,12 @@ var CLAIRE_TOOLS = [
   // Coach-Claire Phase 2 — aggregate tools. Each returns a rolled-up summary
   // (counts/totals/top-N) instead of raw record dumps, so strategic questions
   // resolve in 1-3 rounds inside the MAX_TOOL_ROUNDS budget.
-  { name: 'query_clients', description: 'Filter all 330 clients by criteria (town/team/frequency/status) and return an AGGREGATED summary — count, balance totals, town/team breakdowns, top-10 by chosen field. Use this for strategic questions across the book of business, NOT for one-client lookups (use lookup_client for that).', input_schema: { type:'object', properties: { town:{type:'string',description:'Filter to a specific town/city (case-insensitive substring match)'}, team:{type:'string',description:'Filter to a team code: B1,B3,B5,S1,S3,M1,M2,M3'}, frequency_code:{type:'string',description:'Filter to a frequency code: RMS - WEK, RMS - EOW, RMS - ETW, RMS - EFW, RMS - MON, OMS'}, status:{type:'string',description:'One of: active, overdue, top_canceller, highest_balance, newest, longest_tenure'}, sort_by:{type:'string',description:'One of: balance, cancellations, last_service'}, limit:{type:'number',description:'Max top_results to return (default 10)'} } } },
+  { name: 'query_clients', description: 'Filter all clients by criteria (town/team/frequency/status) and return an AGGREGATED summary — count, balance totals, town/team breakdowns, top-10 by chosen field. Use this for strategic questions across the book of business, NOT for one-client lookups (use lookup_client for that). Defaults to active clients; pass client_status to surface paused or inactive (win-back, snowbirds, churn).', input_schema: { type:'object', properties: { town:{type:'string',description:'Filter to a specific town/city (case-insensitive substring match)'}, team:{type:'string',description:'Filter to a team code: B1,B3,B5,S1,S3,M1,M2,M3'}, frequency_code:{type:'string',description:'Filter to a frequency code: RMS - WEK, RMS - EOW, RMS - ETW, RMS - EFW, RMS - MON, OMS'}, status:{type:'string',description:'Sort/filter mode: overdue, top_canceller, highest_balance, newest, longest_tenure'}, client_status:{type:'string',description:'Client status filter: active (default) | paused | inactive | all. Use paused for snowbirds/vacation, inactive for churned/win-back, all for full picture.'}, sort_by:{type:'string',description:'One of: balance, cancellations, last_service'}, limit:{type:'number',description:'Max top_results to return (default 10)'} } } },
   { name: 'revenue_summary', description: 'Roll up revenue by period and dimension. Returns total, job count, average per job, and breakdown by team/town/frequency/package. Use for "how is revenue trending" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: today, this_week, this_month, last_month, last_30_days, last_90_days, this_year, date_range'}, start_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, end_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, by:{type:'string',description:'Group breakdown by: team, town, frequency, or package'} }, required:['period'] } },
-  { name: 'accounts_receivable_summary', description: 'Full AR rollup — total outstanding, client count, aging buckets (0-30/31-60/61-90/over_90 days), top-10 worst, optional by-town/by-team breakdowns. Use this when Tom asks "what is my AR" or anything about overdue payments.', input_schema: { type:'object', properties: { aging_buckets:{type:'boolean',description:'Include 0-30/31-60/61-90/over_90 buckets (default true)'}, by_town:{type:'boolean',description:'Include per-town breakdown (default false)'}, by_team:{type:'boolean',description:'Include per-team breakdown (default false)'} } } },
+  { name: 'accounts_receivable_summary', description: 'Full AR rollup — total outstanding, client count, aging buckets (0-30/31-60/61-90/over_90 days), top-10 worst, optional by-town/by-team breakdowns. Use this when Tom asks "what is my AR" or anything about overdue payments. Defaults to active clients only; pass client_status="all" to include balances from paused/inactive clients too.', input_schema: { type:'object', properties: { aging_buckets:{type:'boolean',description:'Include 0-30/31-60/61-90/over_90 buckets (default true)'}, by_town:{type:'boolean',description:'Include per-town breakdown (default false)'}, by_team:{type:'boolean',description:'Include per-team breakdown (default false)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
   { name: 'cancellation_analysis', description: 'Who cancels most and how often. Returns total cancellations, unique-clients-cancelled count, top cancellers, breakdown by team and day-of-week. Use for "who are my top cancellers" or "is Tuesday a problem day".', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: last_30_days, last_90_days, last_year, all_time (default all_time)'}, limit:{type:'number',description:'Max top cancellers to return (default 10)'} } } },
   { name: 'team_performance', description: 'Team metrics rollup — jobs completed, revenue, avg per job, client count, cancellations per team. Use for "which team is doing best" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: this_month, last_month, last_90_days (default last_30_days)'} } } },
-  { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'} } } },
+  { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention. Defaults to active clients only; pass client_status="all" to include paused/inactive.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
   { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
@@ -10584,12 +10682,13 @@ async function processVoiceCommand(text) {
     +'If Tom asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
     +'DATA YOU CAN SEE\n'
     +'You have aggregate access to Tom\'s full operating data. Use these tools as your default for strategic questions:\n'
-    +'- query_clients — filter/aggregate across all 330 clients (by town, team, status, etc.)\n'
+    +'- query_clients — filter/aggregate across the book of business (by town, team, status, etc.)\n'
     +'- revenue_summary — rollup revenue by period and dimension\n'
     +'- accounts_receivable_summary — AR aging and breakdowns\n'
     +'- cancellation_analysis — who cancels and how often\n'
     +'- team_performance — team metrics\n'
     +'- at_risk_clients — composite churn risk signals\n'
+    +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when Tom asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
     +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data Tom doesn\'t have in the app.\n'
     +'\nCite specific numbers from data. Never guess. If Tom asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
@@ -10981,9 +11080,16 @@ function _executeClaireToolCallInner(toolCall, message) {
       if (!bc) { _claireLastToolResult = 'No client found matching "'+input.client+'".'; return; }
       _claireLastToolResult = bc.fn+' '+bc.ln+(bc.bal>0?' has a balance of $'+Math.round(bc.bal)+'.':' has no outstanding balance.');
     } else {
-      var owing = PentaClients.filterClients(function(c){return c.bal>0;});
+      // Migration 008: default to active clients only.
+      var includeAll = (input.client_status === 'all');
+      var owing = PentaClients.filterClients(function(c){
+        if (c.bal <= 0) return false;
+        if (includeAll) return true;
+        return (c.status||'active') === 'active';
+      });
       var total = owing.reduce(function(s,c){return s+c.bal;},0);
-      _claireLastToolResult = owing.length+' client'+(owing.length===1?'':'s')+' with outstanding balances totaling $'+Math.round(total).toLocaleString()+'. '
+      _claireLastToolResult = owing.length+' client'+(owing.length===1?'':'s')+' with outstanding balances totaling $'+Math.round(total).toLocaleString()
+        +(includeAll?' (incl. paused/inactive)':' (active only)')+'. '
         +(owing.length?'Top: '+owing.sort(function(a,b){return b.bal-a.bal;}).slice(0,5).map(function(c){return c.fn+' '+c.ln+' $'+Math.round(c.bal);}).join(', ')+'.':'');
     }
 
@@ -11265,6 +11371,9 @@ function _executeClaireToolCallInner(toolCall, message) {
     var fTeam = (input.team||'').toUpperCase().trim();
     var fFreq = (input.frequency_code||'').trim();
     var qStatus = (input.status||'').toLowerCase().trim();
+    // Migration 008: client_status filter defaults to 'active'.
+    var qcCs = (input.client_status||'active').toLowerCase().trim();
+    if (qcCs !== 'all') qcList = qcList.filter(function(c){ return (c.status||'active') === qcCs; });
     if (fTown) qcList = qcList.filter(function(c){ return (c.city||'').toLowerCase().indexOf(fTown) >= 0; });
     if (fTeam) qcList = qcList.filter(function(c){ return (c.team||'').toUpperCase() === fTeam; });
     if (fFreq) qcList = qcList.filter(function(c){ return c.fc === fFreq; });
@@ -11310,7 +11419,7 @@ function _executeClaireToolCallInner(toolCall, message) {
       else if ((c.bal||0) > 0) key = ' $'+Math.round(c.bal);
       return c.fn+' '+c.ln+(c.city?' — '+c.city:'')+key;
     });
-    _claireLastToolResult = 'query_clients: '+qcList.length+' matched of '+qcAll.length+' total. '
+    _claireLastToolResult = 'query_clients: '+qcList.length+' matched of '+qcAll.length+' total (client_status='+qcCs+'). '
       +'Total balance $'+Math.round(qcTotalBal).toLocaleString()+', avg $'+Math.round(qcAvgBal)+'. '
       +'Towns — '+(townList.join('; ')||'none')+'. '
       +'Teams — '+(teamList.join('; ')||'none')+'. '
@@ -11370,7 +11479,13 @@ function _executeClaireToolCallInner(toolCall, message) {
       +' across '+rsJobs.length+' jobs (avg $'+Math.round(rsAvg)+').'+rsBreakdown;
 
   } else if (name === 'accounts_receivable_summary') {
-    var arList = PentaClients.filterClients(function(c){ return (c.bal||0) > 0; });
+    // Migration 008: default to active clients only; client_status='all' for full picture.
+    var arIncludeAll = (input.client_status === 'all');
+    var arList = PentaClients.filterClients(function(c){
+      if ((c.bal||0) <= 0) return false;
+      if (arIncludeAll) return true;
+      return (c.status||'active') === 'active';
+    });
     var arTotal = arList.reduce(function(s,c){ return s + (c.bal||0); }, 0);
     var arBuckets = { '0_30': 0, '31_60': 0, '61_90': 0, 'over_90': 0 };
     var arBucketCount = { '0_30': 0, '31_60': 0, '61_90': 0, 'over_90': 0 };
@@ -11515,7 +11630,12 @@ function _executeClaireToolCallInner(toolCall, message) {
       if (fc.indexOf('EFW') >= 0 || fc.indexOf('MON') >= 0) return 28;
       return null;
     }
-    var arcScored = PentaClients.list().map(function(c){
+    // Migration 008: at_risk only considers active clients by default.
+    var arcIncludeAll = (input.client_status === 'all');
+    var arcPool = arcIncludeAll
+      ? PentaClients.list()
+      : PentaClients.list().filter(function(c){ return (c.status||'active') === 'active'; });
+    var arcScored = arcPool.map(function(c){
       var reasons = [], score = 0;
       var cancels = _arcCancelCount(c);
       if (cancels >= 3) { reasons.push(cancels+' cancellations'); score += cancels; }
@@ -15929,6 +16049,53 @@ function openClientEdit(clientId) {
       </div>
     </div>
 
+    <!-- SECTION: Status & Pause (Migration 008) -->
+    <div style="margin-bottom:20px;background:var(--surface2);border-radius:12px;overflow:hidden">
+      <button type="button" onclick="(function(btn){var b=document.getElementById('ce-status-body');var open=b.style.display!=='none';b.style.display=open?'none':'block';btn.querySelector('.ce-status-caret').textContent=open?'▸':'▾';})(this)" style="width:100%;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase">Status & Pause</span>
+          ${c.status === 'paused' ? '<span style="font-size:10px;background:#f59e0b;color:#000;padding:1px 6px;border-radius:4px;font-weight:700">PAUSED</span>' : ''}
+          ${c.status === 'inactive' ? '<span style="font-size:10px;background:#6b7280;color:#fff;padding:1px 6px;border-radius:4px;font-weight:700">INACTIVE</span>' : ''}
+        </div>
+        <span class="ce-status-caret" style="color:var(--muted);font-size:14px">${c.status && c.status !== 'active' ? '▾' : '▸'}</span>
+      </button>
+      <div id="ce-status-body" style="display:${c.status && c.status !== 'active' ? 'block' : 'none'};padding:0 14px 14px 14px">
+        <div style="margin-bottom:10px">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Status</div>
+          <select id="ce-status" class="field-input" style="width:100%" onchange="(function(v){var p=document.getElementById('ce-status-pause-fields');var hA=document.getElementById('ce-status-helper-active');var hP=document.getElementById('ce-status-helper-paused');var hI=document.getElementById('ce-status-helper-inactive');p.style.display=(v==='paused')?'block':'none';hA.style.display=(v==='active')?'block':'none';hP.style.display=(v==='paused')?'block':'none';hI.style.display=(v==='inactive')?'block':'none';})(this.value)">
+            <option value="active" ${(!c.status||c.status==='active')?'selected':''}>Active</option>
+            <option value="paused" ${c.status==='paused'?'selected':''}>Paused</option>
+            <option value="inactive" ${c.status==='inactive'?'selected':''}>Inactive</option>
+          </select>
+        </div>
+        <div id="ce-status-pause-fields" style="display:${c.status==='paused'?'block':'none'}">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div>
+              <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Pause Start</div>
+              <input id="ce-pause-start" type="date" class="field-input" style="width:100%" value="${(function(){var d=c.pause_start||'';if(d&&d.includes('/')){var p=d.split('/');return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0');}return d||new Date().toISOString().slice(0,10);})()}">
+            </div>
+            <div>
+              <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Pause End <span style="color:var(--muted);font-weight:400">(optional)</span></div>
+              <input id="ce-pause-end" type="date" class="field-input" style="width:100%" value="${(function(){var d=c.pause_end||'';if(d&&d.includes('/')){var p=d.split('/');return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0');}return d||'';})()}">
+            </div>
+          </div>
+          <div style="margin-bottom:8px">
+            <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Pause Reason</div>
+            <input id="ce-pause-reason" class="field-input" style="width:100%" placeholder="snowbird, vacation, renovation..." value="${(c.pause_reason||'').replace(/"/g,'&quot;')}">
+          </div>
+        </div>
+        <div id="ce-status-helper-active" style="display:${(!c.status||c.status==='active')?'block':'none'};font-size:12px;color:var(--muted);background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:8px;padding:8px 10px">
+          ✓ Active client. On the schedule and counted in operational views.
+        </div>
+        <div id="ce-status-helper-paused" style="display:${c.status==='paused'?'block':'none'};font-size:12px;color:var(--muted);background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:8px;padding:8px 10px">
+          ⏸ Paused clients are removed from the schedule until the pause end date, or until you manually set them back to active.
+        </div>
+        <div id="ce-status-helper-inactive" style="display:${c.status==='inactive'?'block':'none'};font-size:12px;color:var(--muted);background:rgba(107,114,128,0.12);border:1px solid rgba(107,114,128,0.25);border-radius:8px;padding:8px 10px">
+          💤 Inactive clients are kept in your database for marketing and history but removed from operational views. You can reactivate them anytime.
+        </div>
+      </div>
+    </div>
+
     <!-- SECTION: Upcoming Cleans (tap to edit) -->
     ${(sched.length > 0 || oneOffFuture.length > 0) ? `
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Upcoming Cleans</div>
@@ -16333,6 +16500,34 @@ function saveClientEdit(clientId) {
     pref_time: document.getElementById('ce-pref-time').value || null
   };
   editPatch.anchor = newAnchor;
+
+  // Migration 008: status & pause fields
+  var ceStatusEl = document.getElementById('ce-status');
+  if (ceStatusEl) {
+    var newStatus = ceStatusEl.value || 'active';
+    var oldStatus = c.status || 'active';
+    var isoToMdy = function(iso){ if(!iso) return null; var p=String(iso).split('-'); if(p.length!==3) return null; return p[1]+'/'+p[2]+'/'+p[0]; };
+    var psEl = document.getElementById('ce-pause-start');
+    var peEl = document.getElementById('ce-pause-end');
+    var prEl = document.getElementById('ce-pause-reason');
+    var psRaw = psEl ? psEl.value.trim() : '';
+    var peRaw = peEl ? peEl.value.trim() : '';
+    var prRaw = prEl ? prEl.value.trim() : '';
+    editPatch.status = newStatus;
+    if (newStatus === 'paused') {
+      editPatch.pause_start = isoToMdy(psRaw) || (function(){var d=new Date();return String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')+'/'+d.getFullYear();})();
+      editPatch.pause_end = isoToMdy(peRaw);
+      editPatch.pause_reason = prRaw || null;
+    } else {
+      editPatch.pause_start = null;
+      editPatch.pause_end = null;
+      editPatch.pause_reason = null;
+    }
+    if (newStatus !== oldStatus) {
+      editPatch.status_changed_at = new Date().toISOString();
+    }
+  }
+
   PentaClients.updateClient(clientId, editPatch);
   // Migration 007 follow-up: re-derive next from the (possibly new) anchor/fc
   // projection. Helper is a no-op when nothing changed; for new drafts with no
@@ -16957,10 +17152,31 @@ function openZillowLookup() {
   window.open(url, '_blank');
 }
 
+// Migration 008: balance/AR views default to active clients only.
+// Toggle to include paused/inactive for full-picture override.
+window._balIncludeNonActive = window._balIncludeNonActive || false;
+function _balFilterActive(c) {
+  if (parseFloat(c.bal) <= 0) return false;
+  if (window._balIncludeNonActive) return true;
+  return (c.status || 'active') === 'active';
+}
+function toggleBalIncludeNonActive() {
+  window._balIncludeNonActive = !window._balIncludeNonActive;
+  openBalanceFollowup();
+}
+
 function openBalanceFollowup() {
-  const clients = PentaClients.filterClients(c => parseFloat(c.bal) > 0);
+  const clients = PentaClients.filterClients(_balFilterActive);
   const subtitle = document.getElementById('bal-subtitle');
-  if (subtitle) subtitle.textContent = clients.length + ' clients with outstanding balances · $' + clients.reduce((s,c) => s + parseFloat(c.bal||0), 0).toFixed(2) + ' total';
+  if (subtitle) {
+    var allOwing = PentaClients.filterClients(c => parseFloat(c.bal) > 0);
+    var hidden = allOwing.length - clients.length;
+    var sub = clients.length + ' clients with outstanding balances · $' + clients.reduce((s,c) => s + parseFloat(c.bal||0), 0).toFixed(2) + ' total';
+    if (hidden > 0 || window._balIncludeNonActive) {
+      sub += ' · <button onclick="toggleBalIncludeNonActive()" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;text-decoration:underline;padding:0">' + (window._balIncludeNonActive ? 'Hide ' + (allOwing.length - PentaClients.filterClients(function(c){return parseFloat(c.bal)>0 && (c.status||'active')==='active';}).length) + ' paused/inactive' : 'Show ' + hidden + ' paused/inactive') + '</button>';
+    }
+    subtitle.innerHTML = sub;
+  }
 
   // Set default message
   const tmpl = document.getElementById('bal-msg-template');
@@ -17005,7 +17221,7 @@ function openBalanceFollowup() {
 }
 
 function updateBalSendBtn() {
-  const clients = PentaClients.filterClients(c => parseFloat(c.bal) > 0);
+  const clients = PentaClients.filterClients(_balFilterActive);
   const checked = clients.filter(c => {
     const chk = document.getElementById('bal-chk-' + c.id);
     return chk && chk.checked;
@@ -17015,7 +17231,7 @@ function updateBalSendBtn() {
 }
 
 function sendAllBalanceFollowups() {
-  const clients = PentaClients.filterClients(c => parseFloat(c.bal) > 0);
+  const clients = PentaClients.filterClients(_balFilterActive);
   const template = (document.getElementById('bal-msg-template') || {}).value || '';
   const selected = clients.filter(c => {
     const chk = document.getElementById('bal-chk-' + c.id);
