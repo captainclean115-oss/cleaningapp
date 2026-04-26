@@ -7815,11 +7815,63 @@ function _claireRenderBubble(who, html) {
 // Tom sees ONE unified reply + ONE D-ID video at the end, instead of a
 // choppy "Done A" / "Done B" / "Done C" sequence with three videos.
 var _claireSilent = false;
-function claireReply(msg) {
+
+// Lightweight markdown → HTML converter for research-mode replies. Voice
+// mode bypasses this and renders Claire's plaintext as-is (existing
+// behavior, unchanged). Sonnet emits common markdown — headers (##),
+// bullets (- or *), bold (**x**), italic (*x*), short paragraphs separated
+// by blank lines — and we convert those to small block elements styled
+// inline so they live cleanly inside the chat bubble. HTML is escaped first
+// so any stray < or & in the model's output can't break out as real markup.
+function _claireMarkdownToHtml(text) {
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  var lines = esc(text).split(/\r?\n/);
+  var blocks = [];
+  var i = 0;
+  while (i < lines.length) {
+    var line = lines[i];
+    var hm = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    var bm = line.match(/^\s*[-*]\s+(.+)$/);
+    if (hm) {
+      var lvl = Math.min(hm[1].length, 4) + 2;  // ## → h4, ### → h5
+      blocks.push('<h' + lvl + ' style="margin:12px 0 4px;font-size:14px;font-weight:700">' + hm[2] + '</h' + lvl + '>');
+      i++;
+    } else if (bm) {
+      var items = [];
+      while (i < lines.length) {
+        var bm2 = lines[i].match(/^\s*[-*]\s+(.+)$/);
+        if (!bm2) break;
+        items.push('<li style="margin:2px 0">' + bm2[1] + '</li>');
+        i++;
+      }
+      blocks.push('<ul style="margin:6px 0;padding-left:20px">' + items.join('') + '</ul>');
+    } else if (line.trim() === '') {
+      i++;
+    } else {
+      var paraLines = [];
+      while (i < lines.length && lines[i].trim() !== '' && !lines[i].match(/^(#{1,6})\s+/) && !lines[i].match(/^\s*[-*]\s+/)) {
+        paraLines.push(lines[i]);
+        i++;
+      }
+      blocks.push('<p style="margin:6px 0;line-height:1.5">' + paraLines.join(' ') + '</p>');
+    }
+  }
+  var html = blocks.join('');
+  // Inline transforms — apply AFTER block parsing so they don't conflict
+  // with bullet-leading "*". Bold first (greedy on **), then italic (single *).
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>');
+  return html;
+}
+
+function claireReply(msg, mode) {
   claireHideTyping();
   if (_claireSilent) return;
-  _claireRenderBubble('claire', msg);
-  claireSpeak(msg);
+  // Research mode: render markdown structure (headers, bullets, paragraphs).
+  // Voice mode (default): plain text passthrough — existing behavior preserved.
+  var html = (mode === 'research') ? _claireMarkdownToHtml(msg) : msg;
+  _claireRenderBubble('claire', html);
+  claireSpeak(msg);  // _claireStripForSpeech inside already strips markdown for TTS
 }
 
 // ── Claire voice (Tier 1: browser speechSynthesis) ──
@@ -10546,12 +10598,12 @@ async function processVoiceCommand(text) {
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
         +'- Tom is reading this on screen, not listening. Take the room you need.\n'
-        +'- Structure: lead with a one-line bottom-line answer, then break into 2-4 sub-sections covering the key dimensions (data, market context, comparison, strategic take). Use sub-headers in plain text — no markdown asterisks/hashes. Just newlines and capitalized labels like "What the data shows" or "Strategic take".\n'
-        +'- Cite specific sources by name when using web_search results: "according to Angi", "Care.com data shows", "Julianaspristinecleaning\'s 2026 rate guide". Tom needs to see your work.\n'
+        +'- Structure for readability — Tom is scanning, not reading word-by-word. Lead with a one-line bottom-line answer in bold (**like this**). Then break the response into 2-4 sub-sections with bold sub-headers (## section header) covering different angles: data, market context, comparison, strategic take, recommendations. Use bullet points (- or *) when listing 3+ items, comparing options, or breaking out specifics like price ranges or competitor names. Use short paragraphs — 2-3 sentences max per paragraph. Insert blank lines between sections.\n'
+        +'- Markdown is OK in research mode (bold, headers, bullets) — it gives Tom visual structure on screen. The TTS engine handles markdown gracefully if he plays it aloud.\n'
+        +'- Cite sources inline as you use them: "according to Angi", "Care.com data shows", "Julianaspristinecleaning\'s 2026 rate guide". Don\'t dump citations at the end.\n'
         +'- Use specific numbers from his data and from web sources. Anchor every claim.\n'
-        +'- Length: 4-8 paragraphs is normal for a research answer. Don\'t pad, but don\'t chop. If the question deserves depth, give depth.\n'
+        +'- Length: 4-8 paragraphs is normal for a research answer, broken into sections. Don\'t pad, but don\'t chop. If the question deserves depth, give depth.\n'
         +'- End with 1-2 sharpening questions if more context would refine the answer ("Want me to pull pricing from Merry Maids\' site for an apples-to-apples?", "Do you have a current rate card to benchmark against?").\n'
-        +'- Still no markdown — no **bold**, no bullets with `-` or `*`, no `#` headers. Plain text with capitalization and line breaks for structure. The TTS engine reads this aloud if Tom hits play, so keep it readable spoken too.\n'
         +'- Strategic, blunt when warranted, but never dismissive. "Stop trying" is the wrong tone — explain the trade-offs, don\'t shut down the conversation.\n'
         +'- For market/competitor/industry questions, USE web_search proactively. Tom expects you to actually look up the local data, not reason from training. Search for specific local info: "South Shore MA cleaning rates 2026", "Merry Maids South Shore pricing", "Massachusetts house cleaning average cost", etc. Cite every source.\n\n')
       : ('VOICE STYLE (your replies are spoken aloud — keep tight)\n'
@@ -10668,7 +10720,7 @@ async function processVoiceCommand(text) {
       _claireSilent = false;
       if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
       if (textReply) {
-        claireReply(textReply);
+        claireReply(textReply, _claireMode);
       } else if (!didAnyToolCall) {
         claireReply('I\'m not sure what you need — can you say that differently?');
       } else {
