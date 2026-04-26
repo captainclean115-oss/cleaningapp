@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#F7F7F5">
+<title>Welcome to Penta</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    background: #F7F7F5;
+    color: #1a1a1a;
+    min-height: 100vh;
+    padding: 24px;
+    padding-top: calc(24px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  .card {
+    max-width: 420px;
+    margin: 32px auto;
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 32px 24px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  }
+  h1 { margin: 0 0 8px; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+  p.sub { color: #6b7280; margin: 0 0 24px; font-size: 14px; line-height: 1.5; }
+  label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 600; color: #374151; }
+  input[type=password], input[type=text] {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #1a1a1a;
+    -webkit-appearance: none;
+  }
+  input:focus {
+    outline: none;
+    border-color: #5E5CE6;
+    box-shadow: 0 0 0 3px rgba(94, 92, 230, 0.15);
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    background: #5E5CE6;
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    margin-top: 20px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  .err {
+    color: #b91c1c;
+    background: rgba(220, 38, 38, 0.08);
+    border: 1px solid rgba(220, 38, 38, 0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-top: 14px;
+    line-height: 1.4;
+  }
+  .ok {
+    color: #166534;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-top: 14px;
+  }
+  .info {
+    background: #F7F7F5;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-top: 20px;
+    font-size: 13px;
+    color: #4b5563;
+    line-height: 1.5;
+  }
+  .info b { color: #1a1a1a; }
+  .email-box {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #ffffff;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    font-size: 13px;
+    word-break: break-all;
+  }
+  a.cta {
+    display: block;
+    text-align: center;
+    margin-top: 24px;
+    padding: 14px;
+    background: #5E5CE6;
+    color: #ffffff;
+    border-radius: 10px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+
+  <div id="form-step">
+    <h1>Welcome to Penta</h1>
+    <p class="sub">Set your password to get started.</p>
+    <label for="pw">Create a password (8+ characters)</label>
+    <input type="password" id="pw" autocomplete="new-password" autofocus>
+    <label for="pw2">Confirm password</label>
+    <input type="password" id="pw2" autocomplete="new-password">
+    <button id="submit-btn" type="button">Continue</button>
+    <div class="err" id="err" style="display:none"></div>
+  </div>
+
+  <div id="loc-step" style="display:none">
+    <h1>One more step</h1>
+    <p class="sub">Penta needs your location while you're working — to log clock-ins, job starts, and photo timestamps. This is required.</p>
+    <button id="loc-btn" type="button">Allow Location</button>
+    <div class="err" id="loc-err" style="display:none"></div>
+  </div>
+
+  <div id="done-step" style="display:none">
+    <h1>You're all set ✓</h1>
+    <p class="sub">Sign in to Penta with the email and password below.</p>
+    <div class="info">
+      <b>Your sign-in email:</b>
+      <div class="email-box" id="done-email">—</div>
+    </div>
+    <a class="cta" href="https://captainclean115-oss.github.io/cleaningapp/">Open Penta →</a>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var ENDPOINT = 'https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/accept-invite';
+
+  var params = new URLSearchParams(location.search);
+  var token = params.get('token');
+
+  if (!token) {
+    document.getElementById('card').innerHTML =
+      '<h1>Invalid link</h1>' +
+      '<p class="sub">This invite link is missing its token. Ask your manager to resend the invite.</p>';
+    return;
+  }
+
+  var formStep = document.getElementById('form-step');
+  var locStep  = document.getElementById('loc-step');
+  var doneStep = document.getElementById('done-step');
+
+  var pwEl    = document.getElementById('pw');
+  var pw2El   = document.getElementById('pw2');
+  var btn     = document.getElementById('submit-btn');
+  var errEl   = document.getElementById('err');
+  var locBtn  = document.getElementById('loc-btn');
+  var locErr  = document.getElementById('loc-err');
+  var doneEm  = document.getElementById('done-email');
+
+  function showErr(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
+  function hideErr()    { errEl.textContent = '';  errEl.style.display = 'none';  }
+
+  pwEl.addEventListener('input', hideErr);
+  pw2El.addEventListener('input', hideErr);
+
+  // Submit on Enter from either field
+  function maybeSubmit(e) { if (e.key === 'Enter') btn.click(); }
+  pwEl.addEventListener('keydown', maybeSubmit);
+  pw2El.addEventListener('keydown', maybeSubmit);
+
+  btn.addEventListener('click', async function () {
+    hideErr();
+    var pw  = pwEl.value || '';
+    var pw2 = pw2El.value || '';
+    if (pw.length < 8)   { showErr('Password must be at least 8 characters.'); return; }
+    if (pw !== pw2)      { showErr('Passwords do not match.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Setting up…';
+
+    try {
+      var resp = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token, password: pw })
+      });
+
+      var result = null;
+      try { result = await resp.json(); } catch (e) {}
+
+      if (!resp.ok) {
+        showErr((result && result.error) || ('Error ' + resp.status));
+        btn.disabled = false;
+        btn.textContent = 'Continue';
+        return;
+      }
+
+      if (result && result.email) doneEm.textContent = result.email;
+
+      formStep.style.display = 'none';
+      locStep.style.display  = 'block';
+    } catch (e) {
+      showErr('Network error. Check your connection and try again.');
+      btn.disabled = false;
+      btn.textContent = 'Continue';
+    }
+  });
+
+  locBtn.addEventListener('click', function () {
+    locErr.style.display = 'none';
+    if (!('geolocation' in navigator)) {
+      locErr.textContent = 'Location is not supported on this browser.';
+      locErr.style.display = 'block';
+      return;
+    }
+    locBtn.disabled = true;
+    locBtn.textContent = 'Requesting…';
+    navigator.geolocation.getCurrentPosition(
+      function () {
+        locStep.style.display  = 'none';
+        doneStep.style.display = 'block';
+      },
+      function () {
+        locErr.textContent =
+          'Location is required to use Penta. Open Settings → Safari → Location, allow it for this site, then tap Allow Location again.';
+        locErr.style.display = 'block';
+        locBtn.disabled = false;
+        locBtn.textContent = 'Allow Location';
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+})();
+</script>
+</body>
+</html>

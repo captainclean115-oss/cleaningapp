@@ -5128,6 +5128,438 @@ window.PentaClients = (function() {
   return api;
 })();
 
+
+// =====================================================================
+// window.PentaEmployees — Sprint 4 Phase 4A facade
+// Backed by Supabase employees table. localStorage emp_roster kept as
+// fallback cache only. Lazy hydrate on first list()/get()/update().
+// Backfill is idempotent and exposed for the boot router to call once.
+// =====================================================================
+(function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  var BACKFILL_FLAG = 'phase4a_emp_backfilled_v1';
+
+  var _cache = [];
+  var _cacheReady = false;
+  var _hydrating = null;     // in-flight promise, prevents double-hydrate
+  var _listeners = [];
+
+  function _notify() {
+    for (var i = 0; i < _listeners.length; i++) {
+      try { _listeners[i](); } catch (e) { console.error(e); }
+    }
+  }
+
+  function _slug(first, last) {
+    var base = (String(first || '') + '.' + String(last || '')).toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9.]/g, '');
+    return base + '@employees.penta.internal';
+  }
+
+  function _readRoster() {
+    try { return JSON.parse(localStorage.getItem('emp_roster') || '[]') || []; }
+    catch (e) { return []; }
+  }
+
+  function _splitName(name) {
+    var n = String(name || '').trim();
+    if (!n) return { first: 'Unknown', last: '-' };
+    var parts = n.split(/\s+/);
+    var first = parts[0];
+    var last = parts.slice(1).join(' ');
+    return { first: first, last: last || '-' };
+  }
+
+  function _langToCulture(lang) {
+    var map = { es: 'mx', pt: 'br', ko: 'kr', en: 'us' };
+    return map[String(lang || '').toLowerCase()] || 'generic';
+  }
+
+  function _toRow(rosterEntry, businessId) {
+    var nm = _splitName(rosterEntry.name);
+    var realEmail = String(rosterEntry.email || '').trim();
+    var emailIsInternal = !realEmail;
+    var email = realEmail || _slug(nm.first, nm.last);
+    var role = Array.isArray(rosterEntry.role) ? rosterEntry.role : [];
+    var rosterStatus = String(rosterEntry.status || '').toLowerCase();
+    return {
+      business_id: businessId,
+      first_name: nm.first,
+      last_name: nm.last,
+      email: email,
+      email_is_internal: emailIsInternal,
+      phone: rosterEntry.phone ? String(rosterEntry.phone).trim() : null,
+      is_team_leader: role.indexOf('TL') !== -1,
+      is_driver: role.indexOf('D') !== -1,
+      culture_tag: _langToCulture(rosterEntry.lang),
+      status: rosterStatus === 'active' ? 'invited' : 'suspended',
+      legacy_roster_id: String(rosterEntry.id || rosterEntry.name || '')
+    };
+  }
+
+  async function _businessId() {
+    var sb = SB();
+    if (!sb) return null;
+    try {
+      var ures = await sb.auth.getUser();
+      var user = ures && ures.data && ures.data.user;
+      if (!user) return null;
+      var pres = await sb.from('users').select('business_id').eq('id', user.id).maybeSingle();
+      return pres && pres.data && pres.data.business_id || null;
+    } catch (e) { console.error('PentaEmployees _businessId error', e); return null; }
+  }
+
+  function _hydrate() {
+    if (_hydrating) return _hydrating;
+    _hydrating = (async function() {
+      var sb = SB();
+      if (!sb) { _hydrating = null; return false; }
+      var bid = await _businessId();
+      if (!bid) { _hydrating = null; return false; }
+      var res = await sb.from('employees')
+        .select('*')
+        .eq('business_id', bid)
+        .is('deleted_at', null)
+        .order('first_name');
+      if (res.error) {
+        console.error('PentaEmployees hydrate error', res.error);
+        _hydrating = null;
+        return false;
+      }
+      _cache = res.data || [];
+      _cacheReady = true;
+      _notify();
+      _hydrating = null;
+      return true;
+    })();
+    return _hydrating;
+  }
+
+  async function _backfillFromRoster() {
+    try {
+      if (localStorage.getItem(BACKFILL_FLAG) === '1') return { skipped: 'already-done' };
+      var sb = SB();
+      if (!sb) return { skipped: 'no-supabase' };
+      var bid = await _businessId();
+      if (!bid) return { skipped: 'no-business' };
+
+      var roster = _readRoster();
+      if (!roster.length) {
+        localStorage.setItem(BACKFILL_FLAG, '1');
+        return { skipped: 'empty-roster' };
+      }
+
+      var existingRes = await sb.from('employees')
+        .select('legacy_roster_id')
+        .eq('business_id', bid)
+        .not('legacy_roster_id', 'is', null);
+      var seen = {};
+      (existingRes.data || []).forEach(function(r) { if (r.legacy_roster_id) seen[r.legacy_roster_id] = true; });
+
+      var rows = [];
+      for (var i = 0; i < roster.length; i++) {
+        var row = _toRow(roster[i], bid);
+        if (row.legacy_roster_id && !seen[row.legacy_roster_id]) rows.push(row);
+      }
+
+      if (!rows.length) {
+        localStorage.setItem(BACKFILL_FLAG, '1');
+        return { inserted: 0, skipped: 'all-already-imported' };
+      }
+
+      var insRes = await sb.from('employees').insert(rows).select();
+      if (insRes.error) {
+        console.error('PentaEmployees backfill insert error', insRes.error);
+        return { error: insRes.error.message };
+      }
+
+      localStorage.setItem(BACKFILL_FLAG, '1');
+      _cacheReady = false;
+      await _hydrate();
+      return { inserted: (insRes.data || []).length };
+    } catch (e) {
+      console.error('PentaEmployees backfill threw', e);
+      return { error: String(e && e.message || e) };
+    }
+  }
+
+  async function list() {
+    if (!_cacheReady) await _hydrate();
+    return _cache.slice();
+  }
+  async function get(id) {
+    if (!_cacheReady) await _hydrate();
+    for (var i = 0; i < _cache.length; i++) if (_cache[i].id === id) return _cache[i];
+    return null;
+  }
+  async function update(id, patch) {
+    if (!_cacheReady) await _hydrate();
+    var sb = SB();
+    if (!sb) throw new Error('No Supabase client');
+    var res = await sb.from('employees').update(patch).eq('id', id).select().maybeSingle();
+    if (res.error) throw res.error;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].id === id && res.data) { _cache[i] = res.data; break; }
+    }
+    _notify();
+    return res.data;
+  }
+  function onChange(fn) {
+    _listeners.push(fn);
+    return function unsub() {
+      var i = _listeners.indexOf(fn);
+      if (i >= 0) _listeners.splice(i, 1);
+    };
+  }
+  function isReady() { return _cacheReady; }
+  async function ready() { if (!_cacheReady) await _hydrate(); }
+
+  window.PentaEmployees = {
+    list: list,
+    get: get,
+    update: update,
+    onChange: onChange,
+    isReady: isReady,
+    ready: ready,
+    _hydrate: _hydrate,
+    _backfillFromRoster: _backfillFromRoster
+  };
+})();
+
+// =====================================================================
+// Penta invite helpers — Sprint 4 Phase 4B (manager UI side)
+// All take rosterId (legacy emp_roster id) and resolve to employees.id
+// internally via PentaEmployees cache.
+// =====================================================================
+(function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  async function _resolveEmployeeByRoster(rosterId) {
+    if (!window.PentaEmployees) return null;
+    try { await window.PentaEmployees.ready(); } catch (e) {}
+    var rows = [];
+    try { rows = await window.PentaEmployees.list(); } catch (e) { return null; }
+    var rid = String(rosterId || '');
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].legacy_roster_id || '') === rid) return rows[i];
+    }
+    return null;
+  }
+
+  function _relativeTime(iso) {
+    var t = new Date(iso).getTime();
+    if (!t) return '';
+    var ms = Date.now() - t;
+    if (ms < 0) ms = -ms;
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return 'just now';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    var d = Math.floor(h / 24);
+    if (d < 30) return d + 'd ago';
+    return new Date(iso).toLocaleDateString();
+  }
+
+  async function pentaGenerateInviteToken() {
+    var buf = new Uint8Array(32);
+    crypto.getRandomValues(buf);
+    var bin = '';
+    for (var i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+
+  async function pentaInviteStatus(rosterId) {
+    var emp = await _resolveEmployeeByRoster(rosterId);
+    if (!emp) return { state: 'none' };
+    if (emp.auth_user_id) return { state: 'active' };
+    var sb = SB(); if (!sb) return { state: 'none' };
+    try {
+      var res = await sb.from('employee_invites')
+        .select('id, accepted_at, revoked_at, expires_at, created_at')
+        .eq('employee_id', emp.id)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (res.error) return { state: 'none' };
+      var arr = res.data || [];
+      if (!arr.length) return { state: 'none' };
+      var inv = arr[0];
+      if (inv.accepted_at) return { state: 'active', at: inv.accepted_at };
+      if (inv.revoked_at)  return { state: 'revoked', at: inv.revoked_at };
+      if (new Date(inv.expires_at).getTime() < Date.now()) return { state: 'expired', at: inv.expires_at };
+      return { state: 'invited', at: inv.created_at };
+    } catch (e) { return { state: 'none' }; }
+  }
+
+  function _pillHTML(state) {
+    var dot = '#9CA3AF', label = 'Not invited';
+    if (state === 'active')  { dot = '#34D399'; label = 'Active'; }
+    if (state === 'invited') { dot = '#FBBF24'; label = 'Invited'; }
+    if (state === 'expired') { dot = '#FB923C'; label = 'Expired'; }
+    if (state === 'revoked') { dot = '#F87171'; label = 'Revoked'; }
+    return '<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)">'
+      + '<span style="width:7px;height:7px;border-radius:50%;background:' + dot + '"></span>'
+      + label + '</span>';
+  }
+
+  function pentaRenderInvitePill(rosterId, target) {
+    if (!target) return;
+    target.innerHTML = '<span style="font-size:11px;color:var(--muted)">…</span>';
+    pentaInviteStatus(rosterId)
+      .then(function(s) { target.innerHTML = _pillHTML(s.state); })
+      .catch(function() { target.innerHTML = _pillHTML('none'); });
+  }
+
+  function _chipText(s) {
+    if (s.state === 'active')  return '🟢 Active';
+    if (s.state === 'invited') return '🟡 Invited' + (s.at ? ' ' + _relativeTime(s.at) : '');
+    if (s.state === 'expired') return '🟠 Expired' + (s.at ? ' ' + _relativeTime(s.at) : '');
+    if (s.state === 'revoked') return '🔴 Revoked';
+    return '⚪ Not invited yet';
+  }
+
+  function pentaRenderInviteChip(rosterId, target, sendBtn) {
+    if (!target) return;
+    target.textContent = '…';
+    pentaInviteStatus(rosterId).then(function(s) {
+      target.textContent = _chipText(s);
+      if (sendBtn) {
+        if (s.state === 'invited' || s.state === 'expired' || s.state === 'revoked') sendBtn.textContent = 'Resend Invite';
+        else if (s.state === 'active') sendBtn.textContent = 'Resend Invite (resets password)';
+        else sendBtn.textContent = 'Send Invite';
+      }
+    }).catch(function() { target.textContent = _chipText({ state: 'none' }); });
+  }
+
+  async function pentaSendInvite(rosterId) {
+    var sb = SB(); if (!sb) { alert('Auth not ready'); return; }
+    var emp = await _resolveEmployeeByRoster(rosterId);
+    if (!emp) { alert('No matching employee row in Supabase yet. Reload and try again — backfill may still be running.'); return; }
+    if (!emp.phone) { alert('No phone number on file. Add one in the Edit tab first.'); return; }
+
+    var token = await pentaGenerateInviteToken();
+    var expires = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    var ins = await sb.from('employee_invites').insert({
+      business_id: emp.business_id,
+      employee_id: emp.id,
+      token: token,
+      phone_sent_to: emp.phone,
+      expires_at: expires
+    });
+    if (ins.error) { alert('Could not create invite: ' + ins.error.message); return; }
+
+    var url = 'https://captainclean115-oss.github.io/cleaningapp/accept-invite.html?token=' + token;
+    var body = 'Hi ' + (emp.first_name || 'team') + ', welcome to Penta! Set your password: ' + url + ' Link expires in 48 hours.';
+    pentaShowInviteSendModal(emp, body, url);
+  }
+
+  function pentaShowInviteSendModal(emp, smsBody, url) {
+    var existing = document.getElementById('penta-invite-send-overlay');
+    if (existing) existing.remove();
+
+    var phone = String(emp.phone || '').replace(/\D/g, '');
+    if (phone.length === 10) phone = '1' + phone;
+    var rcHref = 'rcmobile://sms?number=' + phone + '&body=' + encodeURIComponent(smsBody);
+    var safeBody = String(smsBody).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    var ov = document.createElement('div');
+    ov.id = 'penta-invite-send-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:24px;';
+    ov.innerHTML = ''
+      + '<div style="max-width:440px;width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif">'
+      +   '<div style="font-size:18px;font-weight:700;margin-bottom:6px">Send invite to ' + (emp.first_name || '') + '</div>'
+      +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tap to open RingCentral with the SMS pre-filled, then hit Send.</div>'
+      +   '<div style="background:var(--surface2);border-radius:10px;padding:12px;font-size:13px;line-height:1.4;margin-bottom:16px;white-space:pre-wrap;word-break:break-word">' + safeBody + '</div>'
+      +   '<a href="' + rcHref + '" style="display:block;text-align:center;padding:14px;background:#FF7A00;color:#fff;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:10px">📱 Open RingCentral</a>'
+      +   '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Sending to ' + (emp.phone || '—') + '</div>'
+      +   '<button type="button" id="penta-invite-send-close" style="width:100%;padding:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer">Close</button>'
+      + '</div>';
+    document.body.appendChild(ov);
+    document.getElementById('penta-invite-send-close').addEventListener('click', function() { ov.remove(); });
+  }
+
+  function _randomPassword() {
+    var chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    var s = '';
+    for (var i = 0; i < 10; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+    return 'penta-' + s;
+  }
+
+  function pentaShowSetTempPasswordModal(rosterId) {
+    var existing = document.getElementById('penta-temp-pw-overlay');
+    if (existing) existing.remove();
+    var ov = document.createElement('div');
+    ov.id = 'penta-temp-pw-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:24px;';
+    ov.innerHTML = ''
+      + '<div style="max-width:420px;width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif">'
+      +   '<div style="font-size:18px;font-weight:700;margin-bottom:6px">Set temporary password</div>'
+      +   '<div style="font-size:13px;color:var(--muted);margin-bottom:14px">Employee will be required to change it on first login.</div>'
+      +   '<div style="display:flex;gap:8px;margin-bottom:14px">'
+      +     '<input id="penta-temp-pw-input" type="text" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace" value="penta2026">'
+      +     '<button type="button" id="penta-temp-pw-regen" title="Generate random" style="padding:0 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:16px;cursor:pointer">↻</button>'
+      +   '</div>'
+      +   '<div id="penta-temp-pw-msg" style="font-size:12px;color:var(--muted);min-height:18px;margin-bottom:8px"></div>'
+      +   '<div style="display:flex;gap:8px">'
+      +     '<button type="button" id="penta-temp-pw-cancel" style="flex:1;padding:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer">Cancel</button>'
+      +     '<button type="button" id="penta-temp-pw-save" style="flex:1;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer">Save</button>'
+      +   '</div>'
+      + '</div>';
+    document.body.appendChild(ov);
+    var input = document.getElementById('penta-temp-pw-input');
+    var msg = document.getElementById('penta-temp-pw-msg');
+    document.getElementById('penta-temp-pw-regen').addEventListener('click', function() { input.value = _randomPassword(); });
+    document.getElementById('penta-temp-pw-cancel').addEventListener('click', function() { ov.remove(); });
+    document.getElementById('penta-temp-pw-save').addEventListener('click', async function() {
+      var pw = (input.value || '').trim();
+      if (pw.length < 8) { msg.style.color = '#F87171'; msg.textContent = 'Must be at least 8 characters.'; return; }
+      msg.style.color = 'var(--muted)'; msg.textContent = 'Saving…';
+      var r = await pentaSetTempPassword(rosterId, pw);
+      if (r && r.success) {
+        msg.style.color = '#34D399';
+        msg.textContent = 'Saved. Tell the employee their temp password is: ' + pw;
+      } else {
+        msg.style.color = '#F87171';
+        msg.textContent = (r && r.error) || 'Could not save — Edge Function may not be deployed yet. Try Send Invite instead, or contact support.';
+      }
+    });
+  }
+
+  async function pentaSetTempPassword(rosterId, tempPassword) {
+    var sb = SB(); if (!sb) return { error: 'Auth not ready' };
+    var emp = await _resolveEmployeeByRoster(rosterId);
+    if (!emp) return { error: 'No matching employee row in Supabase' };
+    var sess;
+    try { sess = (await sb.auth.getSession()).data.session; } catch (e) { return { error: 'Session not available' }; }
+    if (!sess) return { error: 'Not signed in' };
+    try {
+      var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/set-employee-password', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + sess.access_token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employee_id: emp.id, temp_password: tempPassword })
+      });
+      var data = null;
+      try { data = await resp.json(); } catch (e) {}
+      if (!resp.ok) return { error: (data && data.error) || ('HTTP ' + resp.status + ' — Edge Function may not be deployed yet.') };
+      return { success: true };
+    } catch (e) {
+      return { error: 'Network error — Edge Function may not be deployed yet.' };
+    }
+  }
+
+  window.pentaGenerateInviteToken      = pentaGenerateInviteToken;
+  window.pentaInviteStatus             = pentaInviteStatus;
+  window.pentaRenderInvitePill         = pentaRenderInvitePill;
+  window.pentaRenderInviteChip         = pentaRenderInviteChip;
+  window.pentaSendInvite               = pentaSendInvite;
+  window.pentaShowInviteSendModal      = pentaShowInviteSendModal;
+  window.pentaShowSetTempPasswordModal = pentaShowSetTempPasswordModal;
+  window.pentaSetTempPassword          = pentaSetTempPassword;
+})();
+
+
 const FREQ_CLASS = {'RMS - WEK':'f-wek','RMS - ETW':'f-etw','RMS - EOW':'f-eow','RMS - EFW':'f-efw','RMS - MON':'f-mon','OMS':'f-oms'};
 const FREQ_LABEL = {'RMS - WEK':'Weekly','RMS - ETW':'Every 3wk','RMS - EOW':'Every 2wk','RMS - EFW':'Monthly+','RMS - MON':'Monthly','OMS':'One-time'};
 const PREF_TIME_LABEL = {
@@ -5697,79 +6129,114 @@ window.addEventListener('DOMContentLoaded', function() {
     if (changed) localStorage.setItem('emp_roster', JSON.stringify(existing));
   } catch(e) {}
 
-  // Auth routing:
-  //   Supabase session present → manager app.
-  //   ?emp=1 in URL            → employee PIN pad.
-  //   otherwise                → manager login form.
-  // NOTE: the head flash-suppress <style> is removed just above, so each
-  // branch MUST explicitly set display on both auth screens. Don't rely on
-  // the suppress persisting into this handler.
+  // Auth routing (Sprint 4 Phase 4D — three-way):
+  //   No session                           → manager login screen
+  //   Session + must_change_password gate  → forced-change overlay (then reload)
+  //   Session + user_metadata.is_employee  → employee portal
+  //   Session + manager                    → manager app + idempotent backfill
+  // The legacy ?emp=1 PIN-pad branch is removed — superseded by Supabase auth.
+  // JWT is decoded synchronously from the Supabase localStorage blob; no
+  // getUser() round-trip on every boot. The token is already trusted because
+  // Supabase validates it on every API call.
+
+  // Helpers (function declarations are hoisted within this handler).
+  function _bootResolveEmployeeFromAuth(parsed) {
+    return (async function() {
+      if (!window.PentaEmployees) return null;
+      try { await window.PentaEmployees.ready(); } catch (e) {}
+      var rows = [];
+      try { rows = await window.PentaEmployees.list(); } catch (e) { return null; }
+      var authId = parsed && parsed.user && parsed.user.id;
+      if (!authId) return null;
+      var match = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].auth_user_id === authId) { match = rows[i]; break; }
+      }
+      if (!match) return null;
+      var rosterEntry = null;
+      try {
+        var roster = JSON.parse(localStorage.getItem('emp_roster') || '[]') || [];
+        rosterEntry = roster.find(function(e) {
+          return String(e.id || '') === String(match.legacy_roster_id || '');
+        }) || null;
+      } catch (e) {}
+      var langMap = { mx: 'es', br: 'pt', kr: 'ko', us: 'en', generic: 'en' };
+      return {
+        id: match.legacy_roster_id || match.id,
+        name: (rosterEntry && rosterEntry.name)
+              || ((match.first_name || '') + ' ' + (match.last_name || '')).trim(),
+        team: (rosterEntry && rosterEntry.team) || '',
+        lang: (rosterEntry && rosterEntry.lang) || langMap[match.culture_tag] || 'en',
+        status: 'active',
+        role: (rosterEntry && rosterEntry.role) || []
+      };
+    })();
+  }
+
+  function _bootShowForcedPasswordChange() {
+    if (document.getElementById('penta-forced-pw-overlay')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'penta-forced-pw-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0F1419;display:flex;align-items:center;justify-content:center;padding:24px;';
+    overlay.innerHTML = ''
+      + '<div style="max-width:420px;width:100%;background:#1A1F26;border:1px solid #2A3038;border-radius:16px;padding:32px 24px;color:#E8EAED;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif">'
+      +   '<h2 style="margin:0 0 8px;font-size:22px;font-weight:600">Set a new password</h2>'
+      +   '<p style="margin:0 0 20px;color:#9AA0A6;font-size:14px;line-height:1.4">Your manager set a temporary password. Choose a permanent one to continue.</p>'
+      +   '<label style="display:block;font-size:12px;color:#9AA0A6;margin:12px 0 6px">New password (8+ characters)</label>'
+      +   '<input id="penta-fpc-pw" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:12px;background:#0F1419;border:1px solid #2A3038;border-radius:10px;color:#fff;font-size:15px">'
+      +   '<label style="display:block;font-size:12px;color:#9AA0A6;margin:14px 0 6px">Confirm password</label>'
+      +   '<input id="penta-fpc-pw2" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:12px;background:#0F1419;border:1px solid #2A3038;border-radius:10px;color:#fff;font-size:15px">'
+      +   '<div id="penta-fpc-err" style="color:#F28B82;font-size:13px;margin-top:10px;min-height:18px"></div>'
+      +   '<button id="penta-fpc-btn" type="button" style="width:100%;padding:14px;background:#5E5CE6;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:600;margin-top:14px;cursor:pointer">Save and continue</button>'
+      + '</div>';
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+
+    var btn = document.getElementById('penta-fpc-btn');
+    var pwEl = document.getElementById('penta-fpc-pw');
+    var pw2El = document.getElementById('penta-fpc-pw2');
+    var errEl = document.getElementById('penta-fpc-err');
+    btn.addEventListener('click', async function() {
+      errEl.textContent = '';
+      var pw  = pwEl.value || '';
+      var pw2 = pw2El.value || '';
+      if (pw.length < 8)  { errEl.textContent = 'Must be at least 8 characters.'; return; }
+      if (pw !== pw2)     { errEl.textContent = 'Passwords do not match.'; return; }
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+        if (!sb) throw new Error('Auth client not ready — refresh and try again.');
+        var r1 = await sb.auth.updateUser({ password: pw });
+        if (r1.error) throw r1.error;
+        var r2 = await sb.auth.updateUser({ data: { password_changed_at: new Date().toISOString() } });
+        if (r2.error) throw r2.error;
+        window.location.reload();
+      } catch (e) {
+        errEl.textContent = (e && e.message) || 'Could not save password.';
+        btn.disabled = false; btn.textContent = 'Save and continue';
+      }
+    });
+  }
+
   var _pentaLogin = document.getElementById('penta-login-screen');
   var _appPin     = document.getElementById('app-pin-screen');
+  if (_appPin) _appPin.style.display = 'none'; // PIN pad never shown after Sprint 4.
 
-  var _hasSbSession = false;
+  // Sync JWT decode from Supabase localStorage blob.
+  var _sbParsed = null;
   try {
     var _sbRaw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
     if (_sbRaw) {
-      var _sbParsed = JSON.parse(_sbRaw);
-      _hasSbSession = !!(_sbParsed && _sbParsed.access_token);
+      var _p = JSON.parse(_sbRaw);
+      if (_p && _p.access_token && _p.user) _sbParsed = _p;
     }
-  } catch(e) {}
+  } catch (e) { _sbParsed = null; }
 
-  if (_hasSbSession) {
-    if (_pentaLogin) _pentaLogin.style.display = 'none';
-    if (_appPin)     _appPin.style.display     = 'none';
-    appUnlockManager();
-
-    // If the manager was in "View as employee" preview before a refresh,
-    // restore it after the manager app is initialized. Requires a live
-    // Supabase session (already confirmed above). If the employee record
-    // is missing/inactive, clear the flag and stay in manager view.
-    try {
-      var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
-      if (_previewId) {
-        var _roster = [];
-        try { _roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
-        var _emp = _roster.find(function(e){
-          return (e.id === _previewId || e.name === _previewId) && e.status === 'active';
-        });
-        if (_emp) {
-          setTimeout(function(){
-            try { pentaEnterEmployeePreview(_emp); } catch(e) { console.error('[preview restore] failed', e); }
-          }, 50);
-        } else {
-          sessionStorage.removeItem('penta_preview_as_employee_id');
-          sessionStorage.removeItem('penta_preview_return_from_admin');
-        }
-      }
-    } catch(e) {}
-    return;
-  }
-
-  // Manager session missing — any stale preview flag is orphaned; clear it.
-  try {
-    sessionStorage.removeItem('penta_preview_as_employee_id');
-    sessionStorage.removeItem('penta_preview_return_from_admin');
-  } catch(e) {}
-
-  var _urlParams = new URLSearchParams(window.location.search);
-  var _isEmp = _urlParams.get('emp') === '1';
-
-  if (_isEmp) {
-    // Employee PIN path. Restore prior employee within this session if the
-    // PIN was already entered and a matching roster entry is present.
-    if (_pentaLogin) _pentaLogin.style.display = 'none';
-    if (_appPin)     _appPin.style.display     = 'flex';
-    var _empId = sessionStorage.getItem('cc_emp_id');
-    var _empLang = sessionStorage.getItem('cc_emp_lang') || 'en';
-    appSelectedLang = _empLang;
-    if (_empId) {
-      try {
-        var roster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-        var emp = roster.find(function(e){ return (e.id || e.name) === _empId && e.status === 'active'; });
-        if (emp) { appUnlockEmployee(emp); return; }
-      } catch(e) {}
-    }
+  if (!_sbParsed) {
+    // No session → login screen.
+    try { sessionStorage.removeItem('penta_preview_as_employee_id'); } catch(e) {}
+    try { sessionStorage.removeItem('penta_preview_return_from_admin'); } catch(e) {}
+    if (_pentaLogin) _pentaLogin.style.display = 'flex';
     try { buildFilters(); } catch(e) {}
     try { applyFilters(); } catch(e) {}
     try { updateTaskBadge(); } catch(e) {}
@@ -5777,20 +6244,85 @@ window.addEventListener('DOMContentLoaded', function() {
     const nav = document.querySelector('.bottom-nav');
     if (tb) tb.style.display = 'none';
     if (nav) nav.style.display = 'none';
+    pentaWireLoginForm();
     return;
   }
 
-  // No session, no ?emp=1 → manager login.
-  if (_pentaLogin) _pentaLogin.style.display = 'flex';
-  if (_appPin)     _appPin.style.display     = 'none';
-  try { buildFilters(); } catch(e) {}
-  try { applyFilters(); } catch(e) {}
-  try { updateTaskBadge(); } catch(e) {}
-  const tb = document.querySelector('.topbar');
-  const nav = document.querySelector('.bottom-nav');
-  if (tb) tb.style.display = 'none';
-  if (nav) nav.style.display = 'none';
-  pentaWireLoginForm();
+  // Session present.
+  var _u        = _sbParsed.user || {};
+  var _userMeta = _u.user_metadata || {};
+  var _appMeta  = _u.app_metadata || {};
+  var _mustChange = !!_appMeta.must_change_password && !_userMeta.password_changed_at;
+
+  if (_pentaLogin) _pentaLogin.style.display = 'none';
+
+  if (_mustChange) {
+    // Manager-set temp password; force change before either app loads.
+    _bootShowForcedPasswordChange();
+    return;
+  }
+
+  var _isEmployee = _userMeta.is_employee === true;
+
+  if (_isEmployee) {
+    appPinRole = 'employee';
+    appSelectedLang = (_userMeta.lang || 'en');
+    (async function() {
+      try {
+        var emp = await _bootResolveEmployeeFromAuth(_sbParsed);
+        if (emp) {
+          appUnlockEmployee(emp);
+        } else {
+          console.warn('[boot] is_employee=true but no employees row matched auth_user_id', _u.id);
+          if (_pentaLogin) {
+            _pentaLogin.style.display = 'flex';
+            var msg = document.getElementById('penta-login-error');
+            if (msg) {
+              msg.textContent = "Your account isn't fully set up — contact your manager.";
+              msg.style.display = '';
+            }
+            try { pentaWireLoginForm(); } catch (e) {}
+          }
+        }
+      } catch (e) {
+        console.error('[boot] employee resolution failed', e);
+      }
+    })();
+    return;
+  }
+
+  // Manager path.
+  appUnlockManager();
+
+  // Idempotent backfill — safe to call on every manager boot. Wrapped so any
+  // failure logs but never blocks the app.
+  try {
+    if (window.PentaEmployees && window.PentaEmployees._backfillFromRoster) {
+      window.PentaEmployees._backfillFromRoster()
+        .then(function(r) { if (r && (r.inserted || r.error)) console.log('[Phase4A] backfill', r); })
+        .catch(function(e) { console.error('[Phase4A] backfill rejected', e); });
+    }
+  } catch (e) { console.error('[Phase4A] backfill threw sync', e); }
+
+  // Restore "View as employee" preview if it was active before refresh.
+  try {
+    var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
+    if (_previewId) {
+      var _roster = [];
+      try { _roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
+      var _emp = _roster.find(function(e){
+        return (e.id === _previewId || e.name === _previewId) && e.status === 'active';
+      });
+      if (_emp) {
+        setTimeout(function(){
+          try { pentaEnterEmployeePreview(_emp); } catch(e) { console.error('[preview restore] failed', e); }
+        }, 50);
+      } else {
+        sessionStorage.removeItem('penta_preview_as_employee_id');
+        sessionStorage.removeItem('penta_preview_return_from_admin');
+      }
+    }
+  } catch(e) {}
 });
 
 // ─────────────────────────────────────────
@@ -19161,6 +19693,7 @@ function renderStaffList() {
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
+          <span data-invite-pill data-roster-id="${emp.id||emp.name}"></span>
         </div>
       </div>
       <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
@@ -19174,6 +19707,15 @@ function renderStaffList() {
   }
   if (!list.length) html = '<div style="color:var(--muted);text-align:center;padding:30px;font-size:13px">No staff yet. Tap + Add to get started.</div>';
   document.getElementById('staff-list').innerHTML = html;
+
+  // Lazy-populate invite status pills on each card (Sprint 4 Phase 4B).
+  try {
+    var pills = document.querySelectorAll('#staff-list [data-invite-pill]');
+    for (var pi = 0; pi < pills.length; pi++) {
+      var rid = pills[pi].getAttribute('data-roster-id');
+      if (rid && typeof pentaRenderInvitePill === 'function') pentaRenderInvitePill(rid, pills[pi]);
+    }
+  } catch (e) { console.warn('[invite-pill] render failed', e); }
 }
 
 function openAddStaff() {
@@ -19355,7 +19897,27 @@ function renderStaffView() {
         `<div><div style="font-size:11px;color:var(--muted);margin-bottom:3px">${label}</div><img src="${src}" style="width:100%;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></div>`
       ).join('') + '</div>'
     ]) : ''}
+
+    ${section('Penta Login', [
+      `<div data-invite-chip data-roster-id="${emp.id||emp.name}" style="display:inline-flex;align-items:center;padding:6px 12px;background:var(--surface);border:1px solid var(--border);border-radius:20px;font-size:13px;margin-bottom:12px">…</div>`,
+      `<div style="display:flex;gap:8px;margin-top:6px">
+        <button type="button" data-permission="send_employee_invites" data-permission-role="manager" data-action="send-invite" data-roster-id="${emp.id||emp.name}" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
+        <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
+      </div>`
+    ])}
   `;
+
+  // Wire up the Penta Login section (Sprint 4 Phase 4B).
+  try {
+    var _rid = emp.id || emp.name;
+    var _chip   = document.querySelector('[data-invite-chip][data-roster-id="' + CSS.escape(_rid) + '"]');
+    var _sendBt = document.querySelector('[data-action="send-invite"][data-roster-id="' + CSS.escape(_rid) + '"]');
+    var _pwBt   = document.querySelector('[data-action="set-temp-pw"][data-roster-id="' + CSS.escape(_rid) + '"]');
+    if (_sendBt) _sendBt.addEventListener('click', function() { pentaSendInvite(_rid); });
+    if (_pwBt)   _pwBt.addEventListener('click',   function() { pentaShowSetTempPasswordModal(_rid); });
+    if (_chip && typeof pentaRenderInviteChip === 'function') pentaRenderInviteChip(_rid, _chip, _sendBt);
+    if (typeof applyPermissions === 'function') applyPermissions();
+  } catch (e) { console.warn('[Penta Login section] wiring failed', e); }
 
   // Load time off history
   const forms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
@@ -25459,14 +26021,17 @@ var DEFAULT_PERMISSIONS = {
     admin_hours_report: true,
     preview_as_employee: true,
     learn: true,
-    send_employee_banner: true
+    send_employee_banner: true,
+    send_employee_invites: true,
+    set_employee_password: true
   },
   employee: {
     learn: true,
     banner_motivational: true,
     recognition_birthday: true,
     recognition_holiday: true,
-    recognition_manager_message: true
+    recognition_manager_message: true,
+    schedule_view: false
   }
 };
 function getPermissions() {
@@ -25535,7 +26100,9 @@ var ADMIN_EMPLOYEE_ROWS = [
   ['recognition_birthday',         'Birthday Recognition'],
   ['recognition_holiday',          'Holiday Recognition'],
   ['recognition_manager_message',  'Manager Message Recognition'],
-  ['learn',                        'Learn Icon']
+  ['learn',                        'Learn Icon'],
+  // Sprint 4: hidden by default — flip on per-role when Tom is ready to expose Schedule.
+  ['schedule_view',                'Schedule (jobs view)']
 ];
 var _adminCurrentRoleTab = 'manager';
 function openAdminScreen() {
@@ -27153,7 +27720,7 @@ function _p3dPage(dir) {
     <!-- Motivational banner (top). Populated by renderMotivationalBanner(). -->
     <div id="pentaMotivationalBanner" class="penta-motivational-banner" data-permission="banner_motivational" data-permission-role="employee" style="display:none"></div>
     <div class="employee-grid" id="employee-grid">
-      <div class="employee-icon-wrap" onclick="openEmployeeSchedule()">
+      <div class="employee-icon-wrap" data-permission="schedule_view" data-permission-role="employee" onclick="openEmployeeSchedule()">
         <div class="employee-icon" style="background: linear-gradient(135deg, #FF3B30 0%, #C73A2E 100%);">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           <span id="emp-badge-schedule" class="employee-badge" style="display:none">0</span>
