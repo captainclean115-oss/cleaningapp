@@ -10445,7 +10445,17 @@ var CLAIRE_TOOLS = [
   { name: 'generate_quote', description: 'Generate a cleaning quote for an address. Looks up square footage and bathrooms to calculate price.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'Desired frequency: weekly, biweekly, monthly, one-time'} }, required:['address'] } },
   { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
   { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
-  { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } }
+  { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } },
+  // Coach-Claire Phase 2 — aggregate tools. Each returns a rolled-up summary
+  // (counts/totals/top-N) instead of raw record dumps, so strategic questions
+  // resolve in 1-3 rounds inside the MAX_TOOL_ROUNDS=6 budget.
+  { name: 'query_clients', description: 'Filter all 330 clients by criteria (town/team/frequency/status) and return an AGGREGATED summary — count, balance totals, town/team breakdowns, top-10 by chosen field. Use this for strategic questions across the book of business, NOT for one-client lookups (use lookup_client for that).', input_schema: { type:'object', properties: { town:{type:'string',description:'Filter to a specific town/city (case-insensitive substring match)'}, team:{type:'string',description:'Filter to a team code: B1,B3,B5,S1,S3,M1,M2,M3'}, frequency_code:{type:'string',description:'Filter to a frequency code: RMS - WEK, RMS - EOW, RMS - ETW, RMS - EFW, RMS - MON, OMS'}, status:{type:'string',description:'One of: active, overdue, top_canceller, highest_balance, newest, longest_tenure'}, sort_by:{type:'string',description:'One of: balance, cancellations, last_service'}, limit:{type:'number',description:'Max top_results to return (default 10)'} } } },
+  { name: 'revenue_summary', description: 'Roll up revenue by period and dimension. Returns total, job count, average per job, and breakdown by team/town/frequency/package. Use for "how is revenue trending" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: today, this_week, this_month, last_month, last_30_days, last_90_days, this_year, date_range'}, start_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, end_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, by:{type:'string',description:'Group breakdown by: team, town, frequency, or package'} }, required:['period'] } },
+  { name: 'accounts_receivable_summary', description: 'Full AR rollup — total outstanding, client count, aging buckets (0-30/31-60/61-90/over_90 days), top-10 worst, optional by-town/by-team breakdowns. Use this when Tom asks "what is my AR" or anything about overdue payments.', input_schema: { type:'object', properties: { aging_buckets:{type:'boolean',description:'Include 0-30/31-60/61-90/over_90 buckets (default true)'}, by_town:{type:'boolean',description:'Include per-town breakdown (default false)'}, by_team:{type:'boolean',description:'Include per-team breakdown (default false)'} } } },
+  { name: 'cancellation_analysis', description: 'Who cancels most and how often. Returns total cancellations, unique-clients-cancelled count, top cancellers, breakdown by team and day-of-week. Use for "who are my top cancellers" or "is Tuesday a problem day".', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: last_30_days, last_90_days, last_year, all_time (default all_time)'}, limit:{type:'number',description:'Max top cancellers to return (default 10)'} } } },
+  { name: 'team_performance', description: 'Team metrics rollup — jobs completed, revenue, avg per job, client count, cancellations per team. Use for "which team is doing best" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: this_month, last_month, last_90_days (default last_30_days)'} } } },
+  { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'} } } },
+  { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
 async function processVoiceCommand(text) {
@@ -10474,14 +10484,24 @@ async function processVoiceCommand(text) {
     +'Think with Tom about his business. Answer any question grounded in his actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
     +'If Tom asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
     +'DATA YOU CAN SEE\n'
-    +'You have full access to Tom\'s operating data: clients (profiles, frequencies, balances, anchor dates, notes, preferences, scores), the schedule, payments, the activity log, teams, and employees. Use the lookup_client, lookup_schedule, lookup_balance, lookup_employee, count_jobs, get_revenue, and locate_team tools whenever a question would be better answered with real numbers — never guess when you can look it up. When you ground a claim in data, cite the specific clients/teams/months you pulled from. When you DON\'T have data to ground a claim, say so. No vibes-based advice. If a question needs market data or external context you don\'t have, say so honestly.\n\n'
+    +'You have aggregate access to Tom\'s full operating data. Use these tools as your default for strategic questions:\n'
+    +'- query_clients — filter/aggregate across all 330 clients (by town, team, status, etc.)\n'
+    +'- revenue_summary — rollup revenue by period and dimension\n'
+    +'- accounts_receivable_summary — AR aging and breakdowns\n'
+    +'- cancellation_analysis — who cancels and how often\n'
+    +'- team_performance — team metrics\n'
+    +'- at_risk_clients — composite churn risk signals\n'
+    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data Tom doesn\'t have in the app.\n'
+    +'\nCite specific numbers from data. Never guess. If Tom asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
-    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, generate quotes, send invoices, add reminders). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n\n'
-    +'VOICE STYLE (your replies are spoken aloud with lip-sync)\n'
+    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, generate quotes, send invoices, add reminders). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
+    +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
+    +'VOICE STYLE (your replies are spoken aloud — keep tight)\n'
     +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
-    +'- For operational confirmations: one short sentence. Cut filler ("let me check", "sure thing!").\n'
-    +'- For strategic answers: a short paragraph; two only when depth genuinely helps Tom decide.\n'
-    +'- After confirming a single action, stop. Don\'t add "let me know if you need anything else" — Tom will.\n\n'
+    +'- Operational confirmations: ONE short sentence. No filler.\n'
+    +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If Tom wants more depth, he\'ll ask. Do not lecture.\n'
+    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else."\n'
+    +'- When citing data: be specific (client name, $ amount, date) but brief — "Pembroke clients average $185/clean vs $165 in Hingham" not a paragraph.\n\n'
     +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY)\n'
     +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
     +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; Tom will not see any words you say between tool calls.\n'
@@ -10521,7 +10541,7 @@ async function processVoiceCommand(text) {
           model: 'claude-sonnet-4-6',
           max_tokens: 400,
           system: systemPrompt,
-          tools: CLAIRE_TOOLS,
+          tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
           messages: _claireHistory
         })
       });
@@ -10538,14 +10558,19 @@ async function processVoiceCommand(text) {
       var toolCall = null;
       (data.content||[]).forEach(function(block) {
         if (block.type === 'text') textReply += block.text;
+        // Server-side tools (web_search) emit `server_tool_use` which we
+        // never need to dispatch client-side. Only treat function `tool_use`
+        // as a tool we have to run.
         if (block.type === 'tool_use') toolCall = block;
       });
 
-      // Record assistant turn in history (text + tool_use if any).
-      var assistantContent = [];
-      if (textReply) assistantContent.push({ type: 'text', text: textReply });
-      if (toolCall) assistantContent.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.input });
-      if (assistantContent.length) _claireHistory.push({ role: 'assistant', content: assistantContent });
+      // Record assistant turn in history. Preserve the FULL content array
+      // (not just text + tool_use): web_search emits server_tool_use and
+      // web_search_tool_result blocks that must round-trip back to the API
+      // so the model retains its search context across rounds.
+      if (data.content && data.content.length) {
+        _claireHistory.push({ role: 'assistant', content: data.content });
+      }
 
       if (toolCall) {
         didAnyToolCall = true;
@@ -10571,6 +10596,12 @@ async function processVoiceCommand(text) {
         // calls. Shouldn't happen with Sonnet, but fall back gracefully.
         claireReply('Done.');
       }
+      // Coach-Claire Phase 2: render the SMS "Send to <X>" button bubble
+      // after the text reply, when send_response_to was called this turn.
+      if (_claireLastToolSmsLink) {
+        _claireRenderSmsButton(_claireLastToolSmsLink);
+        _claireLastToolSmsLink = null;
+      }
       return;
     }
     // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging. Recap line is
@@ -10584,6 +10615,10 @@ async function processVoiceCommand(text) {
       claireReply('That was a lot — anything still left to handle?');
     } else {
       claireReply('Hmm, I got tangled up looking that up — can you ask again, or rephrase?');
+    }
+    if (_claireLastToolSmsLink) {
+      _claireRenderSmsButton(_claireLastToolSmsLink);
+      _claireLastToolSmsLink = null;
     }
   } catch(e) {
     _claireSilent = false;
@@ -10619,6 +10654,19 @@ var CLAIRE_QUERY_TOOLS = {
 // stored as tool_result in conversation history (instead of just "Done.").
 // This is Claire's memory of her own actions.
 var _claireLastToolResult = '';
+
+// Coach-Claire Phase 2 — when send_response_to fires inside the silent tool
+// loop, it stashes the SMS link here. The wrap-up renderer then appends a
+// "Send to <X>" button bubble AFTER Claire's text reply, so Tom sees the
+// button in the right order (text first, action affordance below it).
+var _claireLastToolSmsLink = null;
+
+function _claireRenderSmsButton(link) {
+  if (!link || !link.url) return;
+  var label = String(link.label || 'Send').replace(/[<>"']/g, '');
+  var html = '<a href="' + link.url + '" style="display:inline-flex;align-items:center;gap:6px;background:var(--accent);color:#fff;text-decoration:none;padding:8px 14px;border-radius:18px;font-size:13px;font-weight:600;font-family:\'DM Sans\',sans-serif">📱 ' + label + '</a>';
+  _claireRenderBubble('claire', html);
+}
 
 function executeClaireToolCall(toolCall, message) {
   _claireActing = true;
@@ -11071,6 +11119,315 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'<button onclick="claireSendSms(\''+mClient.id+'\',\''+input.message.replace(/'/g,"\\'")+'\')" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;cursor:pointer">Send</button>'
       +'</div>';
     _claireLastToolResult = 'Prepared message to '+mClient.fn+' '+mClient.ln+': "'+input.message+'". Draft showing in UI for Tom to review and send.';
+
+  // ── COACH-CLAIRE PHASE 2 — AGGREGATE TOOLS ──
+  // Each tool returns a rolled-up summary string. Output is concise on purpose
+  // — Sonnet sees this as tool_result and reasons over it; we don't need to
+  // dump every record. Strategic questions resolve in 1-3 rounds inside the
+  // MAX_TOOL_ROUNDS=6 budget.
+
+  } else if (name === 'query_clients') {
+    var qcAll = PentaClients.list();
+    var qcList = qcAll.slice();
+    var fTown = (input.town||'').toLowerCase().trim();
+    var fTeam = (input.team||'').toUpperCase().trim();
+    var fFreq = (input.frequency_code||'').trim();
+    var qStatus = (input.status||'').toLowerCase().trim();
+    if (fTown) qcList = qcList.filter(function(c){ return (c.city||'').toLowerCase().indexOf(fTown) >= 0; });
+    if (fTeam) qcList = qcList.filter(function(c){ return (c.team||'').toUpperCase() === fTeam; });
+    if (fFreq) qcList = qcList.filter(function(c){ return c.fc === fFreq; });
+    if (qStatus === 'overdue' || qStatus === 'highest_balance') {
+      qcList = qcList.filter(function(c){ return (c.bal||0) > 0; });
+    }
+    var qcCans = {};
+    try { qcCans = JSON.parse(localStorage.getItem('client_cancels') || '{}'); } catch(e) {}
+    function _qcCancelCount(c) {
+      var n = 0, ln = (c.ln||'').toLowerCase();
+      Object.keys(qcCans).forEach(function(k){
+        if (k.split(',')[0].trim().toLowerCase() === ln) n += qcCans[k];
+      });
+      return n;
+    }
+    if (qStatus === 'top_canceller') qcList = qcList.filter(function(c){ return _qcCancelCount(c) > 0; });
+    var qSort = (input.sort_by||'').toLowerCase();
+    if (qStatus === 'highest_balance' || qSort === 'balance' || qStatus === 'overdue') {
+      qcList.sort(function(a,b){ return (b.bal||0) - (a.bal||0); });
+    } else if (qStatus === 'top_canceller' || qSort === 'cancellations') {
+      qcList.sort(function(a,b){ return _qcCancelCount(b) - _qcCancelCount(a); });
+    } else if (qSort === 'last_service' || qStatus === 'longest_tenure') {
+      qcList.sort(function(a,b){ return String(b.last||'').localeCompare(String(a.last||'')); });
+    } else if (qStatus === 'newest') {
+      qcList.sort(function(a,b){ return String(b.last||'').localeCompare(String(a.last||'')) * -1; });
+    }
+    var qLimit = Math.min(Math.max(parseInt(input.limit, 10) || 10, 1), 25);
+    var qcTotalBal = qcList.reduce(function(s,c){ return s + (c.bal||0); }, 0);
+    var qcAvgBal = qcList.length ? qcTotalBal / qcList.length : 0;
+    var townMap = {};
+    qcList.forEach(function(c){ var t = c.city || '(no city)'; townMap[t] = (townMap[t]||0)+1; });
+    var townList = Object.keys(townMap).sort(function(a,b){return townMap[b]-townMap[a];}).slice(0,8)
+      .map(function(t){ return t+': '+townMap[t]; });
+    var teamMap = {};
+    qcList.forEach(function(c){ var t = c.team || '(unassigned)'; teamMap[t] = (teamMap[t]||0)+1; });
+    var teamList = Object.keys(teamMap).sort(function(a,b){return teamMap[b]-teamMap[a];})
+      .map(function(t){ return t+': '+teamMap[t]; });
+    var topResults = qcList.slice(0, qLimit).map(function(c){
+      var key = '';
+      if (qSort === 'balance' || qStatus === 'highest_balance' || qStatus === 'overdue') key = ' $'+Math.round(c.bal||0);
+      else if (qSort === 'cancellations' || qStatus === 'top_canceller') key = ' ('+_qcCancelCount(c)+' cancels)';
+      else if (qSort === 'last_service' || qStatus === 'longest_tenure' || qStatus === 'newest') key = ' (last: '+(c.last||'never')+')';
+      else if ((c.bal||0) > 0) key = ' $'+Math.round(c.bal);
+      return c.fn+' '+c.ln+(c.city?' — '+c.city:'')+key;
+    });
+    _claireLastToolResult = 'query_clients: '+qcList.length+' matched of '+qcAll.length+' total. '
+      +'Total balance $'+Math.round(qcTotalBal).toLocaleString()+', avg $'+Math.round(qcAvgBal)+'. '
+      +'Towns — '+(townList.join('; ')||'none')+'. '
+      +'Teams — '+(teamList.join('; ')||'none')+'. '
+      +'Top '+topResults.length+' — '+(topResults.join('; ')||'none')+'.';
+
+  } else if (name === 'revenue_summary') {
+    var rsPeriod = (input.period||'this_month').toLowerCase();
+    var rsToday = new Date(); rsToday.setHours(0,0,0,0);
+    function _rsKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+    var rsStart, rsEnd;
+    if (rsPeriod === 'today') { rsStart = new Date(rsToday); rsEnd = new Date(rsToday); }
+    else if (rsPeriod === 'this_week') { rsStart = new Date(rsToday); rsStart.setDate(rsToday.getDate() - rsToday.getDay()); rsEnd = new Date(rsStart); rsEnd.setDate(rsStart.getDate()+6); }
+    else if (rsPeriod === 'this_month') { rsStart = new Date(rsToday.getFullYear(), rsToday.getMonth(), 1); rsEnd = new Date(rsToday.getFullYear(), rsToday.getMonth()+1, 0); }
+    else if (rsPeriod === 'last_month') { rsStart = new Date(rsToday.getFullYear(), rsToday.getMonth()-1, 1); rsEnd = new Date(rsToday.getFullYear(), rsToday.getMonth(), 0); }
+    else if (rsPeriod === 'last_30_days') { rsEnd = new Date(rsToday); rsStart = new Date(rsToday); rsStart.setDate(rsToday.getDate()-30); }
+    else if (rsPeriod === 'last_90_days') { rsEnd = new Date(rsToday); rsStart = new Date(rsToday); rsStart.setDate(rsToday.getDate()-90); }
+    else if (rsPeriod === 'this_year') { rsStart = new Date(rsToday.getFullYear(), 0, 1); rsEnd = new Date(rsToday.getFullYear(), 11, 31); }
+    else if (rsPeriod === 'date_range' && input.start_date && input.end_date) { rsStart = new Date(input.start_date+'T00:00:00'); rsEnd = new Date(input.end_date+'T00:00:00'); }
+    else { _claireLastToolResult = 'revenue_summary: invalid period "'+input.period+'". Try this_month, last_30_days, etc.'; return; }
+    var rsStartK = _rsKey(rsStart), rsEndK = _rsKey(rsEnd);
+    var rsJobs = jobs.filter(function(j){ return j.date >= rsStartK && j.date <= rsEndK && !j.cancelled && !j.autoGenerated; });
+    function _rsPrice(j){
+      if (j.price) return parseFloat(j.price)||0;
+      var cc = PentaClients.getClient(j.clientId);
+      if (cc) {
+        var ln = cc.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim();
+        var cp = CLIENT_PRICES[ln];
+        if (cp) return parseFloat(cp.replace('$',''))||0;
+      }
+      return REV_LOOKUP[j.clientId] || 0;
+    }
+    var rsTotal = 0; rsJobs.forEach(function(j){ rsTotal += _rsPrice(j); });
+    var rsAvg = rsJobs.length ? rsTotal/rsJobs.length : 0;
+    var rsBy = (input.by||'').toLowerCase();
+    var rsBreakdown = '';
+    if (rsBy === 'team' || rsBy === 'town' || rsBy === 'frequency' || rsBy === 'package') {
+      var rsGroup = {};
+      rsJobs.forEach(function(j){
+        var key = '(unknown)';
+        if (rsBy === 'team') key = j.team || '(unassigned)';
+        else { var cc2 = PentaClients.getClient(j.clientId);
+          if (cc2) {
+            if (rsBy === 'town') key = cc2.city || '(no city)';
+            else if (rsBy === 'frequency') key = FREQ_LABEL[cc2.fc] || cc2.freq || '(unknown)';
+            else if (rsBy === 'package') key = cc2.pkg || '(no pkg)';
+          }
+        }
+        if (!rsGroup[key]) rsGroup[key] = { total: 0, count: 0 };
+        rsGroup[key].total += _rsPrice(j);
+        rsGroup[key].count++;
+      });
+      rsBreakdown = ' Breakdown by '+rsBy+': '
+        + Object.keys(rsGroup).sort(function(a,b){return rsGroup[b].total-rsGroup[a].total;})
+            .map(function(k){ return k+' $'+Math.round(rsGroup[k].total).toLocaleString()+' ('+rsGroup[k].count+')'; }).join('; ')+'.';
+    }
+    _claireLastToolResult = 'revenue_summary '+rsPeriod+' ('+rsStartK+' to '+rsEndK+'): $'+Math.round(rsTotal).toLocaleString()
+      +' across '+rsJobs.length+' jobs (avg $'+Math.round(rsAvg)+').'+rsBreakdown;
+
+  } else if (name === 'accounts_receivable_summary') {
+    var arList = PentaClients.filterClients(function(c){ return (c.bal||0) > 0; });
+    var arTotal = arList.reduce(function(s,c){ return s + (c.bal||0); }, 0);
+    var arBuckets = { '0_30': 0, '31_60': 0, '61_90': 0, 'over_90': 0 };
+    var arBucketCount = { '0_30': 0, '31_60': 0, '61_90': 0, 'over_90': 0 };
+    var arNow = new Date(); arNow.setHours(0,0,0,0);
+    arList.forEach(function(c){
+      var dDays = null;
+      if (c.last && c.last.indexOf('/') >= 0) {
+        var p = c.last.split('/');
+        if (p.length === 3) {
+          var dt = new Date(+p[2], +p[0]-1, +p[1]);
+          if (!isNaN(dt)) dDays = Math.round((arNow - dt) / 86400000);
+        }
+      }
+      var bucket = 'over_90';
+      if (dDays === null) bucket = 'over_90';
+      else if (dDays <= 30) bucket = '0_30';
+      else if (dDays <= 60) bucket = '31_60';
+      else if (dDays <= 90) bucket = '61_90';
+      arBuckets[bucket] += (c.bal||0);
+      arBucketCount[bucket]++;
+    });
+    var arTop = arList.slice().sort(function(a,b){return (b.bal||0)-(a.bal||0);}).slice(0,10)
+      .map(function(c){ return c.fn+' '+c.ln+(c.city?' ('+c.city+')':'')+' $'+Math.round(c.bal); });
+    var arResp = 'AR summary: $'+Math.round(arTotal).toLocaleString()+' outstanding across '+arList.length+' clients. '
+      +'Aging — 0-30d: $'+Math.round(arBuckets['0_30']).toLocaleString()+' ('+arBucketCount['0_30']+'), '
+      +'31-60d: $'+Math.round(arBuckets['31_60']).toLocaleString()+' ('+arBucketCount['31_60']+'), '
+      +'61-90d: $'+Math.round(arBuckets['61_90']).toLocaleString()+' ('+arBucketCount['61_90']+'), '
+      +'over 90d: $'+Math.round(arBuckets['over_90']).toLocaleString()+' ('+arBucketCount['over_90']+'). '
+      +'Top 10 owed — '+arTop.join('; ')+'.';
+    if (input.by_town) {
+      var arTownMap = {};
+      arList.forEach(function(c){ var t = c.city||'(no city)'; arTownMap[t] = (arTownMap[t]||0)+(c.bal||0); });
+      arResp += ' By town — ' + Object.keys(arTownMap).sort(function(a,b){return arTownMap[b]-arTownMap[a];}).slice(0,10)
+        .map(function(t){ return t+' $'+Math.round(arTownMap[t]).toLocaleString(); }).join('; ')+'.';
+    }
+    if (input.by_team) {
+      var arTeamMap = {};
+      arList.forEach(function(c){ var t = c.team||'(unassigned)'; arTeamMap[t] = (arTeamMap[t]||0)+(c.bal||0); });
+      arResp += ' By team — ' + Object.keys(arTeamMap).sort(function(a,b){return arTeamMap[b]-arTeamMap[a];})
+        .map(function(t){ return t+' $'+Math.round(arTeamMap[t]).toLocaleString(); }).join('; ')+'.';
+    }
+    _claireLastToolResult = arResp;
+
+  } else if (name === 'cancellation_analysis') {
+    // Manual-entry counts: client_cancels localStorage = { "lastname, firstname": count }
+    var caCans = {};
+    try { caCans = JSON.parse(localStorage.getItem('client_cancels') || '{}'); } catch(e) {}
+    var caTotalManual = 0;
+    Object.keys(caCans).forEach(function(k){ caTotalManual += caCans[k]; });
+    // Date-stamped cancels live on jobs[].cancelled
+    var caPeriod = (input.period||'all_time').toLowerCase();
+    var caToday = new Date(); caToday.setHours(0,0,0,0);
+    var caStartK = '0000-00-00';
+    if (caPeriod === 'last_30_days') { var c30 = new Date(caToday); c30.setDate(caToday.getDate()-30); caStartK = c30.toISOString().slice(0,10); }
+    else if (caPeriod === 'last_90_days') { var c90 = new Date(caToday); c90.setDate(caToday.getDate()-90); caStartK = c90.toISOString().slice(0,10); }
+    else if (caPeriod === 'last_year') { var c365 = new Date(caToday); c365.setDate(caToday.getDate()-365); caStartK = c365.toISOString().slice(0,10); }
+    var caJobs = jobs.filter(function(j){ return j.cancelled && j.date >= caStartK; });
+    var caClientCount = {};
+    var caTeamCount = {};
+    var caDowCount = { Sun:0, Mon:0, Tue:0, Wed:0, Thu:0, Fri:0, Sat:0 };
+    var caDowNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    caJobs.forEach(function(j){
+      var key = j.clientId || j.clientName || '(unknown)';
+      caClientCount[key] = (caClientCount[key]||0)+1;
+      var t = j.team || '(unassigned)';
+      caTeamCount[t] = (caTeamCount[t]||0)+1;
+      try { var dt2 = new Date(j.date+'T12:00:00'); if (!isNaN(dt2)) caDowCount[caDowNames[dt2.getDay()]]++; } catch(e) {}
+    });
+    var caLimit = Math.min(Math.max(parseInt(input.limit, 10) || 10, 1), 25);
+    var caTop = Object.keys(caClientCount).sort(function(a,b){return caClientCount[b]-caClientCount[a];}).slice(0,caLimit)
+      .map(function(k){
+        var cc = PentaClients.getClient(k);
+        var nm = cc ? cc.fn+' '+cc.ln : k;
+        return nm+' ('+caClientCount[k]+')';
+      });
+    var caTeamList = Object.keys(caTeamCount).sort(function(a,b){return caTeamCount[b]-caTeamCount[a];})
+      .map(function(t){ return t+': '+caTeamCount[t]; });
+    var caDowList = caDowNames.map(function(d){ return d+': '+caDowCount[d]; });
+    _claireLastToolResult = 'cancellation_analysis '+caPeriod+': '+caJobs.length+' cancelled jobs from '+Object.keys(caClientCount).length+' unique clients. '
+      +'Top cancellers — '+(caTop.join('; ')||'none')+'. '
+      +'By team — '+(caTeamList.join('; ')||'none')+'. '
+      +'By day — '+caDowList.join('; ')+'. '
+      +'(Note: client_cancels manual log totals '+caTotalManual+' across all-time but is not date-stamped.)';
+
+  } else if (name === 'team_performance') {
+    var tpPeriod = (input.period||'last_30_days').toLowerCase();
+    var tpToday = new Date(); tpToday.setHours(0,0,0,0);
+    var tpStart, tpEnd = new Date(tpToday);
+    if (tpPeriod === 'this_month') { tpStart = new Date(tpToday.getFullYear(), tpToday.getMonth(), 1); tpEnd = new Date(tpToday.getFullYear(), tpToday.getMonth()+1, 0); }
+    else if (tpPeriod === 'last_month') { tpStart = new Date(tpToday.getFullYear(), tpToday.getMonth()-1, 1); tpEnd = new Date(tpToday.getFullYear(), tpToday.getMonth(), 0); }
+    else if (tpPeriod === 'last_90_days') { tpStart = new Date(tpToday); tpStart.setDate(tpToday.getDate()-90); }
+    else { tpStart = new Date(tpToday); tpStart.setDate(tpToday.getDate()-30); tpPeriod = 'last_30_days'; }
+    var tpStartK = tpStart.toISOString().slice(0,10), tpEndK = tpEnd.toISOString().slice(0,10);
+    function _tpPrice(j){
+      if (j.price) return parseFloat(j.price)||0;
+      var cc = PentaClients.getClient(j.clientId);
+      if (cc) { var ln=cc.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim(); var cp=CLIENT_PRICES[ln]; if (cp) return parseFloat(cp.replace('$',''))||0; }
+      return REV_LOOKUP[j.clientId] || 0;
+    }
+    var tpAgg = {};
+    jobs.forEach(function(j){
+      if (j.date < tpStartK || j.date > tpEndK) return;
+      var t = j.team || '(unassigned)';
+      if (!tpAgg[t]) tpAgg[t] = { jobs: 0, revenue: 0, clients: {}, cancellations: 0 };
+      if (j.cancelled) { tpAgg[t].cancellations++; return; }
+      if (j.autoGenerated) return;
+      tpAgg[t].jobs++;
+      tpAgg[t].revenue += _tpPrice(j);
+      if (j.clientId) tpAgg[t].clients[j.clientId] = true;
+    });
+    var tpKeys = Object.keys(tpAgg).sort(function(a,b){return tpAgg[b].revenue-tpAgg[a].revenue;});
+    var tpRows = tpKeys.map(function(t){
+      var a = tpAgg[t];
+      var avg = a.jobs ? Math.round(a.revenue/a.jobs) : 0;
+      return t+': '+a.jobs+' jobs, $'+Math.round(a.revenue).toLocaleString()+' rev, $'+avg+' avg, '+Object.keys(a.clients).length+' clients, '+a.cancellations+' cancels';
+    });
+    _claireLastToolResult = 'team_performance '+tpPeriod+' ('+tpStartK+' to '+tpEndK+'): '+(tpRows.join(' | ') || 'no jobs in window');
+
+  } else if (name === 'at_risk_clients') {
+    var arcLimit = Math.min(Math.max(parseInt(input.limit, 10) || 10, 1), 25);
+    var arcCans = {};
+    try { arcCans = JSON.parse(localStorage.getItem('client_cancels') || '{}'); } catch(e) {}
+    var arcNow = new Date(); arcNow.setHours(0,0,0,0);
+    function _arcCancelCount(c){
+      var n = 0, ln = (c.ln||'').toLowerCase();
+      Object.keys(arcCans).forEach(function(k){ if (k.split(',')[0].trim().toLowerCase() === ln) n += arcCans[k]; });
+      return n;
+    }
+    function _arcDaysSinceLast(c){
+      if (!c.last || c.last.indexOf('/') < 0) return null;
+      var p = c.last.split('/');
+      if (p.length !== 3) return null;
+      var dt = new Date(+p[2], +p[0]-1, +p[1]);
+      if (isNaN(dt)) return null;
+      return Math.round((arcNow - dt) / 86400000);
+    }
+    function _arcExpectedInterval(c){
+      var fc = (c.fc||'').toUpperCase();
+      if (fc.indexOf('WEK') >= 0) return 7;
+      if (fc.indexOf('EOW') >= 0) return 14;
+      if (fc.indexOf('ETW') >= 0) return 21;
+      if (fc.indexOf('EFW') >= 0 || fc.indexOf('MON') >= 0) return 28;
+      return null;
+    }
+    var arcScored = PentaClients.list().map(function(c){
+      var reasons = [], score = 0;
+      var cancels = _arcCancelCount(c);
+      if (cancels >= 3) { reasons.push(cancels+' cancellations'); score += cancels; }
+      else if (cancels >= 1) { reasons.push(cancels+' recent cancel'); score += 1; }
+      var days = _arcDaysSinceLast(c);
+      var expected = _arcExpectedInterval(c);
+      if (days !== null && expected !== null && days > expected * 1.5) {
+        reasons.push(days+'d since last (vs '+expected+'d expected)');
+        score += Math.min(4, Math.floor((days - expected) / expected));
+      }
+      if ((c.bal||0) > 200) { reasons.push('$'+Math.round(c.bal)+' overdue'); score += 2; }
+      else if ((c.bal||0) > 0) { reasons.push('$'+Math.round(c.bal)+' balance'); score += 1; }
+      return { c: c, score: score, reasons: reasons };
+    }).filter(function(x){ return x.score > 0; })
+      .sort(function(a,b){ return b.score - a.score; });
+    var arcHigh = arcScored.filter(function(x){ return x.score >= 4; }).slice(0, arcLimit);
+    var arcMed = arcScored.filter(function(x){ return x.score >= 2 && x.score < 4; }).slice(0, arcLimit);
+    function _arcRow(x){
+      return x.c.fn+' '+x.c.ln+(x.c.city?' ('+x.c.city+')':'')+' [score '+x.score+'] — '+x.reasons.join(', ');
+    }
+    _claireLastToolResult = 'at_risk_clients: '+arcHigh.length+' HIGH risk, '+arcMed.length+' medium risk. '
+      +'High — '+(arcHigh.map(_arcRow).join('; ')||'none')+'. '
+      +'Medium — '+(arcMed.map(_arcRow).join('; ')||'none')+'.';
+
+  } else if (name === 'send_response_to') {
+    var srRecipient = String(input.recipient||'').trim();
+    var srContent = String(input.content||'').trim();
+    if (!srRecipient || !srContent) { _claireLastToolResult = 'send_response_to needs both recipient and content.'; return; }
+    var srPhone = '', srLabel = '';
+    if (srRecipient.toLowerCase() === 'me' || srRecipient.toLowerCase() === 'tom') {
+      srPhone = '15085598062';  // Tom's RingCentral primary
+      srLabel = 'Send to Tom';
+    } else {
+      var srRoster = [];
+      try { srRoster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
+      var srMatch = srRoster.find(function(r){ return (r.name||'').toLowerCase() === srRecipient.toLowerCase(); });
+      if (!srMatch) { _claireLastToolResult = 'send_response_to: no employee named "'+srRecipient+'" in roster, and recipient was not "me".'; return; }
+      srPhone = (srMatch.phone||'').replace(/\D/g,'');
+      if (!srPhone) { _claireLastToolResult = 'send_response_to: '+srMatch.name+' has no phone on file in emp_roster.'; return; }
+      srLabel = 'Send to ' + srMatch.name;
+    }
+    var srUrl = 'rcmobile://sms?number=' + srPhone + '&body=' + encodeURIComponent(srContent);
+    _claireLastToolSmsLink = { recipient: srRecipient, label: srLabel, url: srUrl, content: srContent };
+    _claireLastToolResult = 'Prepared SMS — '+srLabel+' (phone ending '+srPhone.slice(-4)+'). Button rendered in chat for Tom to tap. Content preview: "'+srContent.slice(0,120)+(srContent.length>120?'...':'')+'"';
 
   } else {
     _claireLastToolResult = 'Unknown tool: '+name+'.';
