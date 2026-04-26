@@ -10448,7 +10448,7 @@ var CLAIRE_TOOLS = [
   { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } },
   // Coach-Claire Phase 2 — aggregate tools. Each returns a rolled-up summary
   // (counts/totals/top-N) instead of raw record dumps, so strategic questions
-  // resolve in 1-3 rounds inside the MAX_TOOL_ROUNDS=6 budget.
+  // resolve in 1-3 rounds inside the MAX_TOOL_ROUNDS budget.
   { name: 'query_clients', description: 'Filter all 330 clients by criteria (town/team/frequency/status) and return an AGGREGATED summary — count, balance totals, town/team breakdowns, top-10 by chosen field. Use this for strategic questions across the book of business, NOT for one-client lookups (use lookup_client for that).', input_schema: { type:'object', properties: { town:{type:'string',description:'Filter to a specific town/city (case-insensitive substring match)'}, team:{type:'string',description:'Filter to a team code: B1,B3,B5,S1,S3,M1,M2,M3'}, frequency_code:{type:'string',description:'Filter to a frequency code: RMS - WEK, RMS - EOW, RMS - ETW, RMS - EFW, RMS - MON, OMS'}, status:{type:'string',description:'One of: active, overdue, top_canceller, highest_balance, newest, longest_tenure'}, sort_by:{type:'string',description:'One of: balance, cancellations, last_service'}, limit:{type:'number',description:'Max top_results to return (default 10)'} } } },
   { name: 'revenue_summary', description: 'Roll up revenue by period and dimension. Returns total, job count, average per job, and breakdown by team/town/frequency/package. Use for "how is revenue trending" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: today, this_week, this_month, last_month, last_30_days, last_90_days, this_year, date_range'}, start_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, end_date:{type:'string',description:'YYYY-MM-DD if period=date_range'}, by:{type:'string',description:'Group breakdown by: team, town, frequency, or package'} }, required:['period'] } },
   { name: 'accounts_receivable_summary', description: 'Full AR rollup — total outstanding, client count, aging buckets (0-30/31-60/61-90/over_90 days), top-10 worst, optional by-town/by-team breakdowns. Use this when Tom asks "what is my AR" or anything about overdue payments.', input_schema: { type:'object', properties: { aging_buckets:{type:'boolean',description:'Include 0-30/31-60/61-90/over_90 buckets (default true)'}, by_town:{type:'boolean',description:'Include per-town breakdown (default false)'}, by_team:{type:'boolean',description:'Include per-team breakdown (default false)'} } } },
@@ -10524,7 +10524,7 @@ async function processVoiceCommand(text) {
   // Each round: call the API, execute any tool it requests, feed the
   // result back, go again. Exit when Claude stops calling tools (pure
   // text reply) or we hit the safety cap.
-  var MAX_TOOL_ROUNDS = 6;
+  var MAX_TOOL_ROUNDS = 10;
   var didAnyToolCall = false;
   var toolsCalledCount = 0;
   // Run the entire tool loop in silent mode so individual tool handlers
@@ -11124,7 +11124,7 @@ function _executeClaireToolCallInner(toolCall, message) {
   // Each tool returns a rolled-up summary string. Output is concise on purpose
   // — Sonnet sees this as tool_result and reasons over it; we don't need to
   // dump every record. Strategic questions resolve in 1-3 rounds inside the
-  // MAX_TOOL_ROUNDS=6 budget.
+  // MAX_TOOL_ROUNDS budget.
 
   } else if (name === 'query_clients') {
     var qcAll = PentaClients.list();
