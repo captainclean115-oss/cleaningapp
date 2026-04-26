@@ -10569,13 +10569,15 @@ async function processVoiceCommand(text) {
       var data = await resp.json();
 
       var textReply = '';
-      var toolCall = null;
+      var toolUses = [];
       (data.content||[]).forEach(function(block) {
         if (block.type === 'text') textReply += block.text;
         // Server-side tools (web_search) emit `server_tool_use` which we
-        // never need to dispatch client-side. Only treat function `tool_use`
-        // as a tool we have to run.
-        if (block.type === 'tool_use') toolCall = block;
+        // never need to dispatch client-side. Only collect function `tool_use`
+        // blocks — Claude can return multiple in one turn (parallel calls)
+        // and Anthropic requires a matching tool_result for EACH id in the
+        // next turn or it 400s with "tool_use ids without tool_result".
+        if (block.type === 'tool_use') toolUses.push(block);
       });
 
       // Record assistant turn in history. Preserve the FULL content array
@@ -10586,13 +10588,31 @@ async function processVoiceCommand(text) {
         _claireHistory.push({ role: 'assistant', content: data.content });
       }
 
-      if (toolCall) {
+      if (toolUses.length > 0) {
         didAnyToolCall = true;
-        toolsCalledCount++;
-        // Tool runs silently (_claireSilent=true suppresses its bubble/speech).
-        // We still get the factual summary back for memory + the wrap-up call.
-        var toolResult = executeClaireToolCall(toolCall, textReply);
-        _claireHistory.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: toolResult }] });
+        // Execute every tool_use Claude requested this turn. Each runs
+        // synchronously; _claireSilent=true suppresses any per-tool UI from
+        // executeClaireToolCall, leaving the wrap-up reply as the only
+        // visible bubble. Build a tool_result block for each, in the same
+        // order as the tool_use blocks (Anthropic matches by id, but order
+        // is the safest contract).
+        var toolResults = [];
+        for (var ti = 0; ti < toolUses.length; ti++) {
+          var tu = toolUses[ti];
+          toolsCalledCount++;
+          var resStr;
+          try {
+            resStr = executeClaireToolCall(tu, textReply);
+          } catch (te) {
+            resStr = 'Tool ' + tu.name + ' threw: ' + (te && te.message ? te.message : String(te));
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content: typeof resStr === 'string' ? resStr : JSON.stringify(resStr)
+          });
+        }
+        _claireHistory.push({ role: 'user', content: toolResults });
         if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
         continue;
       }
