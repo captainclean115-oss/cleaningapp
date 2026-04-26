@@ -10534,18 +10534,32 @@ async function processVoiceCommand(text) {
   _claireSilent = true;
   try {
     for (var round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      // TEMP DIAGNOSTIC — Phase 2 web_search 400 investigation. Capture the
+      // exact request body Claude sees (so we can spot malformed tool/history
+      // blocks) and the exact Anthropic error body on any non-2xx response.
+      // Revert after diagnosis.
+      var _claireDiagBody = {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 400,
+        system: systemPrompt,
+        tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
+        messages: _claireHistory
+      };
+      console.log('[Claire DIAG] round ' + round + ' request body:', JSON.stringify(_claireDiagBody, null, 2));
       var resp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 400,
-          system: systemPrompt,
-          tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
-          messages: _claireHistory
-        })
+        body: JSON.stringify(_claireDiagBody)
       });
       if (!resp.ok) {
+        // TEMP DIAGNOSTIC — read the error body BEFORE the early returns so
+        // Tom can paste it. Anthropic 400s carry { type:'error', error:{ type, message } }.
+        try {
+          var _claireDiagErrBody = await resp.text();
+          console.error('[Claire DIAG] HTTP ' + resp.status + ' on round ' + round + ' — response body:', _claireDiagErrBody);
+        } catch (_e) {
+          console.error('[Claire DIAG] HTTP ' + resp.status + ' on round ' + round + ' — could not read response body:', _e);
+        }
         _claireSilent = false;
         claireHideTyping();
         if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
