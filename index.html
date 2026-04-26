@@ -5578,7 +5578,7 @@ window.PentaClients = (function() {
 
     var phone = String(emp.phone || '').replace(/\D/g, '');
     if (phone.length === 10) phone = '1' + phone;
-    var rcHref = 'rcmobile://sms?number=' + phone + '&body=' + encodeURIComponent(smsBody);
+    var rcHref = 'sms:+' + phone + '&body=' + encodeURIComponent(smsBody);
     var safeBody = String(smsBody).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     var ov = document.createElement('div');
@@ -5587,9 +5587,9 @@ window.PentaClients = (function() {
     ov.innerHTML = ''
       + '<div style="max-width:440px;width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif">'
       +   '<div style="font-size:18px;font-weight:700;margin-bottom:6px">Send invite to ' + (emp.first_name || '') + '</div>'
-      +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tap to open RingCentral with the SMS pre-filled, then hit Send.</div>'
+      +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tap to open Messages with the SMS pre-filled, then hit Send.</div>'
       +   '<div style="background:var(--surface2);border-radius:10px;padding:12px;font-size:13px;line-height:1.4;margin-bottom:16px;white-space:pre-wrap;word-break:break-word">' + safeBody + '</div>'
-      +   '<a href="' + rcHref + '" style="display:block;text-align:center;padding:14px;background:#FF7A00;color:#fff;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:10px">📱 Open RingCentral</a>'
+      +   '<a href="' + rcHref + '" style="display:block;text-align:center;padding:14px;background:#FF7A00;color:#fff;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:10px">📱 Open Messages</a>'
       +   '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Sending to ' + (emp.phone || '—') + '</div>'
       +   '<button type="button" id="penta-invite-send-close" style="width:100%;padding:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer">Close</button>'
       + '</div>';
