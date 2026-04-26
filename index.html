@@ -5336,15 +5336,63 @@ window.PentaClients = (function() {
   function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
 
   async function _resolveEmployeeByRoster(rosterId) {
-    if (!window.PentaEmployees) return null;
-    try { await window.PentaEmployees.ready(); } catch (e) {}
-    var rows = [];
-    try { rows = await window.PentaEmployees.list(); } catch (e) { return null; }
-    var rid = String(rosterId || '');
-    for (var i = 0; i < rows.length; i++) {
-      if (String(rows[i].legacy_roster_id || '') === rid) return rows[i];
+    // Returns { employee, error } — never throws.
+    // employee = matching employees row, or null
+    // error    = structured object describing what went wrong, or null on success
+    if (!rosterId) {
+      return { employee: null, error: { kind: 'no_roster_id', msg: 'rosterId argument was empty' } };
     }
-    return null;
+    if (!window.PentaEmployees) {
+      return { employee: null, error: { kind: 'facade_missing', msg: 'window.PentaEmployees does not exist' } };
+    }
+
+    // Force-await hydration. Triggers it if it has never run this session.
+    try {
+      await window.PentaEmployees.ready();
+    } catch (e) {
+      return { employee: null, error: { kind: 'hydrate_threw', msg: 'ready() threw: ' + (e && e.message), raw: e } };
+    }
+
+    // First lookup attempt
+    var rows;
+    try {
+      rows = await window.PentaEmployees.list();
+    } catch (e) {
+      return { employee: null, error: { kind: 'list_threw', msg: 'list() threw: ' + (e && e.message), raw: e } };
+    }
+    if (!Array.isArray(rows)) {
+      return { employee: null, error: { kind: 'list_not_array', msg: 'list() returned non-array', raw: rows } };
+    }
+
+    var target = String(rosterId);
+    var match = rows.find(function(r) { return String(r.legacy_roster_id || '') === target; });
+    if (match) return { employee: match, error: null };
+
+    // Cache miss — force a re-hydrate and try once more in case the row was just inserted.
+    try {
+      await window.PentaEmployees._hydrate();
+    } catch (e) {
+      return { employee: null, error: { kind: 'rehydrate_threw', msg: '_hydrate() threw: ' + (e && e.message), raw: e } };
+    }
+    try {
+      rows = await window.PentaEmployees.list();
+    } catch (e) {
+      return { employee: null, error: { kind: 'list_threw_2', msg: 'list() threw on retry: ' + (e && e.message), raw: e } };
+    }
+    match = rows.find(function(r) { return String(r.legacy_roster_id || '') === target; });
+    if (match) return { employee: match, error: null };
+
+    // Genuine miss — diagnose by reporting cache size + sample legacy_roster_ids.
+    var sample = rows.slice(0, 5).map(function(r) { return r.legacy_roster_id; });
+    return {
+      employee: null,
+      error: {
+        kind: 'not_in_cache',
+        msg: 'Roster id "' + rosterId + '" not in employees table. Cache has ' + rows.length + ' rows. First few legacy_roster_ids: ' + JSON.stringify(sample),
+        cacheSize: rows.length,
+        sampleIds: sample
+      }
+    };
   }
 
   function _relativeTime(iso) {
@@ -5404,8 +5452,9 @@ window.PentaClients = (function() {
       + label + '</span>';
   }
 
-  function pentaRenderInvitePill(rosterId, target) {
+  async function pentaRenderInvitePill(rosterId, target) {
     if (!target) return;
+    try { if (window.PentaEmployees) await window.PentaEmployees.ready(); } catch (e) {}
     target.innerHTML = '<span style="font-size:11px;color:var(--muted)">…</span>';
     pentaInviteStatus(rosterId)
       .then(function(s) { target.innerHTML = _pillHTML(s.state); })
@@ -5420,8 +5469,9 @@ window.PentaClients = (function() {
     return '⚪ Not invited yet';
   }
 
-  function pentaRenderInviteChip(rosterId, target, sendBtn) {
+  async function pentaRenderInviteChip(rosterId, target, sendBtn) {
     if (!target) return;
+    try { if (window.PentaEmployees) await window.PentaEmployees.ready(); } catch (e) {}
     target.textContent = '…';
     pentaInviteStatus(rosterId).then(function(s) {
       target.textContent = _chipText(s);
@@ -5434,25 +5484,92 @@ window.PentaClients = (function() {
   }
 
   async function pentaSendInvite(rosterId) {
-    var sb = SB(); if (!sb) { alert('Auth not ready'); return; }
-    var emp = await _resolveEmployeeByRoster(rosterId);
-    if (!emp) { alert('No matching employee row in Supabase yet. Reload and try again — backfill may still be running.'); return; }
-    if (!emp.phone) { alert('No phone number on file. Add one in the Edit tab first.'); return; }
+    var resolved;
+    try {
+      resolved = await _resolveEmployeeByRoster(rosterId);
+    } catch (e) {
+      alert('Send Invite failed (resolver crashed):\n' + (e && e.message));
+      console.error('[pentaSendInvite] resolver crash', e);
+      return;
+    }
 
-    var token = await pentaGenerateInviteToken();
-    var expires = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
-    var ins = await sb.from('employee_invites').insert({
-      business_id: emp.business_id,
-      employee_id: emp.id,
-      token: token,
-      phone_sent_to: emp.phone,
-      expires_at: expires
-    });
-    if (ins.error) { alert('Could not create invite: ' + ins.error.message); return; }
+    if (resolved.error) {
+      var err = resolved.error;
+      var detail;
+      switch (err.kind) {
+        case 'not_in_cache':
+          detail = 'Employee not found in Supabase.\n\n' + err.msg + '\n\nIf this is a new employee, the backfill may not have run on this device yet. Try signing out and back in.';
+          break;
+        case 'list_threw':
+        case 'list_threw_2':
+        case 'hydrate_threw':
+        case 'rehydrate_threw':
+          detail = 'Could not load employees from Supabase.\n\n' + err.msg + '\n\nThis is usually an auth/session issue. Sign out and back in.';
+          break;
+        case 'list_not_array':
+          detail = 'Employees query returned unexpected data. Sign out and back in.\n\n' + err.msg;
+          break;
+        case 'facade_missing':
+          detail = 'PentaEmployees facade did not load. Reload the page.';
+          break;
+        default:
+          detail = 'Unexpected error: ' + (err.msg || JSON.stringify(err));
+      }
+      alert('Send Invite failed.\n\n' + detail);
+      console.error('[pentaSendInvite]', err);
+      return;
+    }
+
+    var emp = resolved.employee;
+    if (!emp.phone) {
+      alert('No phone number on file for ' + (emp.first_name || 'this employee') + '. Add a phone in the Staff edit form first.');
+      return;
+    }
+
+    // Generate token + expiry
+    var token, expires;
+    try {
+      token = await pentaGenerateInviteToken();
+      expires = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    } catch (e) {
+      alert('Could not generate invite token: ' + (e && e.message));
+      return;
+    }
+
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) {
+      alert('Supabase client not ready. Reload the page.');
+      return;
+    }
+
+    var insertResult;
+    try {
+      insertResult = await sb.from('employee_invites').insert({
+        business_id: emp.business_id,
+        employee_id: emp.id,
+        token: token,
+        phone_sent_to: emp.phone,
+        expires_at: expires
+      });
+    } catch (e) {
+      alert('Could not create invite row: ' + (e && e.message));
+      console.error('[pentaSendInvite] insert threw', e);
+      return;
+    }
+    if (insertResult && insertResult.error) {
+      alert('Could not create invite row.\n\n' + insertResult.error.message + '\n\nThis is usually an RLS/permissions issue.');
+      console.error('[pentaSendInvite] insert error', insertResult.error);
+      return;
+    }
 
     var url = 'https://captainclean115-oss.github.io/cleaningapp/accept-invite.html?token=' + token;
-    var body = 'Hi ' + (emp.first_name || 'team') + ', welcome to Penta! Set your password: ' + url + ' Link expires in 48 hours.';
-    pentaShowInviteSendModal(emp, body, url);
+    var body = 'Hi ' + (emp.first_name || 'there') + ', welcome to Penta! Set your password: ' + url + ' Link expires in 48 hours.';
+
+    if (typeof pentaShowInviteSendModal === 'function') {
+      pentaShowInviteSendModal(emp, body, url);
+    } else {
+      alert('Invite created but send modal helper missing. Token URL:\n' + url);
+    }
   }
 
   function pentaShowInviteSendModal(emp, smsBody, url) {
@@ -5487,7 +5604,22 @@ window.PentaClients = (function() {
     return 'penta-' + s;
   }
 
-  function pentaShowSetTempPasswordModal(rosterId) {
+  async function pentaShowSetTempPasswordModal(rosterId) {
+    var resolved;
+    try {
+      resolved = await _resolveEmployeeByRoster(rosterId);
+    } catch (e) {
+      alert('Set Temp Password failed (resolver crashed): ' + (e && e.message));
+      return;
+    }
+    if (resolved.error) {
+      alert('Set Temp Password failed.\n\n' + (resolved.error.msg || 'Unknown error') + '\n\nIf this persists, sign out and back in.');
+      console.error('[pentaShowSetTempPasswordModal]', resolved.error);
+      return;
+    }
+    // emp is available if any future code in this modal needs it; current modal
+    // passes rosterId through to pentaSetTempPassword which does its own lookup.
+    var emp = resolved.employee;
     var existing = document.getElementById('penta-temp-pw-overlay');
     if (existing) existing.remove();
     var ov = document.createElement('div');
