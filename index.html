@@ -7725,6 +7725,42 @@ function runVoiceCmd() {
 function _claireMsgsEl() { return document.getElementById('claire-messages'); }
 function _claireTimeNow() { return new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
 
+// Coach-Claire Phase 2 — mode detector. Voice mode (default) keeps Claire's
+// replies tight and spoken-style. Research mode unlocks longer, structured,
+// cited answers for typed strategic questions ("how do I compare to my
+// competitors", "give me a hiring strategy"). Pure function of the user's
+// text — no API call. False positives waste tokens, so the detector is
+// conservative: action verbs and short messages stay in voice mode.
+function _detectClaireMode(text) {
+  if (!text) return 'voice';
+  var t = String(text).toLowerCase().trim();
+  // Action verbs at sentence start → operational, stay in voice mode.
+  if (/^(cancel|move|reschedule|schedule|edit|send|text|call|add|change|update|set|book|show|find|get|look ?up|locate|count|tell me about|who is|when is|what time)\b/.test(t)) {
+    return 'voice';
+  }
+  // Strong research / advisory signals → research mode.
+  if (/\b(compare|competitors?|competition|market|strategy|strategic|should i|how do i|what'?s the best|how does .{0,20}(stack|compare)|research|analyze|analysis|deep ?dive|explain|walk me through|thoughts on|pricing strategy|industry|trend|benchmark|recommend|recommendation|swot|opportun(ity|ities)|risks?|growth|expand|state of the business|state of my business)\b/.test(t)) {
+    return 'research';
+  }
+  // Long messages without action flavor → research.
+  if (t.length > 120) return 'research';
+  return 'voice';
+}
+
+function _claireShowResearchLabel() {
+  var box = _claireMsgsEl();
+  if (!box) return;
+  var prev = document.getElementById('claire-research-label');
+  if (prev) prev.remove();
+  var row = document.createElement('div');
+  row.className = 'claire-msg-row';
+  row.id = 'claire-research-label';
+  row.innerHTML = '<div class="claire-mini-avatar"><span>C</span></div>'
+    + '<div style="font-size:11px;color:var(--muted);font-style:italic;padding:6px 12px;line-height:1.4">Research mode — pulling data and market context…</div>';
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+
 function claireEnsureIntro() {
   var box = _claireMsgsEl();
   if (!box || box.dataset.inited === '1') return;
@@ -10462,6 +10498,17 @@ async function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
   text = text.replace(/^(hey |hi |ok )?(claire|clear)[,.]?\s*/i, '').trim();
 
+  // Phase 2 mode detection. Voice = terse spoken-style (default). Research =
+  // longer, structured, cited typed-style for strategic questions. Re-render
+  // the typing indicator so the "Research mode…" label sits ABOVE it (the
+  // typing row was inserted by runVoiceCmd before we got here).
+  var _claireMode = _detectClaireMode(text);
+  if (_claireMode === 'research') {
+    claireHideTyping();
+    _claireShowResearchLabel();
+    claireShowTyping();
+  }
+
   if (!_claireApiKey) {
     setClaireApiKey();
     if (!_claireApiKey) { var s=document.getElementById('voice-cmd-status'); s.style.display='block'; claireReply('I need an API key to work. Try your command again.'); return; }
@@ -10496,12 +10543,23 @@ async function processVoiceCommand(text) {
     +'OPERATIONAL TOOLS\n'
     +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, generate quotes, send invoices, add reminders). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
     +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
-    +'VOICE STYLE (your replies are spoken aloud — keep tight)\n'
-    +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
-    +'- Operational confirmations: ONE short sentence. No filler.\n'
-    +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If Tom wants more depth, he\'ll ask. Do not lecture.\n'
-    +'- After confirming an action, stop. Don\'t add "let me know if you need anything else."\n'
-    +'- When citing data: be specific (client name, $ amount, date) but brief — "Pembroke clients average $185/clean vs $165 in Hingham" not a paragraph.\n\n'
+    +(_claireMode === 'research'
+      ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
+        +'- Tom is reading this on screen, not listening. Take the room you need.\n'
+        +'- Structure: lead with a one-line bottom-line answer, then break into 2-4 sub-sections covering the key dimensions (data, market context, comparison, strategic take). Use sub-headers in plain text — no markdown asterisks/hashes. Just newlines and capitalized labels like "What the data shows" or "Strategic take".\n'
+        +'- Cite specific sources by name when using web_search results: "according to Angi", "Care.com data shows", "Julianaspristinecleaning\'s 2026 rate guide". Tom needs to see your work.\n'
+        +'- Use specific numbers from his data and from web sources. Anchor every claim.\n'
+        +'- Length: 4-8 paragraphs is normal for a research answer. Don\'t pad, but don\'t chop. If the question deserves depth, give depth.\n'
+        +'- End with 1-2 sharpening questions if more context would refine the answer ("Want me to pull pricing from Merry Maids\' site for an apples-to-apples?", "Do you have a current rate card to benchmark against?").\n'
+        +'- Still no markdown — no **bold**, no bullets with `-` or `*`, no `#` headers. Plain text with capitalization and line breaks for structure. The TTS engine reads this aloud if Tom hits play, so keep it readable spoken too.\n'
+        +'- Strategic, blunt when warranted, but never dismissive. "Stop trying" is the wrong tone — explain the trade-offs, don\'t shut down the conversation.\n'
+        +'- For market/competitor/industry questions, USE web_search proactively. Tom expects you to actually look up the local data, not reason from training. Search for specific local info: "South Shore MA cleaning rates 2026", "Merry Maids South Shore pricing", "Massachusetts house cleaning average cost", etc. Cite every source.\n\n')
+      : ('VOICE STYLE (your replies are spoken aloud — keep tight)\n'
+        +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
+        +'- Operational confirmations: ONE short sentence. No filler.\n'
+        +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If Tom wants more depth, he\'ll ask. Do not lecture.\n'
+        +'- After confirming an action, stop. Don\'t add "let me know if you need anything else."\n'
+        +'- When citing data: be specific (client name, $ amount, date) but brief — "Pembroke clients average $185/clean vs $165 in Hingham" not a paragraph.\n\n'))
     +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY)\n'
     +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
     +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; Tom will not see any words you say between tool calls.\n'
@@ -10539,7 +10597,9 @@ async function processVoiceCommand(text) {
         headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 400,
+          // Voice mode keeps replies short; research mode needs room for
+          // 4-8 paragraphs of structured analysis with citations.
+          max_tokens: (_claireMode === 'research') ? 2000 : 400,
           system: systemPrompt,
           tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
           messages: _claireHistory
