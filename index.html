@@ -4578,12 +4578,13 @@ window.PentaClients = (function() {
 
   function _triggerRerender(rolledBackId) {
     try {
+      // Phase 3E.1 — always re-run applyFilters when Supabase data lands.
+      // Pre-Phase-3E the cc_tab gate was an optimization (sync CLIENTS array meant
+      // re-renders were wasted). Post-Phase-3E it's the bug — Clients tab counts
+      // stay at 0 if user is on Home when load completes.
+      if (typeof applyFilters === 'function') applyFilters();
       var activeTab = sessionStorage.getItem('cc_tab') || 'home';
-      if (activeTab === 'clients' && typeof applyFilters === 'function') {
-        applyFilters();
-      } else if (activeTab === 'cal' && typeof renderCal === 'function') {
-        renderCal();
-      }
+      if (activeTab === 'cal' && typeof renderCal === 'function') renderCal();
       // Phase 3D: if the message drawer is open on the rolled-back client,
       // refresh its title and subtitle so the DOM matches the corrected cache.
       // The client edit sheet closes on save, so it's not open when a rollback fires.
