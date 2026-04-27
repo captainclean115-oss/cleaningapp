@@ -52,7 +52,10 @@ serve(async (req) => {
     .eq("token", token)
     .maybeSingle();
 
-  if (inviteErr) return json(500, { error: "DB error looking up invite" });
+  if (inviteErr) {
+    console.error('[accept-invite] invite lookup failed:', JSON.stringify(inviteErr));
+    return json(500, { error: "DB error looking up invite", detail: inviteErr.message, code: inviteErr.code });
+  }
   if (!invite) return json(404, { error: "Invite not found" });
   if (invite.revoked_at) return json(410, { error: "Invite revoked" });
   if (invite.accepted_at) return json(409, { error: "Invite already used" });
