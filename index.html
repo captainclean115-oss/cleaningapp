@@ -20380,6 +20380,50 @@ async function saveStaffEmployee() {
   };
   if (idx === -1) { list.push(emp); } else { list[idx] = emp; }
   saveStaffList(list);
+
+  // Sprint 4.1 — dual-write to Supabase employees table.
+  // Best-effort: log on failure but don't block UI flow (localStorage write
+  // already succeeded so the manager's edit is durable client-side).
+  try {
+    if (window.PentaEmployees) {
+      var rosterId = String(emp.id || emp.name || '');
+      var rows = await window.PentaEmployees.list();
+      var supaRow = rows.find(function(r) {
+        return String(r.legacy_roster_id || '') === rosterId;
+      });
+      if (supaRow) {
+        var langMap = { es: 'mx', pt: 'br', ko: 'kr', en: 'us' };
+        var first = '', last = '-';
+        if (emp.name && emp.name.indexOf(' ') > -1) {
+          first = emp.name.split(' ')[0];
+          last = emp.name.split(' ').slice(1).join(' ');
+        } else {
+          first = emp.name || '';
+          last = '-';
+        }
+        var phoneClean = String(emp.phone || '').replace(/\D/g, '');
+        var patch = {
+          first_name: first,
+          last_name: last || '-',
+          phone: phoneClean || null,
+          culture_tag: langMap[emp.lang] || 'generic',
+          status: emp.status === 'active' ? (supaRow.status === 'invited' ? 'invited' : 'active')
+                  : emp.status === 'inactive' ? 'suspended' : supaRow.status
+        };
+        if (emp.email && emp.email.indexOf('@employees.penta.internal') === -1) {
+          patch.email = emp.email;
+          patch.email_is_internal = false;
+        }
+        await window.PentaEmployees.update(supaRow.id, patch);
+        console.log('[Sprint 4.1] Staff edit dual-write OK for', rosterId);
+      } else {
+        console.log('[Sprint 4.1] No Supabase row for', rosterId, '— backfill will handle it');
+      }
+    }
+  } catch (e) {
+    console.error('[Sprint 4.1] Staff edit dual-write failed:', e);
+  }
+
   document.getElementById('staff-save-msg').textContent = '✓ Saved!';
   setTimeout(() => {
     closeStaffModal();

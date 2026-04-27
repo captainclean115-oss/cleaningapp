@@ -107,13 +107,18 @@ serve(async (req) => {
     .upsert(
       {
         id: authUserId,
+        auth_user_id: authUserId,
         business_id: employee.business_id,
         role: "employee",
+        email: employee.email,
+        first_name: employee.first_name,
+        last_name: employee.last_name,
       },
       { onConflict: "id" }
     );
   if (pubUserErr) {
-    console.error("public.users upsert warning:", pubUserErr.message);
+    console.error("public.users upsert FAILED:", pubUserErr);
+    return json(500, { error: "Failed to create users record", detail: pubUserErr.message, code: pubUserErr.code });
   }
 
   const { error: acceptErr } = await admin

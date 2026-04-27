@@ -112,10 +112,22 @@ serve(async (req) => {
       .eq("id", emp.id);
     if (linkErr) return json(500, { error: "Failed to link employee", detail: linkErr.message });
 
-    await admin.from("users").upsert(
-      { id: authUserId, business_id: emp.business_id, role: "employee" },
+    const { error: pubUserErr } = await admin.from("users").upsert(
+      {
+        id: authUserId,
+        auth_user_id: authUserId,
+        business_id: emp.business_id,
+        role: "employee",
+        email: emp.email,
+        first_name: emp.first_name,
+        last_name: emp.last_name,
+      },
       { onConflict: "id" }
     );
+    if (pubUserErr) {
+      console.error("public.users upsert FAILED:", pubUserErr);
+      return json(500, { error: "Failed to create users record", detail: pubUserErr.message, code: pubUserErr.code });
+    }
   } else {
     const { error: updErr } = await admin.auth.admin.updateUserById(authUserId, {
       password: temp_password,
