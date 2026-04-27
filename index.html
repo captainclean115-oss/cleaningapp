@@ -19728,27 +19728,16 @@ function pentaWireLoginForm() {
   });
 }
 
-// Employee portal exit — called from the in-portal logout button.
-// Returns the employee to the PIN pad (?emp=1 path) without touching Supabase.
-function logout() {
-  sessionStorage.removeItem('cc_emp_id');
-  sessionStorage.removeItem('cc_emp_lang');
-  sessionStorage.removeItem('cc_tab');
-  appPinRole = null;
-  currentEmployee = null;
-  appPinCurrent = '';
-  appUpdatePinDots();
-  var err = document.getElementById('app-pin-error');
-  if (err) err.textContent = '';
-  const panel = document.getElementById('staff-panel');
-  if (panel) { panel.classList.remove('active'); panel.style.display = ''; }
-  const portalScreen = document.getElementById('portal-screen');
-  if (portalScreen) portalScreen.style.display = 'none';
-  document.body.classList.remove('in-portal');
-  const loginScreen = document.getElementById('login-screen');
-  if (loginScreen) loginScreen.style.display = 'flex';
-  const pinScreen = document.getElementById('app-pin-screen');
-  if (pinScreen) pinScreen.style.display = 'flex';
+// Sprint 4.2.A — clean Supabase sign-out. Replaces the legacy in-app PIN-pad
+// re-show that lingered past Phase 4D. After signOut + reload, the boot router
+// routes to #penta-login-screen for both manager and employee.
+async function logout() {
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb && sb.auth) await sb.auth.signOut({ scope: 'global' });
+  } catch (e) { console.error('[logout] signOut error:', e); }
+  try { localStorage.removeItem('sb-wymoezilyjmyibmuqqmr-auth-token'); } catch (e) {}
+  location.reload();
 }
 
 
@@ -20228,7 +20217,6 @@ function openEditStaff(idx) {
   document.getElementById('staff-zip').value = emp.zip || '';
   // Employment
   document.getElementById('staff-team').value = emp.team || 'B1';
-  document.getElementById('staff-pin').value = emp.pin || '';
   document.getElementById('staff-pay').value = emp.payRate || '';
   document.getElementById('staff-lang').value = emp.lang || 'en';
   document.getElementById('staff-status').value = emp.status || 'active';
@@ -20339,13 +20327,8 @@ async function saveStaffEmployee() {
   try {
   const idx = parseInt(document.getElementById('staff-edit-idx').value);
   const name = document.getElementById('staff-name').value.trim();
-  const pin = String(document.getElementById('staff-pin').value).trim();
   if (!name) { alert('Name is required'); return; }
-  if (!pin || pin.length !== 4 || isNaN(pin)) { alert('PIN must be exactly 4 digits'); return; }
-  if (pin === '4444') { alert('That PIN is reserved for the manager'); return; }
   const list = getStaffList();
-  const conflict = list.find((e,i) => e.pin === pin && i !== idx);
-  if (conflict) { alert('PIN ' + pin + ' is already used by ' + conflict.name); return; }
   const status = document.getElementById('staff-status').value;
   const availDays = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
     .filter(d => { const el = document.getElementById('staff-day-' + d); return el && el.checked; });
@@ -20365,7 +20348,7 @@ async function saveStaffEmployee() {
 
   const emp = {
     id: (idx >= 0 && list[idx] && list[idx].id) || ('e_' + Date.now()),
-    name, pin,
+    name,
     team: document.getElementById('staff-team').value,
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
@@ -21615,14 +21598,13 @@ function loginSuccess() {
   if (typeof showPortalTab === 'function') showPortalTab('home');
 }
 
-function portalLogout() {
-  currentEmployee = null;
-  currentPin = '';
-  updatePinDots();
-  document.getElementById('login-screen').style.display = 'flex';
-  document.getElementById('portal-screen').style.display = 'none';
-  document.body.classList.remove('in-portal');
-  document.getElementById('login-error').textContent = '';
+async function portalLogout() {
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb && sb.auth) await sb.auth.signOut({ scope: 'global' });
+  } catch (e) { console.error('[portalLogout] signOut error:', e); }
+  try { localStorage.removeItem('sb-wymoezilyjmyibmuqqmr-auth-token'); } catch (e) {}
+  location.reload();
 }
 
 // ─────────────────────────────────────────
@@ -27262,7 +27244,6 @@ function _p3dPage(dir) {
             <option value="B1">B1</option><option value="B3">B3</option><option value="B5">B5</option><option value="S1">S1</option><option value="S3">S3</option><option value="M1">M1</option><option value="M2">M2</option><option value="M3">M3</option>
           </select>
         </div>
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">PIN (4 digits) *</div><input type="number" id="staff-pin" maxlength="4" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;font-family:'DM Mono',monospace"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
