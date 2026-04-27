@@ -5420,7 +5420,11 @@ window.PentaClients = (function() {
   }
 
   async function pentaInviteStatus(rosterId) {
-    var emp = await _resolveEmployeeByRoster(rosterId);
+    // Sprint 4.1.1 — bail silently if rosterId doesn't resolve.
+    // Prevents 400s from employee_id=eq.undefined queries.
+    if (!rosterId) return { state: 'none' };
+    var resolved = await _resolveEmployeeByRoster(rosterId);
+    var emp = resolved && resolved.employee;
     if (!emp) return { state: 'none' };
     if (emp.auth_user_id) return { state: 'active' };
     var sb = SB(); if (!sb) return { state: 'none' };
@@ -5455,6 +5459,17 @@ window.PentaClients = (function() {
   async function pentaRenderInvitePill(rosterId, target) {
     if (!target) return;
     try { if (window.PentaEmployees) await window.PentaEmployees.ready(); } catch (e) {}
+    // Sprint 4.1.1 — silently skip if rosterId doesn't resolve to a Supabase row.
+    if (!rosterId) {
+      if (target) target.innerHTML = '';
+      return;
+    }
+    var rows = await window.PentaEmployees.list();
+    var match = rows.find(function(r) { return String(r.legacy_roster_id || '') === String(rosterId); });
+    if (!match) {
+      if (target) target.innerHTML = '';
+      return;
+    }
     target.innerHTML = '<span style="font-size:11px;color:var(--muted)">…</span>';
     pentaInviteStatus(rosterId)
       .then(function(s) { target.innerHTML = _pillHTML(s.state); })
@@ -5472,6 +5487,17 @@ window.PentaClients = (function() {
   async function pentaRenderInviteChip(rosterId, target, sendBtn) {
     if (!target) return;
     try { if (window.PentaEmployees) await window.PentaEmployees.ready(); } catch (e) {}
+    // Sprint 4.1.1 — silently skip if rosterId doesn't resolve to a Supabase row.
+    if (!rosterId) {
+      if (target) target.innerHTML = '';
+      return;
+    }
+    var rows = await window.PentaEmployees.list();
+    var match = rows.find(function(r) { return String(r.legacy_roster_id || '') === String(rosterId); });
+    if (!match) {
+      if (target) target.innerHTML = '';
+      return;
+    }
     target.textContent = '…';
     pentaInviteStatus(rosterId).then(function(s) {
       target.textContent = _chipText(s);
