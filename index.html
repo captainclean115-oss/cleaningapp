@@ -24286,18 +24286,46 @@ async function submitApplication() {
     .filter(c => ['English','Spanish','Portuguese','Kriolu'].includes(c.value))
     .map(c => c.value);
 
-  // Collect document photos
-  const docPhotos = {};
-  const docIds = ['app-license-front','app-license-back','app-passport','app-ssn'];
-  const docLabels = { 'app-license-front':'License Front', 'app-license-back':'License Back', 'app-passport':'Passport', 'app-ssn':'Social Security' };
+  // Sprint 4.2.B — Upload optional doc photos to Supabase Storage instead of base64.
+  const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  const docUrls = {
+    driver_license_front_url: null,
+    driver_license_back_url: null,
+    ssn_card_url: null,
+    passport_url: null
+  };
 
-  await Promise.all(docIds.map(id => new Promise(resolve => {
-    const el = document.getElementById(id);
-    if (!el || !el.files[0]) { resolve(); return; }
-    const reader = new FileReader();
-    reader.onload = e => { docPhotos[docLabels[id]] = e.target.result; resolve(); };
-    reader.readAsDataURL(el.files[0]);
-  })));
+  if (sb) {
+    const docMap = [
+      { id: 'app-license-front', col: 'driver_license_front_url' },
+      { id: 'app-license-back',  col: 'driver_license_back_url' },
+      { id: 'app-ssn',           col: 'ssn_card_url' },
+      { id: 'app-passport',      col: 'passport_url' }
+    ];
+    const appUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('app-' + Date.now() + '-' + Math.random().toString(36).slice(2,10));
+    for (const d of docMap) {
+      const inp = document.getElementById(d.id);
+      if (!inp || !inp.files || !inp.files[0]) continue;
+      const f = inp.files[0];
+      const ext = (f.name.split('.').pop() || 'jpg').toLowerCase();
+      const path = '48532f06-0625-415b-9091-2638bed6506d/' + appUuid + '/' + d.col + '.' + ext;
+      try {
+        const { error: upErr } = await sb.storage.from('applications').upload(path, f, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: f.type || 'application/octet-stream'
+        });
+        if (upErr) {
+          console.error('[Sprint 4.2.B] Storage upload failed for', d.col, upErr);
+        } else {
+          const { data: pub } = sb.storage.from('applications').getPublicUrl(path);
+          docUrls[d.col] = pub && pub.publicUrl ? pub.publicUrl : path;
+        }
+      } catch (e) {
+        console.error('[Sprint 4.2.B] Storage upload exception for', d.col, e);
+      }
+    }
+  }
 
   const now = new Date();
   const expNotesRaw = document.getElementById('app-expnotes').value.trim();
@@ -24358,7 +24386,7 @@ async function submitApplication() {
     emergencyRel: emRelEn,
     emergencyRelOriginal: (submitLang !== 'en' && emRelRaw) ? emRelRaw : '',
     signature: document.getElementById('app-signature').value.trim(),
-    docs: docPhotos
+    docs: docUrls
   };
 
   // Manager mode: add directly to emp_roster
@@ -24391,6 +24419,36 @@ async function submitApplication() {
       emRel: app.emRel,
     });
     saveStaffList(list);
+
+    // Sprint 4.2.B — Manager-mode dual-write to Supabase employees.
+    // PentaEmployees facade has no add() method, so insert directly via the
+    // shared client. Best-effort: log on failure but don't block UI flow.
+    if (sb) {
+      try {
+        const langMap = { es: 'mx', pt: 'br', cv: 'cv', en: 'us' };
+        const phoneClean = String(app.phone || '').replace(/\D/g, '');
+        const empRow = {
+          business_id: '48532f06-0625-415b-9091-2638bed6506d',
+          first_name: app.firstName,
+          last_name: app.lastName || '-',
+          phone: phoneClean || null,
+          email: app.email || null,
+          email_is_internal: !app.email,
+          culture_tag: langMap[app.submitLang] || 'us',
+          status: 'active',
+          legacy_roster_id: 'app_' + Date.now()
+        };
+        const insRes = await sb.from('employees').insert(empRow).select('id').single();
+        if (insRes.error) {
+          console.error('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees failed:', insRes.error);
+        } else {
+          console.log('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees OK:', insRes.data && insRes.data.id);
+        }
+      } catch (e) {
+        console.error('[Sprint 4.2.B] Manager-mode dual-write threw:', e);
+      }
+    }
+
     _appManagerMode = false;
     const screen = document.getElementById('application-screen');
     if (screen) screen.style.display = 'none';
@@ -24400,8 +24458,62 @@ async function submitApplication() {
     return;
   }
 
-  applications.push(app);
-  localStorage.setItem('job_applications', JSON.stringify(applications));
+  // Sprint 4.2.B — INSERT to Supabase job_applications instead of localStorage.
+  let insData = null;
+  if (sb) {
+    const insertRow = {
+      business_id: '48532f06-0625-415b-9091-2638bed6506d',
+      first_name: app.firstName,
+      last_name: app.lastName,
+      phone: app.phone,
+      email: app.email,
+      address: app.address,
+      city: app.city,
+      state: null,
+      zip_code: null,
+      preferred_language: submitLang || 'en',
+      work_authorization: app.workAuth,
+      drivers_license_status: app.hasLicense,
+      has_reliable_transportation: null,
+      available_days: (app.availDays || []).join(','),
+      preferred_start_time: null,
+      hours_per_week_desired: app.prefHours,
+      earliest_start_date: null,
+      prior_cleaning_experience: app.experience,
+      prior_employer: null,
+      emergency_contact_name: app.emergencyName,
+      emergency_contact_phone: app.emergencyPhone,
+      emergency_contact_relation: app.emergencyRel,
+      hear_about_us: app.heardFrom,
+      referred_by: null,
+      prior_cleaning_experience_en: (submitLang !== 'en' && expNotesEn) ? expNotesEn : null,
+      emergency_contact_relation_en: (submitLang !== 'en' && emRelEn) ? emRelEn : null,
+      signature_full_name: app.signature,
+      signature_date_iso: now.toISOString(),
+      status: 'new',
+      submitted_at: now.toISOString(),
+      ...docUrls
+    };
+    const insRes = await sb.from('job_applications').insert(insertRow).select('id').single();
+    if (insRes.error) {
+      console.error('[Sprint 4.2.B] job_applications INSERT failed:', insRes.error);
+      document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
+      return;
+    }
+    insData = insRes.data;
+    console.log('[Sprint 4.2.B] Application saved:', insData && insData.id);
+  } else {
+    console.error('[Sprint 4.2.B] Supabase client unavailable — application not persisted');
+    document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
+    return;
+  }
+
+  // Sprint 4.2.B — Confirmation SMS to applicant.
+  // TODO: No public SMS helper exists today. The only working SMS path is rcFetch
+  //   '/account/~/extension/~/sms', which requires rcToken on the manager's
+  //   device — not present on the applicant's browser where this form runs.
+  //   Move this to a Supabase Edge Function (server-side RC OAuth) in a follow-up.
+  //   For now the thank-you screen is the only confirmation surface.
 
   // Log to main app updates tab
   const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
