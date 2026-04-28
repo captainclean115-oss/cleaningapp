@@ -24219,6 +24219,28 @@ function hideApplication() {
   document.getElementById('login-screen').style.display = 'flex';
 }
 
+function _generateUuidV4() {
+  // Prefer native crypto.randomUUID (Chrome 92+, Safari 15.4+, FF 95+, all current iOS/Android)
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback: RFC 4122 v4 UUID using crypto.getRandomValues (still cryptographically random)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0'));
+    return hex.slice(0, 4).join('') + '-' + hex.slice(4, 6).join('') + '-' + hex.slice(6, 8).join('') + '-' + hex.slice(8, 10).join('') + '-' + hex.slice(10, 16).join('');
+  }
+  // Last-resort fallback: Math.random-based v4 (NOT cryptographically secure, but produces valid UUID shape)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 async function submitApplication() {
   // Sprint 4.2.B — guard against _appManagerMode being undeclared
   // (was an implicit global; some sprints removed its setter). The
@@ -24278,7 +24300,7 @@ async function submitApplication() {
       { id: 'app-ssn',           col: 'ssn_card_url' },
       { id: 'app-passport',      col: 'passport_url' }
     ];
-    const appUuid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('app-' + Date.now() + '-' + Math.random().toString(36).slice(2,10));
+    const appUuid = _generateUuidV4();
     for (const d of docMap) {
       const inp = document.getElementById(d.id);
       if (!inp || !inp.files || !inp.files[0]) continue;
@@ -24435,9 +24457,9 @@ async function submitApplication() {
   }
 
   // Sprint 4.2.B — INSERT to Supabase job_applications instead of localStorage.
-  let insData = null;
   if (sb) {
     const insertRow = {
+      id: appUuid,
       business_id: '48532f06-0625-415b-9091-2638bed6506d',
       first_name: app.firstName,
       last_name: app.lastName,
@@ -24470,14 +24492,13 @@ async function submitApplication() {
       submitted_at: now.toISOString(),
       ...docUrls
     };
-    const insRes = await sb.from('job_applications').insert(insertRow).select('id').single();
+    const insRes = await sb.from('job_applications').insert(insertRow);
     if (insRes.error) {
       console.error('[Sprint 4.2.B] job_applications INSERT failed:', insRes.error);
       document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
       return;
     }
-    insData = insRes.data;
-    console.log('[Sprint 4.2.B] Application saved:', insData && insData.id);
+    console.log('[Sprint 4.2.B.1] Application saved:', appUuid);
   } else {
     console.error('[Sprint 4.2.B] Supabase client unavailable — application not persisted');
     document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
