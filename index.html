@@ -20067,6 +20067,21 @@ async function hireApplicant(id) {
     status: 'active',
     legacy_roster_id: 'app_' + String(app.id).slice(0, 8)
   };
+
+  // Sprint 4.2.B fix — pre-check for email conflict to give a clearer error
+  if (app.email) {
+    const { data: existing } = await sb
+      .from('employees')
+      .select('id, first_name, last_name')
+      .eq('business_id', app.business_id)
+      .eq('email', app.email)
+      .maybeSingle();
+    if (existing) {
+      alert('An employee with email ' + app.email + ' already exists (' + existing.first_name + ' ' + existing.last_name + '). Cannot hire as duplicate. Update the application email or merge with existing employee.');
+      return;
+    }
+  }
+
   const { data: empData, error: empErr } = await sb.from('employees').insert(empRow).select('id').single();
   if (empErr) { alert('Hire failed: ' + empErr.message); return; }
   const session = await sb.auth.getSession();
@@ -24194,6 +24209,8 @@ let applications = JSON.parse(localStorage.getItem('job_applications') || '[]');
 
 
 function hideApplication() {
+  // Sprint 4.2.B fix — guard against _appManagerMode being undeclared
+  const _appManagerMode = (typeof window !== 'undefined' && window._appManagerMode === true);
   if (_appManagerMode) {
     closeManagerAppForm();
     return;
