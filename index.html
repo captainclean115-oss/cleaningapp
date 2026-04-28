@@ -24249,6 +24249,11 @@ function hideApplication() {
 }
 
 async function submitApplication() {
+  // Sprint 4.2.B — guard against _appManagerMode being undeclared
+  // (was an implicit global; some sprints removed its setter). The
+  // future Section 4D manager-mode button will set window._appManagerMode = true.
+  const _appManagerMode = (typeof window !== 'undefined' && window._appManagerMode === true);
+
   // Validate required fields
   const required = {
     'app-firstname': 'First Name',
@@ -24449,7 +24454,7 @@ async function submitApplication() {
       }
     }
 
-    _appManagerMode = false;
+    window._appManagerMode = false;
     const screen = document.getElementById('application-screen');
     if (screen) screen.style.display = 'none';
     showStaffView();
