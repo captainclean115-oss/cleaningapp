@@ -784,7 +784,7 @@ body {
   flex-direction: column;
   align-items: center; justify-content: center;
   padding: 32px 24px;
-  /* Same branded Field Flow wallpaper used by the manager home launcher
+  /* Same branded Penta wallpaper used by the manager home launcher
      and the employee portal so every screen feels like the same app. */
   background:
     radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
@@ -835,7 +835,7 @@ body {
 
 /* PIN screen sits on top of everything — no need to hide elements.
    Background handled by the main #app-pin-screen rule above (branded
-   Field Flow wallpaper). Do NOT override with var(--bg) here. */
+   Penta wallpaper). Do NOT override with var(--bg) here. */
 #app-pin-screen { z-index: 9999; }
 
 
@@ -2492,7 +2492,7 @@ body.in-portal .bottom-nav { display: none !important; }
    SMART PROCUREMENT — INVENTORY
    Phase 1 (inventory + predictive runout): live.
    Phase 2 (AI price-shop): simulated with deterministic mock vendors.
-   Design matches the rest of Field Flow — glass cards, purple/teal wallpaper
+   Design matches the rest of Penta — glass cards, purple/teal wallpaper
    base, iOS squircles, DM Sans.
    ═══════════════════════════════════════════════════════════════════════ */
 #inventory-view {
@@ -3703,7 +3703,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <div id="app-pin-screen" style="display:flex;position:fixed;inset:0;z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;">
   <div style="text-align:center;margin-bottom:32px">
     <div style="font-size:48px;margin-bottom:10px">🧹</div>
-    <div style="font-size:26px;font-weight:700;color:#f0f0f5;letter-spacing:-.02em">Field Flow</div>
+    <div style="font-size:26px;font-weight:700;color:#f0f0f5;letter-spacing:-.02em">Penta</div>
     <div style="font-size:13px;color:#8b8fa8;margin-top:4px" id="app-pin-subtitle">Enter your PIN to continue</div>
   </div>
   <div style="display:flex;gap:6px;justify-content:center;margin-bottom:24px" id="app-lang-row">
@@ -6193,7 +6193,7 @@ const MESSAGES = {
   review: (c) => `Hi ${c.fn}! We hope your recent cleaning on ${c.last||'your last visit'} left your home sparkling ✨ If you have a moment, we'd really appreciate a quick Google review — it helps our small business so much! [Your Google review link]. Thank you! — [Your Name]`,
   balance: (c) => `Hi ${c.fn}, hope you are well! Just a friendly reminder that there is an outstanding balance of $${Math.round(c.bal).toLocaleString()} on your account. You can pay by [payment method] or reply here and we will sort it out. No rush - just wanted to make sure you received this. Thanks! - [Your Name]`,
   checkin: (c) => `Hi ${c.fn}! Just checking in — it's been a little while since your last service on ${c.last||'your last visit'}. We miss you! Would you like to schedule your next cleaning? We have availability in your area. — [Your Name]`,
-  confirm: (c) => `Hi ${c.fn}! Confirming your Field Flowointment for ${c.next||'your upcoming date'}. Our team will be there${c.notes&&c.notes.includes('ETA')?', and we will give you a heads-up when we are on our way':''}. Please reply YES to confirm or let us know if you need to change anything. Thanks! - [Your Name]`,
+  confirm: (c) => `Hi ${c.fn}! Confirming your Penta appointment for ${c.next||'your upcoming date'}. Our team will be there${c.notes&&c.notes.includes('ETA')?', and we will give you a heads-up when we are on our way':''}. Please reply YES to confirm or let us know if you need to change anything. Thanks! - [Your Name]`,
 };
 
 function selectMsgType(type) {
@@ -9776,8 +9776,9 @@ async function contentGenerateCaption() {
       ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
       return;
     }
-    var prompt = 'Write a short, authentic Instagram-style caption for a Manna Maids social post. '
-      + 'Manna Maids is a residential cleaning company in Massachusetts. '
+    var businessName = await _getClaireBusinessName();
+    var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
+      + businessName + ' is a residential cleaning company in Massachusetts. '
       + 'The caption should: sound proud of the work but not corporate, be 15–25 words max, include 2–3 relevant hashtags at the end, '
       + 'and match what you see in the attached ' + _currentContent.mediaType + '. '
       + 'Do NOT use quotation marks around the caption. Output the caption text only, nothing else.';
@@ -9982,8 +9983,9 @@ async function contentRegenCaption(id) {
       ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
       return;
     }
-    var prompt = 'Write a short, authentic Instagram-style caption for a Manna Maids social post. '
-      + 'Manna Maids is a residential cleaning company in Massachusetts. '
+    var businessName = await _getClaireBusinessName();
+    var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
+      + businessName + ' is a residential cleaning company in Massachusetts. '
       + '15–25 words max, proud of the work but not corporate, 2–3 relevant hashtags at the end. '
       + 'Match what you see in the attached ' + item.mediaType + '. '
       + 'Do NOT use quotation marks. Output caption text only.';
@@ -13800,7 +13802,7 @@ async function geocodeJobs(jobList) {
     try {
       const query = encodeURIComponent(job.addr + ', Massachusetts, USA');
       const resp = await fetch(`https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`, {
-        headers: { 'User-Agent': 'Field Flow/1.0' }
+        headers: { 'User-Agent': 'Penta/1.0' }
       });
       const data = await resp.json();
       if (data && data[0]) {
@@ -17586,7 +17588,7 @@ function emailQuote() {
     'To schedule or ask questions, reply to this email or call/text us anytime.\n\n' +
     'We look forward to serving you!\n\n' +
     'The Maids\n' +
-    'Field Flow, Inc.\n' +
+    'Penta, Inc.\n' +
     '800 Brockton Ave, Abington, MA 02351\n' +
     'Phone: (508) 559-8062';
 
@@ -18369,7 +18371,7 @@ async function qtFetchSuggestions(query) {
     const resp = await fetch(
       'https://nominatim.openstreetmap.org/search?q=' + encoded +
       '&format=json&addressdetails=1&limit=5&countrycodes=us',
-      { headers: { 'Accept-Language': 'en', 'User-Agent': 'MannaField Flow/1.0' } }
+      { headers: { 'Accept-Language': 'en', 'User-Agent': 'MannaPenta/1.0' } }
     );
     if (!resp.ok) { sug.style.display = 'none'; return; }
     const data = await resp.json();
@@ -18486,7 +18488,7 @@ async function lookupSqftForAddress(fullAddr) {
     const geoResp = await fetch(
       'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(fullAddr) +
       '&format=json&addressdetails=1&extratags=1&limit=1',
-      { headers: { 'User-Agent': 'MannaField Flow/1.0' } }
+      { headers: { 'User-Agent': 'MannaPenta/1.0' } }
     );
     const geo = await geoResp.json();
     if (!geo || !geo.length) { setTip('Not found — enter manually'); return; }
@@ -18779,6 +18781,29 @@ function showInbox() {
   document.getElementById('draft-text').value = '';
 }
 
+// Sprint 4.2.B Section 5 — resolve business name from auth/cache for AI prompts.
+// Used by generateAIDraft (Claire SMS-drafter) + contentGenerateCaption +
+// contentRegenCaption. Function-hoisted so earlier-in-source callers can see it.
+async function _getClaireBusinessName() {
+  try {
+    if (window._cachedBusinessName) return window._cachedBusinessName;
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return 'this cleaning business';
+    const session = await sb.auth.getSession();
+    if (!session || !session.data || !session.data.session) return 'this cleaning business';
+    const userId = session.data.session.user.id;
+    const { data: userRow } = await sb.from('users').select('business_id').eq('id', userId).maybeSingle();
+    if (!userRow || !userRow.business_id) return 'this cleaning business';
+    const { data: bizRow } = await sb.from('businesses').select('name').eq('id', userRow.business_id).maybeSingle();
+    if (!bizRow || !bizRow.name) return 'this cleaning business';
+    window._cachedBusinessName = bizRow.name;
+    return bizRow.name;
+  } catch (e) {
+    console.warn('[Sprint 4.2.B Section 5] Failed to resolve business name:', e);
+    return 'this cleaning business';
+  }
+}
+
 async function generateAIDraft(incomingMsg, client) {
   const draftEl = document.getElementById('draft-text');
   draftEl.value = '';
@@ -18806,7 +18831,8 @@ async function generateAIDraft(incomingMsg, client) {
       (extras.upcoming ? `Upcoming scheduled cleans: ${extras.upcoming}. ` : '');
   }
 
-  const prompt = `You are a professional cleaning business assistant for Field Flow, a cleaning company in Massachusetts run by Tom.
+  const businessName = await _getClaireBusinessName();
+  const prompt = `You are a professional cleaning business assistant for ${businessName}, a cleaning company in Massachusetts.
 A client just sent this SMS: "${incomingMsg}"
 ${clientContext ? 'Client context: ' + clientContext : 'Unknown client.'}
 Instructions:
@@ -19800,7 +19826,7 @@ function printHandbook(sigName, sigDate, empName) {
     '<p style="font-size:14px"><b>Employee:</b> ' + empName + '</p>' +
     '<p style="font-size:14px"><b>Signed as:</b> ' + sigName + '</p>' +
     '<p style="font-size:14px"><b>Date:</b> ' + sigDate + '</p>' +
-    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the Field Flow, Inc. Employee Handbook.</p>' +
+    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the Penta, Inc. Employee Handbook.</p>' +
     '</div>' +
     '<div style="margin-top:24px;background:#f0f0f0;border-radius:10px;padding:14px;font-size:13px;color:#444;text-align:center">' +
     '📱 To print or save as PDF: tap the <b>Share</b> button in Safari → <b>Print</b> or <b>Save to Files</b>' +
@@ -19814,6 +19840,244 @@ function printHandbook(sigName, sigDate, empName) {
 
 function closeStaffModal() {
   document.getElementById('staff-modal').style.display = 'none';
+}
+
+// ─────────────────────────────────────────
+// Sprint 4.2.B Section 4 — Applicants sub-tab
+// ─────────────────────────────────────────
+
+function _appHtmlEscape(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function setStaffSubtab(tab) {
+  try { sessionStorage.setItem('cc_staff_subtab', tab); } catch (e) {}
+  const btnStaff = document.getElementById('staff-subtab-staff');
+  const btnApps = document.getElementById('staff-subtab-applicants');
+  const listStaff = document.getElementById('staff-list');
+  const listApps = document.getElementById('applicants-list-staff');
+  if (btnStaff) {
+    btnStaff.style.background = tab === 'staff' ? '#5E5CE6' : '#2a3140';
+    btnStaff.style.color = tab === 'staff' ? 'white' : '#ccc';
+  }
+  if (btnApps) {
+    btnApps.style.background = tab === 'applicants' ? '#5E5CE6' : '#2a3140';
+    btnApps.style.color = tab === 'applicants' ? 'white' : '#ccc';
+  }
+  if (listStaff) listStaff.style.display = tab === 'staff' ? '' : 'none';
+  if (listApps) listApps.style.display = tab === 'applicants' ? '' : 'none';
+  if (tab === 'applicants') renderApplicantsList();
+}
+
+async function renderApplicantsList() {
+  const target = document.getElementById('applicants-list-staff');
+  if (!target) return;
+  target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Loading...</div>';
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) {
+      target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Sign in to view applicants.</div>';
+      return;
+    }
+    const { data, error } = await sb
+      .from('job_applications')
+      .select('*')
+      .eq('business_id', '48532f06-0625-415b-9091-2638bed6506d')
+      .neq('status', 'archived')
+      .order('submitted_at', { ascending: false });
+    if (error) {
+      target.innerHTML = '<div style="padding:20px;color:#f88">Error: ' + _appHtmlEscape(error.message || 'unknown') + '</div>';
+      return;
+    }
+    const newCount = (data || []).filter(function(a){ return a.status === 'new'; }).length;
+    const badge = document.getElementById('applicants-badge');
+    if (badge) {
+      badge.textContent = newCount;
+      badge.style.display = newCount > 0 ? 'inline-block' : 'none';
+    }
+    const headerHtml =
+      '<div style="padding:0 0 12px;display:flex;justify-content:flex-end">' +
+        '<button onclick="openManagerApplication()" style="background:#5E5CE6;color:white;border:none;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">+ New Application (in-person)</button>' +
+      '</div>';
+    if (!data || data.length === 0) {
+      target.innerHTML = headerHtml + '<div style="padding:20px;color:#888;text-align:center">No applications yet.</div>';
+      return;
+    }
+    const order = { new:0, reviewed:1, interviewed:2, hired:3, rejected:4 };
+    data.sort(function(a,b){
+      var ao = order[a.status] != null ? order[a.status] : 5;
+      var bo = order[b.status] != null ? order[b.status] : 5;
+      return ao - bo;
+    });
+    var pillColors = { new:'#5E5CE6', reviewed:'#888', interviewed:'#fa0', hired:'#0c0', rejected:'#a44', archived:'#444' };
+    var rows = data.map(function(a){
+      var status = a.status || 'new';
+      var pill = pillColors[status] || '#888';
+      var date = a.submitted_at ? new Date(a.submitted_at).toLocaleDateString() : '';
+      var contact = a.phone || a.email || '—';
+      return '<div onclick="openApplicantDetail(\'' + a.id + '\')" style="padding:14px 16px;border-bottom:1px solid #2a3140;cursor:pointer;display:flex;justify-content:space-between;align-items:center">' +
+        '<div>' +
+          '<div style="font-weight:600;color:#fff">' + _appHtmlEscape(a.first_name) + ' ' + _appHtmlEscape(a.last_name) + '</div>' +
+          '<div style="font-size:12px;color:#888;margin-top:2px">' + _appHtmlEscape(contact) + ' · ' + _appHtmlEscape(date) + '</div>' +
+        '</div>' +
+        '<span style="background:' + pill + ';color:white;padding:3px 10px;border-radius:12px;font-size:11px;text-transform:uppercase">' + _appHtmlEscape(status) + '</span>' +
+      '</div>';
+    }).join('');
+    target.innerHTML = headerHtml + '<div>' + rows + '</div>';
+  } catch (e) {
+    target.innerHTML = '<div style="padding:20px;color:#f88">Error: ' + _appHtmlEscape(e.message || String(e)) + '</div>';
+  }
+}
+
+async function openApplicantDetail(id) {
+  const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Sign in required'); return; }
+  const { data, error } = await sb.from('job_applications').select('*').eq('id', id).single();
+  if (error || !data) { alert('Failed to load applicant: ' + (error && error.message)); return; }
+  var existing = document.getElementById('applicant-detail-overlay');
+  if (existing) existing.remove();
+  var docs = [
+    { label: '🪪 License Front', url: data.driver_license_front_url },
+    { label: '🪪 License Back',  url: data.driver_license_back_url },
+    { label: '🛂 Passport',       url: data.passport_url },
+    { label: '📇 SSN Card',       url: data.ssn_card_url }
+  ].filter(function(d){ return d.url; });
+  var docHtml = docs.length === 0 ? '<div style="color:#888;font-size:13px">No documents uploaded</div>' :
+    docs.map(function(d){ return '<a href="' + d.url + '" target="_blank" rel="noopener" style="display:inline-block;margin:4px 8px 4px 0;color:#9af;text-decoration:underline">' + d.label + '</a>'; }).join('');
+  var langPretty = { en:'English', es:'Spanish', pt:'Portuguese', kr:'Korean', ko:'Korean', cv:'Kriolu' };
+  var html =
+    '<div id="applicant-detail-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;overflow-y:auto;padding:20px">' +
+      '<div style="max-width:640px;margin:0 auto;background:#1a1f26;border-radius:16px;padding:24px;color:#fff">' +
+        '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">' +
+          '<div>' +
+            '<div style="font-size:22px;font-weight:700">' + _appHtmlEscape(data.first_name) + ' ' + _appHtmlEscape(data.last_name) + '</div>' +
+            '<div style="color:#888;font-size:13px;margin-top:4px">Submitted ' + (data.submitted_at ? _appHtmlEscape(new Date(data.submitted_at).toLocaleString()) : '—') + ' · ' + _appHtmlEscape(langPretty[data.preferred_language] || data.preferred_language || 'English') + '</div>' +
+          '</div>' +
+          '<button onclick="closeApplicantDetail()" style="background:transparent;color:#fff;border:none;font-size:28px;cursor:pointer;line-height:1">×</button>' +
+        '</div>' +
+        '<div style="background:#2a3140;border-radius:8px;padding:14px;margin-bottom:16px">' +
+          '<div style="display:grid;grid-template-columns:120px 1fr;gap:10px;font-size:14px">' +
+            '<div style="color:#888">Phone</div><div>' + _appHtmlEscape(data.phone || '—') + '</div>' +
+            '<div style="color:#888">Email</div><div>' + _appHtmlEscape(data.email || '—') + '</div>' +
+            '<div style="color:#888">Address</div><div>' + _appHtmlEscape(data.address || '—') + (data.city ? ', ' + _appHtmlEscape(data.city) : '') + '</div>' +
+            '<div style="color:#888">Work auth</div><div>' + _appHtmlEscape(data.work_authorization || '—') + '</div>' +
+            '<div style="color:#888">License</div><div>' + _appHtmlEscape(data.drivers_license_status || '—') + '</div>' +
+            '<div style="color:#888">Hours/wk</div><div>' + _appHtmlEscape(data.hours_per_week_desired || '—') + '</div>' +
+            '<div style="color:#888">Days</div><div>' + _appHtmlEscape(data.available_days || '—') + '</div>' +
+            '<div style="color:#888">Heard via</div><div>' + _appHtmlEscape(data.hear_about_us || '—') + '</div>' +
+          '</div>' +
+        '</div>' +
+        (data.prior_cleaning_experience ?
+          '<div style="margin-bottom:16px"><div style="color:#888;font-size:12px;margin-bottom:4px">PRIOR EXPERIENCE</div><div style="background:#2a3140;border-radius:8px;padding:12px;font-size:14px">' + _appHtmlEscape(data.prior_cleaning_experience) + (data.prior_cleaning_experience_en && data.prior_cleaning_experience_en !== data.prior_cleaning_experience ? '<div style="color:#888;font-size:13px;margin-top:8px;border-top:1px solid #444;padding-top:8px"><strong>EN:</strong> ' + _appHtmlEscape(data.prior_cleaning_experience_en) + '</div>' : '') + '</div></div>' : '') +
+        '<div style="margin-bottom:16px">' +
+          '<div style="color:#888;font-size:12px;margin-bottom:4px">EMERGENCY CONTACT</div>' +
+          '<div style="background:#2a3140;border-radius:8px;padding:12px;font-size:14px">' +
+            _appHtmlEscape(data.emergency_contact_name || '—') + ' (' + _appHtmlEscape(data.emergency_contact_relation || '—') + ') · ' + _appHtmlEscape(data.emergency_contact_phone || '—') +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:16px">' +
+          '<div style="color:#888;font-size:12px;margin-bottom:4px">DOCUMENTS</div>' +
+          '<div style="background:#2a3140;border-radius:8px;padding:12px">' + docHtml + '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:16px">' +
+          '<div style="color:#888;font-size:12px;margin-bottom:4px">SIGNED</div>' +
+          '<div style="background:#2a3140;border-radius:8px;padding:12px;font-style:italic">' + _appHtmlEscape(data.signature_full_name || '—') + (data.signature_date_iso ? ' · ' + _appHtmlEscape(new Date(data.signature_date_iso).toLocaleDateString()) : '') + '</div>' +
+        '</div>' +
+        '<div style="margin-bottom:16px">' +
+          '<div style="color:#888;font-size:12px;margin-bottom:4px">MANAGER NOTES</div>' +
+          '<textarea id="applicant-notes-' + data.id + '" placeholder="Add notes..." style="width:100%;min-height:60px;background:#2a3140;color:#fff;border:1px solid #3a4150;border-radius:8px;padding:10px;font-size:14px;font-family:inherit;resize:vertical">' + _appHtmlEscape(data.manager_notes || '') + '</textarea>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button onclick="setApplicantStatus(\'' + data.id + '\', \'reviewed\')" style="flex:1;min-width:120px;padding:12px;background:#888;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Mark Reviewed</button>' +
+          '<button onclick="setApplicantStatus(\'' + data.id + '\', \'interviewed\')" style="flex:1;min-width:120px;padding:12px;background:#fa0;color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer">Mark Interviewed</button>' +
+          '<button onclick="hireApplicant(\'' + data.id + '\')" style="flex:1;min-width:120px;padding:12px;background:#0c0;color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer">Hire</button>' +
+          '<button onclick="rejectApplicant(\'' + data.id + '\')" style="flex:1;min-width:120px;padding:12px;background:#a44;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Reject</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closeApplicantDetail() {
+  const el = document.getElementById('applicant-detail-overlay');
+  if (el) el.remove();
+}
+
+async function setApplicantStatus(id, status) {
+  const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Sign in required'); return; }
+  const session = await sb.auth.getSession();
+  const reviewedBy = session && session.data && session.data.session ? session.data.session.user.id : null;
+  const notesEl = document.getElementById('applicant-notes-' + id);
+  const notes = notesEl ? notesEl.value : null;
+  const patch = { status: status, status_changed_at: new Date().toISOString() };
+  if (notes !== null) patch.manager_notes = notes;
+  if (status === 'reviewed' || status === 'interviewed') {
+    patch.reviewed_by = reviewedBy;
+    patch.reviewed_at = new Date().toISOString();
+  }
+  const { error } = await sb.from('job_applications').update(patch).eq('id', id);
+  if (error) { alert('Update failed: ' + error.message); return; }
+  closeApplicantDetail();
+  renderApplicantsList();
+}
+
+async function rejectApplicant(id) {
+  if (!confirm('Reject this application?')) return;
+  await setApplicantStatus(id, 'rejected');
+}
+
+async function hireApplicant(id) {
+  if (!confirm('Hire this applicant? This creates an employee record. You will then need to manually tap Send Invite from the Staff tab when ready.')) return;
+  const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Sign in required'); return; }
+  const { data: app, error: fetchErr } = await sb.from('job_applications').select('*').eq('id', id).single();
+  if (fetchErr || !app) { alert('Failed to load applicant'); return; }
+  const langMap = { es:'mx', pt:'br', ko:'kr', kr:'kr', en:'us', cv:'cv' };
+  const phoneClean = String(app.phone || '').replace(/\D/g, '') || null;
+  const empRow = {
+    business_id: app.business_id,
+    first_name: app.first_name,
+    last_name: app.last_name || '-',
+    phone: phoneClean,
+    email: app.email || null,
+    email_is_internal: !app.email,
+    culture_tag: langMap[app.preferred_language] || 'us',
+    status: 'active',
+    legacy_roster_id: 'app_' + String(app.id).slice(0, 8)
+  };
+  const { data: empData, error: empErr } = await sb.from('employees').insert(empRow).select('id').single();
+  if (empErr) { alert('Hire failed: ' + empErr.message); return; }
+  const session = await sb.auth.getSession();
+  const reviewedBy = session && session.data && session.data.session ? session.data.session.user.id : null;
+  await sb.from('job_applications').update({
+    status: 'hired',
+    hired_at: new Date().toISOString(),
+    hired_employee_id: empData.id,
+    reviewed_by: reviewedBy,
+    reviewed_at: new Date().toISOString()
+  }).eq('id', id);
+  closeApplicantDetail();
+  alert('Hired! Go to Staff tab to find ' + app.first_name + ' ' + app.last_name + ' and tap Send Invite when ready.');
+  renderApplicantsList();
+}
+
+function openManagerApplication() {
+  // Sprint 4.2.B Section 4 — Manager-mode entry button.
+  // Sets the global flag so submitApplication's manager-mode block fires after submit.
+  window._appManagerMode = true;
+  const screen = document.getElementById('application-screen');
+  if (screen) screen.style.display = 'flex';
+  const homeScreen = document.getElementById('home-screen');
+  if (homeScreen) homeScreen.style.display = 'none';
+  const portalScreen = document.getElementById('portal-screen');
+  if (portalScreen) portalScreen.style.display = 'none';
 }
 
 function renderStaffList() {
@@ -20833,7 +21097,6 @@ function checkPin() {
 // ─────────────────────────────────────────
 // ADMIN PANEL
 // ─────────────────────────────────────────
-const ADMIN_PASSWORD = 'Maids2026!'; // Change this to your password
 let employeeList = JSON.parse(localStorage.getItem('emp_roster') || 'null');
 
 // Initialize with default employees if none saved
@@ -20861,318 +21124,8 @@ Object.defineProperty(window, 'EMPLOYEES', {
   configurable: true
 });
 
-function showAdminLogin() {
-  document.getElementById('admin-login-modal').style.display = 'flex';
-  setTimeout(() => document.getElementById('admin-pw-input').focus(), 100);
-}
-
-function checkAdminPW() {
-  const pw = document.getElementById('admin-pw-input').value;
-  if (pw === ADMIN_PASSWORD) {
-    document.getElementById('admin-login-modal').style.display = 'none';
-    document.getElementById('admin-pw-input').value = '';
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('admin-screen').style.display = 'block';
-    renderAdminEmployees();
-  } else {
-    document.getElementById('admin-pw-error').textContent = 'Incorrect password';
-    document.getElementById('admin-pw-input').value = '';
-  }
-}
-
-function hideAdmin() {
-  document.getElementById('admin-screen').style.display = 'none';
-  document.getElementById('login-screen').style.display = 'flex';
-}
-
-function showAdminTab(tab) {
-  ['employees','applications','forms','signatures'].forEach(t => {
-    document.getElementById('admin-tab-' + t).style.display = t === tab ? 'block' : 'none';
-    document.getElementById('atab-' + t).classList.toggle('active', t === tab);
-  });
-  if (tab === 'employees') renderAdminEmployees();
-  if (tab === 'applications') renderApplications();
-  if (tab === 'forms') renderAdminForms();
-  if (tab === 'signatures') renderSignatures();
-}
-
-function renderAdminEmployees() {
-  const active = employeeList.filter(e => e.status === 'active').length;
-  document.getElementById('roster-count').textContent = `${active} Active · ${employeeList.length} Total`;
-
-  document.getElementById('employee-list-admin').innerHTML = employeeList.map((emp, i) => {
-    const color = TEAM_COLORS[emp.team] || '#6b7280';
-    const langLabels = { en:'EN', es:'ES', pt:'PT', cv:'KR' };
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;${emp.status==='inactive'?'opacity:0.5':''}">
-      <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:15px;font-weight:600">${emp.name}</div>
-        <div style="font-size:12px;color:var(--muted);display:flex;gap:8px;margin-top:2px">
-          <span style="color:${color}">${emp.team}</span>
-          <span>PIN: ${emp.pin}</span>
-          ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '<span style="color:var(--red)">No pay rate</span>'}
-          <span>${langLabels[emp.lang]||'EN'}</span>
-        </div>
-      </div>
-      <button onclick="openEditEmployee(${i})" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">Edit</button>
-    </div>`;
-  }).join('');
-}
-
-function openAddEmployee() {
-  document.getElementById('emp-modal-title').textContent = 'Add Employee';
-  document.getElementById('emp-edit-idx').value = '-1';
-  document.getElementById('emp-name').value = '';
-  document.getElementById('emp-team').value = 'B1';
-  document.getElementById('emp-pin').value = '';
-  document.getElementById('emp-pay').value = '';
-  document.getElementById('emp-lang').value = 'en';
-  document.getElementById('emp-phone').value = '';
-  document.getElementById('emp-status').value = 'active';
-  document.getElementById('emp-delete-btn').style.display = 'none';
-  document.getElementById('emp-save-msg').textContent = '';
-  document.getElementById('emp-modal').style.display = 'flex';
-}
-
-function openEditEmployee(idx) {
-  const emp = employeeList[idx];
-  document.getElementById('emp-modal-title').textContent = 'Edit — ' + emp.name;
-  document.getElementById('emp-edit-idx').value = idx;
-  document.getElementById('emp-name').value = emp.name;
-  document.getElementById('emp-team').value = emp.team;
-  document.getElementById('emp-pin').value = emp.pin;
-  document.getElementById('emp-pay').value = emp.payRate || '';
-  document.getElementById('emp-lang').value = emp.lang || 'en';
-  document.getElementById('emp-phone').value = emp.phone || '';
-  document.getElementById('emp-status').value = emp.status || 'active';
-  if (document.getElementById('emp-term-reason')) document.getElementById('emp-term-reason').value = emp.termReason || '';
-  if (document.getElementById('emp-term-notes')) document.getElementById('emp-term-notes').value = emp.termNotes || '';
-  if (document.getElementById('emp-rehire')) { document.getElementById('emp-rehire').checked = emp.rehire || false; document.getElementById('emp-rehire-label').textContent = emp.rehire ? 'Yes' : 'No'; }
-  document.getElementById('emp-delete-btn').style.display = 'block';
-  document.getElementById('emp-save-msg').textContent = '';
-  togglePortalTermFields();
-  document.getElementById('emp-modal').style.display = 'flex';
-}
-
-function saveEmployee() {
-  const idx = parseInt(document.getElementById('emp-edit-idx').value);
-  const name = document.getElementById('emp-name').value.trim();
-  const pin = document.getElementById('emp-pin').value.trim();
-
-  if (!name) { alert('Name is required'); return; }
-  if (!pin || pin.length !== 4 || isNaN(pin)) { alert('PIN must be exactly 4 digits'); return; }
-
-  // Check PIN not already used by another employee
-  const pinConflict = employeeList.find((e, i) => e.pin === pin && i !== idx);
-  if (pinConflict) { alert('PIN ' + pin + ' is already used by ' + pinConflict.name + '. Please choose a different PIN.'); return; }
-
-  const _status = document.getElementById('emp-status').value;
-  const emp = {
-    name,
-    team: document.getElementById('emp-team').value,
-    pin,
-    payRate: parseFloat(document.getElementById('emp-pay').value) || 0,
-    lang: document.getElementById('emp-lang').value,
-    phone: document.getElementById('emp-phone').value.trim(),
-    status: _status,
-    termReason: _status === 'terminated' ? (document.getElementById('emp-term-reason')?.value || '') : '',
-    termNotes: _status === 'terminated' ? (document.getElementById('emp-term-notes')?.value?.trim() || '') : '',
-    rehire: _status === 'terminated' ? (document.getElementById('emp-rehire')?.checked || false) : false,
-    termDate: _status === 'terminated' ? (parseInt(document.getElementById('emp-edit-idx').value) >= 0 && employeeList[parseInt(document.getElementById('emp-edit-idx').value)]?.termDate || new Date().toLocaleDateString()) : ''
-  };
-
-  if (idx === -1) {
-    employeeList.push(emp);
-  } else {
-    employeeList[idx] = emp;
-  }
-  saveEmployeeList();
-
-  document.getElementById('emp-save-msg').textContent = '✓ Saved!';
-  setTimeout(() => {
-    document.getElementById('emp-modal').style.display = 'none';
-    renderAdminEmployees();
-  }, 800);
-}
-
-function deleteEmployee() {
-  const idx = parseInt(document.getElementById('emp-edit-idx').value);
-  if (idx < 0) return;
-  const emp = employeeList[idx];
-  if (!confirm('Remove ' + emp.name + ' from the roster?')) return;
-  employeeList.splice(idx, 1);
-  saveEmployeeList();
-  document.getElementById('emp-modal').style.display = 'none';
-  renderAdminEmployees();
-}
-
-function renderApplications() {
-  const apps = JSON.parse(localStorage.getItem('job_applications') || '[]');
-  const el = document.getElementById('applications-list');
-  if (apps.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px;font-size:14px">No applications yet</div>';
-    return;
-  }
-  el.innerHTML = apps.slice().reverse().map((app, i) => {
-    const statusColors = { pending:'var(--amber)', approved:'var(--green)', declined:'var(--red)' };
-    const realIdx = apps.length - 1 - i;
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:10px">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
-        <div>
-          <div style="font-size:16px;font-weight:600">${app.firstName} ${app.lastName}</div>
-          <div style="font-size:12px;color:var(--muted)">${app.submittedStr} · ${app.phone}</div>
-          ${app.email ? `<div style="font-size:12px;color:var(--muted)">${app.email}</div>` : ''}
-        </div>
-        <span style="font-size:11px;padding:3px 10px;border-radius:20px;background:${statusColors[app.status]}22;color:${statusColors[app.status]};border:1px solid ${statusColors[app.status]}44;text-transform:capitalize">${app.status}</span>
-      </div>
-      <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-        <span>📍 ${app.address ? app.address+', ':''} ${app.city||''}</span>
-        <span>🗓 ${(app.availDays||[]).join(', ')}</span>
-        <span>🌐 ${(app.languages||[]).join(', ')}</span>
-        <span>${app.hasLicense==='yes'?'🚗 Has license':'❌ No license'}</span>
-        <span>${app.workAuth||''}</span>
-        ${app.submitLang && app.submitLang !== 'en' ? `<span style="background:rgba(167,139,250,0.14);color:var(--accent2);padding:1px 6px;border-radius:4px;font-weight:700">📝 ${app.submitLang.toUpperCase()} → EN</span>` : ''}
-      </div>
-      <!-- Full details expandable -->
-      <div id="app-detail-${realIdx}" style="display:none;border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:8px">
-          <div><span style="color:var(--muted)">Experience:</span> ${app.experience||'—'}</div>
-          <div><span style="color:var(--muted)">Start time:</span> ${app.prefHours||'—'}</div>
-          <div><span style="color:var(--muted)">Heard from:</span> ${app.heardFrom||'—'}</div>
-          <div><span style="color:var(--muted)">Work auth:</span> ${app.workAuth||'—'}</div>
-        </div>
-        ${app.expNotes ? `<div style="font-size:12px;color:var(--muted);margin-bottom:8px"><span style="color:var(--text)">Experience notes:</span> ${app.expNotes}${app.expNotesOriginal ? `<div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border);font-style:italic;font-size:11px;color:var(--muted)">Original (${(app.submitLang||'').toUpperCase()}): ${app.expNotesOriginal}</div>` : ''}</div>` : ''}
-        <div style="font-size:12px;margin-bottom:8px">
-          <span style="color:var(--muted)">Emergency contact:</span> ${app.emergencyName||'—'} · ${app.emergencyPhone||'—'} ${app.emergencyRel?'('+app.emergencyRel+')':''}
-        </div>
-        <div style="font-size:12px;color:var(--muted);font-style:italic">Signed: ${app.signature||'—'}</div>
-        ${app.docs && Object.keys(app.docs).length > 0 ? `
-          <div style="margin-top:10px">
-            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Documents</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-              ${Object.entries(app.docs).map(([label,src]) => `
-                <div>
-                  <div style="font-size:10px;color:var(--muted);margin-bottom:3px">${label}</div>
-                  <img src="${src}" style="width:100%;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--border)">
-                </div>`).join('')}
-            </div>
-          </div>` : ''}
-        ${app.assignedPin ? `<div style="margin-top:8px;background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.2);border-radius:8px;padding:8px;font-size:13px;color:var(--green)">✓ Approved · Portal PIN: <strong>${app.assignedPin}</strong></div>` : ''}
-      </div>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button onclick="toggleAppDetail(${realIdx})" style="flex:0.5;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:8px;border-radius:8px;cursor:pointer">👁 View</button>
-        ${app.status === 'pending' ? `
-        <button onclick="approveApplication(${realIdx})" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-family:'DM Sans',sans-serif;font-size:13px;padding:8px;border-radius:8px;cursor:pointer">✓ Approve</button>
-        <button onclick="declineApplication(${realIdx})" style="flex:0.5;background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;padding:8px;border-radius:8px;cursor:pointer">✗ Decline</button>
-        ` : ''}
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function approveApplication(idx) {
-  const apps = JSON.parse(localStorage.getItem('job_applications') || '[]');
-  const app = apps[idx];
-  if (!app) return;
-
-  // Generate a unique PIN
-  let newPin;
-  do {
-    newPin = String(Math.floor(1000 + Math.random() * 9000));
-  } while (employeeList.some(e => e.pin === newPin));
-
-  // Add to employee roster
-  employeeList.push({
-    name: app.firstName + ' ' + app.lastName,
-    team: 'B1', // default — can edit
-    pin: newPin,
-    payRate: 0,
-    lang: app.languages && app.languages.includes('Spanish') ? 'es' :
-          app.languages && app.languages.includes('Kriolu') ? 'cv' :
-          app.languages && app.languages.includes('Portuguese') ? 'pt' : 'en',
-    phone: app.phone,
-    status: 'active'
-  });
-  saveEmployeeList();
-
-  // Update application status
-  apps[idx].status = 'approved';
-  apps[idx].assignedPin = newPin;
-  localStorage.setItem('job_applications', JSON.stringify(apps));
-
-  alert(`✓ ${app.firstName} ${app.lastName} added to roster!
-
-Their portal PIN is: ${newPin}
-
-Please share this with them and assign the correct team.`);
-  renderApplications();
-  renderAdminEmployees();
-}
-
-function declineApplication(idx) {
-  const apps = JSON.parse(localStorage.getItem('job_applications') || '[]');
-  if (!confirm('Decline this application?')) return;
-  apps[idx].status = 'declined';
-  localStorage.setItem('job_applications', JSON.stringify(apps));
-  renderApplications();
-}
-
-function renderAdminForms() {
-  const forms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  const el = document.getElementById('admin-forms-list');
-  if (forms.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px;font-size:14px">No forms submitted yet</div>';
-    return;
-  }
-  const typeLabels = { timeoff:'🏖️ Time Off', callout:'🤒 Call Out', supplies:'🧹 Supplies', incident:'⚠️ Incident', equipment:'🧹 Equipment Issue', vehicle:'🚗 Vehicle Issue' };
-  el.innerHTML = forms.slice().reverse().map(f => {
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="font-size:14px;font-weight:600">${typeLabels[f.type]||f.type}</div>
-        <div style="font-size:11px;color:var(--muted)">${f.dateStr}</div>
-      </div>
-      <div style="font-size:13px;color:var(--muted)">${f.employee} · Team ${f.team}</div>
-      ${f.data['f-start'] ? `<div style="font-size:12px;margin-top:6px">📅 ${f.data['f-start']}${f.data['f-end']?' → '+f.data['f-end']:''}</div>` : ''}
-      ${f.data['f-reason'] ? `<div style="font-size:12px;color:var(--muted)">${f.data['f-reason']}</div>` : ''}
-      ${f.data['f-equip-type'] ? `<div style="font-size:12px;color:var(--muted)">🧹 ${f.data['f-equip-type']} — ${f.data['f-equip-issue']||''} (${f.data['f-equip-team']||''})</div>` : ''}
-      ${f.data['f-vehicle-issue'] ? `<div style="font-size:12px;color:var(--muted)">🚗 ${f.data['f-vehicle-issue']} · Team ${f.data['f-vehicle-team']||''}${f.data['f-mileage']?' · '+f.data['f-mileage']+' miles':''}</div>` : ''}
-      ${f.data['f-paid'] ? `<div style="font-size:12px;padding:3px 8px;border-radius:20px;display:inline-block;margin-top:4px;${f.data['f-paid'].includes('Paid')?'background:rgba(52,211,153,0.1);color:var(--green)':'background:rgba(255,255,255,0.06);color:var(--muted)'}">${f.data['f-paid']}</div>` : ''}
-      ${f.data['f-photo'] ? `<img src="${f.data['f-photo']}" style="width:100%;border-radius:8px;margin-top:8px;max-height:180px;object-fit:cover">` : ''}
-      ${f.data['f-notes'] ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">${f.data['f-notes']}</div>` : ''}
-      ${f.data['f-items'] ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">${f.data['f-items']}</div>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function renderSignatures() {
-  const sigs = JSON.parse(localStorage.getItem('emp_signatures') || '{}');
-  const el = document.getElementById('signatures-list');
-  const keys = Object.keys(sigs);
-  if (keys.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px;font-size:14px">No signatures yet</div>';
-    return;
-  }
-  const unsigned = employeeList.filter(e => e.status === 'active' && !sigs[e.name + '_sig']);
-  el.innerHTML = `
-    <div style="background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:var(--radius);padding:12px;margin-bottom:14px;font-size:13px">
-      ✅ ${keys.length} signed · ${unsigned.length > 0 ? `⚠️ ${unsigned.length} not yet signed` : '🎉 All active employees signed'}
-    </div>
-    ${unsigned.length > 0 ? `<div style="margin-bottom:14px">${unsigned.map(e => `<div style="font-size:13px;color:var(--red);padding:4px 0">⚠️ ${e.name} (${e.team}) — not signed</div>`).join('')}</div>` : ''}
-    ${keys.map(k => {
-      const s = sigs[k];
-      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:8px">
-        <div style="font-size:15px;font-weight:600;font-style:italic;color:var(--green)">${s.name}</div>
-        <div style="font-size:12px;color:var(--muted);margin-top:2px">${s.employee} · ${s.team} · ${s.date}</div>
-      </div>`;
-    }).join('')}`;
-}
-
-// Enter key for admin password
-document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && document.getElementById('admin-login-modal').style.display === 'flex') {
-    checkAdminPW();
-  }
-});
+// Sprint 4.2.B Section 4D — showAdminLogin() removed. Hidden Maids2026! admin
+// panel retired. Tom's home-screen "Admin" icon (separate UI) is unaffected.
 
 
 function togglePaidSwitch() {
@@ -21257,11 +21210,11 @@ const APP_T = {
     emergency: 'Emergency Contact',
     emName: 'Name *', emPhone: 'Phone *', emRel: 'Relationship',
     emRelPlaceholder: 'e.g. Spouse, Parent, Sibling',
-    consent: 'By signing below, I certify that all information provided is accurate. I authorize Field Flow, Inc. to verify all information.',
+    consent: 'By signing below, I certify that all information provided is accurate. I authorize Penta, Inc. to verify all information.',
     sigLabel: 'Full name (acts as your signature) *',
     submit: 'Submit Application',
     successTitle: 'Application Submitted!',
-    successMsg: 'Thank you for applying to Field Flow, Inc. We will review your application and contact you within a few days.',
+    successMsg: 'Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.',
     backBtn: 'Back to Login',
     docsSection: 'Identity Documents',
     licFront: "Driver\'s License (front)",
@@ -21291,11 +21244,11 @@ const APP_T = {
     emergency: 'Contacto de emergencia',
     emName: 'Nombre *', emPhone: 'Teléfono *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ej. Esposo/a, Padre/Madre, Hermano/a',
-    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a Field Flow, Inc. a verificarla.',
+    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a Penta, Inc. a verificarla.',
     sigLabel: 'Nombre completo (sirve como tu firma) *',
     submit: 'Enviar solicitud',
     successTitle: '¡Solicitud enviada!',
-    successMsg: 'Gracias por aplicar a Field Flow, Inc. Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
+    successMsg: 'Gracias por aplicar a Penta, Inc. Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
     backBtn: 'Volver al inicio',
     docsSection: 'Documentos de Identidad',
     licFront: 'Licencia de conducir (frente)',
@@ -21325,11 +21278,11 @@ const APP_T = {
     emergency: 'Contato de emergência',
     emName: 'Nome *', emPhone: 'Telefone *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ex. Cônjuge, Pai/Mãe, Irmão/ã',
-    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a Field Flow, Inc. a verificá-las.',
+    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a Penta, Inc. a verificá-las.',
     sigLabel: 'Nome completo (serve como sua assinatura) *',
     submit: 'Enviar candidatura',
     successTitle: 'Candidatura Enviada!',
-    successMsg: 'Obrigado por se candidatar à Field Flow, Inc. Analisaremos sua candidatura e entraremos em contato em alguns dias.',
+    successMsg: 'Obrigado por se candidatar à Penta, Inc. Analisaremos sua candidatura e entraremos em contato em alguns dias.',
     backBtn: 'Voltar ao início',
     docsSection: 'Documentos de Identidade',
     licFront: 'CNH (frente)',
@@ -21359,11 +21312,11 @@ const APP_T = {
     emergency: 'Kontatu di emerjensia',
     emName: 'Nomi *', emPhone: 'Telefoni *', emRel: 'Parentesku',
     emRelPlaceholder: 'Ex. Maridun/Mudjer, Pai/Mai, Irmaun/Irma',
-    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu Field Flow, Inc. pa verifica-l.',
+    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu Penta, Inc. pa verifica-l.',
     sigLabel: 'Nomi kumpletu (ta sirvi komu bo firma) *',
     submit: 'Manda pedidu',
     successTitle: 'Pedidu Mandadu!',
-    successMsg: 'Obrigadu pa kandidata na Field Flow, Inc. Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
+    successMsg: 'Obrigadu pa kandidata na Penta, Inc. Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
     backBtn: 'Volta pa login',
     docsSection: 'Dokumentus di Identidadi',
     licFront: 'Karteira di kondusaun (frenti)',
@@ -21543,20 +21496,6 @@ function showApplication() {
 }
 
 
-function deleteForm(idx) {
-  if (!confirm('Delete this form submission?')) return;
-  const forms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  forms.splice(idx, 1);
-  localStorage.setItem('emp_forms', JSON.stringify(forms));
-  submittedForms = forms;
-  renderAdminForms();
-}
-
-
-function toggleAppDetail(idx) {
-  const el = document.getElementById('app-detail-' + idx);
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
-}
 
 // Shake animation
     const card = document.querySelector('.login-card');
@@ -23271,14 +23210,14 @@ const HANDBOOK_EN = `
 <div class="handbook-h1">MANNA MAIDS, INC.</div>
 <div class="handbook-h2">Employee Handbook</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Effective April 10, 2026</div>
-<div class="handbook-p">Welcome to Field Flow, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
+<div class="handbook-p">Welcome to Penta, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
 </div>
 <div class="handbook-divider"></div>
 
 <div class="handbook-section">
 <div class="handbook-h2">SECTION 1 — EMPLOYMENT</div>
 <div class="handbook-h3">1.1 At-Will Employment</div>
-<div class="handbook-p">Employment at Field Flow, Inc. is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
+<div class="handbook-p">Employment at Penta, Inc. is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
 <div class="handbook-h3">1.2 Equal Opportunity</div>
 <div class="handbook-p">We do not discriminate based on race, color, religion, sex, national origin, age, disability, sexual orientation, gender identity, or any other characteristic protected by Massachusetts or federal law.</div>
 <div class="handbook-h3">1.3 Anti-Harassment</div>
@@ -23376,13 +23315,13 @@ const HANDBOOK_ES = `
 <div class="handbook-h1">MANNA MAIDS, INC.</div>
 <div class="handbook-h2">Manual del Empleado</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efectivo 10 de abril de 2026</div>
-<div class="handbook-p">Bienvenido a Field Flow, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
+<div class="handbook-p">Bienvenido a Penta, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SECCIÓN 1 — EMPLEO</div>
 <div class="handbook-h3">1.1 Empleo a voluntad</div>
-<div class="handbook-p">El empleo en Field Flow, Inc. es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
+<div class="handbook-p">El empleo en Penta, Inc. es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdad de oportunidades</div>
 <div class="handbook-p">No discriminamos por raza, color, religión, sexo, origen nacional, edad, discapacidad, orientación sexual, identidad de género ni ninguna otra característica protegida por la ley.</div>
 <div class="handbook-h3">1.3 Política contra el acoso</div>
@@ -23451,13 +23390,13 @@ const HANDBOOK_PT = `
 <div class="handbook-h1">MANNA MAIDS, INC.</div>
 <div class="handbook-h2">Manual do Funcionário</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Vigente a partir de 10 de abril de 2026</div>
-<div class="handbook-p">Bem-vindo à Field Flow, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
+<div class="handbook-p">Bem-vindo à Penta, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SEÇÃO 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a qualquer tempo</div>
-<div class="handbook-p">O emprego na Field Flow, Inc. é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
+<div class="handbook-p">O emprego na Penta, Inc. é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdade de oportunidades</div>
 <div class="handbook-p">Não discriminamos por raça, cor, religião, sexo, origem nacional, idade, deficiência, orientação sexual, identidade de gênero ou qualquer outra característica protegida por lei.</div>
 <div class="handbook-h3">1.3 Política anti-assédio</div>
@@ -23526,13 +23465,13 @@ const HANDBOOK_CV = `
 <div class="handbook-h1">MANNA MAIDS, INC.</div>
 <div class="handbook-h2">Manual di Trabalhador</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efetivo 10 di Abril di 2026</div>
-<div class="handbook-p">Binvindu na Field Flow, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
+<div class="handbook-p">Binvindu na Penta, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SESAUN 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a vontadi</div>
-<div class="handbook-p">Emprego na Field Flow, Inc. e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
+<div class="handbook-p">Emprego na Penta, Inc. e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdadi di oportunidadi</div>
 <div class="handbook-p">Nu ka ta diskrimina pa rasa, kor, religiaun, sexu, origem nasional, idadi, defisiensia, orientasaun sexual, identidadi di jeneru, ou kalkuer otra karakteristika protejidu pa lei.</div>
 <div class="handbook-h3">1.3 Politika kontra asediu</div>
@@ -24537,24 +24476,6 @@ async function submitApplication() {
 
 
 
-// ─────────────────────────────────────────
-// TERMINATION FIELDS (added)
-// ─────────────────────────────────────────
-function togglePortalTermFields() {
-  const status = document.getElementById('emp-status');
-  const fields = document.getElementById('portal-term-fields');
-  if (!status || !fields) return;
-  fields.style.display = status.value === 'terminated' ? 'block' : 'none';
-  const cb = document.getElementById('emp-rehire');
-  const lbl = document.getElementById('emp-rehire-label');
-  if (cb && lbl) {
-    cb.onchange = () => {
-      lbl.textContent = cb.checked ? 'Yes' : 'No';
-      lbl.style.color = cb.checked ? 'var(--green)' : 'var(--muted)';
-    };
-  }
-}
-
 
 
 // ─────────────────────────────────────────
@@ -24572,6 +24493,8 @@ function showStaffView() {
   const filterRow = document.getElementById('filter-row');
   const statsBar = document.querySelector('.stats-bar');
   [searchWrap, filterRow, statsBar].forEach(el => { if (el) el.style.display = 'none'; });
+  // Sprint 4.2.B Section 4C — restore last-used sub-tab when entering Staff view
+  setTimeout(function() { if (typeof setStaffSubtab === 'function') setStaffSubtab(sessionStorage.getItem('cc_staff_subtab') || 'staff'); }, 50);
 }
 
 function showClientsSubview() {
@@ -24958,7 +24881,7 @@ function geocodeAddress(addr, callback) {
   var stored = JSON.parse(localStorage.getItem('ff_geocache') || '{}');
   if (stored[key]) { _geocodeCache[key] = stored[key]; callback(stored[key]); return; }
   var url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(addr) + '&limit=1&countrycodes=us';
-  fetch(url, {headers:{'User-Agent':'FieldFlow/1.0'}})
+  fetch(url, {headers:{'User-Agent':'Penta/1.0'}})
     .then(function(r){ return r.json(); })
     .then(function(data) {
       if (data && data[0]) {
@@ -26071,8 +25994,8 @@ function showMcLearnMore() {
 }
 function showRevenueDetail(kind) {
   var txt = {
-    affiliate: 'Affiliate revenue (live now): every time you tap "Approve & Open" on a vendor card, Field Flow earns a small affiliate commission. You get the lowest price; we fund the platform.',
-    rebates: 'Vendor rebates (Year 2): once we hit ~500 active cleaning businesses buying through Field Flow, we negotiate direct 3–8% rebates from manufacturers. Those rebates flow back to you as credit.',
+    affiliate: 'Affiliate revenue (live now): every time you tap "Approve & Open" on a vendor card, Penta earns a small affiliate commission. You get the lowest price; we fund the platform.',
+    rebates: 'Vendor rebates (Year 2): once we hit ~500 active cleaning businesses buying through Penta, we negotiate direct 3–8% rebates from manufacturers. Those rebates flow back to you as credit.',
     label: 'Private Label (Year 2-3): the Manna Clean brand — same manufacturers, your label on the bottle. 30–50% higher margins. Drop-shipped direct so you carry no inventory.'
   }[kind] || '';
   alert(txt);
@@ -27599,7 +27522,22 @@ function _p3dPage(dir) {
         <button onclick="closeStaffSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
       </div>
     </div>
+    <!-- Sprint 4.2.B Section 4 — Staff/Applicants segmented control -->
+    <div id="staff-subtab-segment" style="display:flex;gap:6px;padding:8px 12px 12px;">
+      <button id="staff-subtab-staff" type="button"
+        onclick="setStaffSubtab('staff')"
+        style="flex:1;padding:8px 12px;background:#5E5CE6;color:white;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">
+        👥 Staff
+      </button>
+      <button id="staff-subtab-applicants" type="button"
+        onclick="setStaffSubtab('applicants')"
+        style="flex:1;padding:8px 12px;background:#2a3140;color:#ccc;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+        📋 Applicants
+        <span id="applicants-badge" style="display:none;background:#fa0;color:#000;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700"></span>
+      </button>
+    </div>
     <div id="staff-list" style="padding:16px"></div>
+    <div id="applicants-list-staff" style="display:none;padding:16px"></div>
   </div>
 </div>
 
@@ -27647,127 +27585,6 @@ function _p3dPage(dir) {
     <button onclick="showApplication()" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline" id="apply-link">
       Interested in joining our team? Apply here
     </button>
-    <button onclick="showAdminLogin()" style="background:none;border:none;color:rgba(255,255,255,0.15);font-size:11px;cursor:pointer">
-      Admin
-    </button>
-  </div>
-</div>
-
-<!-- ADMIN LOGIN MODAL -->
-<div id="admin-login-modal" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;padding:24px">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px 24px;width:100%;max-width:340px">
-    <div style="font-size:18px;font-weight:700;margin-bottom:4px">Admin Access</div>
-    <div style="font-size:13px;color:var(--muted);margin-bottom:20px">Enter admin password</div>
-    <input type="password" id="admin-pw-input" class="field-input" placeholder="Password" style="margin-bottom:12px">
-    <button onclick="checkAdminPW()" class="submit-btn">Enter</button>
-    <button onclick="document.getElementById('admin-login-modal').style.display='none'" style="width:100%;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;margin-top:10px;cursor:pointer">Cancel</button>
-    <div id="admin-pw-error" style="color:var(--red);font-size:13px;text-align:center;margin-top:8px;min-height:20px"></div>
-  </div>
-</div>
-
-<!-- ADMIN SCREEN -->
-<div id="admin-screen" style="display:none;padding-bottom:40px">
-  <div style="background:linear-gradient(180deg,rgba(220,38,38,0.1) 0%,transparent 100%);border-bottom:1px solid var(--border);padding:20px 16px 12px">
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <div>
-        <div style="font-size:20px;font-weight:700">⚙️ Admin Panel</div>
-        <div style="font-size:13px;color:var(--muted)">Field Flow, Inc.</div>
-      </div>
-      <button onclick="hideAdmin()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">← Back</button>
-    </div>
-  </div>
-  <div style="display:flex;border-bottom:1px solid var(--border);background:var(--surface);overflow-x:auto;scrollbar-width:none">
-    <div class="ptab active" id="atab-employees" onclick="showAdminTab('employees')" style="flex-shrink:0">👥 Employees</div>
-    <div class="ptab" id="atab-applications" onclick="showAdminTab('applications')" style="flex-shrink:0">📋 Applications</div>
-    <div class="ptab" id="atab-forms" onclick="showAdminTab('forms')" style="flex-shrink:0">📝 Forms</div>
-    <div class="ptab" id="atab-signatures" onclick="showAdminTab('signatures')" style="flex-shrink:0">✍️ Signed</div>
-  </div>
-  <div id="admin-tab-employees" style="padding:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)" id="roster-count"></div>
-      <button onclick="openAddEmployee()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">+ Add Employee</button>
-    </div>
-    <div id="employee-list-admin"></div>
-  </div>
-  <div id="admin-tab-applications" style="display:none;padding:16px">
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:14px">Job Applications</div>
-    <div id="applications-list"></div>
-  </div>
-  <div id="admin-tab-forms" style="display:none;padding:16px">
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:14px">Submitted Forms</div>
-    <div id="admin-forms-list"></div>
-  </div>
-  <div id="admin-tab-signatures" style="display:none;padding:16px">
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:14px">Handbook Signatures</div>
-    <div id="signatures-list"></div>
-  </div>
-</div>
-
-<!-- EMPLOYEE EDIT MODAL -->
-<div id="emp-modal" style="display:none" class="modal-overlay" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal-sheet">
-    <div class="modal-header">
-      <div class="modal-title" id="emp-modal-title">Edit Employee</div>
-      <button class="modal-close" onclick="document.getElementById('emp-modal').style.display='none'">×</button>
-    </div>
-    <div class="modal-body">
-      <input type="hidden" id="emp-edit-idx">
-      <div class="field-group"><div class="field-label">Full Name *</div><input type="text" class="field-input" id="emp-name"></div>
-      <div class="field-group"><div class="field-label">Team *</div>
-        <select class="field-input" id="emp-team">
-          <option value="B1">B1</option><option value="B3">B3</option><option value="B5">B5</option>
-          <option value="S1">S1</option><option value="S3">S3</option>
-          <option value="M1">M1</option><option value="M2">M2</option><option value="M3">M3</option>
-        </select>
-      </div>
-      <div class="field-group"><div class="field-label">PIN (4 digits) *</div><input type="text" class="field-input" id="emp-pin" maxlength="4" placeholder="e.g. 4821"></div>
-      <div class="field-group"><div class="field-label">Hourly Pay Rate ($)</div><input type="number" class="field-input" id="emp-pay" step="0.25" placeholder="e.g. 18.00"></div>
-      <div class="field-group"><div class="field-label">Preferred Language</div>
-        <select class="field-input" id="emp-lang">
-          <option value="en">English</option><option value="es">Spanish</option>
-          <option value="pt">Portuguese</option><option value="cv">Kriolu</option>
-        </select>
-      </div>
-      <div class="field-group"><div class="field-label">Phone Number</div><input type="tel" class="field-input" id="emp-phone" placeholder="617-555-1234"></div>
-      <div class="field-group"><div class="field-label">Status</div>
-        <select class="field-input" id="emp-status" onchange="togglePortalTermFields()">
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
-          <option value="terminated">Terminated</option>
-        </select>
-      </div>
-      <div id="portal-term-fields" style="display:none">
-        <div class="field-group">
-          <div class="field-label">Termination Reason</div>
-          <select class="field-input" id="emp-term-reason">
-            <option value="">Select reason...</option>
-            <option value="Voluntary resignation">Voluntary resignation</option>
-            <option value="No call / no show">No call / no show</option>
-            <option value="Performance issues">Performance issues</option>
-            <option value="Policy violation">Policy violation</option>
-            <option value="End of season">End of season</option>
-            <option value="Laid off">Laid off</option>
-            <option value="Other">Other</option>
-          </select>
-        </div>
-        <div class="field-group">
-          <div class="field-label">Notes (optional)</div>
-          <textarea class="field-input" id="emp-term-notes" rows="2" style="resize:none"></textarea>
-        </div>
-        <div class="field-group" style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border-radius:var(--radius-sm);padding:12px">
-          <div class="field-label" style="margin:0">Eligible for rehire</div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="emp-rehire" style="width:18px;height:18px;cursor:pointer;accent-color:var(--accent)">
-            <span id="emp-rehire-label" style="font-size:13px;color:var(--muted)">No</span>
-          </label>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button class="submit-btn" onclick="saveEmployee()" style="flex:1">Save Employee</button>
-        <button onclick="deleteEmployee()" id="emp-delete-btn" style="flex:0.4;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer;display:none">Delete</button>
-      </div>
-      <div id="emp-save-msg" style="margin-top:10px;text-align:center;font-size:13px;color:var(--green);min-height:20px"></div>
-    </div>
   </div>
 </div>
 
@@ -27962,7 +27779,7 @@ function _p3dPage(dir) {
     <div style="height:1px;background:var(--border);margin:20px 0"></div>
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
       <div style="font-size:13px;color:var(--muted);line-height:1.6" id="app-consent-text">
-        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize Field Flow, Inc. to verify all information provided.
+        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize Penta, Inc. to verify all information provided.
       </div>
       <div class="field-group" style="margin-top:12px;margin-bottom:0">
         <div class="field-label" id="app-sig-label">Full name (acts as your signature) *</div>
@@ -27979,7 +27796,7 @@ function _p3dPage(dir) {
     <div style="font-size:48px;margin-bottom:16px">✅</div>
     <div style="font-size:22px;font-weight:700;margin-bottom:8px" id="app-success-title">Application Submitted!</div>
     <div style="font-size:14px;color:var(--muted);line-height:1.6" id="app-success-msg">
-      Thank you for applying to Field Flow, Inc. We will review your application and contact you within a few days.
+      Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.
     </div>
     <button onclick="hideApplication()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
       Back to Login
