@@ -24211,14 +24211,48 @@ let applications = JSON.parse(localStorage.getItem('job_applications') || '[]');
 
 
 function hideApplication() {
-  // Sprint 4.2.B fix — guard against _appManagerMode being undeclared
+  // Sprint 4.2.E — Route to the correct screen based on context
+  // (mirrors appBackFromApply pattern at ~line 19686)
+  // Manager mode: close the form and return to manager UI.
+  // ?emp=1 in URL: legacy employee PIN pad (retiring in Sprint 6.x D2).
+  // Otherwise: manager email/password login (#penta-login-screen).
   const _appManagerMode = (typeof window !== 'undefined' && window._appManagerMode === true);
   if (_appManagerMode) {
     closeManagerAppForm();
     return;
   }
   document.getElementById('application-screen').style.display = 'none';
-  document.getElementById('login-screen').style.display = 'flex';
+  var isEmp = false;
+  try { isEmp = new URLSearchParams(window.location.search).get('emp') === '1'; } catch(e){}
+  if (isEmp) {
+    var ls = document.getElementById('login-screen');
+    if (ls) ls.style.display = 'flex';
+  } else {
+    var pl = document.getElementById('penta-login-screen');
+    if (pl) pl.style.display = 'flex';
+  }
+}
+
+// Sprint 4.2.E — Success-screen "Done" handler for public submitters.
+// A public applicant has no account; they shouldn't be sent to any login screen.
+// Just close the form silently. The user can close the tab or navigate away.
+function hideApplicationDone() {
+  var screen = document.getElementById('application-screen');
+  if (screen) screen.style.display = 'none';
+  // Reset the success panel so a future submitter starts fresh
+  var success = document.getElementById('app-success');
+  if (success) success.style.display = 'none';
+  // Show the form again (so it's ready if they re-open) and clear it
+  var form = document.getElementById('app-form');
+  if (form) {
+    form.style.display = 'block';
+    if (typeof form.reset === 'function') form.reset();
+  }
+  // For public flow, route to the manager-login surface as the safe default
+  // (in case the user explicitly wants to leave the application surface).
+  // This matches the routing logic in hideApplication() for non-emp case.
+  var pl = document.getElementById('penta-login-screen');
+  if (pl) pl.style.display = 'flex';
 }
 
 function _generateUuidV4() {
@@ -27838,8 +27872,8 @@ function _p3dPage(dir) {
     <div style="font-size:14px;color:var(--muted);line-height:1.6" id="app-success-msg">
       Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.
     </div>
-    <button onclick="hideApplication()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
-      Back to Login
+    <button onclick="hideApplicationDone()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
+      Done
     </button>
   </div>
 </div>
