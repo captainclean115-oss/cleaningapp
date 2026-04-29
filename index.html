@@ -24294,6 +24294,7 @@ async function submitApplication() {
     ssn_card_url: null,
     passport_url: null
   };
+  const appUuid = _generateUuidV4();
 
   if (sb) {
     const docMap = [
@@ -24302,7 +24303,6 @@ async function submitApplication() {
       { id: 'app-ssn',           col: 'ssn_card_url' },
       { id: 'app-passport',      col: 'passport_url' }
     ];
-    const appUuid = _generateUuidV4();
     for (const d of docMap) {
       const inp = document.getElementById(d.id);
       if (!inp || !inp.files || !inp.files[0]) continue;
