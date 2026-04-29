@@ -2391,6 +2391,14 @@ body.home-dragging, body.home-dragging * {
   border-radius: var(--radius-sm); color: var(--text); font-family: 'DM Sans', sans-serif;
   font-size: 15px; padding: 11px 14px; outline: none;
 }
+
+/* iOS Safari auto-zooms when a focused input has font-size < 16px.
+   Force every tappable form element to be 16px, defeating both class
+   rules and the ~65 inline styles. Desktop loses nothing visible. */
+input, textarea, select {
+  font-size: 16px !important;
+}
+
 .field-input:focus { border-color: var(--accent); }
 textarea.field-input { resize: none; min-height: 80px; line-height: 1.5; }
 select.field-input { appearance: none; }
