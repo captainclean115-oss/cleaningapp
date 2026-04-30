@@ -4041,6 +4041,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:12px 14px;color:#fff;font-size:18px;font-weight:700;font-family:'DM Sans',sans-serif;outline:none;margin-bottom:14px">
     <label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">METHOD</label>
     <div id="payments-methods" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px"></div>
+    <label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">PHOTO (OPTIONAL)</label>
+    <label for="pp-photo" style="display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border:1px dashed rgba(255,255,255,0.25);border-radius:12px;cursor:pointer;color:rgba(255,255,255,0.7);font-size:14px;margin-bottom:14px;background:rgba(255,255,255,0.04)">
+      <span style="font-size:18px">📷</span> <span id="pp-photo-label">Add photo (optional)</span>
+    </label>
+    <input type="file" accept="image/*" capture="environment" id="pp-photo" style="display:none">
+    <div id="pp-photo-preview" style="display:none;margin-bottom:14px;text-align:center">
+      <img id="pp-photo-preview-img" src="" style="max-width:100%;max-height:200px;border-radius:12px">
+    </div>
     <label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">NOTE (OPTIONAL)</label>
     <input id="payments-note" type="text" maxlength="80" placeholder="Check #, confirmation number, etc."
       style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 14px;color:#fff;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;margin-bottom:18px">
@@ -7347,7 +7355,7 @@ function promptSetActor() {
 }
 
 var _claireActing = false; // set true while Claire runs a tool so logs auto-tag as "Claire"
-function logPendingUpdate(action, details, actor, clientId) {
+function logPendingUpdate(action, details, actor, clientId, photo) {
   const now = new Date();
   const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
@@ -7359,7 +7367,8 @@ function logPendingUpdate(action, details, actor, clientId) {
     actor: who,
     time: timeStr,
     done: false,
-    clientId: clientId || null
+    clientId: clientId || null,
+    photo: photo || null
   });
   savePending();
   // Also log to permanent activity log
@@ -11262,6 +11271,30 @@ function renderPaymentsView() {
 }
 
 function paymentsOpen(clientId) {
+  // Bug #6: reset + wire photo capture
+  window._ppPhotoDataURL = null;
+  var ppPhotoInput = document.getElementById('pp-photo');
+  var ppPhotoPreview = document.getElementById('pp-photo-preview');
+  var ppPhotoPreviewImg = document.getElementById('pp-photo-preview-img');
+  var ppPhotoLabel = document.getElementById('pp-photo-label');
+  if (ppPhotoInput) {
+    ppPhotoInput.value = '';
+    if (ppPhotoPreview) ppPhotoPreview.style.display = 'none';
+    if (ppPhotoPreviewImg) ppPhotoPreviewImg.src = '';
+    if (ppPhotoLabel) ppPhotoLabel.textContent = 'Add photo (optional)';
+    ppPhotoInput.onchange = function() {
+      var f = this.files && this.files[0];
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function(e) {
+        window._ppPhotoDataURL = e.target.result;
+        if (ppPhotoPreviewImg) ppPhotoPreviewImg.src = e.target.result;
+        if (ppPhotoPreview) ppPhotoPreview.style.display = 'block';
+        if (ppPhotoLabel) ppPhotoLabel.textContent = 'Photo added — tap to change';
+      };
+      r.readAsDataURL(f);
+    };
+  }
   var c = PentaClients.getClient(clientId);
   if (!c) return;
   _paymentsClientId = clientId;
@@ -11319,7 +11352,8 @@ function paymentsConfirm() {
       '$' + amt.toFixed(2) + ' via ' + method + ' · $' + oldBal + ' → $' + Math.round(c.bal)
         + (note ? ' · ' + note : ''),
       null,
-      id
+      id,
+      window._ppPhotoDataURL || null
     );
   }
   // Persist client balance update so a refresh retains it.
