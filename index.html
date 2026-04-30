@@ -5837,13 +5837,12 @@ function cleanName(c) {
 
 function buildFilters() {
   const zones = [...new Set(PentaClients.mapClients(c=>c.zone).filter(Boolean))].sort();
-  const freqs = ['Weekly','Every 2wk','Every 3wk','Monthly+','Monthly'];
+  const freqs = ['Weekly','Every 2wk','Every 3wk','Monthly+','Monthly','One-time'];
   const chips = document.getElementById('filter-chips');
   if (!chips) return;
   
   const special = [
     {id:'bal', label:'Balance due'},
-    {id:'note', label:'Has special notes'},
   ];
   
   [...special].forEach(f => {
@@ -5993,11 +5992,6 @@ function applyFilters(force) {
     if (q && !name.includes(q) && !(c.city || '').toLowerCase().includes(q) && !(c.ph || '').includes(q) && !(c.addr || '').toLowerCase().includes(q)) return false;
     for (const f of activeFilters) {
       if (f === 'bal' && c.bal <= 0) return false;
-      if (f === 'soon') {
-        const d = daysUntil(c.next);
-        if (d === null || d < 0 || d > 7) return false;
-      }
-      if (f === 'note' && !c.notes) return false;
       if (f.startsWith('freq:')) {
         const fl = f.slice(5);
         const cl = FREQ_LABEL[c.fc] || c.freq;
