@@ -11109,6 +11109,9 @@ document.addEventListener('click', function(e) {
   }
 
   function closeCurrentFeature() {
+    // Quote Builder modal -- same swipe-right convention as other modals
+    var qm = document.getElementById('quote-modal');
+    if (qm && qm.style.display === 'flex') { closeQuoteTool(); return; }
     // Customer form modal (New / Edit client) — topmost priority
     var custForm = document.getElementById('customer-form-overlay');
     if (custForm && custForm.style.display && custForm.style.display !== 'none') {
@@ -11139,6 +11142,8 @@ document.addEventListener('click', function(e) {
   }
 
   function anyModalOpen() {
+    var qm = document.getElementById('quote-modal');
+    if (qm && qm.style.display === 'flex') return true;
     var cf = document.getElementById('customer-form-overlay');
     if (cf && cf.style.display === 'flex') return true;
     var cv = document.getElementById('content-view');
@@ -17459,6 +17464,7 @@ const _qtFreqLabels = { once:'one-time', weekly:'per week', biweekly:'every 2 we
 const _qtFreqFC = { once:'OMS', weekly:'RMS - WEK', biweekly:'RMS - EOW', triweekly:'RMS - ETW', monthly:'RMS - MON' };
 
 function openQuoteTool() {
+  document.body.classList.add('overlay-open');
   try {
     const modal = document.getElementById('quote-modal');
     if (!modal) { alert('Quote modal element not found'); return; }
@@ -18224,6 +18230,7 @@ function closeBalanceModal() {
 }
 
 function closeQuoteTool() {
+  document.body.classList.remove('overlay-open');
   document.getElementById('quote-modal').style.display = 'none';
 }
 
@@ -28129,7 +28136,7 @@ function _p3dPage(dir) {
     <div style="position:sticky;top:0;background:var(--surface);z-index:1;border-bottom:1px solid var(--border);padding-top:env(safe-area-inset-top)">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px 12px">
         <div style="font-size:18px;font-weight:700">💰 Quote Tool</div>
-        <button onclick="closeQuoteTool()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>
+        <button onclick="closeQuoteTool()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;padding:8px 12px;margin:-8px -12px">×</button>
       </div>
       <div style="display:flex;gap:0;padding:0 20px 0">
         <button id="qt-tab-quote" onclick="showQuoteTab('quote')" style="flex:1;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;padding:8px 0 10px;cursor:pointer">Quote</button>
