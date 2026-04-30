@@ -3705,6 +3705,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 }
 .penta-learn-settings-save:active { transform: scale(0.98); }
 
+/* Bug #5: per-row SMS/Email channel toggle — active-state highlight */
+[data-bal-channel-row] button[data-active="true"]:not([disabled]) {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-color: var(--accent) !important;
+  opacity: 1 !important;
+}
+
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -11228,8 +11236,8 @@ function renderPaymentsView() {
       + '<div style="font-size:13px;margin-top:4px">No outstanding balances.</div></div>';
     return;
   }
-  // Summary card on top
-  var head = '<div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);border-radius:16px;padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">'
+  // Summary card on top — Bug #5: tappable, opens openBalanceFollowup
+  var head = '<div role="button" tabindex="0" onclick="openBalanceFollowup()" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);border-radius:16px;padding:16px 18px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">'
     + '<div>'
     + '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em">Outstanding</div>'
     + '<div style="font-size:28px;font-weight:800;color:#FF6B6B;letter-spacing:-0.01em">$' + Math.round(total).toLocaleString() + '</div>'
@@ -11238,6 +11246,7 @@ function renderPaymentsView() {
     + '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em">Clients</div>'
     + '<div style="font-size:28px;font-weight:800;color:#fff;letter-spacing:-0.01em">' + clients.length + '</div>'
     + '</div>'
+    + '<span style="margin-left:12px;color:rgba(255,255,255,0.55);font-size:22px;flex-shrink:0">›</span>'
     + '</div>';
   var label = '<div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;margin:8px 2px 10px">Balances</div>';
   var rows = clients.map(function(c) {
@@ -17931,6 +17940,8 @@ function toggleBalIncludeNonActive() {
 }
 
 function openBalanceFollowup() {
+  // Bug #5: reset per-row channel overrides on each fresh open
+  window._balRowChannels = {};
   const clients = PentaClients.filterClients(_balFilterActive);
   const subtitle = document.getElementById('bal-subtitle');
   if (subtitle) {
@@ -17969,7 +17980,18 @@ function openBalanceFollowup() {
             </div>
             <div style="text-align:right;flex-shrink:0">
               <div style="font-size:15px;font-weight:700;color:var(--red)">$${parseFloat(c.bal).toFixed(2)}</div>
-              <div style="font-size:10px;color:var(--muted)">${method === 'text' ? '💬 Text' : method === 'email' ? '✉️ Email' : '—'}</div>
+              <div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:4px" data-bal-channel-row="${c.id}">
+                <button type="button"
+                        onclick="window._balRowChannels=window._balRowChannels||{};window._balRowChannels['${c.id}']='sms';this.parentNode.querySelectorAll('button').forEach(b=>b.dataset.active='false');this.dataset.active='true';"
+                        data-active="${hasPhone ? 'true' : 'false'}"
+                        ${hasPhone ? '' : 'disabled'}
+                        style="padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;font-weight:600;cursor:${hasPhone ? 'pointer' : 'not-allowed'};opacity:${hasPhone ? '1' : '0.4'}">SMS</button>
+                <button type="button"
+                        onclick="window._balRowChannels=window._balRowChannels||{};window._balRowChannels['${c.id}']='email';this.parentNode.querySelectorAll('button').forEach(b=>b.dataset.active='false');this.dataset.active='true';"
+                        data-active="${!hasPhone && hasEmail ? 'true' : 'false'}"
+                        ${hasEmail ? '' : 'disabled'}
+                        style="padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;font-weight:600;cursor:${hasEmail ? 'pointer' : 'not-allowed'};opacity:${hasEmail ? '1' : '0.4'}">Email</button>
+              </div>
             </div>
           </div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:6px">
@@ -18018,7 +18040,12 @@ function sendAllBalanceFollowups() {
     const hasPhone = c.ph && c.ph.trim();
     const hasEmail = c.em && c.em.trim();
 
-    if (hasPhone) {
+    // Bug #5: per-row channel override (defaults to phone-first, email-fallback)
+    var rowChannels = window._balRowChannels || {};
+    var channel = rowChannels[c.id];
+    if (!channel) channel = hasPhone ? 'sms' : (hasEmail ? 'email' : null);
+
+    if (channel === 'sms' && hasPhone) {
       // Try RC first, fall back to SMS
       if (rcToken) {
         getMyRCNumber().then(myNum => {
@@ -18035,7 +18062,7 @@ function sendAllBalanceFollowups() {
         // Queue for SMS - open one at a time
       }
       sent++;
-    } else if (hasEmail) {
+    } else if (channel === 'email' && hasEmail) {
       window.location.href = 'mailto:' + c.em + '?subject=Your%20Balance%20with%20The%20Maids&body=' + encodeURIComponent(msg);
       sent++;
     } else {
