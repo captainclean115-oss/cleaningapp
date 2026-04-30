@@ -49,7 +49,7 @@
 <style>
 :root {
   --bg: transparent; /* Phase 2: gradient applied to html, surfaces sit on top */
-  --surface: rgba(255,255,255,0.85);
+  --surface: rgba(255,255,255,0.95); /* Phase 2.5: bump from 0.85 — too translucent on full-screen modals */
   --surface2: rgba(255,255,255,0.95);
   --border: rgba(255,255,255,0.5);
   --border2: rgba(255,255,255,0.6);
@@ -343,7 +343,7 @@ body {
   /* Solid dark background instead of backdrop-filter: blur() — the blur
      re-computes every scroll frame and was the main cause of the
      sticky-feeling vertical scroll on Schedule. */
-  background: #0d0d1f;
+  background: var(--surface);
   padding: calc(var(--safe-top) + 12px) 16px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -880,7 +880,7 @@ body {
 
 
 
-#staff-panel { display:none; position:fixed; inset:0; z-index:150; background:var(--bg); overflow-y:auto; padding-bottom:80px; padding-top:calc(var(--safe-top) + 58px); }
+#staff-panel { display:none; position:fixed; inset:0; z-index:150; background:transparent; overflow-y:auto; padding-bottom:80px; padding-top:calc(var(--safe-top) + 58px); }
 #staff-panel.active { display:block !important; }
 #staff-view { display:none; }
 #staff-view.active { display:block; }
@@ -1492,7 +1492,7 @@ body.home-dragging, body.home-dragging * {
   display: none;
   position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   flex-direction: column;
-  background: var(--bg);
+  background: transparent;
   z-index: 210;
 }
 #claire-view.active { display: flex; }
@@ -1523,7 +1523,7 @@ body.home-dragging, body.home-dragging * {
   /* Sits ABOVE the bottom-nav zone so the locked nav stays fully visible. */
   position: fixed; top: 0; left: 0; right: 0;
   bottom: calc(110px + env(safe-area-inset-bottom));
-  background: var(--bg);
+  background: transparent;
   z-index: 260;
   flex-direction: column;
   overflow: hidden;
@@ -1880,7 +1880,7 @@ body.home-dragging, body.home-dragging * {
   width: 54%; height: 54%;
 }
 .home-app-label {
-  font-size: 11px; line-height: 1.15;
+  font-size: 12px; line-height: 1.15;
   color: rgba(255,255,255,0.97); font-weight: 500;
   letter-spacing: -0.2px;
   margin-top: 1px;
@@ -3817,7 +3817,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 </div>
 
 <!-- ═══ MANAGER LOGIN SCREEN ═══ -->
-<div id="penta-login-screen" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg);position:fixed;inset:0;z-index:9998;overflow-y:auto">
+<div id="penta-login-screen" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:transparent;position:fixed;inset:0;z-index:9998;overflow-y:auto">
   <div style="max-width:380px;width:100%;background:var(--surface);border-radius:20px;padding:32px;border:1px solid var(--border)">
     <div style="text-align:center;margin-bottom:28px">
       <div style="font-size:28px;font-weight:700;color:var(--text)">Penta</div>
@@ -4094,7 +4094,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   </div>
 </div>
 
-<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:var(--bg);flex-direction:column">
+<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:transparent;flex-direction:column">
   <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
     <div style="flex:1">
@@ -4263,7 +4263,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div id="staff-inbox-list" style="padding:6px 12px 16px"></div>
   </div>
 
-  <div id="staff-conv-section" style="display:none;flex-direction:column;position:fixed;inset:0;z-index:250;background:var(--bg)">
+  <div id="staff-conv-section" style="display:none;flex-direction:column;position:fixed;inset:0;z-index:250;background:transparent">
     <div class="conv-header">
       <button class="conv-back" onclick="closeStaffChat()">‹</button>
       <div style="flex:1;min-width:0">
@@ -27697,7 +27697,7 @@ function _p3dPage(dir) {
 
 
 <!-- ═══ STAFF PANEL ═══ -->
-<div id="staff-panel" style="display:none;position:fixed;inset:0;z-index:150;background:var(--bg);overflow-y:auto;-webkit-overflow-scrolling:touch">
+<div id="staff-panel" style="display:none;position:fixed;inset:0;z-index:150;background:transparent;overflow-y:auto;-webkit-overflow-scrolling:touch">
   <div id="staff-panel-inner" style="display:flex;flex-direction:column;min-height:100vh">
 <!-- LOGIN SCREEN -->
 <div id="login-screen" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;padding:calc(var(--safe-top) + 32px) 24px 32px;flex:1">
