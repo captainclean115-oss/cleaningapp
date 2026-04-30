@@ -10863,8 +10863,9 @@ function _homeOnDragMove(e) {
       hoverTile.classList.add('folder-target');
     }
   } else {
-    console.warn('[BUG1-DBG] hover cleared (no tile under finger or self-hover)');
-    _homeDrag.hover = null;
+    // Bug #1 Part 1 hotfix #4: keep last-known hover, don't clear on drift.
+    // The drop handler relies on _homeDrag.hover; clearing on every drift kills sparse drops.
+    console.warn('[BUG1-DBG] no tile under finger (keeping last hover:', _homeDrag.hover ? _homeDrag.hover.className : 'null', ')');
   }
 }
 
