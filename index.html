@@ -10843,6 +10843,7 @@ function _homeOnDragMove(e) {
     _homeDrag.hoverDockBtn = hoverDockBtn;
     _homeDrag.hover = null;
   } else if (hoverTile && hoverTile !== _homeDrag.tile) {
+    console.warn('[BUG1-DBG] hover set:', hoverTile.className, 'page:', hoverTile.getAttribute('data-page'), 'slot:', hoverTile.getAttribute('data-slot-idx'), 'fixed:', hoverTile.getAttribute('data-fixed'));
     if (hoverTile.getAttribute('data-fixed') === '1') {
       _homeDrag.hover = null;
     } else {
@@ -10850,6 +10851,7 @@ function _homeOnDragMove(e) {
       hoverTile.classList.add('folder-target');
     }
   } else {
+    console.warn('[BUG1-DBG] hover cleared (no tile under finger or self-hover)');
     _homeDrag.hover = null;
   }
 }
@@ -10859,6 +10861,7 @@ function _homeOnDragEnd() {
 }
 
 function _homeFinishDrag(commit) {
+  console.warn('[BUG1-DBG] finishDrag called, commit:', commit, 'hover:', _homeDrag && _homeDrag.hover ? _homeDrag.hover.className : 'null', 'fromPage:', _homeDrag && _homeDrag.fromPage, 'fromSlot:', _homeDrag && _homeDrag.fromSlot);
   if (!_homeDrag) return;
   document.removeEventListener('pointermove', _homeOnDragMove);
   document.removeEventListener('pointerup', _homeOnDragEnd);
@@ -10902,6 +10905,7 @@ function _homeFinishDrag(commit) {
   }
 
   if (commit && d.hover) {
+    console.warn('[BUG1-DBG] taking commit+hover branch, hover.dataset:', JSON.stringify({page: d.hover.getAttribute('data-page'), slot: d.hover.getAttribute('data-slot-idx'), type: d.hover.getAttribute('data-slot-type')}));
     var targetPage = parseInt(d.hover.getAttribute('data-page'));
     var targetSlot = parseInt(d.hover.getAttribute('data-slot-idx'));
     var targetType = d.hover.getAttribute('data-slot-type');
@@ -10930,6 +10934,7 @@ function _homeFinishDrag(commit) {
     // Dropped in empty grid area — append the icon to the end of the
     // currently visible page so Tom can move an icon "away from the
     // others" instead of only inserting between existing tiles.
+    console.warn('[BUG1-DBG] taking fallback branch, calling moveToEndOfVisiblePage, fromPage:', d.fromPage, 'fromSlot:', d.fromSlot);
     _homeMoveSlotToEndOfVisiblePage(d.fromPage, d.fromSlot);
   }
   // Remove clone; the re-render will restore tile visibility
@@ -11073,18 +11078,26 @@ function _homeMoveSlot(fromPage, fromSlot, toPage, toSlot) {
   return _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, false);
 }
 function _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, insertAfter) {
+  console.warn('[BUG1-DBG] moveSlotAt called, args:', {fromPage: fromPage, fromSlot: fromSlot, toPage: toPage, toSlot: toSlot, insertAfter: insertAfter});
   // Bug #1 Part 1: sparse grid — direct-index assignment, no shift.
   // insertAfter param preserved for caller compatibility but a no-op in sparse mode.
   var pages = _homeGetPages();
-  if (!pages[fromPage] || !pages[toPage]) return;
+  if (!pages[fromPage] || !pages[toPage]) {
+    console.warn('[BUG1-DBG] EARLY RETURN page missing, fromPage:', fromPage, 'toPage:', toPage, 'pages.length:', pages.length, 'fromPageType:', typeof pages[fromPage], 'toPageType:', typeof pages[toPage]);
+    return;
+  }
   var moved = pages[fromPage][fromSlot];
-  if (!moved) return;
+  if (!moved) {
+    console.warn('[BUG1-DBG] EARLY RETURN no moved at', fromPage, fromSlot, 'pages[fromPage]:', JSON.stringify(pages[fromPage]));
+    return;
+  }
   pages[fromPage][fromSlot] = null;
   // Clamp toSlot to valid range
   if (toSlot < 0) toSlot = 0;
   if (toSlot >= HOME_PAGE_CAPACITY) toSlot = HOME_PAGE_CAPACITY - 1;
   // Direct placement. If destination occupied, find next null on that page;
   // if page is full, fall back to first null across pages, else new page.
+  console.warn('[BUG1-DBG] destination check, toPage:', toPage, 'toSlot:', toSlot, 'destSlot:', JSON.stringify(pages[toPage][toSlot]), 'pages[toPage].length:', pages[toPage].length);
   if (pages[toPage][toSlot] == null) {
     pages[toPage][toSlot] = moved;
   } else {
