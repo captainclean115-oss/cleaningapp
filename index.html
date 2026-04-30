@@ -10533,6 +10533,17 @@ function renderHomeScreen() {
   renderDock();
   // Apply manager permissions to freshly-rendered home tiles. Defined below.
   try { if (typeof applyPermissions === 'function') applyPermissions(); } catch(e){}
+  // [BUG1-GRID-DBG] one-shot DOM dump after render
+  setTimeout(function(){
+    var grids = document.querySelectorAll('.home-grid');
+    console.warn('[BUG1-GRID-DBG] grid count:', grids.length);
+    grids.forEach(function(g, gi) {
+      console.warn('[BUG1-GRID-DBG] grid ' + gi + ' children:', g.children.length);
+      Array.prototype.forEach.call(g.children, function(c, ci) {
+        console.warn('[BUG1-GRID-DBG] g' + gi + ' child' + ci + ':', c.tagName, c.className, 'page=' + c.getAttribute('data-page'), 'slot=' + c.getAttribute('data-slot-idx'));
+      });
+    });
+  }, 100);
 }
 
 function renderDock() {
