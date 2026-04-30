@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="My Clients">
-<meta name="theme-color" content="#0a0a20">
+<meta name="theme-color" content="#BFC9E8">
 <title>My Clients</title>
 <script>
 // Synchronous auth-flash suppression: decide which auth screen (if any) to
@@ -48,13 +48,13 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface2: #22263a;
-  --border: rgba(255,255,255,0.08);
-  --border2: rgba(255,255,255,0.14);
-  --text: #f0f0f5;
-  --muted: #8b8fa8;
+  --bg: transparent; /* Phase 2: gradient applied to html, surfaces sit on top */
+  --surface: rgba(255,255,255,0.85);
+  --surface2: rgba(255,255,255,0.95);
+  --border: rgba(255,255,255,0.5);
+  --border2: rgba(255,255,255,0.6);
+  --text: #2A2840;
+  --muted: #6B6880;
   --accent: #6c8fff;
   --accent2: #a78bfa;
   --green: #34d399;
@@ -121,10 +121,7 @@ html {
      across the entire viewport automatically (it IS the viewport). More
      reliable than body::before with z-index:-1 or background-attachment:
      fixed, both of which dropped out mid-scroll on the employee portal. */
-  background:
-    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.40) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   overscroll-behavior: none;
 }
 body {
@@ -832,10 +829,7 @@ body {
   padding: 32px 24px;
   /* Same branded Penta wallpaper used by the manager home launcher
      and the employee portal so every screen feels like the same app. */
-  background:
-    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   background-attachment: fixed;
   min-height: 100vh;
 }
@@ -1769,10 +1763,7 @@ body.home-dragging, body.home-dragging * {
   overflow: hidden;
   /* Same branded wallpaper as body — purple (upper-left) + teal (lower-right)
      over a near-black base. Matches the employee portal exactly. */
-  background:
-    radial-gradient(ellipse at 30% 10%, rgba(94, 92, 230, 0.45) 0%, transparent 55%),
-    radial-gradient(ellipse at 80% 85%, rgba(30, 158, 170, 0.4) 0%, transparent 60%),
-    linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   padding: max(20px, env(safe-area-inset-top)) 0 0;
 }
 #home-view.active { display: block; }
@@ -2557,9 +2548,7 @@ body.in-portal .bottom-nav { display: none !important; }
   display: none;
   position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   z-index: 260;
-  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
-              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.4) 0%, transparent 60%),
-              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   flex-direction: column; overflow: hidden;
   color: #fff; font-family: 'DM Sans', sans-serif;
 }
@@ -3010,9 +2999,7 @@ body.in-portal .bottom-nav { display: none !important; }
   display: none;
   position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   z-index: 270;
-  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
-              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.4) 0%, transparent 60%),
-              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   flex-direction: column; overflow: hidden;
   color: #fff; font-family: 'DM Sans', sans-serif;
 }
@@ -3064,9 +3051,7 @@ body.in-portal .bottom-nav { display: none !important; }
   display: none;
   position: fixed; top: 0; left: 0; right: 0; bottom: 0;
   z-index: 260;
-  background: radial-gradient(ellipse at 30% 10%, rgba(94,92,230,0.45) 0%, transparent 55%),
-              radial-gradient(ellipse at 80% 85%, rgba(30,158,170,0.40) 0%, transparent 60%),
-              linear-gradient(180deg, #0a0a20 0%, #10142a 50%, #0d1618 100%);
+  background: var(--bg-gradient);
   flex-direction: column; overflow: hidden;
   color: #fff; font-family: 'DM Sans', sans-serif;
 }
@@ -4067,7 +4052,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <!-- PAYMENTS HUB (demo) — outstanding balances + manual card record.
      Real processor integration (Stripe / Square) slots into recordDemoPayment
      when you're ready. -->
-<div id="payments-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:radial-gradient(ellipse at 30% 10%,rgba(94,92,230,0.45) 0%,transparent 55%),radial-gradient(ellipse at 80% 85%,rgba(30,158,170,0.4) 0%,transparent 60%),linear-gradient(180deg,#0a0a20 0%,#10142a 50%,#0d1618 100%);flex-direction:column;overflow:hidden">
+<div id="payments-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:var(--bg-gradient);flex-direction:column;overflow:hidden">
   <div style="flex:0 0 auto;padding:calc(var(--safe-top) + 12px) 16px 10px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.08);background:rgba(10,10,32,0.7);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)">
     <button onclick="closePaymentsDemo()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);color:#fff;width:34px;height:34px;border-radius:50%;font-size:20px;line-height:1;cursor:pointer;padding:0">‹</button>
     <div style="flex:1;min-width:0">
