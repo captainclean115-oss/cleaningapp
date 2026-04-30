@@ -1782,12 +1782,6 @@ body.home-dragging, body.home-dragging * {
   padding: 4px 10px 120px;
   max-width: 480px; margin: 0 auto;
 }
-.home-app-empty {
-  width: 100%;
-  min-height: 88px;
-  opacity: 0;
-  display: block;
-}
 .home-app {
   background: none; border: none; padding: 0;
   display: flex; flex-direction: column; align-items: center; gap: 7px;
@@ -10435,46 +10429,10 @@ function _homeState() {
     HOME_APPS.forEach(function(a) {
       if (dockSet[a.id]) return;
       if (!present[a.id]) {
-        // Bug #1 Part 1: place in first null slot (page 0, then 1+); else new page.
-        (function placeNewApp(){
-          var slotObj = { type: 'app', id: a.id };
-          for (var pi = 0; pi < pages.length; pi++) {
-            if (!Array.isArray(pages[pi])) pages[pi] = [];
-            while (pages[pi].length < HOME_PAGE_CAPACITY) pages[pi].push(null);
-            for (var si = 0; si < HOME_PAGE_CAPACITY; si++) {
-              if (pages[pi][si] == null) { pages[pi][si] = slotObj; return; }
-            }
-          }
-          var newPage = [];
-          for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newPage.push(null);
-          newPage[0] = slotObj;
-          pages.push(newPage);
-        })();
+        if (!pages[0]) pages[0] = [];
+        pages[0].push({ type: 'app', id: a.id });
       }
     });
-  })();
-  // Bug #1 Part 1: Sparse-grid normalization
-  // Pad each page to length HOME_PAGE_CAPACITY with trailing nulls.
-  // Trim if any page exceeds capacity (data-cleanup safety).
-  // Convert stale ids (not in HOME_APPS) to null.
-  // Collapse trailing empty pages (only trailing, not mid-stack).
-  (function normalizePages(){
-    var validIds = {};
-    HOME_APPS.forEach(function(a){ validIds[a.id] = true; });
-    pages = pages.map(function(page){
-      if (!Array.isArray(page)) page = [];
-      if (page.length > HOME_PAGE_CAPACITY) page = page.slice(0, HOME_PAGE_CAPACITY);
-      while (page.length < HOME_PAGE_CAPACITY) page.push(null);
-      for (var i = 0; i < page.length; i++) {
-        var s = page[i];
-        if (!s) { page[i] = null; continue; }
-        if (s.type === 'app' && !validIds[s.id]) page[i] = null;
-      }
-      return page;
-    });
-    while (pages.length > 1 && pages[pages.length - 1].every(function(s){ return s === null; })) {
-      pages.pop();
-    }
   })();
   window.__homeStateCache = { pages: pages, dock: dock };
   return window.__homeStateCache;
@@ -10533,17 +10491,6 @@ function renderHomeScreen() {
   renderDock();
   // Apply manager permissions to freshly-rendered home tiles. Defined below.
   try { if (typeof applyPermissions === 'function') applyPermissions(); } catch(e){}
-  // [BUG1-GRID-DBG] one-shot DOM dump after render
-  setTimeout(function(){
-    var grids = document.querySelectorAll('.home-grid');
-    console.warn('[BUG1-GRID-DBG] grid count:', grids.length);
-    grids.forEach(function(g, gi) {
-      console.warn('[BUG1-GRID-DBG] grid ' + gi + ' children:', g.children.length);
-      Array.prototype.forEach.call(g.children, function(c, ci) {
-        console.warn('[BUG1-GRID-DBG] g' + gi + ' child' + ci + ':', c.tagName, c.className, 'page=' + c.getAttribute('data-page'), 'slot=' + c.getAttribute('data-slot-idx'));
-      });
-    });
-  }, 100);
 }
 
 function renderDock() {
@@ -10666,8 +10613,6 @@ function _homeStartDockDrag(btn, startX, startY) {
 }
 
 function _homeRenderSlot(slot, pageIdx, slotIdx) {
-  // Bug #1 Part 1: empty-slot placeholder so CSS grid keeps the cell.
-  if (!slot) return '<div class="home-app-empty" data-slot-empty="1" data-page="' + pageIdx + '" data-slot-idx="' + slotIdx + '"></div>';
   if (slot.type === 'folder') {
     var first4 = (slot.apps || []).slice(0, 4).map(function(id){
       var a = _homeGetSlotApp(id);
@@ -10839,7 +10784,7 @@ function _homeOnDragMove(e) {
   _homeDrag.clone.style.display = 'none';
   var under = document.elementFromPoint(x, y);
   _homeDrag.clone.style.display = '';
-  var hoverTile = under && under.closest ? under.closest('.home-app, .home-app-empty') : null;
+  var hoverTile = under && under.closest ? under.closest('.home-app') : null;
   var hoverDockBtn = under && under.closest ? under.closest('.bottom-nav .nav-btn[data-dock-id]') : null;
   var overDockArea = !!(under && under.closest && under.closest('.bottom-nav'));
 
@@ -10855,7 +10800,6 @@ function _homeOnDragMove(e) {
     _homeDrag.hoverDockBtn = hoverDockBtn;
     _homeDrag.hover = null;
   } else if (hoverTile && hoverTile !== _homeDrag.tile) {
-    console.warn('[BUG1-DBG] hover set:', hoverTile.className, 'page:', hoverTile.getAttribute('data-page'), 'slot:', hoverTile.getAttribute('data-slot-idx'), 'fixed:', hoverTile.getAttribute('data-fixed'));
     if (hoverTile.getAttribute('data-fixed') === '1') {
       _homeDrag.hover = null;
     } else {
@@ -10863,9 +10807,7 @@ function _homeOnDragMove(e) {
       hoverTile.classList.add('folder-target');
     }
   } else {
-    // Bug #1 Part 1 hotfix #4: keep last-known hover, don't clear on drift.
-    // The drop handler relies on _homeDrag.hover; clearing on every drift kills sparse drops.
-    console.warn('[BUG1-DBG] no tile under finger (keeping last hover:', _homeDrag.hover ? _homeDrag.hover.className : 'null', ')');
+    _homeDrag.hover = null;
   }
 }
 
@@ -10874,7 +10816,6 @@ function _homeOnDragEnd() {
 }
 
 function _homeFinishDrag(commit) {
-  console.warn('[BUG1-DBG] finishDrag called, commit:', commit, 'hover:', _homeDrag && _homeDrag.hover ? _homeDrag.hover.className : 'null', 'fromPage:', _homeDrag && _homeDrag.fromPage, 'fromSlot:', _homeDrag && _homeDrag.fromSlot);
   if (!_homeDrag) return;
   document.removeEventListener('pointermove', _homeOnDragMove);
   document.removeEventListener('pointerup', _homeOnDragEnd);
@@ -10918,7 +10859,6 @@ function _homeFinishDrag(commit) {
   }
 
   if (commit && d.hover) {
-    console.warn('[BUG1-DBG] taking commit+hover branch, hover.dataset:', JSON.stringify({page: d.hover.getAttribute('data-page'), slot: d.hover.getAttribute('data-slot-idx'), type: d.hover.getAttribute('data-slot-type')}));
     var targetPage = parseInt(d.hover.getAttribute('data-page'));
     var targetSlot = parseInt(d.hover.getAttribute('data-slot-idx'));
     var targetType = d.hover.getAttribute('data-slot-type');
@@ -10947,7 +10887,6 @@ function _homeFinishDrag(commit) {
     // Dropped in empty grid area — append the icon to the end of the
     // currently visible page so Tom can move an icon "away from the
     // others" instead of only inserting between existing tiles.
-    console.warn('[BUG1-DBG] taking fallback branch, calling moveToEndOfVisiblePage, fromPage:', d.fromPage, 'fromSlot:', d.fromSlot);
     _homeMoveSlotToEndOfVisiblePage(d.fromPage, d.fromSlot);
   }
   // Remove clone; the re-render will restore tile visibility
@@ -10962,8 +10901,7 @@ function _dockAddFromGrid(appId, fromPage, fromSlot, targetDockId) {
   if (fromPage >= 0 && state.pages[fromPage] && state.pages[fromPage][fromSlot]) {
     var slot = state.pages[fromPage][fromSlot];
     if (slot.type === 'app' && slot.id === appId) {
-      // Bug #1 Part 1: sparse grid — null the slot, no compaction.
-      state.pages[fromPage][fromSlot] = null;
+      state.pages[fromPage].splice(fromSlot, 1);
     }
   }
   // If already in dock, remove first (we'll re-insert at target)
@@ -10972,20 +10910,7 @@ function _dockAddFromGrid(appId, fromPage, fromSlot, targetDockId) {
   // Respect dock capacity: if full, bump the last item back to the grid
   if (state.dock.length >= DOCK_MAX) {
     var bumped = state.dock.pop();
-    // Bug #1 Part 1: sparse grid — bump goes into first null slot on page 0.
-    if (state.pages[0]) {
-      while (state.pages[0].length < HOME_PAGE_CAPACITY) state.pages[0].push(null);
-      var bumpedPlaced = false;
-      for (var bi = 0; bi < HOME_PAGE_CAPACITY; bi++) {
-        if (state.pages[0][bi] == null) { state.pages[0][bi] = { type:'app', id: bumped }; bumpedPlaced = true; break; }
-      }
-      if (!bumpedPlaced) {
-        var bumpPage = [];
-        for (var k = 0; k < HOME_PAGE_CAPACITY; k++) bumpPage.push(null);
-        bumpPage[0] = { type:'app', id: bumped };
-        state.pages.push(bumpPage);
-      }
-    }
+    if (state.pages[0]) state.pages[0].push({ type:'app', id: bumped });
   }
   // Insert at target position (or end)
   var insertAt = state.dock.length;
@@ -11008,38 +10933,12 @@ function _dockRemoveToGrid(appId, hoverTile) {
     var hp = parseInt(hoverTile.getAttribute('data-page'));
     var hs = parseInt(hoverTile.getAttribute('data-slot-idx'));
     if (!isNaN(hp) && !isNaN(hs) && state.pages[hp]) {
-      // Bug #1 Part 1: direct-index. If hovered slot is occupied, find next null.
-      while (state.pages[hp].length < HOME_PAGE_CAPACITY) state.pages[hp].push(null);
-      if (state.pages[hp][hs] == null) {
-        state.pages[hp][hs] = { type:'app', id: appId };
-      } else {
-        var hPlaced = false;
-        for (var hi = 0; hi < HOME_PAGE_CAPACITY; hi++) {
-          if (state.pages[hp][hi] == null) { state.pages[hp][hi] = { type:'app', id: appId }; hPlaced = true; break; }
-        }
-        if (!hPlaced) {
-          var newP = [];
-          for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newP.push(null);
-          newP[0] = { type:'app', id: appId };
-          state.pages.push(newP);
-        }
-      }
+      state.pages[hp].splice(hs, 0, { type:'app', id: appId });
       _homeSavePages();
       return;
     }
   }
-  // Bug #1 Part 1: fallback — first null slot on current page.
-  while (state.pages[pageIdx].length < HOME_PAGE_CAPACITY) state.pages[pageIdx].push(null);
-  var fbPlaced = false;
-  for (var fi = 0; fi < HOME_PAGE_CAPACITY; fi++) {
-    if (state.pages[pageIdx][fi] == null) { state.pages[pageIdx][fi] = { type:'app', id: appId }; fbPlaced = true; break; }
-  }
-  if (!fbPlaced) {
-    var newFp = [];
-    for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newFp.push(null);
-    newFp[0] = { type:'app', id: appId };
-    state.pages.push(newFp);
-  }
+  state.pages[pageIdx].push({ type:'app', id: appId });
   _homeSavePages();
 }
 function _dockReorder(fromId, toId) {
@@ -11061,29 +10960,13 @@ function _homeCurrentPageIdx() {
   return Math.round(wrap.scrollLeft / w);
 }
 function _homeMoveSlotToEndOfVisiblePage(fromPage, fromSlot) {
-  // Bug #1 Part 1: sparse grid — first null slot on visible page; new page if full.
   var pages = _homeGetPages();
   if (!pages[fromPage]) return;
-  var moved = pages[fromPage][fromSlot];
+  var moved = pages[fromPage].splice(fromSlot, 1)[0];
   if (!moved) return;
-  pages[fromPage][fromSlot] = null;
   var dest = _homeCurrentPageIdx();
-  if (!pages[dest]) {
-    var newPage = [];
-    for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newPage.push(null);
-    pages[dest] = newPage;
-  }
-  while (pages[dest].length < HOME_PAGE_CAPACITY) pages[dest].push(null);
-  var placed = false;
-  for (var si = 0; si < HOME_PAGE_CAPACITY; si++) {
-    if (pages[dest][si] == null) { pages[dest][si] = moved; placed = true; break; }
-  }
-  if (!placed) {
-    var newPage2 = [];
-    for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newPage2.push(null);
-    newPage2[0] = moved;
-    pages.push(newPage2);
-  }
+  if (!pages[dest]) pages[dest] = [];
+  pages[dest].push(moved);
   _homeSavePages();
 }
 
@@ -11091,47 +10974,16 @@ function _homeMoveSlot(fromPage, fromSlot, toPage, toSlot) {
   return _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, false);
 }
 function _homeMoveSlotAt(fromPage, fromSlot, toPage, toSlot, insertAfter) {
-  console.warn('[BUG1-DBG] moveSlotAt called, args:', {fromPage: fromPage, fromSlot: fromSlot, toPage: toPage, toSlot: toSlot, insertAfter: insertAfter});
-  // Bug #1 Part 1: sparse grid — direct-index assignment, no shift.
-  // insertAfter param preserved for caller compatibility but a no-op in sparse mode.
   var pages = _homeGetPages();
-  if (!pages[fromPage] || !pages[toPage]) {
-    console.warn('[BUG1-DBG] EARLY RETURN page missing, fromPage:', fromPage, 'toPage:', toPage, 'pages.length:', pages.length, 'fromPageType:', typeof pages[fromPage], 'toPageType:', typeof pages[toPage]);
-    return;
-  }
-  var moved = pages[fromPage][fromSlot];
-  if (!moved) {
-    console.warn('[BUG1-DBG] EARLY RETURN no moved at', fromPage, fromSlot, 'pages[fromPage]:', JSON.stringify(pages[fromPage]));
-    return;
-  }
-  pages[fromPage][fromSlot] = null;
-  // Clamp toSlot to valid range
+  if (!pages[fromPage] || !pages[toPage]) return;
+  var moved = pages[fromPage].splice(fromSlot, 1)[0];
+  if (!moved) return;
+  if (fromPage === toPage && fromSlot < toSlot) toSlot--;
+  if (insertAfter) toSlot++;
+  // Clamp
   if (toSlot < 0) toSlot = 0;
-  if (toSlot >= HOME_PAGE_CAPACITY) toSlot = HOME_PAGE_CAPACITY - 1;
-  // Direct placement. If destination occupied, find next null on that page;
-  // if page is full, fall back to first null across pages, else new page.
-  console.warn('[BUG1-DBG] destination check, toPage:', toPage, 'toSlot:', toSlot, 'destSlot:', JSON.stringify(pages[toPage][toSlot]), 'pages[toPage].length:', pages[toPage].length);
-  if (pages[toPage][toSlot] == null) {
-    pages[toPage][toSlot] = moved;
-  } else {
-    var placed = false;
-    for (var si = 0; si < HOME_PAGE_CAPACITY; si++) {
-      if (pages[toPage][si] == null) { pages[toPage][si] = moved; placed = true; break; }
-    }
-    if (!placed) {
-      for (var pi = 0; pi < pages.length && !placed; pi++) {
-        for (var sj = 0; sj < HOME_PAGE_CAPACITY && !placed; sj++) {
-          if (pages[pi][sj] == null) { pages[pi][sj] = moved; placed = true; }
-        }
-      }
-    }
-    if (!placed) {
-      var newPage = [];
-      for (var k = 0; k < HOME_PAGE_CAPACITY; k++) newPage.push(null);
-      newPage[0] = moved;
-      pages.push(newPage);
-    }
-  }
+  if (toSlot > pages[toPage].length) toSlot = pages[toPage].length;
+  pages[toPage].splice(toSlot, 0, moved);
   _homeSavePages();
 }
 
@@ -11145,8 +10997,8 @@ function _homeCreateFolder(fromPage, fromSlot, toPage, toSlot) {
   var name = (targetApp && targetApp.label) || 'Folder';
   var folder = { type: 'folder', name: name, apps: [target.id, moved.id] };
   pages[toPage][toSlot] = folder;
-  // Remove the source — Bug #1 Part 1: sparse grid, null the slot.
-  pages[fromPage][fromSlot] = null;
+  // Remove the source
+  pages[fromPage].splice(fromSlot, 1);
   _homeSavePages();
 }
 
@@ -11157,8 +11009,7 @@ function _homeDropIntoFolder(fromPage, fromSlot, toPage, toSlot) {
   if (!moved || !target || moved.type !== 'app' || target.type !== 'folder') return;
   if (!target.apps) target.apps = [];
   if (target.apps.indexOf(moved.id) < 0) target.apps.push(moved.id);
-  // Bug #1 Part 1: sparse grid — null the source slot.
-  pages[fromPage][fromSlot] = null;
+  pages[fromPage].splice(fromSlot, 1);
   _homeSavePages();
 }
 
