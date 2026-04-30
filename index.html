@@ -5976,7 +5976,7 @@ function applyFilters(force) {
     var cs = c.status || 'active';
     if (clientStatusFilter !== 'all' && cs !== clientStatusFilter) return false;
     const name = cleanName(c).toLowerCase();
-    if (q && !name.includes(q) && !c.city.toLowerCase().includes(q) && !c.ph.includes(q) && !c.addr.toLowerCase().includes(q)) return false;
+    if (q && !name.includes(q) && !(c.city || '').toLowerCase().includes(q) && !(c.ph || '').includes(q) && !(c.addr || '').toLowerCase().includes(q)) return false;
     for (const f of activeFilters) {
       if (f === 'bal' && c.bal <= 0) return false;
       if (f === 'soon') {
@@ -7194,7 +7194,7 @@ function suggestClients(q) {
   if (!q || q.length < 2) { box.style.display = 'none'; return; }
   const matches = PentaClients.filterClients(c =>
     (c.fn + ' ' + c.ln).toLowerCase().includes(q.toLowerCase()) ||
-    c.city.toLowerCase().includes(q.toLowerCase())
+    (c.city || '').toLowerCase().includes(q.toLowerCase())
   ).slice(0, 6);
   if (!matches.length) { box.style.display = 'none'; return; }
   box.style.display = 'block';
