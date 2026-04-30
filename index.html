@@ -197,12 +197,13 @@ body {
 .section-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; padding: 8px 0 6px; }
 
 .client-card {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+  background: transparent; border: none;
+  border-radius: 0; padding: 14px 16px; margin-bottom: 0;
   cursor: pointer; transition: all .15s; active: opacity(.8);
 }
 .client-card:active { opacity: .95; }
 .client-card.expanded { border-color: var(--border2); }
+.client-card + .client-card { border-top: 0.5px solid rgba(42,40,64,0.08); }
 .card-top { display: flex; align-items: center; gap: 10px; }
 .avatar {
   width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
@@ -221,7 +222,7 @@ body {
 .sched-section { margin: 10px 0 8px; }
 .sched-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 7px; }
 .sched-list { display: flex; flex-direction: column; gap: 5px; }
-.sched-row { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); }
+.sched-row { display: flex; align-items: center; gap: 9px; font-size: 14px; color: var(--text-on-light-soft); }
 .sched-row.sched-next { color: var(--text); font-weight: 500; }
 .sched-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border2); flex-shrink: 0; }
 .sched-dot.sched-dot-next { background: var(--accent); box-shadow: 0 0 0 3px rgba(79,142,247,0.2); }
@@ -229,8 +230,8 @@ body {
 .sched-rel { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .client-card.expanded .card-detail { display: block; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-.detail-item .d-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
-.detail-item .d-val { font-size: 13px; font-weight: 500; }
+.detail-item .d-label { font-size: 11px; color: var(--text-on-light-soft); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+.detail-item .d-val { font-size: 14px; font-weight: 600; }
 .notes-bar { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.25); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 10px; font-size: 12px; color: var(--amber); display: flex; gap: 6px; align-items: flex-start; }
 .action-row { display: flex; gap: 8px; }
 .action-btn { text-decoration: none; 
@@ -6117,8 +6118,8 @@ function render(force) {
           ${c.ph ? `<a class="action-btn btn-call" href="glip://r/call?number=${toE164(c.ph)}" onclick="event.stopPropagation()">📞 Call</a>` : ''}
           ${c.ph ? `<button class="action-btn btn-sms" onclick="event.stopPropagation();openClientMessages('${c.id}','${c.ph}','${c.fn} ${c.ln}')">✉ SMS</button>` : ''}
           <button class="action-btn btn-msg" onclick="event.stopPropagation();openDrawer(event,'${c.id}')">✦ Draft msg</button>
-          <button class="action-btn" style="background:var(--surface2);color:var(--muted);border:1px solid var(--muted)" onclick="event.stopPropagation();openClientActivityLog('${c.id}')">📋 Activity</button>
-          <button class="action-btn" style="background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
+          <button class="action-btn" style="background:var(--muted);color:#fff;border:none" onclick="event.stopPropagation();openClientActivityLog('${c.id}')">📋 Activity</button>
+          <button class="action-btn" style="background:var(--text);color:#fff;border:none" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
         </div>
         ${c.bal > 0 ? `<div onclick="event.stopPropagation()" style="margin-top:8px">
           <button class="payment-btn" onclick="event.stopPropagation();recordPayment('${c.id}',event)">
@@ -6143,7 +6144,7 @@ function render(force) {
       <div class="card-top" onclick="toggleCard('${c.id}',event)" style="cursor:pointer">
         <div class="avatar ${av}">${ini}</div>
         <div class="card-main">
-          <div class="card-name">${name}${(function(){var sc=getClientScores(c),ov=getOverallStars(sc);if(ov===null)return '';var s='';for(var i=1;i<=5;i++)s+='<span style="opacity:'+(i<=ov?'1':'0.35')+';font-size:14px;letter-spacing:1px">&#11088;</span>';return '<span data-cid="'+c.id+'" onclick="event.stopPropagation();openScoreCard(this)" style="cursor:pointer;margin-left:4px">'+s+'</span>';})()}</div>
+          ${(function(){var sc=getClientScores(c),ov=getOverallStars(sc);var starsHtml='';if(ov!==null){var s='';for(var i=1;i<=5;i++)s+='<span style="opacity:'+(i<=ov?'1':'0.35')+';font-size:14px;letter-spacing:1px">&#11088;</span>';starsHtml='<div class="card-stars" data-cid="'+c.id+'" onclick="event.stopPropagation();openScoreCard(this)" style="flex-shrink:0;cursor:pointer;margin-left:8px">'+s+'</div>';}return '<div class="card-name-row" style="display:flex;align-items:baseline;gap:6px"><div class="card-name" style="flex:1;min-width:0">'+name+'</div>'+starsHtml+'</div>';})()}
           <div class="card-sub">${c.city}${c.addr ? ' · ' + c.addr : ''}</div>
           ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[prefDayFormat(c.pref_day), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
