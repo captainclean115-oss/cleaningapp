@@ -3841,9 +3841,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   <div class="filter-scroll" id="filter-chips"></div>
 </div>
 
-<div class="stats-bar">
-  <div class="stats-inner" id="stats-bar"></div>
-</div>
+
 
 <div id="install-banner-wrap"></div>
 
@@ -6012,18 +6010,7 @@ function render(force) {
   if (!force && expandedId && document.querySelector('.client-card.expanded')) {
     return;
   }
-  const totalBadge = document.getElementById('total-badge');
-  if (totalBadge) totalBadge.textContent = filtered.length;
 
-  const balDue = filtered.filter(c=>c.bal>0).reduce((s,c)=>s+c.bal,0);
-  const pendingCount = (function(){
-    try { return JSON.parse(localStorage.getItem('cleanco_pending') || '[]').filter(p=>!p.done).length; }
-    catch(e) { return 0; }
-  })();
-  // Outstanding stat card moved to the new Payments launcher tile.
-  document.getElementById('stats-bar').innerHTML = `
-    <div class="stat-card"><div class="stat-label">Clients</div><div class="stat-value">${filtered.length}</div></div>
-`;
 
   const list = document.getElementById('client-list');
   if (!filtered.length) {
@@ -6123,7 +6110,7 @@ function render(force) {
       </div>`;
     }
 
-    return `<div class="client-card${isExp?' expanded':''}" data-id="${c.id}" style="${c.status==='paused'?'opacity:0.75':c.status==='inactive'?'opacity:0.5':''}">
+    return `<div class="client-card${isExp?' expanded':''}" data-id="${c.id}" style="${c.status==='paused'?'opacity:0.75':''}">
       <div class="card-top" onclick="toggleCard('${c.id}',event)" style="cursor:pointer">
         <div class="avatar ${av}">${ini}</div>
         <div class="card-main">
