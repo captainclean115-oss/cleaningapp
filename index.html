@@ -5236,26 +5236,149 @@ window.PentaClients = (function() {
     return map[String(lang || '').toLowerCase()] || 'generic';
   }
 
-  function _toRow(rosterEntry, businessId) {
-    var nm = _splitName(rosterEntry.name);
-    var realEmail = String(rosterEntry.email || '').trim();
-    var emailIsInternal = !realEmail;
-    var email = realEmail || _slug(nm.first, nm.last);
-    var role = Array.isArray(rosterEntry.role) ? rosterEntry.role : [];
-    var rosterStatus = String(rosterEntry.status || '').toLowerCase();
-    return {
-      business_id: businessId,
-      first_name: nm.first,
-      last_name: nm.last,
-      email: email,
-      email_is_internal: emailIsInternal,
-      phone: rosterEntry.phone ? String(rosterEntry.phone).trim() : null,
-      is_team_leader: role.indexOf('TL') !== -1,
-      is_driver: role.indexOf('D') !== -1,
-      culture_tag: _langToCulture(rosterEntry.lang),
-      status: rosterStatus === 'active' ? 'invited' : 'suspended',
-      legacy_roster_id: String(rosterEntry.id || rosterEntry.name || '')
-    };
+  function _toRow(emp) {
+    // Translate in-memory employee → Supabase employees row.
+    // Phase 6.3a: extended for team_text, payRate, photoUrl, and Migration 012 fields.
+    // business_id is read from emp.business_id (caller must provide).
+    if (!emp || typeof emp !== 'object') return null;
+    var row = {};
+    if (emp.id != null) row.id = emp.id;
+    if (emp.business_id != null) row.business_id = emp.business_id;
+    if (emp.legacy_roster_id != null) row.legacy_roster_id = emp.legacy_roster_id;
+    if (emp.auth_user_id != null) row.auth_user_id = emp.auth_user_id;
+
+    // name → first_name + last_name (split on first whitespace)
+    if (emp.name != null && emp.first_name == null) {
+      var nm = _splitName(emp.name);
+      row.first_name = nm.first;
+      row.last_name = nm.last;
+    }
+    if (emp.first_name != null) row.first_name = emp.first_name;
+    if (emp.last_name != null) row.last_name = emp.last_name;
+
+    // email handling: real email if provided, else synthetic internal
+    var realEmail = String(emp.email || '').trim();
+    if (realEmail) {
+      row.email = realEmail;
+      row.email_is_internal = false;
+    } else if (row.first_name != null) {
+      row.email = _slug(row.first_name, row.last_name || '-');
+      row.email_is_internal = true;
+    }
+    if (emp.email_is_internal != null) row.email_is_internal = !!emp.email_is_internal;
+
+    if (emp.phone != null) row.phone = emp.phone ? String(emp.phone).trim() : null;
+
+    // role array → is_team_leader + is_driver
+    if (Array.isArray(emp.role)) {
+      row.is_team_leader = emp.role.indexOf('TL') !== -1;
+      row.is_driver = emp.role.indexOf('D') !== -1;
+    }
+    if (emp.is_team_leader != null) row.is_team_leader = !!emp.is_team_leader;
+    if (emp.is_driver != null) row.is_driver = !!emp.is_driver;
+
+    // lang → culture_tag
+    if (emp.lang != null) row.culture_tag = _langToCulture(emp.lang);
+    if (emp.culture_tag != null) row.culture_tag = emp.culture_tag;
+
+    // team text → team_text (Phase 6.3-pre Migration 013)
+    if (emp.team != null) row.team_text = String(emp.team);
+    if (emp.team_text != null) row.team_text = emp.team_text;
+
+    // status: pass through if valid, else default to 'invited'
+    if (emp.status != null) {
+      var s = String(emp.status).toLowerCase();
+      row.status = (s === 'active' || s === 'invited' || s === 'suspended' || s === 'terminated') ? s : 'invited';
+    }
+
+    if (emp.hired_at != null) row.hired_at = (emp.hired_at === '' ? null : emp.hired_at);
+    if (emp.terminated_at != null) row.terminated_at = (emp.terminated_at === '' ? null : emp.terminated_at);
+
+    // photoUrl → photo_url
+    if (emp.photoUrl != null) row.photo_url = emp.photoUrl;
+    if (emp.photo_url != null) row.photo_url = emp.photo_url;
+
+    if (emp.birthday != null) row.birthday = (emp.birthday === '' ? null : emp.birthday);
+
+    // Migration 012 fields — pass through if present
+    if (emp.ssn_last4 != null) row.ssn_last4 = emp.ssn_last4;
+    if (emp.address != null) row.address = emp.address;
+    if (emp.city != null) row.city = emp.city;
+    if (emp.state != null) row.state = emp.state;
+    if (emp.zip != null) row.zip = emp.zip;
+    if (emp.emergency_contact_name != null) row.emergency_contact_name = emp.emergency_contact_name;
+    if (emp.emergency_contact_phone != null) row.emergency_contact_phone = emp.emergency_contact_phone;
+
+    // payRate → pay_rate
+    if (emp.payRate != null) row.pay_rate = emp.payRate;
+    if (emp.pay_rate != null) row.pay_rate = emp.pay_rate;
+    if (emp.pay_type != null) row.pay_type = emp.pay_type;
+
+    if (emp.manager_notes != null) row.manager_notes = emp.manager_notes;
+
+    return row;
+  }
+
+  function _fromRow(row) {
+    // Translate Supabase employees row → in-memory employee.
+    // Phase 6.3a: matches _toRow's reverse. Used by _hydrate's cache build.
+    if (!row || typeof row !== 'object') return null;
+    var emp = {};
+    if (row.id != null) emp.id = row.id;
+    if (row.business_id != null) emp.business_id = row.business_id;
+    if (row.legacy_roster_id != null) emp.legacy_roster_id = row.legacy_roster_id;
+    if (row.auth_user_id != null) emp.auth_user_id = row.auth_user_id;
+
+    var fn = row.first_name || '';
+    var ln = row.last_name || '';
+    emp.name = (fn + ' ' + ln).trim();
+    emp.first_name = fn;
+    emp.last_name = ln;
+
+    if (row.email != null) emp.email = row.email;
+    if (row.email_is_internal != null) emp.email_is_internal = row.email_is_internal;
+    if (row.phone != null) emp.phone = row.phone;
+
+    var roleArr = [];
+    if (row.is_team_leader) roleArr.push('TL');
+    if (row.is_driver) roleArr.push('D');
+    emp.role = roleArr;
+    emp.is_team_leader = !!row.is_team_leader;
+    emp.is_driver = !!row.is_driver;
+
+    if (row.culture_tag != null) {
+      emp.culture_tag = row.culture_tag;
+      emp.lang = ({ us:'en', mx:'es', br:'pt', kr:'cv' })[row.culture_tag] || 'en';
+    }
+
+    if (row.team_text != null) emp.team = row.team_text;
+    emp.team_text = row.team_text || null;
+
+    if (row.status != null) emp.status = row.status;
+    if (row.hired_at != null) emp.hired_at = row.hired_at;
+    if (row.terminated_at != null) emp.terminated_at = row.terminated_at;
+
+    if (row.photo_url != null) {
+      emp.photoUrl = row.photo_url;
+      emp.photo_url = row.photo_url;
+    }
+    if (row.birthday != null) emp.birthday = row.birthday;
+
+    // Migration 012 pass-through
+    ['ssn_last4','address','city','state','zip','emergency_contact_name',
+     'emergency_contact_phone','pay_type','manager_notes'].forEach(function(k){
+      if (row[k] != null) emp[k] = row[k];
+    });
+    if (row.pay_rate != null) {
+      emp.payRate = row.pay_rate;
+      emp.pay_rate = row.pay_rate;
+    }
+
+    if (row.deleted_at != null) emp.deleted_at = row.deleted_at;
+    if (row.created_at != null) emp.created_at = row.created_at;
+    if (row.updated_at != null) emp.updated_at = row.updated_at;
+
+    return emp;
   }
 
   async function _businessId() {
@@ -5287,7 +5410,7 @@ window.PentaClients = (function() {
         _hydrating = null;
         return false;
       }
-      _cache = res.data || [];
+      _cache = (res.data || []).map(_fromRow).filter(function(x){ return x !== null; });
       _cacheReady = true;
       _notify();
       _hydrating = null;
@@ -5319,7 +5442,10 @@ window.PentaClients = (function() {
 
       var rows = [];
       for (var i = 0; i < roster.length; i++) {
-        var row = _toRow(roster[i], bid);
+        // Backfill semantics: active-in-roster → invited DB; else → suspended.
+        var rstatus = String(roster[i].status || '').toLowerCase() === 'active' ? 'invited' : 'suspended';
+        var entry = Object.assign({}, roster[i], { business_id: bid, status: rstatus });
+        var row = _toRow(entry);
         if (row.legacy_roster_id && !seen[row.legacy_roster_id]) rows.push(row);
       }
 
@@ -5374,18 +5500,218 @@ window.PentaClients = (function() {
   }
   function isReady() { return _cacheReady; }
   async function ready() { if (!_cacheReady) await _hydrate(); }
+  // === Phase 6.3a additions ===
+
+  function listSync() {
+    // Returns a snapshot of the current cache without awaiting hydration.
+    // Used by hot-path UI rendering. May return [] if cache is cold.
+    return Array.isArray(_cache) ? _cache.slice() : [];
+  }
+
+  function getByLegacyRosterId(rosterId) {
+    if (!_cache) return null;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].legacy_roster_id === rosterId) return _cache[i];
+    }
+    return null;
+  }
+
+  function getByAuthUserId(uid) {
+    if (!_cache || !uid) return null;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].auth_user_id === uid) return _cache[i];
+    }
+    return null;
+  }
+
+  function getByName(name) {
+    if (!_cache || !name) return null;
+    var n = String(name).trim().toLowerCase();
+    for (var i = 0; i < _cache.length; i++) {
+      if (String(_cache[i].name || '').trim().toLowerCase() === n) return _cache[i];
+    }
+    return null;
+  }
+
+  function find(pred) {
+    if (!_cache || typeof pred !== 'function') return null;
+    for (var i = 0; i < _cache.length; i++) {
+      if (pred(_cache[i])) return _cache[i];
+    }
+    return null;
+  }
+
+  function filter(pred) {
+    if (!_cache || typeof pred !== 'function') return [];
+    return _cache.filter(pred);
+  }
+
+  function map(fn) {
+    if (!_cache || typeof fn !== 'function') return [];
+    return _cache.map(fn);
+  }
+
+  function setField(id, field, val) {
+    var patch = {};
+    patch[field] = val;
+    return update(id, patch);
+  }
+
+  async function insert(empData) {
+    // empData is in-memory shape; _toRow translates.
+    // Returns the inserted row (in-memory shape) or throws on error.
+    var c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) throw new Error('PentaEmployees.insert: no Supabase client');
+    var row = _toRow(empData);
+    if (!row) throw new Error('PentaEmployees.insert: _toRow returned null');
+    // Need business_id from the auth context if not provided
+    if (!row.business_id) {
+      try {
+        var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+        if (sess && sess.user && sess.user.user_metadata && sess.user.user_metadata.business_id) {
+          row.business_id = sess.user.user_metadata.business_id;
+        }
+      } catch (e) {}
+    }
+    if (!row.business_id) {
+      // Fall back: read from existing cache (any row has business_id)
+      if (_cache && _cache.length > 0 && _cache[0].business_id) {
+        row.business_id = _cache[0].business_id;
+      }
+    }
+    if (!row.business_id) {
+      // Fall back: resolve via auth → users table lookup (same path _hydrate uses).
+      // Phase 6.3a fix: cache may be empty on first insert (no live employees yet).
+      try {
+        var bid = await _businessId();
+        if (bid) row.business_id = bid;
+      } catch (e) {}
+    }
+    if (!row.business_id) {
+      throw new Error('PentaEmployees.insert: business_id could not be derived');
+    }
+
+    var resp = await c.from('employees').insert(row).select().maybeSingle();
+    if (resp.error) throw resp.error;
+    var inserted = _fromRow(resp.data);
+    if (inserted) {
+      _cache = _cache || [];
+      _cache.push(inserted);
+      _notify();
+    }
+    return inserted;
+  }
+
+  async function archive(id) {
+    // Soft-delete: deleted_at = now(), status='terminated', terminated_at = now().
+    var nowIso = new Date().toISOString();
+    return update(id, {
+      deleted_at: nowIso,
+      terminated_at: nowIso,
+      status: 'terminated'
+    });
+  }
+
+  async function uploadPhoto(id, file) {
+    // Upload to employee-photos bucket. Path: <business_id>/<employee_id>/photo.<ext>
+    // After upload, set photo_url on the employee row to the storage path.
+    var c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) throw new Error('PentaEmployees.uploadPhoto: no Supabase client');
+    var emp = null;
+    if (_cache) {
+      for (var i = 0; i < _cache.length; i++) {
+        if (_cache[i].id === id) { emp = _cache[i]; break; }
+      }
+    }
+    if (!emp) throw new Error('PentaEmployees.uploadPhoto: employee not found in cache');
+    if (!emp.business_id) throw new Error('PentaEmployees.uploadPhoto: business_id missing');
+
+    var ext = 'jpg';
+    if (file && file.name) {
+      var parts = file.name.split('.');
+      if (parts.length > 1) ext = parts.pop().toLowerCase();
+    } else if (file && file.type) {
+      var t = file.type.toLowerCase();
+      if (t.indexOf('png') >= 0) ext = 'png';
+      else if (t.indexOf('webp') >= 0) ext = 'webp';
+      else if (t.indexOf('heic') >= 0) ext = 'heic';
+    }
+
+    var path = emp.business_id + '/' + id + '/photo.' + ext;
+    var up = await c.storage.from('employee-photos').upload(path, file, {
+      cacheControl: '3600',
+      upsert: true
+    });
+    if (up.error) throw up.error;
+
+    // Update the row with the storage path (bucket is private; signed URL on read)
+    return update(id, { photo_url: path });
+  }
+
+  function getPhotoUrl(id) {
+    // Synchronous: returns the stored path. For a signed URL, call getSignedPhotoUrl.
+    if (!_cache) return null;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].id === id) return _cache[i].photo_url || null;
+    }
+    return null;
+  }
+
+  async function getSignedPhotoUrl(id, expiresIn) {
+    var path = getPhotoUrl(id);
+    if (!path) return null;
+    var c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) return null;
+    var resp = await c.storage.from('employee-photos').createSignedUrl(path, expiresIn || 3600);
+    if (resp.error) return null;
+    return resp.data && resp.data.signedUrl ? resp.data.signedUrl : null;
+  }
+
+  // === end Phase 6.3a additions ===
+
+
+
+  
 
   window.PentaEmployees = {
     list: list,
+    listSync: listSync,
     get: get,
+    getByLegacyRosterId: getByLegacyRosterId,
+    getByAuthUserId: getByAuthUserId,
+    getByName: getByName,
+    find: find,
+    filter: filter,
+    map: map,
     update: update,
+    setField: setField,
+    insert: insert,
+    archive: archive,
+    uploadPhoto: uploadPhoto,
+    getPhotoUrl: getPhotoUrl,
+    getSignedPhotoUrl: getSignedPhotoUrl,
     onChange: onChange,
     isReady: isReady,
     ready: ready,
     _hydrate: _hydrate,
-    _backfillFromRoster: _backfillFromRoster
+    _backfillFromRoster: _backfillFromRoster,
+    _toRow: _toRow,
+    _fromRow: _fromRow
   };
 })();
+
+// Phase 6.3a fix: re-render employee-driven UI when the facade cache updates.
+// listSync() returns [] on cold cache; once _hydrate resolves, the cache
+// populates and these subscriptions trigger fresh renders. Without this,
+// the Staff/Roster tabs render empty on first paint and stay empty until
+// the next user interaction.
+if (window.PentaEmployees && window.PentaEmployees.onChange) {
+  window.PentaEmployees.onChange(function() {
+    try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
+    try { if (typeof renderStaffSubview === 'function') renderStaffSubview(); } catch (e) {}
+    try { if (typeof renderMainEmployees === 'function') renderMainEmployees(); } catch (e) {}
+  });
+}
 
 // =====================================================================
 // Penta invite helpers — Sprint 4 Phase 4B (manager UI side)
@@ -13203,7 +13529,10 @@ if (window.location.search.includes('code=')) {
 // ─────────────────────────────────────────
 
 function getMainEmpList() {
-  try { return JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) { return []; }
+  // Phase 6.3a: delegates to PentaEmployees.listSync(). localStorage emp_roster
+  // is no longer the source of truth — the facade cache is. listSync() returns
+  // a snapshot synchronously; if the cache is cold, returns []. Safe drop-in.
+  return (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
 }
 
 function saveMainEmpList(list) {
@@ -13366,7 +13695,7 @@ function openMainEmpEdit(idx) {
   document.getElementById('main-emp-modal').style.display = 'flex';
 }
 
-function saveMainEmp() {
+async function saveMainEmp() {
   const idx = parseInt(document.getElementById('main-emp-idx').value);
   const name = document.getElementById('main-emp-name').value.trim();
   const pin = document.getElementById('main-emp-pin').value.trim();
@@ -13395,8 +13724,24 @@ function saveMainEmp() {
     termDate: status === 'terminated' ? (idx >= 0 && getMainEmpList()[idx]?.termDate || new Date().toLocaleDateString()) : ''
   };
 
-  if (idx === -1) { list.push(emp); } else { list[idx] = emp; }
-  saveMainEmpList(list);
+  // Phase 6.3a: idx === -1 → facade insert; idx >= 0 → facade update.
+  if (idx === -1) {
+    var insertData = Object.assign({}, emp);
+    if (insertData.id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(insertData.id))) {
+      insertData.legacy_roster_id = insertData.legacy_roster_id || String(insertData.id);
+      delete insertData.id;
+    }
+    try { await window.PentaEmployees.insert(insertData); }
+    catch (e) { console.error('[Phase 6.3a] saveMainEmp insert failed:', e); }
+  } else {
+    var target = list[idx];
+    if (target && target.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(target.id))) {
+      try { await window.PentaEmployees.update(target.id, emp); }
+      catch (e) { console.error('[Phase 6.3a] saveMainEmp update failed:', e); }
+    } else {
+      console.warn('[Phase 6.3a] saveMainEmp: target has no UUID id; update skipped (legacy localStorage roster)');
+    }
+  }
   document.getElementById('main-emp-msg').textContent = '✓ Saved!';
   setTimeout(() => {
     document.getElementById('main-emp-modal').style.display = 'none';
@@ -13404,39 +13749,23 @@ function saveMainEmp() {
   }, 600);
 }
 
-function deleteMainEmp() {
+async function deleteMainEmp() {
   const idx = parseInt(document.getElementById('main-emp-idx').value);
   const list = getMainEmpList();
   if (!confirm('Remove ' + (list[idx]?.name || 'employee') + '?')) return;
-  list.splice(idx, 1);
-  saveMainEmpList(list);
+  // Phase 6.3a: soft-delete via facade.archive (sets deleted_at + status='terminated').
+  // Behavior change: was hard-delete (splice). archive preserves the row for audit.
+  var target = list[idx];
+  if (target && target.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(target.id))) {
+    try { await window.PentaEmployees.archive(target.id); }
+    catch (e) { console.error('[Phase 6.3a] deleteMainEmp archive failed:', e); }
+  } else {
+    console.warn('[Phase 6.3a] deleteMainEmp: target has no UUID id; archive skipped');
+  }
   document.getElementById('main-emp-modal').style.display = 'none';
   renderMainEmployees();
 }
 
-function approveMainApp(idx) {
-  const apps = JSON.parse(localStorage.getItem('job_applications') || '[]');
-  const app = apps[idx];
-  if (!app) return;
-  const list = getMainEmpList();
-  while (list.some(e => e.pin === newPin));
-
-  list.push({
-    name: app.firstName + ' ' + app.lastName,
-    team: 'B1',
-    payRate: 0,
-    lang: app.languages?.includes('Spanish') ? 'es' :
-          app.languages?.includes('Kriolu') ? 'cv' :
-          app.languages?.includes('Portuguese') ? 'pt' : 'en',
-    phone: app.phone || '',
-    status: 'active'
-  });
-  saveMainEmpList(list);
-  apps[idx].status = 'approved';
-  localStorage.setItem('job_applications', JSON.stringify(apps));
-        alert('Employee added successfully.');
-  renderMainEmployees();
-}
 
 function declineMainApp(idx) {
   if (!confirm('Decline this application?')) return;
@@ -13728,7 +14057,7 @@ function saveRosterTermData(data) {
   localStorage.setItem('roster_term_data', JSON.stringify(data));
 }
 
-function openRosterEmpEdit(empId) {
+async function openRosterEmpEdit(empId) {
   // Find in emp_roster (localStorage) for unified editing
   const list = getStaffList();
   const staffIdx = list.findIndex(e => e.id === empId || e.name === (EMPLOYEE_ROSTER.find(r => r.id === empId)||{}).name);
@@ -13741,11 +14070,14 @@ function openRosterEmpEdit(empId) {
   // Fallback: employee exists in EMPLOYEE_ROSTER but not yet in emp_roster
   const er = EMPLOYEE_ROSTER.find(e => e.id === empId);
   if (!er) return;
-  // Add them first then edit
-  const newEmp = { id: er.id, name: er.name, team: er.defaultTeam||'', pin: '', payRate: 0, phone: '', lang: 'en', status: 'active', role: er.role||[] };
-  list.push(newEmp);
-  saveStaffList(list);
-  openEditStaff(list.length - 1);
+  // Phase 6.3a: insert via facade. legacy_roster_id preserves the EMPLOYEE_ROSTER id.
+  const newEmp = { legacy_roster_id: String(er.id), name: er.name, team: er.defaultTeam||'', payRate: 0, phone: '', lang: 'en', status: 'active', role: er.role||[] };
+  let inserted;
+  try { inserted = await window.PentaEmployees.insert(newEmp); }
+  catch (e) { console.error('[Phase 6.3a] openRosterEmpEdit insert failed:', e); return; }
+  const freshList = getStaffList();
+  const newIdx = freshList.findIndex(e => inserted && e.id === inserted.id);
+  if (newIdx >= 0) openEditStaff(newIdx);
   const termData = getRosterTermData();
   const td = termData[empId] || {};
 
@@ -20266,10 +20598,8 @@ async function logout() {
 // ═══════════════════════════════════════
 
 function getStaffList() {
-  try {
-    const list = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-    return list;
-  } catch(e) { return []; }
+  // Phase 6.3a: delegates to PentaEmployees.listSync(). See getMainEmpList comment.
+  return (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
 }
 
 function saveStaffList(list) {
@@ -20556,8 +20886,13 @@ async function hireApplicant(id) {
     }
   }
 
-  const { data: empData, error: empErr } = await sb.from('employees').insert(empRow).select('id').single();
-  if (empErr) { alert('Hire failed: ' + empErr.message); return; }
+  let empData;
+  try {
+    empData = await window.PentaEmployees.insert(empRow);
+  } catch (e) {
+    alert('Hire failed: ' + (e.message || String(e)));
+    return;
+  }
   const session = await sb.auth.getSession();
   const reviewedBy = session && session.data && session.data.session ? session.data.session.user.id : null;
   await sb.from('job_applications').update({
@@ -21160,8 +21495,17 @@ async function saveStaffEmployee() {
     rehire: status === 'terminated' ? document.getElementById('staff-rehire').checked : false,
     termDate: status === 'terminated' ? (idx >= 0 && list[idx]?.termDate || new Date().toLocaleDateString()) : ''
   };
-  if (idx === -1) { list.push(emp); } else { list[idx] = emp; }
-  saveStaffList(list);
+  // Phase 6.3a: idx === -1 → facade insert (was localStorage-only before this commit).
+  // idx >= 0 → handled by the existing facade update path below (line 21456+).
+  if (idx === -1) {
+    var insertData = Object.assign({}, emp);
+    if (insertData.id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(insertData.id))) {
+      insertData.legacy_roster_id = insertData.legacy_roster_id || String(insertData.id);
+      delete insertData.id;
+    }
+    try { await window.PentaEmployees.insert(insertData); }
+    catch (e) { console.error('[Phase 6.3a] saveStaffEmployee insert failed:', e); }
+  }
 
   // Sprint 4.1 — dual-write to Supabase employees table.
   // Best-effort: log on failure but don't block UI flow (localStorage write
@@ -21216,13 +21560,19 @@ async function saveStaffEmployee() {
   }
 }
 
-function deleteStaffEmployee() {
+async function deleteStaffEmployee() {
   const idx = parseInt(document.getElementById('staff-edit-idx').value);
   if (idx < 0) return;
   const list = getStaffList();
   if (!confirm('Remove ' + (list[idx]?.name || 'employee') + '?')) return;
-  list.splice(idx, 1);
-  saveStaffList(list);
+  // Phase 6.3a: soft-delete via facade.archive (was hard-delete via splice).
+  var target = list[idx];
+  if (target && target.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(target.id))) {
+    try { await window.PentaEmployees.archive(target.id); }
+    catch (e) { console.error('[Phase 6.3a] deleteStaffEmployee archive failed:', e); }
+  } else {
+    console.warn('[Phase 6.3a] deleteStaffEmployee: target has no UUID id; archive skipped');
+  }
   closeStaffModal();
   renderStaffList();
 }
@@ -24865,7 +25215,6 @@ async function submitApplication() {
       emPhone: app.emPhone,
       emRel: app.emRel,
     });
-    saveStaffList(list);
 
     // Sprint 4.2.B — Manager-mode dual-write to Supabase employees.
     // PentaEmployees facade has no add() method, so insert directly via the
@@ -24885,11 +25234,11 @@ async function submitApplication() {
           status: 'active',
           legacy_roster_id: 'app_' + Date.now()
         };
-        const insRes = await sb.from('employees').insert(empRow).select('id').single();
-        if (insRes.error) {
-          console.error('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees failed:', insRes.error);
-        } else {
-          console.log('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees OK:', insRes.data && insRes.data.id);
+        try {
+          const inserted = await window.PentaEmployees.insert(empRow);
+          console.log('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees OK:', inserted && inserted.id);
+        } catch (innerErr) {
+          console.error('[Sprint 4.2.B] Manager-mode dual-write to Supabase employees failed:', innerErr);
         }
       } catch (e) {
         console.error('[Sprint 4.2.B] Manager-mode dual-write threw:', e);
