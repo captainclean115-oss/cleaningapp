@@ -6130,7 +6130,7 @@ function render(force) {
             })()}
           </div>
           <div class="detail-grid" style="padding-right:80px">
-          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph ? ((typeof appPinRole !== 'undefined' && appPinRole === 'manager') ? `<button onclick="event.stopPropagation();openContactSheet('${c.id}')" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;font-family:'DM Sans',sans-serif">📱 ${c.ph}</button>` : c.ph) : '—'}</div></div>
+          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph ? ((typeof appPinRole !== 'undefined' && isManagerRole()) ? `<button onclick="event.stopPropagation();openContactSheet('${c.id}')" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;font-family:'DM Sans',sans-serif">📱 ${c.ph}</button>` : c.ph) : '—'}</div></div>
           <div class="detail-item"><div class="d-label">Team</div><div class="d-val" style="font-weight:700">${c.team || CLIENT_TEAMS[c.ln.toLowerCase().replace(/[^a-z\s\-]/g,'')] || '—'}</div></div>
 
           <div class="detail-item"><div class="d-label">Key</div><div class="d-val">${(function(){var k=getClientKey(c.ln);return k&&k.key?k.key:'—';})()}</div></div>
@@ -6277,7 +6277,7 @@ function closeDrawer() {
 function openContactSheet(clientId) {
   var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
   if (!c) { console.warn('[contact-sheet] client not found', clientId); return; }
-  if (typeof appPinRole !== 'undefined' && appPinRole !== 'manager') {
+  if (typeof appPinRole !== 'undefined' && !isManagerRole()) {
     console.warn('[contact-sheet] non-manager blocked');
     return;
   }
@@ -6365,7 +6365,7 @@ let _historyClient = null;
 function openClientHistory(clientId) {
   var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
   if (!c) { console.warn('[history] client not found', clientId); return; }
-  if (typeof appPinRole !== 'undefined' && appPinRole !== 'manager') {
+  if (typeof appPinRole !== 'undefined' && !isManagerRole()) {
     console.warn('[history] non-manager blocked');
     return;
   }
@@ -19495,6 +19495,125 @@ function updateNavBadge() {
 let appPinCurrent = '';
 let appPinRole = null; // 'manager' or 'employee'
 
+// === Phase 6.2a: role-derivation helper (additive, replaces appPinRole reads) ===
+// Mirrors the boot router at line 6840: parses the Supabase auth-token blob from
+// localStorage. If user_metadata.is_employee → 'employee'. Otherwise looks up
+// users.role from DB once and caches it. Refreshes on onAuthStateChange.
+let _pentaCachedRole = null;       // 'owner' | 'admin' | 'manager' | 'employee' | null
+let _pentaCachedRoleUserId = null; // auth.uid() that the cache belongs to
+
+function _pentaParseAuthToken() {
+  try {
+    const raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.user ? parsed : null;
+  } catch (e) { return null; }
+}
+
+async function _pentaResolveRoleFromDB(authUserId) {
+  try {
+    const c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) return null;
+    const { data, error } = await c.from('users').select('role').eq('id', authUserId).maybeSingle();
+    if (error || !data) return null;
+    return data.role || null;
+  } catch (e) { return null; }
+}
+
+// Synchronous read. Returns whatever is cached. If the session changed since
+// last cache, returns null and triggers an async refresh in the background.
+function getCurrentAppRole() {
+  const blob = _pentaParseAuthToken();
+  if (!blob || !blob.user) {
+    _pentaCachedRole = null;
+    _pentaCachedRoleUserId = null;
+    return null;
+  }
+  const uid = blob.user.id;
+  // Employee shortcut — never hits DB
+  const meta = blob.user.user_metadata || {};
+  if (meta.is_employee === true) {
+    _pentaCachedRole = 'employee';
+    _pentaCachedRoleUserId = uid;
+    return 'employee';
+  }
+  // Manager-equivalent: cached if uid matches, else trigger async refresh
+  if (_pentaCachedRoleUserId === uid && _pentaCachedRole) {
+    return _pentaCachedRole;
+  }
+  // Cache miss — fire and forget. Caller gets null on this call; UI re-renders
+  // when refresh completes (auth-state-change or next render pass).
+  _pentaResolveRoleFromDB(uid).then(r => {
+    _pentaCachedRole = r;
+    _pentaCachedRoleUserId = uid;
+  });
+  return null;
+}
+
+// Convenience: matches the manager-equivalent read sites being rewired below.
+function isManagerRole() {
+  const r = getCurrentAppRole();
+  if (r === 'owner' || r === 'admin' || r === 'manager') return true;
+  // Phase 6.2a transitional fallback: trust the legacy appPinRole when the
+  // DB cache is cold. appUnlockManager (line 19564) sets this synchronously
+  // during boot, so by the time any UI gate fires, this short-circuit covers
+  // the gap before _pentaResolveRoleFromDB resolves. Removed in 6.2b when
+  // appPinRole writes are deleted.
+  if (r === null && typeof appPinRole !== 'undefined' && appPinRole === 'manager') return true;
+  return false;
+}
+
+// Hook the existing onAuthStateChange to invalidate cache on sign-in/out.
+// The handler at line 29502 already mirrors session; we extend it to refresh role.
+(function _pentaWireRoleRefresh(){
+  function attach(c) {
+    if (!c || !c.auth || !c.auth.onAuthStateChange) return false;
+    c.auth.onAuthStateChange(function(_event, session){
+      if (!session || !session.user) {
+        _pentaCachedRole = null;
+        _pentaCachedRoleUserId = null;
+        return;
+      }
+      const meta = session.user.user_metadata || {};
+      if (meta.is_employee === true) {
+        _pentaCachedRole = 'employee';
+        _pentaCachedRoleUserId = session.user.id;
+        return;
+      }
+      _pentaResolveRoleFromDB(session.user.id).then(r => {
+        _pentaCachedRole = r;
+        _pentaCachedRoleUserId = session.user.id;
+      });
+    });
+    return true;
+  }
+  // Try immediately, then poll briefly if Supabase client isn't ready yet
+  if (attach(window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client))) return;
+  let tries = 0;
+  const iv = setInterval(function(){
+    tries++;
+    if (attach(window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client)) || tries > 40) clearInterval(iv);
+  }, 250);
+})();
+
+// Eagerly warm the cache on first load if a session is already present.
+(function _pentaWarmRoleCache(){
+  const blob = _pentaParseAuthToken();
+  if (!blob || !blob.user) return;
+  const meta = blob.user.user_metadata || {};
+  if (meta.is_employee === true) {
+    _pentaCachedRole = 'employee';
+    _pentaCachedRoleUserId = blob.user.id;
+    return;
+  }
+  _pentaResolveRoleFromDB(blob.user.id).then(r => {
+    _pentaCachedRole = r;
+    _pentaCachedRoleUserId = blob.user.id;
+  });
+})();
+// === end Phase 6.2a helper ===
+
 function appPinPress(digit, btn) {
   if (btn) {
     btn.style.background = '#4f8ef7';
@@ -19915,7 +20034,7 @@ function pentaLearnResetReview() {
 function pentaLearnGoHome() {
   closePentaLearn();
   try {
-    if (typeof appPinRole !== 'undefined' && appPinRole === 'employee'
+    if (typeof appPinRole !== 'undefined' && getCurrentAppRole() === 'employee'
         && typeof showPortalTab === 'function') {
       showPortalTab('home');
       return;
@@ -19932,7 +20051,7 @@ function _pentaLearnKey(suffix) {
   // Per-role separation: manager previewing an employee must not overwrite
   // Tom's own settings. appPinRole is 'employee' while inside the portal
   // (either real employee OR during preview mode).
-  const role = (typeof appPinRole !== 'undefined' && appPinRole === 'employee') ? 'employee' : 'manager';
+  const role = (typeof appPinRole !== 'undefined' && getCurrentAppRole() === 'employee') ? 'employee' : 'manager';
   return 'penta_learn_' + suffix + '_' + role;
 }
 
@@ -25746,13 +25865,13 @@ function openCalJobCard(el) {
   var editBtn = document.createElement('button');
   editBtn.textContent = '\u270f\ufe0f Edit';
   editBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
-  if (appPinRole !== 'manager') editBtn.style.display = 'none';
+  if (!isManagerRole()) editBtn.style.display = 'none';
   editBtn.onclick = function(){ closeCalJobCard(); openJobModal(j.id); };
   // Phase 2.10: Contact button — manager-only, opens unified Contact sheet
   var contactBtn = document.createElement('button');
   contactBtn.textContent = '📱 Contact';
   contactBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
-  if (appPinRole !== 'manager' || !j.clientId) contactBtn.style.display = 'none';
+  if (!isManagerRole() || !j.clientId) contactBtn.style.display = 'none';
   contactBtn.onclick = function(){ closeCalJobCard(); setTimeout(function(){ openContactSheet(j.clientId); }, 250); };
   actionRow.appendChild(doneBtn);
   actionRow.appendChild(contactBtn);
