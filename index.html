@@ -6556,36 +6556,65 @@ async function getJobHistoryMetrics(j) {
 }
 
 function renderJobHistoryDetail(j, m) {
-  if (m.error) {
-    return '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">⚠️ ' + m.error + '</div>';
-  }
-  if (!m.stops || m.stops.length === 0) {
-    return '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">No GPS records found for this clean. Either the team didn\'t log a stop matching this address, or GPS data wasn\'t captured that day.</div>';
-  }
   var c = _historyClient;
-  var firstStop = m.stops[0];
-  var inTimeStr = firstStop.inTime ? new Date(firstStop.inTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
-  var outTimeStr = firstStop.outTime ? new Date(firstStop.outTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+  if (!c) return '<div style="padding:12px 0;color:var(--red);font-size:13px">Client missing</div>';
+
+  // ============ LAYER 1: always-available data ============
   var schedStr = j.time ? (j.time + (j.endTime ? ' – ' + j.endTime : '')) : '—';
-  var rosterNames = m.roster.map(function(e){ return e.first_name || e.name || 'Employee'; }).join(', ') || '—';
+  var roster = (typeof pentaEmployees !== 'undefined' ? pentaEmployees : [])
+    .filter(function(e){ return e.team === j.team && (e.status === 'active' || e.status === undefined); });
+  var rosterNames = roster.map(function(e){ return e.first_name || e.name || 'Employee'; }).join(', ') || '—';
+  var rosterCount = roster.length;
+  var revenue = parseFloat(String(j.price || 0).replace(/[^0-9.]/g,'') || 0);
   var paymentMethod = '—';
-  if (typeof getClientExtras === 'function' && c) {
+  if (typeof getClientExtras === 'function') {
     try { var ex = getClientExtras(c.id); if (ex && ex.payment) paymentMethod = ex.payment; } catch(e){}
   }
+
+  // ============ LAYER 2: GPS-derived (conditional) ============
+  var gpsHasData = m && !m.error && m.stops && m.stops.length > 0;
+  var actualTimeStr = '—';
+  var minutesInHomeStr = '—';
+  var laborStr = '—';
+  var marginStr = '—';
+  var marginPctStr = '';
+  var marginColor = 'var(--text)';
+  var gpsNotice = '';
+
+  if (gpsHasData) {
+    var firstStop = m.stops[0];
+    var inT = firstStop.inTime ? new Date(firstStop.inTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+    var outT = firstStop.outTime ? new Date(firstStop.outTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+    actualTimeStr = inT + ' – ' + outT;
+    minutesInHomeStr = m.totalMin + ' min × ' + rosterCount + ' = ' + (m.totalMin * rosterCount) + ' min';
+    var laborCost = m.laborCost || 0;
+    laborStr = '$' + laborCost.toFixed(2);
+    var margin = revenue - laborCost;
+    var marginPct = revenue > 0 ? (margin / revenue) * 100 : 0;
+    marginStr = '$' + margin.toFixed(2);
+    marginPctStr = ' (' + marginPct.toFixed(0) + '%)';
+    marginColor = margin > 0 ? 'var(--green)' : 'var(--red)';
+  } else {
+    var reason = (m && m.error) ? m.error : 'No GPS records matched this clean';
+    gpsNotice = '<div style="padding:10px;margin-bottom:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px;font-size:12px;color:var(--text)">⚠️ ' + reason + '. Time + labor metrics unavailable.</div>';
+  }
+
   var labelStyle = 'font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-on-light-soft);font-weight:700;margin-bottom:2px';
   var valStyle   = 'font-size:14px;font-weight:600;color:var(--text)';
+
   return '' +
+    gpsNotice +
     '<div style="padding:12px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
       '<div><div style="' + labelStyle + '">Scheduled</div><div style="' + valStyle + '">' + schedStr + '</div></div>' +
-      '<div><div style="' + labelStyle + '">Actual</div><div style="' + valStyle + '">' + inTimeStr + ' – ' + outTimeStr + '</div></div>' +
-      '<div><div style="' + labelStyle + '">Minutes in home</div><div style="' + valStyle + '">' + m.totalMin + ' min × ' + m.roster.length + ' = ' + m.totalInHomeMin + ' min</div></div>' +
+      '<div><div style="' + labelStyle + '">Actual</div><div style="' + valStyle + '">' + actualTimeStr + '</div></div>' +
+      '<div><div style="' + labelStyle + '">Minutes in home</div><div style="' + valStyle + '">' + minutesInHomeStr + '</div></div>' +
       '<div><div style="' + labelStyle + '">Team</div><div style="' + valStyle + '">' + (j.team || '—') + '</div></div>' +
-      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Employees <span style="font-weight:400;text-transform:none;letter-spacing:0">(estimate based on current team roster)</span></div><div style="' + valStyle + '">' + rosterNames + '</div></div>' +
+      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Employees <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-on-light-soft)">(estimate based on current team roster)</span></div><div style="' + valStyle + '">' + rosterNames + '</div></div>' +
     '</div>' +
     '<div style="padding:12px 0;border-top:0.5px solid rgba(42,40,64,0.08);display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
-      '<div><div style="' + labelStyle + '">Revenue</div><div style="font-size:16px;font-weight:700;color:var(--text)">$' + m.revenue.toFixed(2) + '</div></div>' +
-      '<div><div style="' + labelStyle + '">Labor</div><div style="font-size:16px;font-weight:700;color:var(--text)">$' + m.laborCost.toFixed(2) + '</div></div>' +
-      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Gross margin</div><div style="font-size:18px;font-weight:700;color:' + (m.grossMargin > 0 ? 'var(--green)' : 'var(--red)') + '">$' + m.grossMargin.toFixed(2) + ' (' + m.grossMarginPct.toFixed(0) + '%)</div></div>' +
+      '<div><div style="' + labelStyle + '">Revenue</div><div style="font-size:16px;font-weight:700;color:var(--text)">$' + revenue.toFixed(2) + '</div></div>' +
+      '<div><div style="' + labelStyle + '">Labor</div><div style="font-size:16px;font-weight:700;color:var(--text)">' + laborStr + '</div></div>' +
+      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Gross margin</div><div style="font-size:18px;font-weight:700;color:' + marginColor + '">' + marginStr + marginPctStr + '</div></div>' +
       '<div style="grid-column:span 2"><div style="' + labelStyle + '">Payment method</div><div style="' + valStyle + '">💳 ' + paymentMethod + '</div></div>' +
     '</div>' +
     '<div style="padding:12px 0 0;border-top:0.5px solid rgba(42,40,64,0.08)">' +
