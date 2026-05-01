@@ -4441,32 +4441,32 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
   <!-- Section 1: Call -->
   <div style="padding:16px 20px 8px">
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Call</div>
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text);margin-bottom:8px;font-weight:700">Call</div>
     <a id="contact-call-btn" class="action-btn btn-call" href="#" style="display:flex;width:100%;text-decoration:none;justify-content:center;align-items:center;gap:8px;font-size:15px;padding:14px;font-weight:700">
       📞 Call now
     </a>
   </div>
 
   <!-- Section 2: SMS / Messages -->
-  <div style="padding:16px 20px 8px;border-top:1px solid var(--border)">
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Send Message</div>
+  <div style="padding:16px 20px 8px;border-top:1px solid rgba(42,40,64,0.08)">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text);margin-bottom:8px;font-weight:700">Send Message</div>
     <div id="contact-msg-types" style="display:flex;gap:8px;overflow-x:auto;padding:0 0 8px;margin-bottom:8px;scrollbar-width:none"></div>
-    <textarea id="contact-msg-text" placeholder="Type message…" style="width:100%;min-height:80px;padding:10px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:14px;resize:vertical;background:var(--surface2);color:var(--text);box-sizing:border-box;outline:none"></textarea>
+    <textarea id="contact-msg-text" placeholder="Type message…" style="width:100%;min-height:80px;padding:10px 12px;border:1px solid rgba(42,40,64,0.15);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:14px;resize:vertical;background:var(--surface2);color:var(--text);box-sizing:border-box;outline:none"></textarea>
     <button onclick="contactSheetSendSMS()" style="width:100%;margin-top:8px;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif">
       💬 Send via Messages
     </button>
   </div>
 
   <!-- Section 3: Email -->
-  <div id="contact-email-section" style="padding:16px 20px 24px;border-top:1px solid var(--border)">
-    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Email</div>
+  <div id="contact-email-section" style="padding:16px 20px 24px;border-top:1px solid rgba(42,40,64,0.08)">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text);margin-bottom:8px;font-weight:700">Email</div>
     <a id="contact-email-btn" class="action-btn btn-email" href="#" style="display:flex;width:100%;text-decoration:none;justify-content:center;align-items:center;gap:8px;font-size:15px;padding:14px;font-weight:700">
       ✉ Open email
     </a>
   </div>
 
   <div style="padding:0 20px 8px">
-    <button onclick="closeContactSheet()" style="width:100%;padding:12px;background:transparent;color:var(--muted);border:none;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif">Cancel</button>
+    <button onclick="closeContactSheet()" style="width:100%;padding:12px;background:transparent;color:var(--text);border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">Cancel</button>
   </div>
 </div>
 
@@ -6155,9 +6155,6 @@ function render(force) {
         </div>
         ${schedHtml}
         <div class="action-row" onclick="event.stopPropagation()">
-          ${c.ph ? `<a class="action-btn btn-call" href="glip://r/call?number=${toE164(c.ph)}" onclick="event.stopPropagation()">📞 Call</a>` : ''}
-          ${c.ph ? `<button class="action-btn btn-sms" onclick="event.stopPropagation();openClientMessages('${c.id}','${c.ph}','${c.fn} ${c.ln}')">✉ SMS</button>` : ''}
-          <button class="action-btn btn-msg" onclick="event.stopPropagation();openDrawer(event,'${c.id}')">✦ Draft msg</button>
           <button class="action-btn" style="background:var(--muted);color:#fff;border:none" onclick="event.stopPropagation();openClientActivityLog('${c.id}')">📋 Activity</button>
           <button class="action-btn" style="background:var(--text);color:#fff;border:none" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
         </div>
@@ -6321,7 +6318,7 @@ function openContactSheet(clientId) {
     var el = document.createElement('div');
     el.className = 'msg-type';
     el.textContent = chip.label;
-    el.style.cssText = 'flex-shrink:0;padding:6px 12px;border-radius:14px;background:var(--surface2);border:1px solid var(--border2);font-size:13px;cursor:pointer;white-space:nowrap;font-family:\'DM Sans\',sans-serif';
+    el.style.cssText = 'flex-shrink:0;padding:6px 12px;border-radius:14px;background:rgba(108,143,255,0.12);border:1px solid var(--accent);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:\'DM Sans\',sans-serif';
     el.onclick = function(){
       if (typeof MESSAGES !== 'undefined' && MESSAGES[chip.key]) {
         document.getElementById('contact-msg-text').value = MESSAGES[chip.key](c);
