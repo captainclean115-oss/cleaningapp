@@ -30,13 +30,24 @@
     } catch(e){}
     var isEmp = false;
     try { isEmp = new URLSearchParams(window.location.search).get('emp') === '1'; } catch(e){}
+    // Phase 6.2b safety: ?emp=1 redirect to manager login until 6.2c
+    // ships the employee email-login flow. Prevents blank-screen state
+    // for anyone hitting ?emp=1 with PIN UI deleted.
+    try {
+      if (new URLSearchParams(window.location.search).get('emp') === '1' && !hasSession) {
+        var u = new URL(window.location.href);
+        u.searchParams.delete('emp');
+        window.location.replace(u.toString());
+        return;
+      }
+    } catch(e) {}
     var css;
     if (hasSession) {
-      css = '#penta-login-screen{display:none!important}#app-pin-screen{display:none!important}';
+      css = '#penta-login-screen{display:none!important}';
     } else if (isEmp) {
       css = '#penta-login-screen{display:none!important}.topbar{display:none!important}.bottom-nav{display:none!important}';
     } else {
-      css = '#app-pin-screen{display:none!important}.topbar{display:none!important}.bottom-nav{display:none!important}';
+      css = '.topbar{display:none!important}.bottom-nav{display:none!important}';
     }
     var st = document.createElement('style');
     st.id = 'auth-flash-suppress';
@@ -905,24 +916,6 @@ body {
   border-radius: 20px; padding: 28px 24px; width: 100%; max-width: 360px;
 }
 .login-label { font-size: 13px; color: var(--muted); margin-bottom: 12px; text-align: center; }
-.pin-dots { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; }
-.pin-dot {
-  width: 16px; height: 16px; border-radius: 50%;
-  border: 2px solid var(--border); background: transparent;
-  transition: all 0.2s;
-}
-.pin-dot.filled { background: var(--accent); border-color: var(--accent); }
-.pin-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.pin-key {
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 16px 8px;
-  font-size: 20px; font-weight: 500; color: var(--text);
-  cursor: pointer; text-align: center; transition: all 0.15s;
-  user-select: none;
-}
-.pin-key:active { background: rgba(108,143,255,0.2); transform: scale(0.95); }
-.pin-key.del { font-size: 16px; color: var(--muted); }
-.pin-key.empty { background: transparent; border-color: transparent; }
 .login-error { color: var(--red); font-size: 13px; text-align: center; margin-top: 12px; min-height: 20px; }
 
 /* ── LANG TOGGLE ── */
@@ -3750,48 +3743,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <body style="touch-action:manipulation">
 
 <!-- ═══ APP PIN SCREEN ═══ -->
-<div id="app-pin-screen" style="display:flex;position:fixed;inset:0;z-index:9999;flex-direction:column;align-items:center;justify-content:center;padding:32px 24px;">
-  <div style="text-align:center;margin-bottom:32px">
-    <div style="font-size:48px;margin-bottom:10px">🧹</div>
-    <div style="font-size:26px;font-weight:700;color:#f0f0f5;letter-spacing:-.02em">Penta</div>
-    <div style="font-size:13px;color:#8b8fa8;margin-top:4px" id="app-pin-subtitle">Enter your PIN to continue</div>
-  </div>
-  <div style="display:flex;gap:6px;justify-content:center;margin-bottom:24px" id="app-lang-row">
-    <button onclick="appSetLang('en')" id="aplb-en" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.15);background:#4f8ef7;color:#fff;cursor:pointer;font-family:DM Sans,sans-serif">EN</button>
-    <button onclick="appSetLang('es')" id="aplb-es" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#8b8fa8;cursor:pointer;font-family:DM Sans,sans-serif">ES</button>
-    <button onclick="appSetLang('pt')" id="aplb-pt" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#8b8fa8;cursor:pointer;font-family:DM Sans,sans-serif">PT</button>
-    <button onclick="appSetLang('cv')" id="aplb-cv" style="padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,0.15);background:transparent;color:#8b8fa8;cursor:pointer;font-family:DM Sans,sans-serif">KR</button>
-  </div>
-  <div style="background:#111827;border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:28px 24px;width:100%;max-width:340px" id="app-pin-card">
-    <div style="font-size:12px;color:#8b8fa8;text-align:center;margin-bottom:16px;text-transform:uppercase;letter-spacing:.08em">PIN</div>
-    <div style="display:flex;gap:14px;justify-content:center;margin-bottom:24px" id="app-pin-dots-row">
-      <div id="apd0" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.15);background:transparent;transition:.15s"></div>
-      <div id="apd1" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.15);background:transparent;transition:.15s"></div>
-      <div id="apd2" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.15);background:transparent;transition:.15s"></div>
-      <div id="apd3" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,0.15);background:transparent;transition:.15s"></div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
-      <button onclick="appPinPress('1',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">1</button>
-      <button onclick="appPinPress('2',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">2</button>
-      <button onclick="appPinPress('3',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">3</button>
-      <button onclick="appPinPress('4',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">4</button>
-      <button onclick="appPinPress('5',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">5</button>
-      <button onclick="appPinPress('6',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">6</button>
-      <button onclick="appPinPress('7',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">7</button>
-      <button onclick="appPinPress('8',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">8</button>
-      <button onclick="appPinPress('9',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">9</button>
-      <button style="background:transparent;border:none;cursor:default"></button>
-      <button onclick="appPinPress('0',this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:22px;font-weight:500;color:#f0f0f5;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">0</button>
-      <button onclick="appPinDel(this)" style="background:#1a2235;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:17px 8px;font-size:16px;font-weight:500;color:#8b8fa8;cursor:pointer;font-family:DM Sans,sans-serif;-webkit-appearance:none;touch-action:manipulation;transition:background .1s,transform .1s">⌫</button>
-    </div>
-    <div id="app-pin-error" style="color:#f87171;font-size:13px;text-align:center;margin-top:14px;min-height:20px"></div>
-  </div>
-  <div style="margin-top:24px;text-align:center">
-    <button onclick="appGoApply()" id="app-apply-btn" style="background:none;border:none;color:#8b8fa8;font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer;text-decoration:underline;touch-action:manipulation">
-      Interested in joining our team? Apply here
-    </button>
-  </div>
-</div>
 
 <!-- ═══ LEARN — Phrase of the Day v1 screen ═══ -->
 <div id="penta-learn-screen" style="display:none">
@@ -6130,7 +6081,7 @@ function render(force) {
             })()}
           </div>
           <div class="detail-grid" style="padding-right:80px">
-          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph ? ((typeof appPinRole !== 'undefined' && isManagerRole()) ? `<button onclick="event.stopPropagation();openContactSheet('${c.id}')" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;font-family:'DM Sans',sans-serif">📱 ${c.ph}</button>` : c.ph) : '—'}</div></div>
+          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph ? ((isManagerRole()) ? `<button onclick="event.stopPropagation();openContactSheet('${c.id}')" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;font-family:'DM Sans',sans-serif">📱 ${c.ph}</button>` : c.ph) : '—'}</div></div>
           <div class="detail-item"><div class="d-label">Team</div><div class="d-val" style="font-weight:700">${c.team || CLIENT_TEAMS[c.ln.toLowerCase().replace(/[^a-z\s\-]/g,'')] || '—'}</div></div>
 
           <div class="detail-item"><div class="d-label">Key</div><div class="d-val">${(function(){var k=getClientKey(c.ln);return k&&k.key?k.key:'—';})()}</div></div>
@@ -6277,7 +6228,7 @@ function closeDrawer() {
 function openContactSheet(clientId) {
   var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
   if (!c) { console.warn('[contact-sheet] client not found', clientId); return; }
-  if (typeof appPinRole !== 'undefined' && !isManagerRole()) {
+  if (!isManagerRole()) {
     console.warn('[contact-sheet] non-manager blocked');
     return;
   }
@@ -6365,7 +6316,7 @@ let _historyClient = null;
 function openClientHistory(clientId) {
   var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
   if (!c) { console.warn('[history] client not found', clientId); return; }
-  if (typeof appPinRole !== 'undefined' && !isManagerRole()) {
+  if (!isManagerRole()) {
     console.warn('[history] non-manager blocked');
     return;
   }
@@ -6728,7 +6679,6 @@ window.addEventListener('DOMContentLoaded', function() {
           id: er.id,
           name: er.name,
           team: er.defaultTeam || '',
-          pin: '',
           payRate: 0,
           phone: '',
           lang: 'en',
@@ -6877,7 +6827,6 @@ window.addEventListener('DOMContentLoaded', function() {
   var _isEmployee = _userMeta.is_employee === true;
 
   if (_isEmployee) {
-    appPinRole = 'employee';
     appSelectedLang = (_userMeta.lang || 'en');
     (async function() {
       try {
@@ -13247,7 +13196,6 @@ if (window.location.search.includes('code=')) {
   if (_ppin) _ppin.style.display = 'none';
   buildFilters(); applyFilters(); updateTaskBadge();
   rcInit(); initSheets();
-  appPinRole = 'manager';
 }
 
 // ─────────────────────────────────────────
@@ -13471,14 +13419,11 @@ function approveMainApp(idx) {
   const app = apps[idx];
   if (!app) return;
   const list = getMainEmpList();
-  let newPin;
-  do { newPin = String(Math.floor(1000 + Math.random() * 9000)); }
   while (list.some(e => e.pin === newPin));
 
   list.push({
     name: app.firstName + ' ' + app.lastName,
     team: 'B1',
-    pin: newPin,
     payRate: 0,
     lang: app.languages?.includes('Spanish') ? 'es' :
           app.languages?.includes('Kriolu') ? 'cv' :
@@ -13488,9 +13433,8 @@ function approveMainApp(idx) {
   });
   saveMainEmpList(list);
   apps[idx].status = 'approved';
-  apps[idx].assignedPin = newPin;
   localStorage.setItem('job_applications', JSON.stringify(apps));
-  alert(`✓ ${app.firstName} ${app.lastName} added!\n\nPortal PIN: ${newPin}\n\nTap Edit to assign their team and pay rate.`);
+        alert('Employee added successfully.');
   renderMainEmployees();
 }
 
@@ -19492,8 +19436,6 @@ function updateNavBadge() {
 // Manager: email + password via Supabase (#login-screen). No PIN.
 // Employee: legacy 4-digit PIN pad (#app-pin-screen) gated by ?emp=1 URL param.
 // Sprint 4 will replace the employee PIN with proper Supabase auth.
-let appPinCurrent = '';
-let appPinRole = null; // 'manager' or 'employee'
 
 // === Phase 6.2a: role-derivation helper (additive, replaces appPinRole reads) ===
 // Mirrors the boot router at line 6840: parses the Supabase auth-token blob from
@@ -19555,12 +19497,6 @@ function getCurrentAppRole() {
 function isManagerRole() {
   const r = getCurrentAppRole();
   if (r === 'owner' || r === 'admin' || r === 'manager') return true;
-  // Phase 6.2a transitional fallback: trust the legacy appPinRole when the
-  // DB cache is cold. appUnlockManager (line 19564) sets this synchronously
-  // during boot, so by the time any UI gate fires, this short-circuit covers
-  // the gap before _pentaResolveRoleFromDB resolves. Removed in 6.2b when
-  // appPinRole writes are deleted.
-  if (r === null && typeof appPinRole !== 'undefined' && appPinRole === 'manager') return true;
   return false;
 }
 
@@ -19614,73 +19550,11 @@ function isManagerRole() {
 })();
 // === end Phase 6.2a helper ===
 
-function appPinPress(digit, btn) {
-  if (btn) {
-    btn.style.background = '#4f8ef7';
-    btn.style.color = '#fff';
-    setTimeout(() => { btn.style.background = '#1a2235'; btn.style.color = '#f0f0f5'; }, 120);
-  }
-  if (appPinCurrent.length >= 4) return;
-  appPinCurrent += digit;
-  appUpdatePinDots();
-  document.getElementById('app-pin-error').textContent = '';
-  if (appPinCurrent.length === 4) {
-    setTimeout(appCheckPin, 150);
-  }
-}
 
-function appPinDel(btn) {
-  if (btn) {
-    btn.style.background = '#4f8ef7';
-    btn.style.color = '#fff';
-    setTimeout(() => { btn.style.background = '#1a2235'; btn.style.color = '#8b8fa8'; }, 120);
-  }
-  appPinCurrent = appPinCurrent.slice(0, -1);
-  appUpdatePinDots();
-  document.getElementById('app-pin-error').textContent = '';
-}
 
-function appUpdatePinDots() {
-  for (let i = 0; i < 4; i++) {
-    const dot = document.getElementById('apd' + i);
-    if (!dot) continue;
-    if (i < appPinCurrent.length) {
-      dot.style.background = '#4f8ef7';
-      dot.style.borderColor = '#4f8ef7';
-      dot.style.boxShadow = '0 0 8px rgba(79,142,247,0.5)';
-    } else {
-      dot.style.background = 'transparent';
-      dot.style.borderColor = 'rgba(255,255,255,0.15)';
-      dot.style.boxShadow = '';
-    }
-  }
-}
 
-function appCheckPin() {
-  const pin = appPinCurrent;
-  appPinCurrent = '';
-  appUpdatePinDots();
-
-  // Employee-only PIN gate (?emp=1). No manager PIN anymore.
-  try {
-    const roster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-    const emp = roster.find(e => String(e.pin) === String(pin) && e.status === 'active');
-    if (emp) {
-      appUnlockEmployee(emp);
-      return;
-    }
-  } catch(e) {}
-
-  const card = document.getElementById('app-pin-card');
-  card.classList.remove('shake');
-  card.offsetHeight;
-  card.classList.add('shake');
-  document.getElementById('app-pin-error').textContent = 'Incorrect PIN. Please try again.';
-  setTimeout(() => card.classList.remove('shake'), 500);
-}
 
 function appUnlockManager() {
-  appPinRole = 'manager';
   const mlogin = document.getElementById('penta-login-screen');
   if (mlogin) mlogin.style.display = 'none';
   const pinScreen = document.getElementById('app-pin-screen');
@@ -19732,7 +19606,6 @@ function appUnlockManager() {
 }
 
 function appUnlockEmployee(emp) {
-  appPinRole = 'employee';
   // Persist employee identity so pull-to-refresh on the employee portal restores
   // the same employee without re-entering the PIN during this browser session.
   sessionStorage.setItem('cc_emp_id', emp.id || emp.name);
@@ -19898,7 +19771,6 @@ function pentaExitEmployeePreview() {
   var chip = document.getElementById('pentaPreviewChip');
   if (chip) chip.remove();
 
-  try { appPinRole = 'manager'; } catch(e) {}
   try { currentEmployee = null; } catch(e) {}
 
   try {
@@ -20034,7 +19906,7 @@ function pentaLearnResetReview() {
 function pentaLearnGoHome() {
   closePentaLearn();
   try {
-    if (typeof appPinRole !== 'undefined' && getCurrentAppRole() === 'employee'
+    if (getCurrentAppRole() === 'employee'
         && typeof showPortalTab === 'function') {
       showPortalTab('home');
       return;
@@ -20051,7 +19923,7 @@ function _pentaLearnKey(suffix) {
   // Per-role separation: manager previewing an employee must not overwrite
   // Tom's own settings. appPinRole is 'employee' while inside the portal
   // (either real employee OR during preview mode).
-  const role = (typeof appPinRole !== 'undefined' && getCurrentAppRole() === 'employee') ? 'employee' : 'manager';
+  const role = (getCurrentAppRole() === 'employee') ? 'employee' : 'manager';
   return 'penta_learn_' + suffix + '_' + role;
 }
 
@@ -21629,7 +21501,6 @@ const T = {
 // STATE
 // ─────────────────────────────────────────
 let currentLang = 'en';
-let currentPin = '';
 let currentEmployee = null;
 let currentTab = 'schedule';
 let completedJobs = JSON.parse(localStorage.getItem('emp_completed') || '{}');
@@ -21687,64 +21558,14 @@ function updatePortalText() {
 // ─────────────────────────────────────────
 // PIN LOGIN
 // ─────────────────────────────────────────
-function pinPress(digit) {
-  if (currentPin.length >= 4) return;
-  currentPin += digit;
-  updatePinDots();
-  if (currentPin.length === 4) setTimeout(checkPin, 200);
-}
 
-function pinDel() {
-  currentPin = currentPin.slice(0, -1);
-  updatePinDots();
-  document.getElementById('login-error').textContent = '';
-}
 
-function updatePinDots() {
-  for (let i = 0; i < 4; i++) {
-    document.getElementById('d' + i).classList.toggle('filled', i < currentPin.length);
-  }
-}
 
-function checkPin() {
-  // Always search employeeList directly (active employees only)
-  const emp = employeeList.find(e => e.pin === currentPin && e.status === 'active');
-  if (emp) {
-    const freshEmp = emp;
-    currentEmployee = freshEmp;
-  // Use login screen selection if set, otherwise use employee profile language
-  if (!currentLang || currentLang === 'en') {
-    currentLang = freshEmp.lang || currentLang || 'en';
-  }
-  document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-  const langMap = { en: 0, es: 1, pt: 2, cv: 3 };
-  const activeLangBtn = document.querySelectorAll('.lang-btn')[langMap[currentLang] || 0];
-  if (activeLangBtn) activeLangBtn.classList.add('active');
-  loginSuccess();
-  } else {
-    document.getElementById('login-error').textContent = t('wrongPin');
-    currentPin = '';
-    updatePinDots();
-    
-// ─────────────────────────────────────────
 // ADMIN PANEL
 // ─────────────────────────────────────────
 let employeeList = JSON.parse(localStorage.getItem('emp_roster') || 'null');
 
 // Initialize with default employees if none saved
-if (!employeeList) {
-  employeeList = [
-    { name: 'Employee 1', team: 'B1', pin: '1111', payRate: 0, lang: 'en', phone: '', status: 'active' },
-    { name: 'Employee 2', team: 'B3', pin: '2222', payRate: 0, lang: 'es', phone: '', status: 'active' },
-    { name: 'Employee 3', team: 'B5', pin: '3333', payRate: 0, lang: 'es', phone: '', status: 'active' },
-    { name: 'Employee 4', team: 'S1', pin: '4444', payRate: 0, lang: 'cv', phone: '', status: 'active' },
-    { name: 'Employee 5', team: 'S3', pin: '5555', payRate: 0, lang: 'cv', phone: '', status: 'active' },
-    { name: 'Employee 6', team: 'M1', pin: '6666', payRate: 0, lang: 'pt', phone: '', status: 'active' },
-    { name: 'Employee 7', team: 'M2', pin: '7777', payRate: 0, lang: 'pt', phone: '', status: 'active' },
-    { name: 'Employee 8', team: 'M3', pin: '8888', payRate: 0, lang: 'en', phone: '', status: 'active' },
-  ];
-  saveEmployeeList();
-}
 
 function saveEmployeeList() {
   localStorage.setItem('emp_roster', JSON.stringify(employeeList));
@@ -22128,14 +21949,6 @@ function showApplication() {
 }
 
 
-
-// Shake animation
-    const card = document.querySelector('.login-card');
-    card.style.animation = 'none';
-    card.offsetHeight;
-    card.style.animation = 'shake 0.4s ease';
-  }
-}
 
 function loginSuccess() {
   document.getElementById('login-screen').style.display = 'none';
@@ -28236,33 +28049,7 @@ function _p3dPage(dir) {
     <button class="lang-btn" onclick="setLang('es')">ES</button>
     <button class="lang-btn" onclick="setLang('pt')">PT</button>
     <button class="lang-btn" onclick="setLang('cv')">KR</button>
-  </div>
-
-  <div class="login-card">
-    <div class="login-label" id="pin-label">Enter your PIN</div>
-    <div class="pin-dots">
-      <div class="pin-dot" id="d0"></div>
-      <div class="pin-dot" id="d1"></div>
-      <div class="pin-dot" id="d2"></div>
-      <div class="pin-dot" id="d3"></div>
-    </div>
-    <div class="pin-keypad">
-      <div class="pin-key" onclick="pinPress('1')">1</div>
-      <div class="pin-key" onclick="pinPress('2')">2</div>
-      <div class="pin-key" onclick="pinPress('3')">3</div>
-      <div class="pin-key" onclick="pinPress('4')">4</div>
-      <div class="pin-key" onclick="pinPress('5')">5</div>
-      <div class="pin-key" onclick="pinPress('6')">6</div>
-      <div class="pin-key" onclick="pinPress('7')">7</div>
-      <div class="pin-key" onclick="pinPress('8')">8</div>
-      <div class="pin-key" onclick="pinPress('9')">9</div>
-      <div class="pin-key empty"></div>
-      <div class="pin-key" onclick="pinPress('0')">0</div>
-      <div class="pin-key del" onclick="pinDel()">⌫</div>
-    </div>
-    <div class="login-error" id="login-error"></div>
-  </div>
-  <div style="margin-top:20px;text-align:center;display:flex;flex-direction:column;gap:8px">
+  </div>  <div style="margin-top:20px;text-align:center;display:flex;flex-direction:column;gap:8px">
     <button onclick="showApplication()" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;text-decoration:underline" id="apply-link">
       Interested in joining our team? Apply here
     </button>
