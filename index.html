@@ -6155,7 +6155,7 @@ function render(force) {
         </div>
         ${schedHtml}
         <div class="action-row" onclick="event.stopPropagation()">
-          <button class="action-btn" style="background:var(--muted);color:#fff;border:none" onclick="event.stopPropagation();openClientActivityLog('${c.id}')">📋 Activity</button>
+          <button class="action-btn" style="background:var(--muted);color:#fff;border:none" onclick="event.stopPropagation();openClientHistory('${c.id}')">📋 Activity</button>
           <button class="action-btn" style="background:var(--text);color:#fff;border:none" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
         </div>
         ${c.bal > 0 ? `<div onclick="event.stopPropagation()" style="margin-top:8px">
@@ -6355,6 +6355,256 @@ function contactSheetSendSMS() {
     console.error('[contact-sheet] openClientMessages not found');
   }
   closeContactSheet();
+}
+
+// ============================================================
+// Phase 2.11b/c — Client History subview (Activity Log + Job History)
+// ============================================================
+let _historyClient = null;
+
+function openClientHistory(clientId) {
+  var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
+  if (!c) { console.warn('[history] client not found', clientId); return; }
+  if (typeof appPinRole !== 'undefined' && appPinRole !== 'manager') {
+    console.warn('[history] non-manager blocked');
+    return;
+  }
+  _historyClient = c;
+  var displayName = c.fn ? ((c.fn + ' ' + (c.ln || '')).trim()) : (c.name || 'Client');
+  document.getElementById('ch-name').textContent = displayName;
+  document.getElementById('ch-sub').textContent = (c.city || '') + (c.addr ? ' · ' + c.addr : '');
+  var view = document.getElementById('client-history-view');
+  view.style.display = 'flex';
+  switchHistoryTab('activity');
+}
+
+function closeClientHistory() {
+  var view = document.getElementById('client-history-view');
+  view.style.display = 'none';
+  _historyClient = null;
+}
+
+function switchHistoryTab(tab) {
+  document.querySelectorAll('.ch-tab').forEach(function(btn){
+    var isActive = btn.getAttribute('data-ch-tab') === tab;
+    btn.style.color = isActive ? 'var(--text)' : 'var(--text-on-light-soft)';
+    btn.style.fontWeight = isActive ? '700' : '600';
+    btn.style.borderBottom = isActive ? '2px solid var(--accent)' : '2px solid transparent';
+  });
+  document.getElementById('ch-pane-activity').style.display = (tab === 'activity') ? '' : 'none';
+  document.getElementById('ch-pane-jobs').style.display = (tab === 'jobs') ? '' : 'none';
+  if (tab === 'activity') renderHistoryActivityTab();
+  if (tab === 'jobs') renderHistoryJobsTab();
+}
+
+function renderHistoryActivityTab() {
+  var pane = document.getElementById('ch-pane-activity');
+  pane.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--text-on-light-soft)">' +
+    '<div style="font-size:48px;margin-bottom:12px">📋</div>' +
+    '<div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px">Activity Log</div>' +
+    '<div style="font-size:13px;line-height:1.5">Schedule changes, cancellations, profile edits, communications, and reports will appear here as they happen.<br><br>Activity tracking ships in a future sprint.</div>' +
+  '</div>';
+}
+
+function renderHistoryJobsTab() {
+  if (!_historyClient) return;
+  var pane = document.getElementById('ch-pane-jobs');
+  var today = new Date(); today.setHours(23,59,59,999);
+  var clientJobs = (typeof jobs !== 'undefined' ? jobs : [])
+    .filter(function(j){ return j.clientId === _historyClient.id; })
+    .filter(function(j){ var jd = new Date(j.date); return jd <= today; })
+    .sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+
+  if (clientJobs.length === 0) {
+    pane.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--text-on-light-soft)">' +
+      '<div style="font-size:48px;margin-bottom:12px">🧹</div>' +
+      '<div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px">No past jobs yet</div>' +
+      '<div style="font-size:13px">Once cleans complete, they will appear here.</div>' +
+    '</div>';
+    return;
+  }
+
+  var html = '';
+  clientJobs.forEach(function(j){
+    var jd = new Date(j.date);
+    var dateStr = jd.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    var statusBadge = j.cancelled
+      ? '<span style="background:var(--red);color:#fff;font-size:10px;padding:3px 8px;border-radius:10px;font-weight:700;text-transform:uppercase">Cancelled</span>'
+      : '<span style="background:var(--green);color:#fff;font-size:10px;padding:3px 8px;border-radius:10px;font-weight:700;text-transform:uppercase">Completed</span>';
+    var revenue = j.price ? '$' + parseFloat(String(j.price).replace(/[^0-9.]/g,'') || 0).toFixed(2) : '—';
+    html += '<div class="hist-job-card" data-job-id="' + j.id + '" style="background:#FFFFFF;border:1px solid rgba(42,40,64,0.08);border-radius:12px;margin-bottom:10px;overflow:hidden">' +
+      '<button onclick="toggleJobHistRow(\'' + j.id + '\')" style="width:100%;display:flex;align-items:center;gap:12px;padding:14px;background:none;border:none;cursor:pointer;text-align:left;font-family:\'DM Sans\',sans-serif">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">' +
+            '<div style="font-size:15px;font-weight:700;color:var(--text)">' + dateStr + '</div>' +
+            statusBadge +
+          '</div>' +
+          '<div style="font-size:13px;color:var(--text-on-light-soft)">Revenue: <strong>' + revenue + '</strong> · Team: ' + (j.team || '—') + '</div>' +
+        '</div>' +
+        '<svg class="hist-chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-on-light-soft)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>' +
+      '</button>' +
+      '<div class="hist-job-detail" id="hist-detail-' + j.id + '" style="display:none;padding:0 14px 14px;border-top:0.5px solid rgba(42,40,64,0.08)"></div>' +
+    '</div>';
+  });
+  pane.innerHTML = html;
+}
+
+async function toggleJobHistRow(jobId) {
+  var detail = document.getElementById('hist-detail-' + jobId);
+  if (!detail) return;
+  var card = document.querySelector('.hist-job-card[data-job-id="' + jobId + '"]');
+  var chev = card ? card.querySelector('.hist-chevron') : null;
+  if (detail.style.display === 'block') {
+    detail.style.display = 'none';
+    if (chev) chev.style.transform = 'rotate(0deg)';
+    return;
+  }
+  detail.style.display = 'block';
+  if (chev) chev.style.transform = 'rotate(180deg)';
+  var j = (typeof jobs !== 'undefined' ? jobs : []).find(function(x){ return x.id === jobId; });
+  if (!j) { detail.innerHTML = '<div style="padding:12px;color:var(--red);font-size:13px">Job not found</div>'; return; }
+  if (j.cancelled) {
+    detail.innerHTML = '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">' +
+      'This job was cancelled. No clean was performed.' +
+      (j.cancelReason ? '<br><br><strong style="color:var(--text)">Reason:</strong> ' + j.cancelReason : '') +
+    '</div>';
+    return;
+  }
+  detail.innerHTML = '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">⏳ Loading clean details from GPS…</div>';
+  try {
+    var metrics = await getJobHistoryMetrics(j);
+    if (!document.getElementById('hist-detail-' + jobId)) return; // pane rebuilt
+    detail.innerHTML = renderJobHistoryDetail(j, metrics);
+  } catch (err) {
+    console.error('[history] metrics fetch failed:', err);
+    if (document.getElementById('hist-detail-' + jobId)) {
+      detail.innerHTML = renderJobHistoryDetail(j, { error: err.message || String(err) });
+    }
+  }
+}
+
+async function fetchTeamDayStops(team, dateStr) {
+  // Inline Geotab fetch matching showDayHistory's API pattern but returning data.
+  if (typeof gpsAuthenticate === 'function' && typeof gpsSession !== 'undefined' && !gpsSession) {
+    await gpsAuthenticate();
+  }
+  if (typeof geotabCall !== 'function') throw new Error('GPS API unavailable');
+  var date = new Date(dateStr);
+  var devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+  var device = devices.find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
+  if (!device) return [];
+  var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
+  var endOfDay   = new Date(date); endOfDay.setHours(23,59,59,999);
+  var trips = await geotabCall('Get', {
+    typeName: 'Trip',
+    search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
+    resultsLimit: 100
+  });
+  if (typeof reverseGeocodeTrips === 'function' && trips && trips.length) {
+    try { await reverseGeocodeTrips(trips); } catch(e){}
+  }
+  if (!trips || trips.length === 0) return [];
+  trips.sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
+  var stopList = [];
+  trips.forEach(function(t, ti){
+    var arriveTime = t.stop ? new Date(t.stop) : null;
+    var nextDepart = trips[ti+1] ? new Date(trips[ti+1].start) : null;
+    stopList.push({
+      addr: t.stopAddress || t.stopLocation || 'Unknown',
+      inTime: arriveTime,
+      outTime: nextDepart,
+      isDepot: (typeof isDepotAddress === 'function') ? isDepotAddress(t.stopAddress || '', team) : false
+    });
+  });
+  return stopList;
+}
+
+async function getJobHistoryMetrics(j) {
+  var c = _historyClient;
+  if (!c || !c.addr) return { error: 'Client address missing' };
+  if (!j.team) return { error: 'No team assigned to this job' };
+  var stops = [];
+  try { stops = await fetchTeamDayStops(j.team, j.date); }
+  catch (e) { return { error: 'GPS data unavailable (Geotab session may have expired)' }; }
+  var teamJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(function(j2){ return j2.date === j.date && j2.team === j.team; });
+  var clientNameStr = ((c.fn || '') + ' ' + (c.ln || '')).trim();
+  var matchingStops = (stops || []).filter(function(s){
+    if (s.isDepot) return false;
+    var matched = (typeof matchStopToClient === 'function') ? matchStopToClient(s.addr, teamJobs) : '';
+    return matched && matched.trim() === clientNameStr;
+  });
+  var totalMin = matchingStops.reduce(function(sum, s){
+    if (s.inTime && s.outTime) {
+      var ms = new Date(s.outTime) - new Date(s.inTime);
+      if (ms > 0) return sum + Math.round(ms / 60000);
+    }
+    return sum;
+  }, 0);
+  var roster = (typeof pentaEmployees !== 'undefined' ? pentaEmployees : [])
+    .filter(function(e){ return e.team === j.team && (e.status === 'active' || e.status === undefined); });
+  var totalRatePerHr = roster.reduce(function(sum, e){ return sum + parseFloat(e.payRate || 0); }, 0);
+  var laborCost = (totalMin / 60) * totalRatePerHr;
+  var revenue = parseFloat(String(j.price || 0).replace(/[^0-9.]/g,'') || 0);
+  var grossMargin = revenue - laborCost;
+  var grossMarginPct = revenue > 0 ? (grossMargin / revenue) * 100 : 0;
+  return {
+    stops: matchingStops, totalMin: totalMin,
+    totalInHomeMin: totalMin * roster.length,
+    roster: roster, laborCost: laborCost,
+    revenue: revenue, grossMargin: grossMargin, grossMarginPct: grossMarginPct
+  };
+}
+
+function renderJobHistoryDetail(j, m) {
+  if (m.error) {
+    return '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">⚠️ ' + m.error + '</div>';
+  }
+  if (!m.stops || m.stops.length === 0) {
+    return '<div style="padding:12px 0;color:var(--text-on-light-soft);font-size:13px">No GPS records found for this clean. Either the team didn\'t log a stop matching this address, or GPS data wasn\'t captured that day.</div>';
+  }
+  var c = _historyClient;
+  var firstStop = m.stops[0];
+  var inTimeStr = firstStop.inTime ? new Date(firstStop.inTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+  var outTimeStr = firstStop.outTime ? new Date(firstStop.outTime).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+  var schedStr = j.time ? (j.time + (j.endTime ? ' – ' + j.endTime : '')) : '—';
+  var rosterNames = m.roster.map(function(e){ return e.first_name || e.name || 'Employee'; }).join(', ') || '—';
+  var paymentMethod = '—';
+  if (typeof getClientExtras === 'function' && c) {
+    try { var ex = getClientExtras(c.id); if (ex && ex.payment) paymentMethod = ex.payment; } catch(e){}
+  }
+  var labelStyle = 'font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-on-light-soft);font-weight:700;margin-bottom:2px';
+  var valStyle   = 'font-size:14px;font-weight:600;color:var(--text)';
+  return '' +
+    '<div style="padding:12px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+      '<div><div style="' + labelStyle + '">Scheduled</div><div style="' + valStyle + '">' + schedStr + '</div></div>' +
+      '<div><div style="' + labelStyle + '">Actual</div><div style="' + valStyle + '">' + inTimeStr + ' – ' + outTimeStr + '</div></div>' +
+      '<div><div style="' + labelStyle + '">Minutes in home</div><div style="' + valStyle + '">' + m.totalMin + ' min × ' + m.roster.length + ' = ' + m.totalInHomeMin + ' min</div></div>' +
+      '<div><div style="' + labelStyle + '">Team</div><div style="' + valStyle + '">' + (j.team || '—') + '</div></div>' +
+      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Employees <span style="font-weight:400;text-transform:none;letter-spacing:0">(estimate based on current team roster)</span></div><div style="' + valStyle + '">' + rosterNames + '</div></div>' +
+    '</div>' +
+    '<div style="padding:12px 0;border-top:0.5px solid rgba(42,40,64,0.08);display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+      '<div><div style="' + labelStyle + '">Revenue</div><div style="font-size:16px;font-weight:700;color:var(--text)">$' + m.revenue.toFixed(2) + '</div></div>' +
+      '<div><div style="' + labelStyle + '">Labor</div><div style="font-size:16px;font-weight:700;color:var(--text)">$' + m.laborCost.toFixed(2) + '</div></div>' +
+      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Gross margin</div><div style="font-size:18px;font-weight:700;color:' + (m.grossMargin > 0 ? 'var(--green)' : 'var(--red)') + '">$' + m.grossMargin.toFixed(2) + ' (' + m.grossMarginPct.toFixed(0) + '%)</div></div>' +
+      '<div style="grid-column:span 2"><div style="' + labelStyle + '">Payment method</div><div style="' + valStyle + '">💳 ' + paymentMethod + '</div></div>' +
+    '</div>' +
+    '<div style="padding:12px 0 0;border-top:0.5px solid rgba(42,40,64,0.08)">' +
+      '<button onclick="sendInvoiceFromHistory(\'' + c.id + '\')" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif">✉ Send Invoice</button>' +
+      '<div style="margin-top:12px;font-size:11px;color:var(--text-on-light-soft);font-style:italic">⏳ Coming soon: profit (after expenses), reports, and conversations linked to this clean.</div>' +
+    '</div>';
+}
+
+function sendInvoiceFromHistory(clientId) {
+  closeClientHistory();
+  setTimeout(function(){
+    if (typeof openContactSheet === 'function') openContactSheet(clientId);
+    setTimeout(function(){
+      var chips = document.querySelectorAll('#contact-msg-types .msg-type');
+      chips.forEach(function(chip){
+        if (chip.textContent.toLowerCase().indexOf('balance') !== -1) chip.click();
+      });
+    }, 200);
+  }, 250);
 }
 
 const MESSAGES = {
@@ -29226,6 +29476,25 @@ function _p3dPage(dir) {
   });
 })();
 </script>
+
+<!-- Phase 2.11b/c: Client History subview (Activity Log + Job History tabs). Manager-only. -->
+<div id="client-history-view" style="display:none;position:fixed;inset:0;background:#FFFFFF;z-index:9100;flex-direction:column">
+  <div style="flex-shrink:0;display:flex;align-items:center;padding:calc(env(safe-area-inset-top) + 12px) 16px 12px;border-bottom:1px solid rgba(42,40,64,0.08);background:#FFFFFF">
+    <button onclick="closeClientHistory()" style="background:none;border:none;cursor:pointer;padding:0;margin-right:12px">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div style="flex:1;min-width:0">
+      <div id="ch-name" style="font-size:18px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+      <div id="ch-sub" style="font-size:13px;color:var(--text-on-light-soft);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+    </div>
+  </div>
+  <div style="flex-shrink:0;display:flex;border-bottom:1px solid rgba(42,40,64,0.08);background:#FFFFFF">
+    <button class="ch-tab" data-ch-tab="activity" onclick="switchHistoryTab('activity')" style="flex:1;padding:14px;background:none;border:none;font-size:14px;font-weight:700;color:var(--text);cursor:pointer;border-bottom:2px solid var(--accent);font-family:'DM Sans',sans-serif">📋 Activity</button>
+    <button class="ch-tab" data-ch-tab="jobs" onclick="switchHistoryTab('jobs')" style="flex:1;padding:14px;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-on-light-soft);cursor:pointer;border-bottom:2px solid transparent;font-family:'DM Sans',sans-serif">🧹 Job History</button>
+  </div>
+  <div id="ch-pane-activity" style="flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch"></div>
+  <div id="ch-pane-jobs" style="flex:1;overflow-y:auto;padding:16px;display:none;-webkit-overflow-scrolling:touch"></div>
+</div>
 
 </body>
 </html>
