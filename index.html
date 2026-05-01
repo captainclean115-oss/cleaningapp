@@ -4430,6 +4430,46 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   </div>
 </div>
 
+<!-- Phase 2.10: Unified Contact sheet (Call / SMS / Email). Manager-only. -->
+<div id="contact-backdrop" class="drawer-backdrop" onclick="closeContactSheet()"></div>
+<div id="contact-drawer" class="drawer" role="dialog" aria-label="Contact client">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div class="drawer-title">Contact <span id="contact-name"></span></div>
+    <div class="drawer-sub" id="contact-phone-display"></div>
+  </div>
+
+  <!-- Section 1: Call -->
+  <div style="padding:16px 20px 8px">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Call</div>
+    <a id="contact-call-btn" class="action-btn btn-call" href="#" style="display:flex;width:100%;text-decoration:none;justify-content:center;align-items:center;gap:8px;font-size:15px;padding:14px;font-weight:700">
+      📞 Call now
+    </a>
+  </div>
+
+  <!-- Section 2: SMS / Messages -->
+  <div style="padding:16px 20px 8px;border-top:1px solid var(--border)">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Send Message</div>
+    <div id="contact-msg-types" style="display:flex;gap:8px;overflow-x:auto;padding:0 0 8px;margin-bottom:8px;scrollbar-width:none"></div>
+    <textarea id="contact-msg-text" placeholder="Type message…" style="width:100%;min-height:80px;padding:10px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:14px;resize:vertical;background:var(--surface2);color:var(--text);box-sizing:border-box;outline:none"></textarea>
+    <button onclick="contactSheetSendSMS()" style="width:100%;margin-top:8px;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif">
+      💬 Send via Messages
+    </button>
+  </div>
+
+  <!-- Section 3: Email -->
+  <div id="contact-email-section" style="padding:16px 20px 24px;border-top:1px solid var(--border)">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:8px;font-weight:700">Email</div>
+    <a id="contact-email-btn" class="action-btn btn-email" href="#" style="display:flex;width:100%;text-decoration:none;justify-content:center;align-items:center;gap:8px;font-size:15px;padding:14px;font-weight:700">
+      ✉ Open email
+    </a>
+  </div>
+
+  <div style="padding:0 20px 8px">
+    <button onclick="closeContactSheet()" style="width:100%;padding:12px;background:transparent;color:var(--muted);border:none;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif">Cancel</button>
+  </div>
+</div>
+
 <script>
 // Phase 3E (April 27, 2026) — hardcoded CLIENTS array deleted.
 // Supabase is the sole source of truth. CLIENTS variable kept as empty array
@@ -6090,7 +6130,7 @@ function render(force) {
             })()}
           </div>
           <div class="detail-grid" style="padding-right:80px">
-          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph || '—'}</div></div>
+          <div class="detail-item"><div class="d-label">Phone</div><div class="d-val">${c.ph ? ((typeof appPinRole !== 'undefined' && appPinRole === 'manager') ? `<button onclick="event.stopPropagation();openContactSheet('${c.id}')" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;font-family:'DM Sans',sans-serif">📱 ${c.ph}</button>` : c.ph) : '—'}</div></div>
           <div class="detail-item"><div class="d-label">Team</div><div class="d-val" style="font-weight:700">${c.team || CLIENT_TEAMS[c.ln.toLowerCase().replace(/[^a-z\s\-]/g,'')] || '—'}</div></div>
 
           <div class="detail-item"><div class="d-label">Key</div><div class="d-val">${(function(){var k=getClientKey(c.ln);return k&&k.key?k.key:'—';})()}</div></div>
@@ -6232,6 +6272,92 @@ function openDrawer(e, clientId) {
 function closeDrawer() {
   document.getElementById('backdrop').classList.remove('open');
   document.getElementById('drawer').classList.remove('open');
+}
+
+// Phase 2.10: Unified Contact sheet — Call / SMS / Email in one drawer.
+// Routes SMS through Penta's internal Messages tab via openClientMessages
+// (no native SMS app). Manager-only by appPinRole gate.
+function openContactSheet(clientId) {
+  var c = (typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
+  if (!c) { console.warn('[contact-sheet] client not found', clientId); return; }
+  if (typeof appPinRole !== 'undefined' && appPinRole !== 'manager') {
+    console.warn('[contact-sheet] non-manager blocked');
+    return;
+  }
+  var displayName = c.fn ? ((c.fn + ' ' + (c.ln || '')).trim()) : (c.name || 'Client');
+  document.getElementById('contact-name').textContent = displayName;
+  document.getElementById('contact-phone-display').textContent = c.ph || 'No phone on file';
+
+  var callBtn = document.getElementById('contact-call-btn');
+  if (c.ph) {
+    callBtn.href = 'glip://r/call?number=' + toE164(c.ph);
+    callBtn.style.opacity = '1';
+    callBtn.style.pointerEvents = 'auto';
+  } else {
+    callBtn.removeAttribute('href');
+    callBtn.style.opacity = '0.4';
+    callBtn.style.pointerEvents = 'none';
+  }
+
+  var emailBtn = document.getElementById('contact-email-btn');
+  if (c.em) {
+    emailBtn.href = 'mailto:' + encodeURIComponent(c.em);
+    document.getElementById('contact-email-section').style.display = '';
+  } else {
+    document.getElementById('contact-email-section').style.display = 'none';
+  }
+
+  var chipBox = document.getElementById('contact-msg-types');
+  chipBox.innerHTML = '';
+  var chips = [
+    {key:'followup', label:'Follow-up'},
+    {key:'reminder', label:'Reminder'},
+    {key:'review',   label:'Review request'},
+    {key:'balance',  label:'Balance'},
+    {key:'checkin',  label:'Check-in'},
+    {key:'confirm',  label:'Confirm'}
+  ];
+  chips.forEach(function(chip){
+    var el = document.createElement('div');
+    el.className = 'msg-type';
+    el.textContent = chip.label;
+    el.style.cssText = 'flex-shrink:0;padding:6px 12px;border-radius:14px;background:var(--surface2);border:1px solid var(--border2);font-size:13px;cursor:pointer;white-space:nowrap;font-family:\'DM Sans\',sans-serif';
+    el.onclick = function(){
+      if (typeof MESSAGES !== 'undefined' && MESSAGES[chip.key]) {
+        document.getElementById('contact-msg-text').value = MESSAGES[chip.key](c);
+      }
+    };
+    chipBox.appendChild(el);
+  });
+
+  window._contactSheetClient = c;
+  document.getElementById('contact-backdrop').classList.add('open');
+  document.getElementById('contact-drawer').classList.add('open');
+}
+
+function closeContactSheet() {
+  document.getElementById('contact-backdrop').classList.remove('open');
+  document.getElementById('contact-drawer').classList.remove('open');
+  var ta = document.getElementById('contact-msg-text');
+  if (ta) ta.value = '';
+  window._contactSheetClient = null;
+}
+
+function contactSheetSendSMS() {
+  var c = window._contactSheetClient;
+  if (!c || !c.ph) { alert('No phone number on file for this client.'); return; }
+  var text = document.getElementById('contact-msg-text').value.trim();
+  if (!text) { alert('Please enter a message.'); return; }
+  if (typeof openClientMessages === 'function') {
+    openClientMessages(c.id, c.ph, c.fn || c.name);
+    setTimeout(function(){
+      var draftEl = document.getElementById('draft-text') || document.querySelector('#messages-view textarea');
+      if (draftEl) draftEl.value = text;
+    }, 350);
+  } else {
+    console.error('[contact-sheet] openClientMessages not found');
+  }
+  closeContactSheet();
 }
 
 const MESSAGES = {
@@ -25346,7 +25472,14 @@ function openCalJobCard(el) {
   editBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
   if (appPinRole !== 'manager') editBtn.style.display = 'none';
   editBtn.onclick = function(){ closeCalJobCard(); openJobModal(j.id); };
+  // Phase 2.10: Contact button — manager-only, opens unified Contact sheet
+  var contactBtn = document.createElement('button');
+  contactBtn.textContent = '📱 Contact';
+  contactBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
+  if (appPinRole !== 'manager' || !j.clientId) contactBtn.style.display = 'none';
+  contactBtn.onclick = function(){ closeCalJobCard(); setTimeout(function(){ openContactSheet(j.clientId); }, 250); };
   actionRow.appendChild(doneBtn);
+  actionRow.appendChild(contactBtn);
   actionRow.appendChild(editBtn);  d.appendChild(inner);
   document.body.appendChild(d);
 }
