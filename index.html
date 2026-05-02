@@ -2520,6 +2520,18 @@ select.field-input { appearance: none; }
 body:not(.home-active) .bottom-nav,
 body.overlay-open .bottom-nav,
 body.in-portal .bottom-nav { display: none !important; }
+
+/* Phase 6.3a Fix 12: hide manager-shell containers when employee portal is open.
+   Symmetric: appUnlockEmployee adds .in-portal, sign-out removes it, manager
+   elements restore automatically. Without this, #clients-view (default
+   display:block) and the topbar-row chrome bleed through staff-panel's
+   transparent background. */
+body.in-portal #clients-view,
+body.in-portal .topbar,
+body.in-portal .search-wrap,
+body.in-portal .stats-bar,
+body.in-portal #install-banner-wrap,
+body.in-portal #filter-row { display: none !important; }
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   gap: 3px; background: none; border: none; cursor: pointer;
@@ -5271,7 +5283,8 @@ window.PentaClients = (function() {
 
     // email handling: real email if provided, else synthetic internal
     var realEmail = String(emp.email || '').trim();
-    if (realEmail) {
+    var looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(realEmail);
+    if (realEmail && looksLikeEmail) {
       row.email = realEmail;
       row.email_is_internal = false;
     } else if (row.first_name != null) {
@@ -19989,7 +20002,8 @@ function appUnlockEmployee(emp) {
   // the same employee without re-entering the PIN during this browser session.
   sessionStorage.setItem('cc_emp_id', emp.id || emp.name);
   sessionStorage.setItem('cc_emp_lang', appSelectedLang || emp.lang || 'en');
-  document.getElementById('app-pin-screen').style.display = 'none';
+  var _pinScreen = document.getElementById('app-pin-screen');
+  if (_pinScreen) _pinScreen.style.display = 'none';
 
   // Show staff panel full screen, hide manager chrome
   const panel = document.getElementById('staff-panel');
@@ -20517,7 +20531,8 @@ function appSetLang(lang) {
 }
 
 function appGoApply() {
-  document.getElementById('app-pin-screen').style.display = 'none';
+  var _pinScreen = document.getElementById('app-pin-screen');
+  if (_pinScreen) _pinScreen.style.display = 'none';
   var pl = document.getElementById('penta-login-screen');
   if (pl) pl.style.display = 'none';
   const panel = document.getElementById('staff-panel');
@@ -21206,7 +21221,7 @@ function renderStaffView() {
 
   // Wire up the Penta Login section (Sprint 4 Phase 4B).
   try {
-    var _rid = emp.id || emp.name;
+    var _rid = emp.legacy_roster_id || emp.id || emp.name;
     var _chip   = document.querySelector('[data-invite-chip][data-roster-id="' + CSS.escape(_rid) + '"]');
     var _sendBt = document.querySelector('[data-action="send-invite"][data-roster-id="' + CSS.escape(_rid) + '"]');
     var _pwBt   = document.querySelector('[data-action="set-temp-pw"][data-roster-id="' + CSS.escape(_rid) + '"]');
