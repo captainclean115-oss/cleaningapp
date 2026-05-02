@@ -13573,10 +13573,6 @@ function getMainEmpList() {
   return (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
 }
 
-function saveMainEmpList(list) {
-  localStorage.setItem('emp_roster', JSON.stringify(list));
-}
-
 function toggleTermFields() {
   const status = document.getElementById('main-emp-status').value;
   const fields = document.getElementById('term-fields');
@@ -13673,7 +13669,6 @@ function renderMainEmployees() {
         <div class="emp-meta">
           <span style="color:${color};font-weight:600">${emp.team}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '<span style="color:var(--red)">No pay rate</span>'}
-          <span>PIN: ${emp.pin}</span>
           <span>${langLabel}</span>
           ${emp.status === 'inactive' ? '<span style="color:var(--red)">Inactive</span>' : ''}
         </div>
@@ -20640,10 +20635,6 @@ function getStaffList() {
   return (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
 }
 
-function saveStaffList(list) {
-  localStorage.setItem('emp_roster', JSON.stringify(list));
-}
-
 function openStaffSheet() {
   renderStaffList();
   document.getElementById('staff-sheet').style.display = 'flex';
@@ -20982,7 +20973,6 @@ function renderStaffList() {
         <div style="font-size:15px;font-weight:600">${emp.name}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${emp.team}</span>
-          <span>PIN: ${emp.pin}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
@@ -21624,21 +21614,6 @@ async function deleteStaffEmployee() {
 // EMPLOYEE DATA (loaded from main app)
 // ─────────────────────────────────────────
 
-// Employees — PINs set here, edit to add/change
-// Format: { pin, name, team, payRate, lang }
-const EMPLOYEES = [
-  // PINs — owner edits these
-  // Add one entry per employee
-  { pin: '1111', name: 'Employee 1', team: 'B1', payRate: 0, lang: 'en' },
-  { pin: '2222', name: 'Employee 2', team: 'B3', payRate: 0, lang: 'es' },
-  { pin: '3333', name: 'Employee 3', team: 'B5', payRate: 0, lang: 'es' },
-  { pin: '4444', name: 'Employee 4', team: 'S1', payRate: 0, lang: 'cv' },
-  { pin: '5555', name: 'Employee 5', team: 'S3', payRate: 0, lang: 'cv' },
-  { pin: '6666', name: 'Employee 6', team: 'M1', payRate: 0, lang: 'pt' },
-  { pin: '7777', name: 'Employee 7', team: 'M2', payRate: 0, lang: 'pt' },
-  { pin: '8888', name: 'Employee 8', team: 'M3', payRate: 0, lang: 'en' },
-];
-
 // Team colors
 const TEAM_COLORS = {
   B1:'#7c3aed', B3:'#db2777', B5:'#6b7280',
@@ -21951,20 +21926,6 @@ function updatePortalText() {
 
 // ADMIN PANEL
 // ─────────────────────────────────────────
-let employeeList = JSON.parse(localStorage.getItem('emp_roster') || 'null');
-
-// Initialize with default employees if none saved
-
-function saveEmployeeList() {
-  localStorage.setItem('emp_roster', JSON.stringify(employeeList));
-}
-
-// Override EMPLOYEES constant with live list
-Object.defineProperty(window, 'EMPLOYEES', {
-  get: () => employeeList.filter(e => e.status === 'active'),
-  configurable: true
-});
-
 // Sprint 4.2.B Section 4D — showAdminLogin() removed. Hidden Maids2026! admin
 // panel retired. Tom's home-screen "Admin" icon (separate UI) is unaffected.
 
@@ -25420,7 +25381,6 @@ function renderStaffSubview() {
         <div style="font-size:15px;font-weight:600">${emp.name}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${emp.team}</span>
-          <span style="color:var(--muted)">PIN: ${emp.pin}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
