@@ -5236,6 +5236,19 @@ window.PentaClients = (function() {
     return map[String(lang || '').toLowerCase()] || 'generic';
   }
 
+  function _normalizeDate(v) {
+    // Postgres date columns accept YYYY-MM-DD or null. Anything else (empty
+    // string, partial 'MM-DD' from year-less birthday inputs, US-locale
+    // 'M/D/YYYY' from new Date().toLocaleDateString(), undefined, non-strings)
+    // becomes null. This is what triggers 22007 invalid_datetime_format
+    // otherwise.
+    if (v == null) return null;
+    if (typeof v !== 'string') return null;
+    var s = v.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    return s;
+  }
+
   function _toRow(emp) {
     // Translate in-memory employee → Supabase employees row.
     // Phase 6.3a: extended for team_text, payRate, photoUrl, and Migration 012 fields.
@@ -5291,14 +5304,14 @@ window.PentaClients = (function() {
       row.status = (s === 'active' || s === 'invited' || s === 'suspended' || s === 'terminated') ? s : 'invited';
     }
 
-    if (emp.hired_at != null) row.hired_at = (emp.hired_at === '' ? null : emp.hired_at);
-    if (emp.terminated_at != null) row.terminated_at = (emp.terminated_at === '' ? null : emp.terminated_at);
+    if (emp.hired_at != null) row.hired_at = _normalizeDate(emp.hired_at);
+    if (emp.terminated_at != null) row.terminated_at = _normalizeDate(emp.terminated_at);
 
     // photoUrl → photo_url
     if (emp.photoUrl != null) row.photo_url = emp.photoUrl;
     if (emp.photo_url != null) row.photo_url = emp.photo_url;
 
-    if (emp.birthday != null) row.birthday = (emp.birthday === '' ? null : emp.birthday);
+    if (emp.birthday != null) row.birthday = _normalizeDate(emp.birthday);
 
     // Migration 012 fields — pass through if present
     if (emp.ssn_last4 != null) row.ssn_last4 = emp.ssn_last4;
@@ -5485,11 +5498,12 @@ window.PentaClients = (function() {
     if (!sb) throw new Error('No Supabase client');
     var res = await sb.from('employees').update(patch).eq('id', id).select().maybeSingle();
     if (res.error) throw res.error;
+    var updated = _fromRow(res.data);
     for (var i = 0; i < _cache.length; i++) {
-      if (_cache[i].id === id && res.data) { _cache[i] = res.data; break; }
+      if (_cache[i].id === id && updated) { _cache[i] = updated; break; }
     }
     _notify();
-    return res.data;
+    return updated;
   }
   function onChange(fn) {
     _listeners.push(fn);
