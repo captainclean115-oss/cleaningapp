@@ -5706,7 +5706,9 @@ window.PentaClients = (function() {
 // the Staff/Roster tabs render empty on first paint and stay empty until
 // the next user interaction.
 if (window.PentaEmployees && window.PentaEmployees.onChange) {
+  console.log('[6.3a probe] registering onChange listener');
   window.PentaEmployees.onChange(function() {
+    console.log('[6.3a probe] onChange listener fired, isReady?', PentaEmployees.isReady());
     try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
     try { if (typeof renderStaffSubview === 'function') renderStaffSubview(); } catch (e) {}
     try { if (typeof renderMainEmployees === 'function') renderMainEmployees(); } catch (e) {}
