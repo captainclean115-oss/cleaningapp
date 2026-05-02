@@ -20990,7 +20990,7 @@ function renderStaffList() {
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
-          <span data-invite-pill data-roster-id="${emp.id||emp.name}"></span>
+          <span data-invite-pill data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}"></span>
         </div>
       </div>
       <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
@@ -21196,10 +21196,10 @@ function renderStaffView() {
     ]) : ''}
 
     ${section('Penta Login', [
-      `<div data-invite-chip data-roster-id="${emp.id||emp.name}" style="display:inline-flex;align-items:center;padding:6px 12px;background:var(--surface);border:1px solid var(--border);border-radius:20px;font-size:13px;margin-bottom:12px">…</div>`,
+      `<div data-invite-chip data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="display:inline-flex;align-items:center;padding:6px 12px;background:var(--surface);border:1px solid var(--border);border-radius:20px;font-size:13px;margin-bottom:12px">…</div>`,
       `<div style="display:flex;gap:8px;margin-top:6px">
-        <button type="button" data-permission="send_employee_invites" data-permission-role="manager" data-action="send-invite" data-roster-id="${emp.id||emp.name}" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
-        <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
+        <button type="button" data-permission="send_employee_invites" data-permission-role="manager" data-action="send-invite" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
+        <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
       </div>`
     ])}
   `;
@@ -21557,7 +21557,7 @@ async function saveStaffEmployee() {
       var rosterId = String(emp.id || emp.name || '');
       var rows = await window.PentaEmployees.list();
       var supaRow = rows.find(function(r) {
-        return String(r.legacy_roster_id || '') === rosterId;
+        return String(r.id || '') === rosterId || String(r.legacy_roster_id || '') === rosterId;
       });
       if (supaRow) {
         var langMap = { es: 'mx', pt: 'br', ko: 'kr', en: 'us' };
