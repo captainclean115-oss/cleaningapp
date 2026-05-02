@@ -5700,20 +5700,56 @@ window.PentaClients = (function() {
   };
 })();
 
-// Phase 6.3a fix: re-render employee-driven UI when the facade cache updates.
+// Phase 6.3a: re-render employee-driven UI when the facade cache updates.
 // listSync() returns [] on cold cache; once _hydrate resolves, the cache
 // populates and these subscriptions trigger fresh renders. Without this,
 // the Staff/Roster tabs render empty on first paint and stay empty until
 // the next user interaction.
 if (window.PentaEmployees && window.PentaEmployees.onChange) {
-  console.log('[6.3a probe] registering onChange listener');
   window.PentaEmployees.onChange(function() {
-    console.log('[6.3a probe] onChange listener fired, isReady?', PentaEmployees.isReady());
     try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
     try { if (typeof renderStaffSubview === 'function') renderStaffSubview(); } catch (e) {}
     try { if (typeof renderMainEmployees === 'function') renderMainEmployees(); } catch (e) {}
   });
 }
+
+// Phase 6.3a: drive _hydrate from every entry point that should warm the cache.
+// Defers the initial kick until supabaseClient is ready (closes the parse-time
+// race), retries once on transient failure, and re-hydrates on auth-state
+// changes so a mid-session sign-in also populates the cache.
+(function pentaPrimeHydrate() {
+  if (!window.PentaEmployees || !window.PentaEmployees._hydrate) return;
+
+  function kick() {
+    var p = window.PentaEmployees._hydrate();
+    if (p && typeof p.then === 'function') {
+      p.then(function(ok) {
+        if (!ok) setTimeout(function() {
+          try { window.PentaEmployees._hydrate(); } catch (e) {}
+        }, 1000);
+      });
+    }
+  }
+
+  function whenClientReady(cb) {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) return cb(sb);
+    var tries = 0;
+    var iv = setInterval(function() {
+      var c = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (c || ++tries > 50) { clearInterval(iv); if (c) cb(c); }
+    }, 100);
+  }
+
+  whenClientReady(function(sb) {
+    kick();
+    try {
+      sb.auth.onAuthStateChange(function(evt) {
+        if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
+      });
+    } catch (e) {}
+  });
+})();
 
 // =====================================================================
 // Penta invite helpers — Sprint 4 Phase 4B (manager UI side)
