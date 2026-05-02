@@ -2532,6 +2532,16 @@ body.in-portal .search-wrap,
 body.in-portal .stats-bar,
 body.in-portal #install-banner-wrap,
 body.in-portal #filter-row { display: none !important; }
+
+/* Phase 6.3a Fix 13: hide the entire portal-screen when an overlay is active
+   over the employee portal. The greeting and date sit in .portal-header — a
+   sibling of #portal-home, not a child — so a #portal-home-only rule misses
+   them. Hiding #portal-screen wholesale covers greeting, date, launcher icons,
+   and any sub-tab content underneath. The overlays themselves
+   (#penta-learn-screen, #content-view) are top-level body children — unaffected.
+   Symmetric: when the overlay closes, .overlay-open is removed and the portal
+   reappears. */
+body.in-portal.overlay-open #portal-screen { display: none !important; }
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   gap: 3px; background: none; border: none; cursor: pointer;
@@ -20343,12 +20353,14 @@ function openPentaLearn() {
   if (!screen) return;
   renderPentaLearn();
   screen.style.display = 'flex';
+  document.body.classList.add('overlay-open');
 }
 
 function closePentaLearn() {
   const screen = document.getElementById('penta-learn-screen');
   if (screen) screen.style.display = 'none';
   try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch(e) {}
+  document.body.classList.remove('overlay-open');
 }
 
 function renderPentaLearn() {
