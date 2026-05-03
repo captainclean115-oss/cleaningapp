@@ -20,6 +20,11 @@
 // occupy the viewport cleanly.
 (function(){
   try {
+    // Bug 6.8-#1 fix: pre-auth gate. Set on <html> immediately — body doesn't
+    // exist yet inside this <head> script, but documentElement does. CSS rule
+    // (html.pre-auth …) hides all shell containers until auth resolves.
+    // appUnlockManager / appUnlockEmployee remove the class on successful unlock.
+    document.documentElement.classList.add('pre-auth');
     var hasSession = false;
     try {
       var raw = localStorage.getItem('sb-wymoezilyjmyibmuqqmr-auth-token');
@@ -2551,6 +2556,30 @@ body.in-portal #filter-row { display: none !important; }
    Symmetric: when the overlay closes, .overlay-open is removed and the portal
    reappears. */
 body.in-portal.overlay-open #portal-screen { display: none !important; }
+
+/* Bug 6.8-#1 fix: hide all manager + employee shell containers until auth
+   resolves. Set on <html> (not <body>) so the auth-flash IIFE — which runs
+   inside <head> before <body> is parsed — can apply it synchronously without
+   waiting for document.body. appUnlockManager + appUnlockEmployee remove the
+   class once the user is signed in. Prevents login-screen FOUC where
+   #clients-view (default display:block) and topbar chrome bled through the
+   transparent login overlay after sign-out + reload. */
+html.pre-auth #clients-view,
+html.pre-auth #home-view,
+html.pre-auth #cal-view,
+html.pre-auth #tasks-view,
+html.pre-auth #messages-view,
+html.pre-auth #gps-view,
+html.pre-auth #claire-view,
+html.pre-auth #staff-panel,
+html.pre-auth #portal-screen,
+html.pre-auth .topbar,
+html.pre-auth .bottom-nav,
+html.pre-auth .search-wrap,
+html.pre-auth .stats-bar,
+html.pre-auth #install-banner-wrap,
+html.pre-auth #filter-row { display: none !important; }
+
 .nav-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   gap: 3px; background: none; border: none; cursor: pointer;
@@ -20007,6 +20036,8 @@ function isManagerRole() {
 
 
 function appUnlockManager() {
+  // Bug 6.8-#1 fix: manager unlock — clear pre-auth gate so manager shell renders.
+  document.documentElement.classList.remove('pre-auth');
   const mlogin = document.getElementById('penta-login-screen');
   if (mlogin) mlogin.style.display = 'none';
   const pinScreen = document.getElementById('app-pin-screen');
@@ -20058,6 +20089,8 @@ function appUnlockManager() {
 }
 
 function appUnlockEmployee(emp) {
+  // Bug 6.8-#1 fix: employee unlock — clear pre-auth gate so portal renders.
+  document.documentElement.classList.remove('pre-auth');
   // Persist employee identity so pull-to-refresh on the employee portal restores
   // the same employee without re-entering the PIN during this browser session.
   sessionStorage.setItem('cc_emp_id', emp.id || emp.name);
@@ -20644,6 +20677,9 @@ async function pentaSignOut() {
     console.error('signout error', e);
   }
   try { localStorage.removeItem('sb-wymoezilyjmyibmuqqmr-auth-token'); } catch (e) {}
+  // Bug 6.8-#1 fix: re-arm pre-auth gate before reload so any reload delay
+  // doesn't expose manager shell. Auth-flash IIFE re-sets on next load.
+  try { document.documentElement.classList.add('pre-auth'); } catch (e) {}
   window.location.reload();
 }
 
@@ -20718,6 +20754,8 @@ async function logout() {
     if (sb && sb.auth) await sb.auth.signOut({ scope: 'global' });
   } catch (e) { console.error('[logout] signOut error:', e); }
   try { localStorage.removeItem('sb-wymoezilyjmyibmuqqmr-auth-token'); } catch (e) {}
+  // Bug 6.8-#1 fix: re-arm pre-auth gate before reload.
+  try { document.documentElement.classList.add('pre-auth'); } catch (e) {}
   location.reload();
 }
 
