@@ -12286,7 +12286,18 @@ async function processVoiceCommand(text) {
   var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   var todayKey = dateKey(today);
   var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
-  var empNames = EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
+  // Phase 6.5a: prefer live facade roster; fall back to EMPLOYEE_ROSTER hardcoded const if facade is empty.
+  var empNames = (function(){
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        var rows = window.PentaEmployees.listSync();
+        if (rows && rows.length) {
+          return rows.map(function(e){ return e.name + ' ('+(e.team || e.defaultTeam || '')+')'; }).join(', ');
+        }
+      }
+    } catch(e) {}
+    return EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
+  })();
 
   // Count how many distinct asks are in Tom's message — rough heuristic that
   // helps the model commit to chaining instead of stopping after one tool.
@@ -12639,7 +12650,10 @@ function _executeClaireToolCallInner(toolCall, message) {
 
   // ── DAY OFF ──
   } else if (name === 'employee_day_off') {
-    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+    var emp = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) emp = window.PentaEmployees.getByName(input.employee || '');
+    if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
     if (!emp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk = input.date || dateKey(new Date());
     dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
@@ -12650,7 +12664,10 @@ function _executeClaireToolCallInner(toolCall, message) {
 
   // ── MOVE EMPLOYEE ──
   } else if (name === 'move_employee') {
-    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+    var emp2 = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) emp2 = window.PentaEmployees.getByName(input.employee || '');
+    if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
     if (!emp2) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk2 = input.date || dateKey(new Date());
     assignEmployee(emp2.id, input.team.toUpperCase(), dk2);
@@ -12713,7 +12730,20 @@ function _executeClaireToolCallInner(toolCall, message) {
 
   // ── LOOKUP EMPLOYEE ──
   } else if (name === 'lookup_employee') {
-    var le = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first; if found via facade, augment with hardcoded
+    // EMPLOYEE_ROSTER entry for depot/defaultTeam fields not in DB.
+    var le = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) le = window.PentaEmployees.getByName(input.employee || '');
+    if (!le) le = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    if (le && (!le.depot || !le.defaultTeam)) {
+      var hc = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (le.name||'').toLowerCase(); });
+      if (hc) {
+        le = Object.assign({}, le, {
+          depot: le.depot || hc.depot || '',
+          defaultTeam: le.defaultTeam || hc.defaultTeam || le.team || ''
+        });
+      }
+    }
     if (!le) { _claireLastToolResult = 'No employee found matching "'+input.employee+'".'; return; }
     var leTeam = getEmployeeTeam(le.id, dateKey(new Date()));
     _claireLastToolResult = le.name+' — today on '+(leTeam?'Team '+leTeam:'no team (Day Off)')+'. Role: '+(le.role.length?le.role.join(', '):'Cleaner')+'. Depot: '+le.depot+'. Default team: '+le.defaultTeam+'.';
@@ -12879,7 +12909,10 @@ function _executeClaireToolCallInner(toolCall, message) {
 
   // ── EDIT EMPLOYEE HOURS ──
   } else if (name === 'edit_employee_hours') {
-    var ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+    var ehEmp = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) ehEmp = window.PentaEmployees.getByName(input.employee || '');
+    if (!ehEmp) ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
     if (!ehEmp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'Couldn\'t find that employee.'); return; }
     var ehDate = input.date || dateKey(new Date());
     var existing = getEmpHours(ehEmp.id, ehDate) || {};
@@ -13368,7 +13401,10 @@ function _executeClaire_legacy(action, message) {
     }
 
   } else if (action.action === 'dayoff') {
-    var emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+    var emp = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) emp = window.PentaEmployees.getByName(action.employee || '');
+    if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
     if (emp) {
       var dk = action.date || dateKey(new Date());
       dailyAssignments[dk + '_' + emp.id] = 'OFF'; saveDailyAssignments();
@@ -13379,7 +13415,10 @@ function _executeClaire_legacy(action, message) {
     }
 
   } else if (action.action === 'moveteam') {
-    var emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
+    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+    var emp2 = null;
+    if (window.PentaEmployees && window.PentaEmployees.getByName) emp2 = window.PentaEmployees.getByName(action.employee || '');
+    if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
     if (emp2 && action.team) {
       var dk2 = action.date || dateKey(new Date());
       assignEmployee(emp2.id, action.team.toUpperCase(), dk2);
@@ -13509,7 +13548,12 @@ function processVoiceCommandLocal(text) {
   }
   if (lower.includes('day off') || lower.includes('out sick') || lower.includes('off today')) {
     var empName = text.replace(/day off|off today|out sick|for|put|mark|set/gi,'').trim();
-    var emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
+    // Phase 6.5a: facade-first via PentaEmployees.find (substring match), EMPLOYEE_ROSTER fallback.
+    var emp = null;
+    if (window.PentaEmployees && window.PentaEmployees.find) {
+      emp = window.PentaEmployees.find(function(e){ return empName.toLowerCase().includes((e.name||'').toLowerCase()); });
+    }
+    if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
     if (emp) { var dk=dateKey(new Date()); dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments(); logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})); claireReply('Got it! '+emp.name+' is off today.'); return; }
     claireReply('Couldn\'t find that employee.'); return;
   }
