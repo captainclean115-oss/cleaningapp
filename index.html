@@ -14048,7 +14048,7 @@ function renderTeamManager() {
 
   teams.forEach(team => {
     const color = team_colors_map[team] || '#6b7280';
-    const employees = EMPLOYEE_ROSTER.filter(e => getEmployeeTeam(e.id, dateStr) === team && isActiveEmp(e));
+    const employees = getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team && isActiveEmp(e));
 
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)">
@@ -14081,7 +14081,7 @@ function renderTeamManager() {
   });
 
   // Floaters / unassigned
-  const unassigned = EMPLOYEE_ROSTER.filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e));
+  const unassigned = getUnifiedRoster().filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e));
   if (unassigned.length > 0) {
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
@@ -14106,7 +14106,7 @@ function renderTeamManager() {
   }
 
   // Unassigned employees (no default team and no daily assignment)
-  const unassigned2 = EMPLOYEE_ROSTER.filter(e => {
+  const unassigned2 = getUnifiedRoster().filter(e => {
     const assigned = getEmployeeTeam(e.id, dateStr);
     return !assigned || assigned === '';
   });
@@ -14133,7 +14133,7 @@ function renderTeamManager() {
   }
 
   // Archived / terminated section
-  const terminated = EMPLOYEE_ROSTER.filter(e => (termData[e.id]?.status) === 'terminated');
+  const terminated = getUnifiedRoster().filter(e => (termData[e.id]?.status) === 'terminated');
   if (terminated.length > 0) {
     html += `<div style="margin-bottom:16px">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">📁 Archived — Former Employees (${terminated.length})</div>
@@ -14165,7 +14165,7 @@ function quickAssign(empId, team, dateStr) {
 }
 
 function promptDefaultTeam(empId) {
-  const emp = EMPLOYEE_ROSTER.find(e => e.id === empId);
+  const emp = getUnifiedRoster().find(e => e.id === empId);
   if (!emp) return;
   const team = prompt('Set default team for ' + emp.name + ':\nB1, B3, B5, S1, S3, M1, M2, M3');
   if (!team) return;
@@ -14187,7 +14187,7 @@ function promptDefaultTeam(empId) {
 }
 
 function editEmployeeAssignment(employeeId, dateStr) {
-  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
   const currentTeam = getEmployeeTeam(employeeId, dateStr);
   const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
@@ -14258,7 +14258,7 @@ function saveRosterTermData(data) {
 async function openRosterEmpEdit(empId) {
   // Find in emp_roster (localStorage) for unified editing
   const list = getStaffList();
-  const staffIdx = list.findIndex(e => e.id === empId || e.name === (EMPLOYEE_ROSTER.find(r => r.id === empId)||{}).name);
+  const staffIdx = list.findIndex(e => e.id === empId || e.name === (getUnifiedRoster().find(r => r.id === empId)||{}).name);
   if (staffIdx >= 0) {
     // Open the staff edit modal
     document.getElementById('staff-sheet').style.display = 'none';
@@ -14266,7 +14266,7 @@ async function openRosterEmpEdit(empId) {
     return;
   }
   // Fallback: employee exists in EMPLOYEE_ROSTER but not yet in emp_roster
-  const er = EMPLOYEE_ROSTER.find(e => e.id === empId);
+  const er = getUnifiedRoster().find(e => e.id === empId);
   if (!er) return;
   // Phase 6.3a: insert via facade. legacy_roster_id preserves the EMPLOYEE_ROSTER id.
   const newEmp = { legacy_roster_id: String(er.id), name: er.name, team: er.defaultTeam||'', payRate: 0, phone: '', lang: 'en', status: 'active', role: er.role||[] };
@@ -14359,7 +14359,7 @@ function saveRosterEmpEdit(empId, overlay) {
 }
 
 function confirmTeamAssign(employeeId, dateStr, team, overlay) {
-  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
 
   // Track old team so we can recalc its schedule
@@ -14424,6 +14424,41 @@ const EMPLOYEE_ROSTER = [
   { id: 'e23', name: 'Ana',         defaultTeam: 'M3', role: ['D'],      depot: 'marlborough' },
 ];
 
+// Phase 6.5b: getUnifiedRoster() — EMPLOYEE_ROSTER (hardcoded + pre-6.3b
+// portal merge) UNION facade rows (post-6.3b additions), deduped by name +
+// legacy_roster_id, computed at call time. Does not mutate EMPLOYEE_ROSTER.
+// Used by Team Manager admin + Hours Report so post-6.3b employees appear
+// in their team rows. Field translation: facade row.team → unified
+// emp.defaultTeam; legacy_roster_id || id → unified emp.id (so
+// dailyAssignments / roster_term_data localStorage lookups remain stable).
+function getUnifiedRoster() {
+  var rows = EMPLOYEE_ROSTER.slice();
+  if (!window.PentaEmployees || !window.PentaEmployees.listSync) return rows;
+  try {
+    var facade = window.PentaEmployees.listSync() || [];
+    facade.forEach(function(fe) {
+      var name = (fe.name || '').toLowerCase();
+      var existsByName = rows.find(function(r) {
+        return (r.name || '').toLowerCase() === name;
+      });
+      var existsByLegacy = fe.legacy_roster_id ? rows.find(function(r) {
+        return r.id === fe.legacy_roster_id;
+      }) : null;
+      if (!existsByName && !existsByLegacy && fe.status !== 'terminated') {
+        rows.push({
+          id: fe.legacy_roster_id || fe.id,
+          name: fe.name,
+          defaultTeam: fe.team || fe.team_text || null,
+          role: Array.isArray(fe.role) ? fe.role : [],
+          depot: null,
+          fromFacade: true
+        });
+      }
+    });
+  } catch(e) { console.warn('[6.5b] getUnifiedRoster failed:', e); }
+  return rows;
+}
+
 // Merge any employees added via portal that aren't in the hardcoded list
 (function() {
   const portalRoster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
@@ -14459,12 +14494,12 @@ function getEmployeeTeam(employeeId, dateStr) {
   if (dailyAssignments[key] !== undefined) {
     return dailyAssignments[key] === 'OFF' ? null : dailyAssignments[key];
   }
-  const emp = EMPLOYEE_ROSTER.find(e => e.id === employeeId);
+  const emp = getUnifiedRoster().find(e => e.id === employeeId);
   return emp ? emp.defaultTeam : null;
 }
 
 function getTeamEmployees(team, dateStr) {
-  return EMPLOYEE_ROSTER.filter(e => getEmployeeTeam(e.id, dateStr) === team);
+  return getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team);
 }
 
 function assignEmployee(employeeId, team, dateStr) {
@@ -15970,7 +16005,7 @@ function onEmpTeamChange(empId, dk, newTeam, dateMs) {
   showEmpStops(newTeam, dateMs);
 
   // Log the change
-  var emp = EMPLOYEE_ROSTER.find(function(x){ return x.id === empId; });
+  var emp = getUnifiedRoster().find(function(x){ return x.id === empId; });
   if (emp) {
     logPendingUpdate(emp.name + ' → ' + newTeam, new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}));
   }
@@ -16030,7 +16065,7 @@ function renderHoursTable(days, dayNames) {
     const color = team_colors_map[team] || '#6b7280';
 
     // Get employees for this team for each day
-    const teamEmployees = EMPLOYEE_ROSTER.filter(e => {
+    const teamEmployees = getUnifiedRoster().filter(e => {
       // Check if employee was on this team for any day this week
       return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team) || e.defaultTeam === team;
     });
@@ -16211,7 +16246,7 @@ function _buildHoursReport(offset) {
   // or defaultTeam, apply overrides, fall back to team data Mon-Fri only.
   teams.forEach(function(team) {
     var data = (typeof weekHours !== 'undefined' && weekHours[team]) ? weekHours[team] : null;
-    var teamEmployees = EMPLOYEE_ROSTER.filter(function(e) {
+    var teamEmployees = getUnifiedRoster().filter(function(e) {
       return days.some(function(d){ return getEmployeeTeam(e.id, dateKey(d)) === team; })
           || e.defaultTeam === team;
     });
