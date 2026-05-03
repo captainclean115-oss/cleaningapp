@@ -3908,7 +3908,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   <div id="staff-subview" style="display:none;padding:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <div style="font-size:19px;font-weight:700">👥 Staff</div>
-      <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 16px;border-radius:20px;cursor:pointer">+ Add</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
+        <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
+        <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 16px;border-radius:20px;cursor:pointer">+ Add</button>
+      </div>
     </div>
     <!-- Sprint 4.2.B Section 4 — Staff/Applicants segmented control -->
     <div id="staff-subtab-segment" style="display:flex;gap:6px;margin-bottom:12px">
@@ -3923,6 +3927,12 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         📋 Applicants
         <span id="applicants-badge" style="display:none;background:#fa0;color:#000;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700"></span>
       </button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Filter:</span>
+      <select id="staff-team-filter-subview" onchange="filterStaffByTeam(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:6px 10px;border-radius:8px;outline:none;appearance:none">
+        <option value="">All teams</option>
+      </select>
     </div>
     <div id="staff-subview-list"></div>
     <div id="applicants-list-staff" style="display:none"></div>
@@ -4192,9 +4202,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="main-emp-name" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team *</div>
         <select id="main-emp-team" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
-          <option value="B1">B1</option><option value="B3">B3</option><option value="B5">B5</option>
-          <option value="S1">S1</option><option value="S3">S3</option>
-          <option value="M1">M1</option><option value="M2">M2</option><option value="M3">M3</option>
+          <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('main-emp-team', team_id) -->
         </select>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Portal PIN (4 digits)</div><input type="text" id="main-emp-pin" maxlength="4" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
@@ -5249,6 +5257,201 @@ window.PentaClients = (function() {
 
 
 // =====================================================================
+// =====================================================================
+// window.PentaTeams — Sprint 6.9 Teams Management
+// Backed by Supabase teams table. Loaded at boot before PentaEmployees
+// hydrate so team_id lookup in _fromRow can resolve to a team name.
+// Soft-delete aware: load filters deleted_at IS NULL, remove() sets
+// deleted_at + active=false to match house convention.
+// =====================================================================
+(function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  var _cache = [];
+  var _loaded = false;
+  var _lastError = null;
+
+  function _withTimeout(promise, label, ms) {
+    var timer;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error('STALL@' + label + ' (' + ms + 'ms)')); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() { clearTimeout(timer); });
+  }
+
+  async function _businessId() {
+    // Path A: piggyback on PentaEmployees cache (instant if hydrated, no network).
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        var rows = window.PentaEmployees.listSync();
+        if (rows && rows.length && rows[0].business_id) {
+          console.debug('[PentaTeams._businessId] Path A hit:', rows[0].business_id);
+          return rows[0].business_id;
+        }
+        console.debug('[PentaTeams._businessId] Path A miss (cache empty), trying ready()');
+        try {
+          await _withTimeout(window.PentaEmployees.ready(), 'PentaEmployees.ready', 3000);
+          var rows2 = window.PentaEmployees.listSync();
+          if (rows2 && rows2.length && rows2[0].business_id) {
+            console.debug('[PentaTeams._businessId] Path A post-ready hit:', rows2[0].business_id);
+            return rows2[0].business_id;
+          }
+        } catch (eA) {
+          console.warn('[PentaTeams._businessId] Path A timed out:', eA.message);
+        }
+      }
+    } catch (e) { console.debug('[PentaTeams._businessId] Path A threw', e); }
+
+    // Path B: own auth-and-users query, each await timeout-wrapped.
+    try {
+      var sb = SB();
+      if (!sb) { console.warn('[PentaTeams._businessId] no sb client'); }
+      else {
+        console.debug('[PentaTeams._businessId] Path B: sb.auth.getUser()');
+        var ures = await _withTimeout(sb.auth.getUser(), 'auth.getUser', 3000);
+        var user = ures && ures.data && ures.data.user;
+        console.debug('[PentaTeams._businessId] Path B user:', user && user.id);
+        if (user) {
+          console.debug('[PentaTeams._businessId] Path B: query users table');
+          var pres = await _withTimeout(
+            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            'users.select',
+            3000
+          );
+          console.debug('[PentaTeams._businessId] Path B users result:', pres);
+          var bid = pres && pres.data && pres.data.business_id;
+          if (bid) return bid;
+        }
+      }
+    } catch (eB) {
+      _lastError = eB;
+      console.warn('[PentaTeams._businessId] Path B failed:', eB.message);
+    }
+
+    // All paths exhausted — return null so callers can fail loudly.
+    console.error('[PentaTeams._businessId] all paths failed (A: cache miss, B: auth/users query)');
+    return null;
+  }
+
+  async function load() {
+    console.debug('[PentaTeams.load] start');
+    try {
+      var sb = SB();
+      if (!sb) { console.warn('[PentaTeams.load] no sb client — aborting'); return []; }
+      var bid = await _businessId();
+      if (!bid) { console.warn('[PentaTeams.load] no business_id — aborting'); return []; }
+      console.debug('[PentaTeams.load] querying teams for business_id', bid);
+      var res = await _withTimeout(
+        sb.from('teams').select('*').eq('business_id', bid).is('deleted_at', null).order('display_order', { ascending: true }),
+        'teams.select',
+        3000
+      );
+      console.debug('[PentaTeams.load] query result:', res);
+      if (res.error) {
+        _lastError = res.error;
+        console.error('[PentaTeams.load] supabase error', res.error);
+        return [];
+      }
+      _cache = res.data || [];
+      _loaded = true;
+      console.log('[PentaTeams.load] OK — cached', _cache.length, 'teams');
+      return _cache;
+    } catch (e) {
+      _lastError = e;
+      console.error('[PentaTeams.load] threw', e);
+      return [];
+    }
+  }
+
+  function listSync() { return _cache.slice(); }
+  function isLoaded() { return _loaded; }
+
+  async function create(name, color) {
+    var sb = SB();
+    var bid = await _businessId();
+    if (!bid) throw new Error('No business found');
+    var order = _cache.length;
+    var res = await sb.from('teams')
+      .insert({ business_id: bid, name: String(name).trim(), color: color || '#3b82f6', display_order: order })
+      .select()
+      .single();
+    if (res.error) throw res.error;
+    await load();
+    return res.data;
+  }
+
+  async function rename(teamId, newName) {
+    var sb = SB();
+    var res = await sb.from('teams')
+      .update({ name: String(newName).trim(), updated_at: new Date().toISOString() })
+      .eq('id', teamId);
+    if (res.error) throw res.error;
+    await load();
+  }
+
+  async function remove(teamId, reassignToTeamId) {
+    var sb = SB();
+    if (reassignToTeamId) {
+      var u = await sb.from('employees').update({ team_id: reassignToTeamId }).eq('team_id', teamId);
+      if (u.error) throw u.error;
+    }
+    var res = await sb.from('teams')
+      .update({ deleted_at: new Date().toISOString(), active: false })
+      .eq('id', teamId);
+    if (res.error) throw res.error;
+    await load();
+    if (window.PentaEmployees && window.PentaEmployees._hydrate) {
+      try { await window.PentaEmployees._hydrate(); } catch (e) {}
+    }
+  }
+
+  function getById(id) {
+    for (var i = 0; i < _cache.length; i++) if (_cache[i].id === id) return _cache[i];
+    return null;
+  }
+  function getByName(name) {
+    for (var i = 0; i < _cache.length; i++) if (_cache[i].name === name) return _cache[i];
+    return null;
+  }
+
+  // Sprint 6.9 diag — one-call runner that reports every step.
+  async function _diag() {
+    var report = { sb: null, businessId: null, queryOk: null, rowCount: null, lastError: null, cache: null, loaded: null };
+    try {
+      var sb = SB();
+      report.sb = !!sb;
+      console.log('[diag] sb client present:', report.sb);
+      if (!sb) return report;
+      var bid = await _businessId();
+      report.businessId = bid;
+      console.log('[diag] business_id:', bid);
+      if (!bid) return report;
+      var res = await sb.from('teams').select('*').eq('business_id', bid).is('deleted_at', null);
+      report.queryOk = !res.error;
+      report.rowCount = res.data ? res.data.length : 0;
+      console.log('[diag] teams query:', { ok: report.queryOk, rows: report.rowCount, error: res.error });
+      report.cache = _cache.slice();
+      report.loaded = _loaded;
+    } catch (e) {
+      report.lastError = String(e && e.message || e);
+      console.error('[diag] threw', e);
+    }
+    report.lastError = report.lastError || (_lastError && (_lastError.message || String(_lastError)));
+    console.table(report);
+    return report;
+  }
+
+  window.PentaTeams = {
+    load: load, listSync: listSync, isLoaded: isLoaded,
+    create: create, rename: rename, remove: remove,
+    getById: getById, getByName: getByName,
+    _diag: _diag,
+    get _cache() { return _cache.slice(); },
+    get _loaded() { return _loaded; },
+    get _lastError() { return _lastError; }
+  };
+})();
+
 // window.PentaEmployees — Sprint 4 Phase 4A facade
 // Backed by Supabase employees table. localStorage emp_roster kept as
 // fallback cache only. Lazy hydrate on first list()/get()/update().
@@ -5302,11 +5505,73 @@ window.PentaClients = (function() {
     return s;
   }
 
-  function _toRow(emp) {
+  // Sprint 6.9: known field whitelist for _toRow's update-mode warn.
+  // Includes both real DB columns AND known-safe legacy fields that callers
+  // pass but _toRow intentionally drops (pin, termReason, etc. — localStorage-only).
+  // An unknown field hitting _toRow in update mode logs a console.warn so
+  // future typos/renames surface immediately instead of silently dropping.
+  var _TOROW_KNOWN_FIELDS = {
+    // PK / FK / identity
+    id: 1, business_id: 1, legacy_roster_id: 1, auth_user_id: 1,
+    // name (camel + snake)
+    name: 1, first_name: 1, last_name: 1,
+    // email + flag
+    email: 1, email_is_internal: 1,
+    // contact
+    phone: 1,
+    // role
+    role: 1, is_team_leader: 1, is_driver: 1,
+    // language
+    lang: 1, culture_tag: 1, cultureTag: 1,
+    // team
+    team: 1, team_text: 1, team_id: 1,
+    // status + lifecycle
+    status: 1, hired_at: 1, terminated_at: 1,
+    // photo + birthday
+    photoUrl: 1, photo_url: 1, birthday: 1,
+    // address
+    ssn_last4: 1, address: 1, city: 1, state: 1, zip: 1,
+    // emergency contact (real cols + aliases)
+    emergency_contact_name: 1, emergency_contact_phone: 1, emergency_contact_relationship: 1,
+    emName: 1, emPhone: 1, emRel: 1,
+    // pay
+    payRate: 1, pay_rate: 1, pay_type: 1,
+    // notes
+    manager_notes: 1, notes: 1,
+    // sizes
+    shirtSize: 1, shirt_size: 1, pantsSize: 1, pants_size: 1,
+    // work auth / license
+    workAuth: 1, work_auth: 1, hasLicense: 1, has_license: 1,
+    // experience
+    experience: 1, expNotes: 1, experience_notes: 1,
+    // availability
+    availDays: 1, available_days: 1,
+    // languages
+    languages: 1, languages_spoken: 1,
+    // schedule preference
+    prefTime: 1, preferred_start_time: 1,
+    // localStorage-only / known safe drops (NOT real columns, intentionally dropped)
+    pin: 1, termReason: 1, termNotes: 1, rehire: 1, termDate: 1,
+    docPhotos: 1, signature: 1, signedAt: 1,
+    defaultTeam: 1, fromPortal: 1
+  };
+
+  function _toRow(emp, opts) {
     // Translate in-memory employee → Supabase employees row.
     // Phase 6.3a: extended for team_text, payRate, photoUrl, and Migration 012 fields.
+    // Sprint 6.9: opts.mode = 'insert' (default) | 'update'. Update mode skips
+    // email-synthesis (would overwrite real emails) and warns on unknown fields.
     // business_id is read from emp.business_id (caller must provide).
+    opts = opts || {};
+    var isUpdate = opts.mode === 'update';
     if (!emp || typeof emp !== 'object') return null;
+    if (isUpdate) {
+      for (var _k in emp) {
+        if (Object.prototype.hasOwnProperty.call(emp, _k) && !_TOROW_KNOWN_FIELDS[_k]) {
+          console.warn('[_toRow] dropped unknown field:', _k);
+        }
+      }
+    }
     var row = {};
     if (emp.id != null) row.id = emp.id;
     if (emp.business_id != null) row.business_id = emp.business_id;
@@ -5322,13 +5587,21 @@ window.PentaClients = (function() {
     if (emp.first_name != null) row.first_name = emp.first_name;
     if (emp.last_name != null) row.last_name = emp.last_name;
 
-    // email handling: real email if provided, else synthetic internal
-    var realEmail = String(emp.email || '').trim();
-    var looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(realEmail);
-    if (realEmail && looksLikeEmail) {
-      row.email = realEmail;
-      row.email_is_internal = false;
-    } else if (row.first_name != null) {
+    // email handling:
+    //   - INSERT (default): synthesize internal fallback if email missing/invalid
+    //   - UPDATE: only touch row.email if caller explicitly provided emp.email
+    //     (otherwise an update that includes first_name would clobber a real email)
+    if (emp.email !== undefined) {
+      var realEmail = String(emp.email || '').trim();
+      var looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(realEmail);
+      if (realEmail && looksLikeEmail) {
+        row.email = realEmail;
+        row.email_is_internal = false;
+      } else if (row.first_name != null) {
+        row.email = _slug(row.first_name, row.last_name || '-');
+        row.email_is_internal = true;
+      }
+    } else if (!isUpdate && row.first_name != null) {
       row.email = _slug(row.first_name, row.last_name || '-');
       row.email_is_internal = true;
     }
@@ -5351,6 +5624,9 @@ window.PentaClients = (function() {
     // team text → team_text (Phase 6.3-pre Migration 013)
     if (emp.team != null) row.team_text = String(emp.team);
     if (emp.team_text != null) row.team_text = emp.team_text;
+    // Sprint 6.9: team_id (FK to teams table) — passed through verbatim.
+    // `!== undefined` so an explicit null clears the FK; `!= null` would skip nulling.
+    if (emp.team_id !== undefined) row.team_id = emp.team_id || null;
 
     // status: pass through if valid, else default to 'invited'
     if (emp.status != null) {
@@ -5441,6 +5717,11 @@ window.PentaClients = (function() {
 
     if (row.team_text != null) emp.team = row.team_text;
     emp.team_text = row.team_text || null;
+    emp.team_id = row.team_id || null;
+    if (row.team_id && window.PentaTeams && typeof window.PentaTeams.getById === 'function') {
+      const _t = window.PentaTeams.getById(row.team_id);
+      if (_t) emp.team = _t.name;
+    }
 
     if (row.status != null) emp.status = row.status;
     if (row.hired_at != null) emp.hired_at = row.hired_at;
@@ -5505,6 +5786,14 @@ window.PentaClients = (function() {
       if (!sb) { _hydrating = null; return false; }
       var bid = await _businessId();
       if (!bid) { _hydrating = null; return false; }
+      // Sprint 6.9: load teams BEFORE employees so _fromRow's team_id lookup
+      // resolves to a team name. Failure here is non-fatal — _fromRow falls
+      // back to the legacy team_text path.
+      try {
+        if (window.PentaTeams && typeof window.PentaTeams.load === 'function') {
+          await window.PentaTeams.load();
+        }
+      } catch (e) { console.warn('[Sprint 6.9] PentaTeams.load failed (non-fatal)', e); }
       var res = await sb.from('employees')
         .select('*')
         .eq('business_id', bid)
@@ -5537,7 +5826,12 @@ window.PentaClients = (function() {
     if (!_cacheReady) await _hydrate();
     var sb = SB();
     if (!sb) throw new Error('No Supabase client');
-    var res = await sb.from('employees').update(patch).eq('id', id).select().maybeSingle();
+    // Sprint 6.9: route through _toRow so JS-shaped callers (saveMainEmp) and
+    // snake_case patches (saveStaffEmployee dual-write) both translate cleanly.
+    // mode='update' skips email synthesis + warns on unknown fields.
+    var row = _toRow(patch, { mode: 'update' });
+    if (!row) throw new Error('PentaEmployees.update: _toRow returned null');
+    var res = await sb.from('employees').update(row).eq('id', id).select().maybeSingle();
     if (res.error) throw res.error;
     var updated = _fromRow(res.data);
     for (var i = 0; i < _cache.length; i++) {
@@ -13789,7 +14083,7 @@ function openMainEmpModal() {
   document.getElementById('main-emp-modal-title').textContent = 'Add Employee';
   document.getElementById('main-emp-idx').value = '-1';
   document.getElementById('main-emp-name').value = '';
-  document.getElementById('main-emp-team').value = 'B1';
+  populateEmpTeamDropdown('main-emp-team', null);
   document.getElementById('main-emp-pin').value = '';
   document.getElementById('main-emp-pay').value = '';
   document.getElementById('main-emp-lang').value = 'en';
@@ -13811,7 +14105,7 @@ function openMainEmpEdit(idx) {
   document.getElementById('main-emp-modal-title').textContent = 'Edit — ' + emp.name;
   document.getElementById('main-emp-idx').value = idx;
   document.getElementById('main-emp-name').value = emp.name;
-  document.getElementById('main-emp-team').value = emp.team || 'B1';
+  populateEmpTeamDropdown('main-emp-team', emp.team_id || null);
   document.getElementById('main-emp-pin').value = emp.pin || '';
   document.getElementById('main-emp-pay').value = emp.payRate || '';
   document.getElementById('main-emp-lang').value = emp.lang || 'en';
@@ -13843,7 +14137,8 @@ async function saveMainEmp() {
   const status = document.getElementById('main-emp-status').value;
   const emp = {
     name,
-    team: document.getElementById('main-emp-team').value,
+    team_id: document.getElementById('main-emp-team').value || null,
+    team: (function(){ var _id = document.getElementById('main-emp-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     pin: pin || String(Math.floor(1000 + Math.random() * 9000)),
     payRate: parseFloat(document.getElementById('main-emp-pay').value) || 0,
     lang: document.getElementById('main-emp-lang').value,
@@ -18028,27 +18323,46 @@ function clearTimePicker() {
 function openCleanTeamPicker(idx, currentTeam) {
   _cePickerIdx = idx;
   _cePickerType = 'team';
-  const teams = ['B1','B3','B5','S1','S3','M1','M2','M3'];
-  const colors = {'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280','S1':'#ca8a04','S3':'#9333ea','M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'};
   document.getElementById('ce-picker-title').textContent = 'Assign Team';
-  document.getElementById('ce-picker-content').innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px">
-      ${teams.map(t => `
-        <button onclick="applyTeamPicker('${t}')" style="padding:12px 6px;background:${currentTeam===t ? colors[t]+'33' : 'var(--surface2)'};border:2px solid ${currentTeam===t ? colors[t] : 'var(--border)'};border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;color:${colors[t]};cursor:pointer">
-          ${t}
-        </button>`).join('')}
-    </div>
-    <button onclick="closePicker()" style="width:100%;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;padding:8px;cursor:pointer">Cancel</button>
-  `;
+  // Sprint 6.9: dynamic team list + colors from PentaTeams cache.
+  // Hidden field still stores team NAME string for legacy compat with downstream readers.
+  const teams = (window.PentaTeams && window.PentaTeams.listSync) ? window.PentaTeams.listSync() : [];
+  let body;
+  if (!teams.length) {
+    // Sprint 6.9: actionable empty-state — one click to fix
+    body = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:12px">No teams configured.</div>' +
+      '<button onclick="closePicker(); openTeamsManager();" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:9px;cursor:pointer;margin-bottom:8px">⚙️ Open Manage Teams</button>' +
+      '<button onclick="closePicker()" style="width:100%;background:none;border:none;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:8px;cursor:pointer">Cancel</button>';
+  } else {
+    // Sprint 6.9: legacy-string nudge if currentTeam doesn't match any team in cache
+    const _legacyMatch = currentTeam && !teams.some(function(t){ return t.name === currentTeam; });
+    const legacyNote = _legacyMatch
+      ? '<div style="padding:8px 12px;margin-bottom:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;line-height:1.4">Current: <strong style="color:var(--text)">' + escapeHtml(currentTeam) + '</strong> (legacy — pick a new team to update)</div>'
+      : '';
+    body = legacyNote +
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px">' +
+      teams.map(function(t) {
+        const tColor = t.color || 'var(--accent)';
+        const isSel = currentTeam === t.name;
+        const safeName = String(t.name).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return '<button onclick="applyTeamPicker(\'' + safeName + '\')" style="padding:12px 6px;background:' + (isSel ? tColor + '33' : 'var(--surface2)') + ';border:2px solid ' + (isSel ? tColor : 'var(--border)') + ';border-radius:10px;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;color:' + tColor + ';cursor:pointer">' + escapeHtml(t.name) + '</button>';
+      }).join('') +
+      '</div>' +
+      '<button onclick="closePicker()" style="width:100%;background:none;border:none;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:8px;cursor:pointer">Cancel</button>';
+  }
+  document.getElementById('ce-picker-content').innerHTML = body;
   document.getElementById('ce-picker-sheet').style.display = 'flex';
 }
 
 function applyTeamPicker(team) {
-  const colors = {'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280','S1':'#ca8a04','S3':'#9333ea','M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'};
+  // Sprint 6.9: color via PentaTeams cache (lookup by name).
+  // Falls through to var(--accent) for legacy team strings not in current cache.
+  const _t = (window.PentaTeams && window.PentaTeams.getByName) ? window.PentaTeams.getByName(team) : null;
+  const tColor = (_t && _t.color) || 'var(--accent)';
   document.getElementById('ce-clean-team-val-' + _cePickerIdx).value = team;
   const btn = document.getElementById('ce-team-btn-' + _cePickerIdx);
   btn.textContent = team;
-  btn.style.color = colors[team] || 'var(--accent)';
+  btn.style.color = tColor;
   btn.style.fontWeight = '700';
   closePicker();
 }
@@ -20769,7 +21083,167 @@ function getStaffList() {
   return (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
 }
 
+// =====================================================================
+// Sprint 6.9 — Manage Teams handlers
+// Modal-based CRUD over PentaTeams. Triggers a full staff re-render on close
+// so team-name labels reflect any rename/reassign that happened.
+// =====================================================================
+window.openTeamsManager = async function() {
+  var modal = document.getElementById('teams-manager-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  try {
+    if (window.PentaTeams && window.PentaTeams.load) await window.PentaTeams.load();
+  } catch (e) { console.error('[TeamsManager] load failed', e); }
+  renderTeamsList();
+};
+
+window.closeTeamsManager = function() {
+  var modal = document.getElementById('teams-manager-modal');
+  if (modal) modal.style.display = 'none';
+  try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
+  try { if (typeof renderStaffSubview === 'function') renderStaffSubview(); } catch (e) {}
+};
+
+window.renderTeamsList = function() {
+  var container = document.getElementById('teams-list-container');
+  if (!container) return;
+  var teams = (window.PentaTeams && window.PentaTeams.listSync) ? window.PentaTeams.listSync() : [];
+  var employees = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+  if (!teams.length) {
+    container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:24px;font-size:13px">No teams yet. Add one below.</div>';
+    return;
+  }
+  container.innerHTML = teams.map(function(t) {
+    var count = employees.filter(function(e) { return e.team_id === t.id; }).length;
+    var nameEsc = escapeHtml(t.name);
+    var colorEsc = escapeHtml(t.color || '#3b82f6');
+    var idEsc = escapeHtml(t.id);
+    var nameJs = nameEsc.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;margin-bottom:6px">' +
+      '<div style="width:14px;height:14px;border-radius:50%;background:' + colorEsc + ';flex-shrink:0"></div>' +
+      '<input type="text" value="' + nameEsc + '" data-team-id="' + idEsc + '" onblur="renameTeamHandler(this)" style="flex:1;background:transparent;border:1px solid transparent;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:4px 6px;border-radius:6px;outline:none">' +
+      '<span style="color:var(--muted);font-size:12px;white-space:nowrap">' + count + (count === 1 ? ' member' : ' members') + '</span>' +
+      '<button onclick="deleteTeamHandler(\'' + idEsc + '\',\'' + nameJs + '\',' + count + ')" style="background:var(--red);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer">Delete</button>' +
+      '</div>';
+  }).join('');
+};
+
+window.addNewTeam = async function() {
+  var nameEl = document.getElementById('new-team-name');
+  var colorEl = document.getElementById('new-team-color');
+  if (!nameEl) return;
+  var name = (nameEl.value || '').trim();
+  var color = colorEl ? colorEl.value : '#3b82f6';
+  if (!name) { alert('Team name required'); return; }
+  try {
+    await window.PentaTeams.create(name, color);
+    nameEl.value = '';
+    renderTeamsList();
+  } catch (e) {
+    alert('Failed to create team: ' + (e.message || e));
+  }
+};
+
+window.renameTeamHandler = async function(input) {
+  var teamId = input && input.dataset && input.dataset.teamId;
+  var newName = (input.value || '').trim();
+  if (!teamId || !newName) { renderTeamsList(); return; }
+  try {
+    await window.PentaTeams.rename(teamId, newName);
+    renderTeamsList();
+  } catch (e) {
+    alert('Failed to rename: ' + (e.message || e));
+    renderTeamsList();
+  }
+};
+
+window.deleteTeamHandler = async function(teamId, teamName, memberCount) {
+  var teams = window.PentaTeams.listSync();
+  if (teams.length <= 1) {
+    alert('Cannot delete the only team. Create another team first.');
+    return;
+  }
+  var reassignToId = null;
+  if (memberCount > 0) {
+    var others = teams.filter(function(t) { return t.id !== teamId; });
+    var choices = others.map(function(t, i) { return (i + 1) + '. ' + t.name; }).join('\n');
+    var pick = prompt('"' + teamName + '" has ' + memberCount + ' member(s). Reassign them to which team?\n\n' + choices + '\n\nEnter number (1-' + others.length + '):');
+    if (pick === null) return;
+    var idx = parseInt(pick, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= others.length) { alert('Cancelled'); return; }
+    reassignToId = others[idx].id;
+  } else {
+    if (!confirm('Delete team "' + teamName + '"?')) return;
+  }
+  try {
+    await window.PentaTeams.remove(teamId, reassignToId);
+    renderTeamsList();
+  } catch (e) {
+    alert('Failed to delete: ' + (e.message || e));
+  }
+};
+
+// =====================================================================
+// Sprint 6.9 — Team-aware UI helpers
+// populateEmpTeamDropdown: populate <select> with current teams, select one
+// populateTeamFilter: populate filter <select> with "All teams" + each team
+// filterStaffByTeam: set window._staffTeamFilter and re-render both lists
+// viewAsTeam: prompt-driven preview, reuses pentaEnterEmployeePreview
+// =====================================================================
+window.populateEmpTeamDropdown = function(elementId, selectedTeamId) {
+  var sel = document.getElementById(elementId);
+  if (!sel) return;
+  var teams = (window.PentaTeams && window.PentaTeams.listSync) ? window.PentaTeams.listSync() : [];
+  if (!teams.length) {
+    sel.innerHTML = '<option value="">No teams configured</option>';
+    return;
+  }
+  var target = selectedTeamId || teams[0].id;
+  sel.innerHTML = teams.map(function(t) {
+    return '<option value="' + escapeHtml(t.id) + '"' + (t.id === target ? ' selected' : '') + '>' + escapeHtml(t.name) + '</option>';
+  }).join('');
+};
+
+window.populateTeamFilter = function(elementId) {
+  var sel = document.getElementById(elementId);
+  if (!sel) return;
+  var teams = (window.PentaTeams && window.PentaTeams.listSync) ? window.PentaTeams.listSync() : [];
+  var current = sel.value;
+  sel.innerHTML = '<option value="">All teams</option>' +
+    teams.map(function(t) {
+      return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>';
+    }).join('');
+  if (current) sel.value = current;
+};
+
+window.filterStaffByTeam = function(teamId) {
+  window._staffTeamFilter = teamId || null;
+  try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
+  try { if (typeof renderStaffSubview === 'function') renderStaffSubview(); } catch (e) {}
+};
+
+window.viewAsTeam = function() {
+  var teams = (window.PentaTeams && window.PentaTeams.listSync) ? window.PentaTeams.listSync() : [];
+  if (!teams.length) { alert('No teams configured'); return; }
+  var choices = teams.map(function(t, i) { return (i + 1) + '. ' + t.name; }).join('\n');
+  var pick = prompt("Preview which team's view?\n\n" + choices + '\n\nEnter number (1-' + teams.length + '):');
+  if (pick === null) return;
+  var idx = parseInt(pick, 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx >= teams.length) { alert('Cancelled'); return; }
+  var team = teams[idx];
+  var emps = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+  var teamEmps = emps.filter(function(e) { return e.team_id === team.id && e.status !== 'terminated'; });
+  if (!teamEmps.length) { alert('No active employees in "' + team.name + '"'); return; }
+  if (typeof pentaEnterEmployeePreview === 'function') {
+    pentaEnterEmployeePreview(teamEmps[0]);
+  } else {
+    alert('Preview as ' + team.name + ' (impersonating ' + teamEmps[0].name + ') — preview UI not available');
+  }
+};
+
 function openStaffSheet() {
+  try { populateTeamFilter('staff-team-filter-sheet'); } catch (e) {}
   renderStaffList();
   document.getElementById('staff-sheet').style.display = 'flex';
 }
@@ -20854,6 +21328,7 @@ function setStaffSubtab(tab) {
   }
   if (listStaff) listStaff.style.display = tab === 'staff' ? '' : 'none';
   if (listApps) listApps.style.display = tab === 'applicants' ? '' : 'none';
+  if (tab === 'staff') { try { populateTeamFilter('staff-team-filter-subview'); } catch (e) {} }
   if (tab === 'applicants') renderApplicantsList();
 }
 
@@ -21083,13 +21558,18 @@ function openManagerApplication() {
 }
 
 function renderStaffList() {
-  const list = getStaffList();
-  const colors = {'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280','S1':'#ca8a04','S3':'#9333ea','M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'};
+  let list = getStaffList();
+  // Sprint 6.9: respect window._staffTeamFilter (set by filter dropdown)
+  if (window._staffTeamFilter) list = list.filter(e => e.team_id === window._staffTeamFilter);
+  const _teamFor = (e) => {
+    const t = (e && e.team_id && window.PentaTeams) ? window.PentaTeams.getById(e.team_id) : null;
+    return { color: (t && t.color) || '#6b7280', name: (t && t.name) || e.team || '—' };
+  };
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
   const card = (emp, i) => {
-    const color = colors[emp.team] || '#6b7280';
+    const { color, name: _teamName } = _teamFor(emp);
     if (emp.status === 'terminated') {
       return `<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;opacity:0.6">
         <div style="width:10px;height:10px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
@@ -21106,7 +21586,7 @@ function renderStaffList() {
       <div style="flex:1;min-width:0">
         <div style="font-size:15px;font-weight:600">${emp.name}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
-          <span style="color:${color};font-weight:600">${emp.team}</span>
+          <span style="color:${color};font-weight:600">${_teamName}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
@@ -21143,7 +21623,7 @@ function openAddStaff() {
     const setC = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
 
     set('staff-edit-idx', '-1');
-    set('staff-name', '');    set('staff-team', 'B1');
+    set('staff-name', '');    populateEmpTeamDropdown('staff-team', null);
     set('staff-pin', '');     set('staff-pay', '');
     set('staff-phone', '');   set('staff-lang', 'en');
     set('staff-status', 'active');
@@ -21236,8 +21716,9 @@ function renderStaffView() {
   const _hasSig = emp.signature || (_sig && _sig.name);
   const _sigName = (_sig && _sig.name) || emp.signature || '';
   const _sigDate = (_sig && _sig.date) || emp.signedAt || '';
-  const colors = {'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280','S1':'#ca8a04','S3':'#9333ea','M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'};
-  const teamColor = colors[emp.team] || 'var(--accent)';
+  // Sprint 6.9: per-team color from PentaTeams cache
+  const _profileTeam = (emp.team_id && window.PentaTeams) ? window.PentaTeams.getById(emp.team_id) : null;
+  const teamColor = (_profileTeam && _profileTeam.color) || 'var(--accent)';
   const statusColor = emp.status === 'active' ? 'var(--green)' : emp.status === 'terminated' ? 'var(--red)' : 'var(--muted)';
 
   const row = (label, val) => val ? `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--muted)">${label}</span><span style="font-size:13px;font-weight:500;text-align:right;max-width:60%">${val}</span></div>` : '';
@@ -21494,7 +21975,7 @@ function openEditStaff(idx) {
   document.getElementById('staff-city').value = emp.city || '';
   document.getElementById('staff-zip').value = emp.zip || '';
   // Employment
-  document.getElementById('staff-team').value = emp.team || 'B1';
+  populateEmpTeamDropdown('staff-team', emp.team_id || null);
   document.getElementById('staff-pay').value = emp.payRate || '';
   document.getElementById('staff-lang').value = emp.lang || 'en';
   document.getElementById('staff-status').value = emp.status || 'active';
@@ -21646,7 +22127,8 @@ async function saveStaffEmployee() {
   const emp = {
     id: (idx >= 0 && list[idx] && list[idx].id) || ('e_' + Date.now()),
     name,
-    team: document.getElementById('staff-team').value,
+    team_id: document.getElementById('staff-team').value || null,
+    team: (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
@@ -21748,6 +22230,7 @@ async function saveStaffEmployee() {
         if (emp.emergency_contact_phone !== undefined) patch.emergency_contact_phone = emp.emergency_contact_phone || null;
         if (emp.manager_notes !== undefined) patch.manager_notes = emp.manager_notes || null;
         if (emp.team !== undefined) patch.team_text = String(emp.team || '');
+        if (emp.team_id !== undefined) patch.team_id = emp.team_id || null;
         if (emp.photoUrl !== undefined) patch.photo_url = emp.photoUrl || null;
         if (emp.birthday) {
           var bd = String(emp.birthday).trim();
@@ -25554,13 +26037,18 @@ function showClientsSubview() {
 }
 
 function renderStaffSubview() {
-  const list = getStaffList();
-  const colors = {'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280','S1':'#ca8a04','S3':'#9333ea','M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'};
+  let list = getStaffList();
+  // Sprint 6.9: respect window._staffTeamFilter (set by filter dropdown)
+  if (window._staffTeamFilter) list = list.filter(e => e.team_id === window._staffTeamFilter);
+  const _teamFor = (e) => {
+    const t = (e && e.team_id && window.PentaTeams) ? window.PentaTeams.getById(e.team_id) : null;
+    return { color: (t && t.color) || '#6b7280', name: (t && t.name) || e.team || '—' };
+  };
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
   const card = (emp, i) => {
-    const color = colors[emp.team] || '#6b7280';
+    const { color, name: _teamName } = _teamFor(emp);
     const langLabel = {en:'EN',es:'ES',pt:'PT',cv:'KR'}[emp.lang||'en']||'EN';
     if (emp.status === 'terminated') {
       return `<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;opacity:0.6">
@@ -25577,7 +26065,7 @@ function renderStaffSubview() {
       <div style="flex:1;min-width:0">
         <div style="font-size:15px;font-weight:600">${emp.name}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
-          <span style="color:${color};font-weight:600">${emp.team}</span>
+          <span style="color:${color};font-weight:600">${_teamName}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
@@ -28339,7 +28827,7 @@ function _p3dPage(dir) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team</div>
           <select id="staff-team" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
-            <option value="B1">B1</option><option value="B3">B3</option><option value="B5">B5</option><option value="S1">S1</option><option value="S3">S3</option><option value="M1">M1</option><option value="M2">M2</option><option value="M3">M3</option>
+            <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('staff-team', team_id) -->
           </select>
         </div>
       </div>
@@ -28676,12 +29164,41 @@ function _p3dPage(dir) {
   <div style="background:var(--surface);width:100%;max-height:92vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
       <div style="font-size:17px;font-weight:700">👥 Staff</div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
+        <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
         <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">+ Add</button>
         <button onclick="closeStaffSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
       </div>
     </div>
+    <div style="padding:12px 16px 0;display:flex;align-items:center;gap:8px">
+      <span style="color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Filter:</span>
+      <select id="staff-team-filter-sheet" onchange="filterStaffByTeam(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:6px 10px;border-radius:8px;outline:none;appearance:none">
+        <option value="">All teams</option>
+      </select>
+    </div>
     <div id="staff-list" style="padding:16px"></div>
+  </div>
+</div>
+
+<!-- ═══ TEAMS MANAGER MODAL (Sprint 6.9) ═══ -->
+<div id="teams-manager-modal" style="display:none;position:fixed;inset:0;z-index:8800;background:rgba(0,0,0,0.85);align-items:flex-end" onclick="if(event.target===this)closeTeamsManager()">
+  <div style="background:var(--surface);width:100%;max-width:600px;margin:0 auto;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div style="font-size:17px;font-weight:700">⚙️ Manage Teams</div>
+      <button onclick="closeTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="padding:16px 20px">
+      <div id="teams-list-container"></div>
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">Add New Team</div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="new-team-name" placeholder="Team name" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:9px 12px;border-radius:9px;outline:none">
+          <input type="color" id="new-team-color" value="#3b82f6" style="width:48px;height:38px;border:1px solid var(--border);border-radius:9px;background:var(--surface2);cursor:pointer">
+          <button onclick="addNewTeam()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">Add</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
