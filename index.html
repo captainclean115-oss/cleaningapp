@@ -7113,30 +7113,6 @@ window.addEventListener('DOMContentLoaded', function() {
   // Auto-generate schedule on load
   setTimeout(function() { autoGenerateSchedule(); }, 500);
 
-  // Seed emp_roster from EMPLOYEE_ROSTER if needed
-  try {
-    const existing = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-    const existingIds = existing.map(e => e.id || e.name);
-    let changed = false;
-    EMPLOYEE_ROSTER.forEach(er => {
-      // Check if already in roster by id or name
-      const found = existing.find(e => e.id === er.id || e.name === er.name);
-      if (!found) {
-        existing.push({
-          id: er.id,
-          name: er.name,
-          team: er.defaultTeam || '',
-          payRate: 0,
-          phone: '',
-          lang: 'en',
-          status: 'active',
-          role: er.role || []
-        });
-        changed = true;
-      }
-    });
-    if (changed) localStorage.setItem('emp_roster', JSON.stringify(existing));
-  } catch(e) {}
 
   // Auth routing (Sprint 4 Phase 4D — three-way):
   //   No session                           → manager login screen
@@ -14459,27 +14435,6 @@ function getUnifiedRoster() {
   return rows;
 }
 
-// Merge any employees added via portal that aren't in the hardcoded list
-(function() {
-  const portalRoster = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-  portalRoster.forEach(pe => {
-    const exists = EMPLOYEE_ROSTER.find(e => e.name.toLowerCase() === pe.name.toLowerCase());
-    if (!exists && pe.status === 'active') {
-      EMPLOYEE_ROSTER.push({
-        id: 'pe_' + pe.name.replace(/\s+/g,'_').toLowerCase(),
-        name: pe.name,
-        defaultTeam: pe.team || null,
-        role: [],
-        depot: pe.team && ['M1','M2','M3'].includes(pe.team) ? 'marlborough' : 'abington',
-        payRate: pe.payRate || 0,
-        phone: pe.phone || '',
-        pin: pe.pin || '',
-        lang: pe.lang || 'en',
-        fromPortal: true
-      });
-    }
-  });
-})();
 
 // Daily assignments — overrides defaultTeam for a specific date
 // key: 'YYYY-MM-DD_employeeId' -> teamName
