@@ -2530,6 +2530,12 @@ body.in-portal .bottom-nav { display: none !important; }
    display:block) and the topbar-row chrome bleed through staff-panel's
    transparent background. */
 body.in-portal #clients-view,
+body.in-portal #home-view,
+body.in-portal #cal-view,
+body.in-portal #tasks-view,
+body.in-portal #messages-view,
+body.in-portal #gps-view,
+body.in-portal #claire-view,
 body.in-portal .topbar,
 body.in-portal .search-wrap,
 body.in-portal .stats-bar,
@@ -7156,22 +7162,17 @@ window.addEventListener('DOMContentLoaded', function() {
         if (rows[i].auth_user_id === authId) { match = rows[i]; break; }
       }
       if (!match) return null;
-      var rosterEntry = null;
-      try {
-        var roster = JSON.parse(localStorage.getItem('emp_roster') || '[]') || [];
-        rosterEntry = roster.find(function(e) {
-          return String(e.id || '') === String(match.legacy_roster_id || '');
-        }) || null;
-      } catch (e) {}
+      // Phase 6.4: dropped legacy roster enrichment. PentaEmployees.list() rows
+      // already carry name/team/lang via _fromRow; no localStorage lookup needed.
       var langMap = { mx: 'es', br: 'pt', kr: 'ko', us: 'en', generic: 'en' };
       return {
         id: match.legacy_roster_id || match.id,
-        name: (rosterEntry && rosterEntry.name)
+        name: match.name
               || ((match.first_name || '') + ' ' + (match.last_name || '')).trim(),
-        team: (rosterEntry && rosterEntry.team) || '',
-        lang: (rosterEntry && rosterEntry.lang) || langMap[match.culture_tag] || 'en',
+        team: match.team || '',
+        lang: match.lang || langMap[match.culture_tag] || 'en',
         status: 'active',
-        role: (rosterEntry && rosterEntry.role) || []
+        role: match.role || []
       };
     })();
   }
@@ -7310,11 +7311,15 @@ window.addEventListener('DOMContentLoaded', function() {
   try {
     var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
     if (_previewId) {
-      var _roster = [];
-      try { _roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
-      var _emp = _roster.find(function(e){
-        return (e.id === _previewId || e.name === _previewId) && e.status === 'active';
-      });
+      // Phase 6.4: facade lookup instead of localStorage roster scan.
+      var _emp = null;
+      try {
+        if (window.PentaEmployees && window.PentaEmployees.find) {
+          _emp = window.PentaEmployees.find(function(e){
+            return (e.id === _previewId || e.legacy_roster_id === _previewId || e.name === _previewId) && e.status === 'active';
+          });
+        }
+      } catch(e) {}
       if (_emp) {
         setTimeout(function(){
           try { pentaEnterEmployeePreview(_emp); } catch(e) { console.error('[preview restore] failed', e); }
@@ -8524,12 +8529,14 @@ function getEmployeeById(id) {
   var hit = roster.find(function(e){ return e.id === id; });
   if (hit) return hit;
   try {
-    var staff = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-    var m = staff.find(function(e){ return e.id === id; });
-    if (m) {
-      // Normalize field names — admin-form stores `team`, roster uses
-      // `defaultTeam`. Expose both so downstream code keeps working.
-      return Object.assign({}, m, { defaultTeam: m.team || m.defaultTeam || '' });
+    // Phase 6.4: facade lookup. Accept either id or legacy_roster_id.
+    if (window.PentaEmployees && window.PentaEmployees.find) {
+      var m = window.PentaEmployees.find(function(e){ return e.id === id || e.legacy_roster_id === id; });
+      if (m) {
+        // Normalize field names — facade rows have `team` from team_text;
+        // expose `defaultTeam` alias so downstream code keeps working.
+        return Object.assign({}, m, { defaultTeam: m.team || m.defaultTeam || '' });
+      }
     }
   } catch(e){}
   return null;
@@ -9912,8 +9919,6 @@ const HOLIDAY_LIBRARY = {
   function _employees() {
     try {
       if (typeof getStaffList === 'function') return getStaffList();
-      var raw = localStorage.getItem('emp_roster');
-      if (raw) return JSON.parse(raw) || [];
     } catch (e) {}
     return [];
   }
@@ -10062,9 +10067,7 @@ function renderRecognitionCard(employeeId) {
     var flagMap = { us: '🇺🇸', mx: '🇲🇽', br: '🇧🇷', kr: '🇰🇷', generic: '' };
     var culture = 'generic';
     try {
-      var emps = (typeof getStaffList === 'function')
-        ? getStaffList()
-        : JSON.parse(localStorage.getItem('emp_roster') || '[]');
+      var emps = (typeof getStaffList === 'function') ? getStaffList() : [];
       var emp = (emps || []).find(function(e){
         return e && (e.id === employeeId || e.name === employeeId);
       });
@@ -10104,8 +10107,13 @@ function pentaBannerUpdateScope() {
   var sel = document.getElementById('pentaBannerRecipient');
   if (!sel) return;
   if (scope === 'employee') {
-    var roster;
-    try { roster = JSON.parse(localStorage.getItem('emp_roster') || '[]') || []; } catch(e) { roster = []; }
+    // Phase 6.4: facade snapshot instead of localStorage.
+    var roster = [];
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        roster = window.PentaEmployees.listSync() || [];
+      }
+    } catch(e) {}
     var active = roster.filter(function(e){ return e && e.status === 'active'; });
     active.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
     sel.innerHTML = '<option value="">Select employee…</option>' + active.map(function(e){
@@ -10193,11 +10201,16 @@ function pentaBannerRenderActive() {
   try { localStorage.setItem('penta_manager_banners', JSON.stringify(list)); } catch(e) {}
   if (countEl) countEl.textContent = String(list.length);
   if (!list.length) { wrap.innerHTML = '<div style="font-size:12px;color:var(--muted);font-style:italic">No active banners.</div>'; return; }
-  var roster;
-  try { roster = JSON.parse(localStorage.getItem('emp_roster') || '[]') || []; } catch(e) { roster = []; }
+  // Phase 6.4: facade snapshot instead of localStorage.
+  var roster = [];
+  try {
+    if (window.PentaEmployees && window.PentaEmployees.listSync) {
+      roster = window.PentaEmployees.listSync() || [];
+    }
+  } catch(e) {}
   function recipientLabel(e) {
     if (e.recipientScope === 'all') return 'All';
-    var match = roster.find(function(r){ return r && (r.id === e.recipientEmployeeId || r.name === e.recipientEmployeeId); });
+    var match = roster.find(function(r){ return r && (r.id === e.recipientEmployeeId || r.legacy_roster_id === e.recipientEmployeeId || r.name === e.recipientEmployeeId); });
     return match ? (match.name || 'Employee') : 'Employee';
   }
   list.sort(function(a,b){ return new Date(b.createdAt) - new Date(a.createdAt); });
@@ -13274,12 +13287,16 @@ function _executeClaireToolCallInner(toolCall, message) {
       srPhone = '15085598062';  // Tom's RingCentral primary
       srLabel = 'Send to Tom';
     } else {
-      var srRoster = [];
-      try { srRoster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
-      var srMatch = srRoster.find(function(r){ return (r.name||'').toLowerCase() === srRecipient.toLowerCase(); });
+      // Phase 6.4: facade lookup by name.
+      var srMatch = null;
+      try {
+        if (window.PentaEmployees && window.PentaEmployees.getByName) {
+          srMatch = window.PentaEmployees.getByName(srRecipient);
+        }
+      } catch(e) {}
       if (!srMatch) { _claireLastToolResult = 'send_response_to: no employee named "'+srRecipient+'" in roster, and recipient was not "me".'; return; }
       srPhone = (srMatch.phone||'').replace(/\D/g,'');
-      if (!srPhone) { _claireLastToolResult = 'send_response_to: '+srMatch.name+' has no phone on file in emp_roster.'; return; }
+      if (!srPhone) { _claireLastToolResult = 'send_response_to: '+srMatch.name+' has no phone on file.'; return; }
       srLabel = 'Send to ' + srMatch.name;
     }
     var srUrl = 'rcmobile://sms?number=' + srPhone + '&body=' + encodeURIComponent(srContent);
@@ -14111,11 +14128,15 @@ function promptDefaultTeam(empId) {
   const valid = ['B1','B3','B5','S1','S3','M1','M2','M3'];
   if (!valid.includes(team.toUpperCase())) { alert('Invalid team. Use: ' + valid.join(', ')); return; }
   emp.defaultTeam = team.toUpperCase();
-  // Update portal roster too if from portal
+  // Phase 6.4: persist team change through the facade so it lands in Supabase
+  // and survives across devices/sessions (was localStorage-only before).
   if (emp.fromPortal) {
-    const pr = JSON.parse(localStorage.getItem('emp_roster') || '[]');
-    const pe = pr.find(p => p.name.toLowerCase() === emp.name.toLowerCase());
-    if (pe) { pe.team = team.toUpperCase(); localStorage.setItem('emp_roster', JSON.stringify(pr)); }
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
+        var pe = window.PentaEmployees.getByName(emp.name);
+        if (pe && pe.id) { window.PentaEmployees.update(pe.id, { team_text: team.toUpperCase() }); }
+      }
+    } catch(e) { console.warn('[Claire change_default_team] facade update failed', e); }
   }
   alert('✓ Default team for ' + emp.name + ' set to ' + team.toUpperCase());
   renderTeamManager();
@@ -20143,8 +20164,13 @@ function pentaOpenEmpPreviewPicker() {
   var existing = document.getElementById('pentaEmpPreviewPicker');
   if (existing) existing.remove();
 
+  // Phase 6.4: facade snapshot instead of localStorage.
   var roster = [];
-  try { roster = JSON.parse(localStorage.getItem('emp_roster') || '[]'); } catch(e) {}
+  try {
+    if (window.PentaEmployees && window.PentaEmployees.listSync) {
+      roster = window.PentaEmployees.listSync() || [];
+    }
+  } catch(e) {}
   var active = roster.filter(function(e){ return e && e.status === 'active'; });
   active.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||'')); });
 
