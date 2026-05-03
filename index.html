@@ -1015,12 +1015,11 @@ body {
 }
 .employee-label {
   font-size: 12px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.95);
+  font-weight: 600;
+  color: var(--text);
   text-align: center;
   margin-top: 8px;
   letter-spacing: -0.2px;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.45);
 }
 .employee-badge {
   position: absolute; top: -4px; right: -4px;
@@ -1242,25 +1241,6 @@ body {
   background: linear-gradient(135deg,#8E7BFF,#5E5CE6); border: none; color: #fff;
 }
 
-.employee-back-btn {
-  display: none;
-  margin: 8px 12px 0;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.16);
-  color: #fff;
-  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600;
-  padding: 8px 16px 8px 10px;
-  border-radius: 20px;
-  cursor: pointer;
-  align-items: center; gap: 4px;
-  -webkit-tap-highlight-color: transparent;
-}
-.employee-back-btn svg {
-  width: 20px; height: 20px;
-  stroke: #fff; fill: none; stroke-width: 2.2;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-#portal-screen.in-subpage .employee-back-btn { display: inline-flex; }
 #portal-screen.in-subpage #portal-home { display: none; }
 /* When NOT in a sub-page, every portal sub-tab stays hidden. */
 #portal-screen:not(.in-subpage) #tab-schedule,
@@ -1272,6 +1252,34 @@ body {
 #portal-screen:not(.in-subpage) #tab-rewards {
   display: none !important;
 }
+
+/* Phase 6.3a Fix 14: shared 🏠 home button for employee portal sub-pages.
+   Replaces the prior 3 different back-button systems (.employee-back-btn,
+   .penta-learn-back, .content-back). One fixed-position button, shown
+   contextually via the parent's active/in-subpage state. Learn keeps its
+   own .penta-learn-home (model for this class). Position is top-right
+   so it doesn't collide with content; matches Learn's placement. */
+.portal-home-btn {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 14px;
+  z-index: 200;
+  width: 40px; height: 40px;
+  padding: 0;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.16);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  border-radius: 50%;
+  cursor: pointer;
+  display: none;
+  align-items: center; justify-content: center;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+#portal-screen.in-subpage .portal-home-btn,
+#content-view.active .portal-home-btn { display: inline-flex; }
 
 /* ── SCHEDULE ── */
 .section { padding: 16px; }
@@ -1530,11 +1538,6 @@ body.home-dragging, body.home-dragging * {
 }
 .content-topbar-row {
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
-}
-.content-back {
-  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
-  width: 36px; height: 36px; border-radius: 50%; font-size: 22px; line-height: 1;
-  cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0;
 }
 .content-title-big {
   font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
@@ -3283,7 +3286,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-.penta-learn-back, .penta-learn-settings, .penta-learn-home {
+.penta-learn-settings, .penta-learn-home {
   background: none; border: none;
   font-size: 22px; line-height: 1;
   color: var(--text);
@@ -3769,7 +3772,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <!-- ═══ LEARN — Phrase of the Day v1 screen ═══ -->
 <div id="penta-learn-screen" style="display:none">
   <div class="penta-learn-header">
-    <button class="penta-learn-back" onclick="closePentaLearn()" aria-label="Back">‹</button>
     <h2 class="penta-learn-title">Learn</h2>
     <div class="penta-learn-header-actions">
       <button class="penta-learn-settings" onclick="openPentaLearnSettings()" aria-label="Settings">⚙</button>
@@ -3973,7 +3975,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <div id="content-view">
   <div class="content-topbar">
     <div class="content-topbar-row">
-      <button class="content-back" onclick="closeContentView()">‹</button>
+      <button class="portal-home-btn" onclick="closeContentView()" aria-label="Home">🏠</button>
       <div class="content-title-big" id="content-title">Content</div>
       <div style="margin-left:auto;font-size:12px;color:var(--muted)" id="content-author-hint"></div>
     </div>
@@ -11900,6 +11902,22 @@ document.addEventListener('click', function(e) {
     var pv = document.getElementById('payments-view');
     if (pv && pv.style.display && pv.style.display !== 'none') {
       try { closePaymentsDemo(); } catch(e){}
+      return;
+    }
+    // Phase 6.3a Fix 14: Penta Learn overlay (employee + manager).
+    // Sits at z-index 9000 above any portal sub-tab state, so check first.
+    var lr = document.getElementById('penta-learn-screen');
+    if (lr && lr.style.display && lr.style.display !== 'none') {
+      try { closePentaLearn(); } catch(e){}
+      return;
+    }
+    // Phase 6.3a Fix 14: employee portal sub-tab. Return to portal home,
+    // not the manager home (which is what the showTab('home') fallback below
+    // would do — wrong for employees).
+    var ps = document.getElementById('portal-screen');
+    if (document.body.classList.contains('in-portal')
+        && ps && ps.classList.contains('in-subpage')) {
+      try { portalGoHome(); } catch(e){}
       return;
     }
     // Content view overlay
@@ -28768,10 +28786,7 @@ function _p3dPage(dir) {
   </div>
 </div>
 
-  <button class="employee-back-btn" onclick="portalGoHome()" aria-label="Back to home">
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
-    <span>Home</span>
-  </button>
+  <button class="portal-home-btn" onclick="portalGoHome()" aria-label="Home">🏠</button>
 
 <!-- Rewards — Gift points modal -->
 <div id="reward-gift-overlay" onclick="if(event.target===this)empRewardsGiftClose()"
