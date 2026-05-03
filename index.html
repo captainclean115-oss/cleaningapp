@@ -5227,7 +5227,6 @@ window.PentaClients = (function() {
 // =====================================================================
 (function() {
   function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
-  var BACKFILL_FLAG = 'phase4a_emp_backfilled_v1';
 
   var _cache = [];
   var _cacheReady = false;
@@ -5245,11 +5244,6 @@ window.PentaClients = (function() {
       .normalize('NFD').replace(/[̀-ͯ]/g, '')
       .replace(/[^a-z0-9.]/g, '');
     return base + '@employees.penta.internal';
-  }
-
-  function _readRoster() {
-    try { return JSON.parse(localStorage.getItem('emp_roster') || '[]') || []; }
-    catch (e) { return []; }
   }
 
   function _splitName(name) {
@@ -5501,57 +5495,6 @@ window.PentaClients = (function() {
     return _hydrating;
   }
 
-  async function _backfillFromRoster() {
-    try {
-      if (localStorage.getItem(BACKFILL_FLAG) === '1') return { skipped: 'already-done' };
-      var sb = SB();
-      if (!sb) return { skipped: 'no-supabase' };
-      var bid = await _businessId();
-      if (!bid) return { skipped: 'no-business' };
-
-      var roster = _readRoster();
-      if (!roster.length) {
-        localStorage.setItem(BACKFILL_FLAG, '1');
-        return { skipped: 'empty-roster' };
-      }
-
-      var existingRes = await sb.from('employees')
-        .select('legacy_roster_id')
-        .eq('business_id', bid)
-        .not('legacy_roster_id', 'is', null);
-      var seen = {};
-      (existingRes.data || []).forEach(function(r) { if (r.legacy_roster_id) seen[r.legacy_roster_id] = true; });
-
-      var rows = [];
-      for (var i = 0; i < roster.length; i++) {
-        // Backfill semantics: active-in-roster → invited DB; else → suspended.
-        var rstatus = String(roster[i].status || '').toLowerCase() === 'active' ? 'invited' : 'suspended';
-        var entry = Object.assign({}, roster[i], { business_id: bid, status: rstatus });
-        var row = _toRow(entry);
-        if (row.legacy_roster_id && !seen[row.legacy_roster_id]) rows.push(row);
-      }
-
-      if (!rows.length) {
-        localStorage.setItem(BACKFILL_FLAG, '1');
-        return { inserted: 0, skipped: 'all-already-imported' };
-      }
-
-      var insRes = await sb.from('employees').insert(rows).select();
-      if (insRes.error) {
-        console.error('PentaEmployees backfill insert error', insRes.error);
-        return { error: insRes.error.message };
-      }
-
-      localStorage.setItem(BACKFILL_FLAG, '1');
-      _cacheReady = false;
-      await _hydrate();
-      return { inserted: (insRes.data || []).length };
-    } catch (e) {
-      console.error('PentaEmployees backfill threw', e);
-      return { error: String(e && e.message || e) };
-    }
-  }
-
   async function list() {
     if (!_cacheReady) await _hydrate();
     return _cache.slice();
@@ -5777,7 +5720,6 @@ window.PentaClients = (function() {
     isReady: isReady,
     ready: ready,
     _hydrate: _hydrate,
-    _backfillFromRoster: _backfillFromRoster,
     _toRow: _toRow,
     _fromRow: _fromRow
   };
@@ -7272,16 +7214,6 @@ window.addEventListener('DOMContentLoaded', function() {
 
   // Manager path.
   appUnlockManager();
-
-  // Idempotent backfill — safe to call on every manager boot. Wrapped so any
-  // failure logs but never blocks the app.
-  try {
-    if (window.PentaEmployees && window.PentaEmployees._backfillFromRoster) {
-      window.PentaEmployees._backfillFromRoster()
-        .then(function(r) { if (r && (r.inserted || r.error)) console.log('[Phase4A] backfill', r); })
-        .catch(function(e) { console.error('[Phase4A] backfill rejected', e); });
-    }
-  } catch (e) { console.error('[Phase4A] backfill threw sync', e); }
 
   // Restore "View as employee" preview if it was active before refresh.
   try {
