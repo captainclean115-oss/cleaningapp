@@ -5354,6 +5354,27 @@ window.PentaClients = (function() {
 
     if (emp.manager_notes != null) row.manager_notes = emp.manager_notes;
 
+    // Phase 6.3a Migration 014: form fields with new DB columns
+    if (emp.shirtSize != null) row.shirt_size = String(emp.shirtSize || '').trim() || null;
+    if (emp.shirt_size != null) row.shirt_size = String(emp.shirt_size || '').trim() || null;
+    if (emp.pantsSize != null) row.pants_size = String(emp.pantsSize || '').trim() || null;
+    if (emp.pants_size != null) row.pants_size = String(emp.pants_size || '').trim() || null;
+    if (emp.workAuth != null) row.work_auth = String(emp.workAuth || '').trim() || null;
+    if (emp.work_auth != null) row.work_auth = String(emp.work_auth || '').trim() || null;
+    if (emp.hasLicense != null) row.has_license = String(emp.hasLicense || '').trim() || null;
+    if (emp.has_license != null) row.has_license = String(emp.has_license || '').trim() || null;
+    if (emp.experience != null) row.experience = String(emp.experience || '').trim() || null;
+    if (emp.expNotes != null) row.experience_notes = String(emp.expNotes || '').trim() || null;
+    if (emp.experience_notes != null) row.experience_notes = String(emp.experience_notes || '').trim() || null;
+    if (emp.availDays != null) row.available_days = Array.isArray(emp.availDays) && emp.availDays.length ? emp.availDays : null;
+    if (emp.available_days != null) row.available_days = Array.isArray(emp.available_days) && emp.available_days.length ? emp.available_days : null;
+    if (emp.languages != null) row.languages_spoken = Array.isArray(emp.languages) && emp.languages.length ? emp.languages : null;
+    if (emp.languages_spoken != null) row.languages_spoken = Array.isArray(emp.languages_spoken) && emp.languages_spoken.length ? emp.languages_spoken : null;
+    if (emp.prefTime != null) row.preferred_start_time = String(emp.prefTime || '').trim() || null;
+    if (emp.preferred_start_time != null) row.preferred_start_time = String(emp.preferred_start_time || '').trim() || null;
+    if (emp.emRel != null) row.emergency_contact_relationship = String(emp.emRel || '').trim() || null;
+    if (emp.emergency_contact_relationship != null) row.emergency_contact_relationship = String(emp.emergency_contact_relationship || '').trim() || null;
+
     return row;
   }
 
@@ -5411,6 +5432,23 @@ window.PentaClients = (function() {
       emp.payRate = row.pay_rate;
       emp.pay_rate = row.pay_rate;
     }
+
+    // Phase 6.3a Migration 014: snake_case from DB → both snake_case and
+    // camelCase on emp so renderer + populate code can read either shape.
+    ['shirt_size','pants_size','work_auth','has_license','experience',
+     'experience_notes','available_days','languages_spoken',
+     'preferred_start_time','emergency_contact_relationship'].forEach(function(k){
+      if (row[k] != null) emp[k] = row[k];
+    });
+    if (row.shirt_size != null) emp.shirtSize = row.shirt_size;
+    if (row.pants_size != null) emp.pantsSize = row.pants_size;
+    if (row.work_auth != null) emp.workAuth = row.work_auth;
+    if (row.has_license != null) emp.hasLicense = row.has_license;
+    if (row.experience_notes != null) emp.expNotes = row.experience_notes;
+    if (row.available_days != null) emp.availDays = row.available_days;
+    if (row.languages_spoken != null) emp.languages = row.languages_spoken;
+    if (row.preferred_start_time != null) emp.prefTime = row.preferred_start_time;
+    if (row.emergency_contact_relationship != null) emp.emRel = row.emergency_contact_relationship;
 
     if (row.deleted_at != null) emp.deleted_at = row.deleted_at;
     if (row.created_at != null) emp.created_at = row.created_at;
@@ -21190,7 +21228,9 @@ function renderStaffView() {
 
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-      <div style="width:52px;height:52px;border-radius:50%;background:${teamColor}22;border:2px solid ${teamColor};display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:${teamColor}">${(emp.name||'?')[0]}</div>
+      ${emp.photoUrl || emp.photo_url
+        ? `<img src="${emp.photoUrl || emp.photo_url}" alt="" style="width:52px;height:52px;border-radius:50%;object-fit:cover;border:2px solid ${teamColor}">`
+        : `<div style="width:52px;height:52px;border-radius:50%;background:${teamColor}22;border:2px solid ${teamColor};display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:${teamColor}">${(emp.name||'?')[0]}</div>`}
       <div>
         <div style="font-size:18px;font-weight:700">${emp.name}</div>
         <div style="display:flex;gap:6px;margin-top:4px">
@@ -21441,29 +21481,35 @@ function openEditStaff(idx) {
   };
   // Work auth
   const wa = document.getElementById('staff-work-auth');
-  if (wa) wa.value = emp.workAuth || '';
+  if (wa) wa.value = emp.work_auth || emp.workAuth || '';
   const lic = document.getElementById('staff-license');
-  if (lic) lic.value = emp.hasLicense || '';
+  if (lic) lic.value = emp.has_license || emp.hasLicense || '';
   const shirt = document.getElementById('staff-shirt-size');
-  if (shirt) shirt.value = emp.shirtSize || '';
+  if (shirt) shirt.value = emp.shirt_size || emp.shirtSize || '';
   const pants = document.getElementById('staff-pants-size');
-  if (pants) pants.value = emp.pantsSize || '';
+  if (pants) pants.value = emp.pants_size || emp.pantsSize || '';
   // Experience
   const exp = document.getElementById('staff-experience');
   if (exp) exp.value = emp.experience || 'none';
   const expN = document.getElementById('staff-exp-notes');
-  if (expN) expN.value = emp.expNotes || '';
-  // Availability days
+  if (expN) expN.value = emp.experience_notes || emp.expNotes || '';
+  // Availability days — Migration 014: prefer DB-side available_days array
+  var _avail = (Array.isArray(emp.available_days) && emp.available_days.length)
+    ? emp.available_days
+    : (Array.isArray(emp.availDays) ? emp.availDays : []);
   ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(d => {
     const el = document.getElementById('staff-day-' + d);
-    if (el) el.checked = emp.availDays && emp.availDays.includes(d);
+    if (el) el.checked = _avail.includes(d);
   });
   const pt = document.getElementById('staff-pref-time');
-  if (pt) pt.value = emp.prefTime || 'flexible';
-  // Languages spoken
+  if (pt) pt.value = emp.preferred_start_time || emp.prefTime || 'flexible';
+  // Languages spoken — Migration 014: prefer DB-side languages_spoken array
+  var _langs = (Array.isArray(emp.languages_spoken) && emp.languages_spoken.length)
+    ? emp.languages_spoken
+    : (Array.isArray(emp.languages) ? emp.languages : []);
   ['English','Spanish','Portuguese','Kriolu'].forEach(l => {
     const el = document.getElementById('staff-spoken-' + l);
-    if (el) el.checked = emp.languages && emp.languages.includes(l);
+    if (el) el.checked = _langs.includes(l);
   });
   // Emergency contact
   const emN = document.getElementById('staff-em-name');
@@ -21471,7 +21517,7 @@ function openEditStaff(idx) {
   const emP = document.getElementById('staff-em-phone');
   if (emP) emP.value = emp.emergency_contact_phone || emp.emPhone || '';
   const emR = document.getElementById('staff-em-rel');
-  if (emR) emR.value = emp.emRel || '';
+  if (emR) emR.value = emp.emergency_contact_relationship || emp.emRel || '';
   // Notes
   const notes = document.getElementById('staff-notes');
   if (notes) notes.value = emp.manager_notes || emp.notes || '';
@@ -21677,6 +21723,18 @@ async function saveStaffEmployee() {
           var bd = String(emp.birthday).trim();
           patch.birthday = /^\d{4}-\d{2}-\d{2}$/.test(bd) ? bd : null;
         }
+        // Phase 6.3a Migration 014: 10 new columns added by ALTER TABLE.
+        // Same conditional !== undefined gate as the rest of the patch.
+        if (emp.shirtSize !== undefined) patch.shirt_size = emp.shirtSize || null;
+        if (emp.pantsSize !== undefined) patch.pants_size = emp.pantsSize || null;
+        if (emp.workAuth !== undefined) patch.work_auth = emp.workAuth || null;
+        if (emp.hasLicense !== undefined) patch.has_license = emp.hasLicense || null;
+        if (emp.experience !== undefined) patch.experience = emp.experience || null;
+        if (emp.expNotes !== undefined) patch.experience_notes = emp.expNotes || null;
+        if (emp.availDays !== undefined) patch.available_days = (Array.isArray(emp.availDays) && emp.availDays.length) ? emp.availDays : null;
+        if (emp.languages !== undefined) patch.languages_spoken = (Array.isArray(emp.languages) && emp.languages.length) ? emp.languages : null;
+        if (emp.prefTime !== undefined) patch.preferred_start_time = emp.prefTime || null;
+        if (emp.emRel !== undefined) patch.emergency_contact_relationship = emp.emRel || null;
         await window.PentaEmployees.update(supaRow.id, patch);
         console.log('[Sprint 4.1] Staff edit dual-write OK for', rosterId);
       } else {
