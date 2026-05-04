@@ -3970,6 +3970,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <button onclick="openScheduleMap()" title="Open fullscreen map"
         style="position:absolute;bottom:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.6);border:none;color:#fff;font-size:16px;border-radius:6px;cursor:pointer;z-index:1000;display:flex;align-items:center;justify-content:center;line-height:1">⛶</button>
     </div>
+    <!-- Sprint 7-map.1: missing-pins notice. Populated by _renderMissingPinsNotice
+         on every map render. Hidden when count is 0. -->
+    <div id="schedule-map-missing-pins" style="display:none;margin-top:8px;font-size:11px;color:var(--muted);line-height:1.4"></div>
   </div>
   <div class="bottom-pad"></div>
 </div>
@@ -5285,21 +5288,50 @@ window.PentaClients = (function() {
 // =====================================================================
 window.PentaGeocode = (function() {
 
-  async function geocodeAddress(addr, city, zip) {
-    if (!addr || !String(addr).trim()) return { lat: null, lng: null, status: 'failed' };
-    var query = [String(addr).trim(), city || '', zip || '', 'MA'].filter(Boolean).join(', ');
+  async function _tryNominatim(query) {
     try {
       var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=' + encodeURIComponent(query);
       var res = await fetch(url, { headers: { 'User-Agent': 'PentaClean/1.0' } });
-      if (res.status === 429) return { lat: null, lng: null, status: 'rate_limited' };
-      if (!res.ok) return { lat: null, lng: null, status: 'failed' };
+      if (res.status === 429) return { status: 'rate_limited' };
+      if (!res.ok) return { status: 'failed' };
       var data = await res.json();
-      if (!data || !data.length) return { lat: null, lng: null, status: 'failed' };
-      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), status: 'ok' };
-    } catch (e) {
-      console.warn('[PentaGeocode] error', e);
-      return { lat: null, lng: null, status: 'failed' };
+      if (!data || !data.length) return { status: 'failed' };
+      return { status: 'ok', lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    } catch (e) { console.warn('[PentaGeocode] nominatim error', e); return { status: 'failed' }; }
+  }
+
+  async function _tryPhoton(query) {
+    try {
+      var url = 'https://photon.komoot.io/api/?limit=1&q=' + encodeURIComponent(query);
+      var res = await fetch(url);
+      if (res.status === 429) return { status: 'rate_limited' };
+      if (!res.ok) return { status: 'failed' };
+      var data = await res.json();
+      var feat = data && data.features && data.features[0];
+      var coords = feat && feat.geometry && feat.geometry.coordinates;
+      if (!coords || coords.length < 2) return { status: 'failed' };
+      // Photon returns [lng, lat] (GeoJSON) — flip to our shape.
+      return { status: 'ok', lng: coords[0], lat: coords[1] };
+    } catch (e) { console.warn('[PentaGeocode] photon error', e); return { status: 'failed' }; }
+  }
+
+  async function geocodeAddress(addr, city, zip) {
+    if (!addr || !String(addr).trim()) return { lat: null, lng: null, status: 'failed' };
+    var query = [String(addr).trim(), city || '', zip || '', 'MA'].filter(Boolean).join(', ');
+
+    // Provider 1: Nominatim (preferred — better US coverage on simple addresses)
+    var nom = await _tryNominatim(query);
+    if (nom.status === 'ok') return { lat: nom.lat, lng: nom.lng, status: 'ok', provider: 'nominatim' };
+
+    // Provider 2: Photon fallback (resolves apt suffixes, directional cities, etc.)
+    var phot = await _tryPhoton(query);
+    if (phot.status === 'ok') return { lat: phot.lat, lng: phot.lng, status: 'ok', provider: 'photon' };
+
+    // Both providers exhausted — preserve rate_limited if either was throttled.
+    if (nom.status === 'rate_limited' || phot.status === 'rate_limited') {
+      return { lat: null, lng: null, status: 'rate_limited' };
     }
+    return { lat: null, lng: null, status: 'failed' };
   }
 
   async function batchBackfill(progressCallback) {
@@ -26906,6 +26938,37 @@ function _applyInlineFilterOpacity(filter) {
   }
 }
 
+// Sprint 7-map.1: render the missing-pins notice below the map. Lists each
+// client whose coords aren't available (geocode_status !== 'ok' OR lat/lng null).
+// Tappable — clicks open openClientEdit(clientId) so the manager can fix the
+// address inline. Dedupes by client id (multiple jobs for same client → one row).
+function _renderMissingPinsNotice(dayJobs) {
+  var el = document.getElementById('schedule-map-missing-pins');
+  if (!el) return;
+  if (!window.PentaClients || !window.PentaClients.getClient) { el.style.display = 'none'; return; }
+  var missing = [];
+  var seen = {};
+  dayJobs.forEach(function(j) {
+    var c = window.PentaClients.getClient(j.clientId);
+    if (!c) return;
+    var hasCoords = c.geocode_status === 'ok' && c.lat != null && c.lng != null;
+    if (hasCoords) return;
+    if (seen[c.id]) return;
+    seen[c.id] = true;
+    var name = ((c.fn || '') + ' ' + (c.ln || '')).trim() || '(unnamed)';
+    missing.push({ id: c.id, name: name, city: c.city || '—', team: j.team || '—' });
+  });
+  if (!missing.length) { el.style.display = 'none'; return; }
+  var safeEsc = (typeof escapeHtml === 'function') ? escapeHtml : function(s){ return String(s||''); };
+  var links = missing.map(function(m) {
+    return '<a href="javascript:void(0)" onclick="openClientEdit(\'' + safeEsc(String(m.id)) + '\')" style="color:var(--accent);text-decoration:underline;cursor:pointer">'
+      + safeEsc(m.name) + '</a> (' + safeEsc(m.city) + ', ' + safeEsc(m.team) + ')';
+  }).join(', ');
+  var label = missing.length + ' missing pin' + (missing.length === 1 ? '' : 's');
+  el.innerHTML = label + ': ' + links + '. Edit address to fix.';
+  el.style.display = 'block';
+}
+
 function renderInlineScheduleMap() {
   var container = document.getElementById('schedule-inline-map');
   if (!container) return;
@@ -26918,6 +26981,10 @@ function renderInlineScheduleMap() {
   var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
   var activeFilter = window.calTeamFilter || null;
   var jobsHash = _inlineJobsHash(dayJobs);
+
+  // Sprint 7-map.1: refresh missing-pins notice on every render (independent
+  // of map render path — Paths A/B/C all need an up-to-date notice).
+  try { _renderMissingPinsNotice(dayJobs); } catch(e) { console.warn('[missing pins notice] failed', e); }
 
   // Path A: first ever inline render — create singleton map + tile layers.
   if (!_inlineScheduleMap) {
