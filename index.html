@@ -4572,6 +4572,12 @@ window.PentaClients = (function() {
       pause_end: _isoToMDY(r.pause_end),
       pause_reason: r.pause_reason,
       status_changed_at: r.status_changed_at,
+      // Sprint 7-map: DB-backed coords (Migration 018). Map plot reads these
+      // directly from cache — no per-render Nominatim call.
+      lat: r.lat == null ? null : Number(r.lat),
+      lng: r.lng == null ? null : Number(r.lng),
+      geocode_status: r.geocode_status || 'pending',
+      geocoded_at: r.geocoded_at || null,
       margin: null
     };
   }
@@ -4627,6 +4633,11 @@ window.PentaClients = (function() {
     if (H.call(src, 'pause_end'))    out.pause_end         = _mdyToIso(src.pause_end);
     if (H.call(src, 'pause_reason')) out.pause_reason      = src.pause_reason == null || src.pause_reason === '' ? null : src.pause_reason;
     if (H.call(src, 'status_changed_at')) out.status_changed_at = src.status_changed_at == null || src.status_changed_at === '' ? null : src.status_changed_at;
+    // Sprint 7-map: persist DB-backed coords (Migration 018).
+    if (H.call(src, 'lat')) out.lat = src.lat;
+    if (H.call(src, 'lng')) out.lng = src.lng;
+    if (H.call(src, 'geocode_status')) out.geocode_status = src.geocode_status;
+    if (H.call(src, 'geocoded_at')) out.geocoded_at = src.geocoded_at;
     return out;
   }
 
@@ -5261,6 +5272,80 @@ window.PentaClients = (function() {
   setTimeout(_bootLoadFromSupabase, 0);
 
   return api;
+})();
+
+
+// =====================================================================
+// window.PentaGeocode — Sprint 7-map: save-time geocoding helper.
+// Replaces per-render Nominatim calls with a DB-backed coords pipeline:
+//   1. geocodeAddress(addr, city, zip) → returns {lat, lng, status} once.
+//   2. batchBackfill(progress) → one-shot for migrating all clients.
+//   3. Map plot reads c.lat/c.lng directly from PentaClients cache.
+// Nominatim still rate-limits at 1 req/sec per ToS — backfill paces 1.1s.
+// =====================================================================
+window.PentaGeocode = (function() {
+
+  async function geocodeAddress(addr, city, zip) {
+    if (!addr || !String(addr).trim()) return { lat: null, lng: null, status: 'failed' };
+    var query = [String(addr).trim(), city || '', zip || '', 'MA'].filter(Boolean).join(', ');
+    try {
+      var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=' + encodeURIComponent(query);
+      var res = await fetch(url, { headers: { 'User-Agent': 'PentaClean/1.0' } });
+      if (res.status === 429) return { lat: null, lng: null, status: 'rate_limited' };
+      if (!res.ok) return { lat: null, lng: null, status: 'failed' };
+      var data = await res.json();
+      if (!data || !data.length) return { lat: null, lng: null, status: 'failed' };
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), status: 'ok' };
+    } catch (e) {
+      console.warn('[PentaGeocode] error', e);
+      return { lat: null, lng: null, status: 'failed' };
+    }
+  }
+
+  async function batchBackfill(progressCallback) {
+    if (!window.PentaClients || !window.PentaClients.list) {
+      throw new Error('PentaClients not ready');
+    }
+    var all = window.PentaClients.list();
+    var clients = all.filter(function(c) {
+      return c && c.geocode_status !== 'ok' && c.addr && String(c.addr).trim();
+    });
+    var done = 0, ok = 0, failed = 0, rate_limited = 0;
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i];
+      var result = await geocodeAddress(c.addr, c.city, c.zip);
+      var nowIso = new Date().toISOString();
+      var patch;
+      if (result.status === 'ok') {
+        patch = { lat: result.lat, lng: result.lng, geocode_status: 'ok', geocoded_at: nowIso };
+        ok++;
+      } else if (result.status === 'rate_limited') {
+        // Don't mark failed — skip, will be picked up in resume run
+        rate_limited++;
+        patch = null;
+      } else {
+        patch = { geocode_status: 'failed', geocoded_at: nowIso };
+        failed++;
+      }
+      if (patch) {
+        try { await window.PentaClients.updateClient(c.id, patch); }
+        catch (e) { console.warn('[PentaGeocode] save failed for', c.id, e); }
+      }
+      done++;
+      if (progressCallback) {
+        try { progressCallback({ done: done, total: clients.length, ok: ok, failed: failed, rate_limited: rate_limited, current: c.fn + ' ' + (c.ln || '') }); }
+        catch (e) {}
+      }
+      // Nominatim ToS: 1 req/sec
+      await new Promise(function(r){ setTimeout(r, 1100); });
+    }
+    return { done: done, ok: ok, failed: failed, rate_limited: rate_limited, total: clients.length };
+  }
+
+  return {
+    geocodeAddress: geocodeAddress,
+    batchBackfill: batchBackfill
+  };
 })();
 
 
@@ -18459,6 +18544,19 @@ function saveClientEdit(clientId) {
   };
   editPatch.anchor = newAnchor;
 
+  // Sprint 7-map: detect address change to mark pending + trigger re-geocode.
+  // Old values from cache `c`; new values already in editPatch.
+  var _addrChanged = (
+    (c.addr || '').trim() !== editPatch.addr ||
+    (c.city || '').trim() !== editPatch.city ||
+    (c.zip  || '').trim() !== editPatch.zip
+  );
+  if (_addrChanged) {
+    editPatch.geocode_status = 'pending';
+    editPatch.lat = null;
+    editPatch.lng = null;
+  }
+
   // Migration 008: status & pause fields
   var _ceStatusChanged = false;
   var ceStatusEl = document.getElementById('ce-status');
@@ -18489,6 +18587,22 @@ function saveClientEdit(clientId) {
   }
 
   PentaClients.updateClient(clientId, editPatch);
+
+  // Sprint 7-map: kick off background geocode if address changed.
+  // Non-blocking — UI returns immediately. Coords land in DB ~1-3 sec later.
+  if (_addrChanged && window.PentaGeocode) {
+    setTimeout(function() {
+      window.PentaGeocode.geocodeAddress(editPatch.addr, editPatch.city, editPatch.zip).then(function(result) {
+        var nowIso = new Date().toISOString();
+        if (result.status === 'ok') {
+          PentaClients.updateClient(clientId, { lat: result.lat, lng: result.lng, geocode_status: 'ok', geocoded_at: nowIso });
+        } else {
+          PentaClients.updateClient(clientId, { geocode_status: 'failed', geocoded_at: nowIso });
+        }
+      });
+    }, 100);
+  }
+
   // Migration 007 follow-up: re-derive next from the (possibly new) anchor/fc
   // projection. Helper is a no-op when nothing changed; for new drafts with no
   // c.next yet, this seeds c.next from anchor.
@@ -26636,7 +26750,6 @@ function _renderScheduleMapCore(containerId, opts) {
   function processTeam(team) {
     var teamJobList = byTeam[team];
     var color = _teamColor(team);
-    // Sprint 6.11: filter dim-not-hide (non-matching teams → opacity 0.25)
     var dim = activeFilter && team !== activeFilter;
     var pinOpacity = dim ? 0.25 : 1.0;
     var lineOpacity = dim ? 0.20 : 0.80;
@@ -26655,59 +26768,70 @@ function _renderScheduleMapCore(containerId, opts) {
       function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; return h*60+m; }
       return tm(a.time)-tm(b.time);
     });
-    teamJobList.forEach(function(j, idx) {
-      var addr = getClientAddrForJob(j);
-      geocodeAddress(addr, function(coords) {
-        jobCoords[idx] = coords;
-        pending--;
-        if (pending === 0) {
-          jobCoords.forEach(function(coords, idx2) {
-            if (!coords) return;
-            var j2 = teamJobList[idx2];
-            var name = j2.clientName || '';
-            // Sprint 6.11: numbered pin label (1=first by time, 2=second, etc.)
-            var positionNum = idx2 + 1;
-            var pinHtml = '<div style="position:relative;width:28px;height:36px">'
-              +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
-              +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
-              +'</div>';
-            var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
-            L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
-              .addTo(map)
-              .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
-            routePoints.push([coords.lat, coords.lng]);
-          });
-          routePoints.push([office.lat, office.lng]);
-          if (routePoints.length > 2) {
-            // Sprint 6.11: OSRM cache (key: team + date + ordered job ids)
-            var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
-            var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
-            var cached = _osrmCacheGet(cacheKey);
-            if (cached) {
-              L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
-            } else {
-              var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
-              var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
-              (function(c, rp, lo, ck) {
-                fetch(osrmUrl)
-                  .then(function(r){ return r.json(); })
-                  .then(function(data) {
-                    if (data && data.routes && data.routes[0]) {
-                      _osrmCacheSet(ck, data.routes[0].geometry);
-                      L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
-                    } else {
-                      L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
-                    }
-                  }).catch(function(){
-                    L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
-                  });
-              })(color, routePoints.slice(), lineOpacity, cacheKey);
-            }
-          }
-          teamsDone++;
-          if (teamsDone === teamList.length && statusEl) statusEl.style.display = 'none';
-        }
+
+    // Sprint 7-map: when all coords resolved, plot pins + polyline.
+    function _onAllResolved() {
+      jobCoords.forEach(function(coords, idx2) {
+        if (!coords) return;
+        var j2 = teamJobList[idx2];
+        var name = j2.clientName || '';
+        var positionNum = idx2 + 1;
+        var pinHtml = '<div style="position:relative;width:28px;height:36px">'
+          +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
+          +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
+          +'</div>';
+        var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
+        L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
+          .addTo(map)
+          .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
+        routePoints.push([coords.lat, coords.lng]);
       });
+      routePoints.push([office.lat, office.lng]);
+      if (routePoints.length > 2) {
+        var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
+        var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
+        var cached = _osrmCacheGet(cacheKey);
+        if (cached) {
+          L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
+        } else {
+          var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
+          var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
+          (function(c, rp, lo, ck) {
+            fetch(osrmUrl)
+              .then(function(r){ return r.json(); })
+              .then(function(data) {
+                if (data && data.routes && data.routes[0]) {
+                  _osrmCacheSet(ck, data.routes[0].geometry);
+                  L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
+                } else {
+                  L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                }
+              }).catch(function(){
+                L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+              });
+          })(color, routePoints.slice(), lineOpacity, cacheKey);
+        }
+      }
+      teamsDone++;
+      if (teamsDone === teamList.length && statusEl) statusEl.style.display = 'none';
+    }
+
+    function _resolveCoords(idx, coords) {
+      jobCoords[idx] = coords;
+      pending--;
+      if (pending === 0) _onAllResolved();
+    }
+
+    teamJobList.forEach(function(j, idx) {
+      // Sprint 7-map: prefer DB coords from PentaClients; fall back to legacy
+      // geocodeAddress only for clients not yet backfilled.
+      var pc = window.PentaClients && window.PentaClients.getClient ? window.PentaClients.getClient(j.clientId) : null;
+      if (pc && pc.lat != null && pc.lng != null) {
+        _resolveCoords(idx, { lat: Number(pc.lat), lng: Number(pc.lng) });
+      } else {
+        var addr = getClientAddrForJob(j);
+        geocodeAddress(addr, function(coords) { _resolveCoords(idx, coords); });
+      }
     });
   }
 
@@ -26906,62 +27030,74 @@ function _plotInlineMapData(map, dayJobs, dateStr, activeFilter, doFitBounds) {
       function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; return h*60+m; }
       return tm(a.time)-tm(b.time);
     });
-    teamJobList.forEach(function(j, idx) {
-      var addr = getClientAddrForJob(j);
-      geocodeAddress(addr, function(coords) {
-        jobCoords[idx] = coords;
-        pending--;
-        if (pending === 0) {
-          jobCoords.forEach(function(coords, idx2) {
-            if (!coords) return;
-            var j2 = teamJobList[idx2];
-            var name = j2.clientName || '';
-            var positionNum = idx2 + 1;
-            var pinHtml = '<div style="position:relative;width:28px;height:36px">'
-              +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
-              +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
-              +'</div>';
-            var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
-            var marker = L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
-              .addTo(map)
-              .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
-            _inlineDataLayers.push({ layer: marker, team: team, kind: 'marker' });
-            routePoints.push([coords.lat, coords.lng]);
-          });
-          routePoints.push([office.lat, office.lng]);
-          if (routePoints.length > 2) {
-            var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
-            var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
-            var cached = _osrmCacheGet(cacheKey);
-            if (cached) {
-              var gj = L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
-              _inlineDataLayers.push({ layer: gj, team: team, kind: 'line' });
-            } else {
-              var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
-              var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
-              (function(c, rp, lo, ck, tm) {
-                fetch(osrmUrl)
-                  .then(function(r){ return r.json(); })
-                  .then(function(data) {
-                    var layer;
-                    if (data && data.routes && data.routes[0]) {
-                      _osrmCacheSet(ck, data.routes[0].geometry);
-                      layer = L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
-                    } else {
-                      layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
-                    }
-                    _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
-                  }).catch(function(){
-                    var layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
-                    _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
-                  });
-              })(color, routePoints.slice(), lineOpacity, cacheKey, team);
-            }
-          }
-          teamsDone++;
-          maybeFit();
-        }
+
+    function _onAllResolved() {
+      jobCoords.forEach(function(coords, idx2) {
+        if (!coords) return;
+        var j2 = teamJobList[idx2];
+        var name = j2.clientName || '';
+        var positionNum = idx2 + 1;
+        var pinHtml = '<div style="position:relative;width:28px;height:36px">'
+          +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
+          +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
+          +'</div>';
+        var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
+        var marker = L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
+          .addTo(map)
+          .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
+        _inlineDataLayers.push({ layer: marker, team: team, kind: 'marker' });
+        routePoints.push([coords.lat, coords.lng]);
       });
+      routePoints.push([office.lat, office.lng]);
+      if (routePoints.length > 2) {
+        var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
+        var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
+        var cached = _osrmCacheGet(cacheKey);
+        if (cached) {
+          var gj = L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
+          _inlineDataLayers.push({ layer: gj, team: team, kind: 'line' });
+        } else {
+          var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
+          var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
+          (function(c, rp, lo, ck, tm) {
+            fetch(osrmUrl)
+              .then(function(r){ return r.json(); })
+              .then(function(data) {
+                var layer;
+                if (data && data.routes && data.routes[0]) {
+                  _osrmCacheSet(ck, data.routes[0].geometry);
+                  layer = L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
+                } else {
+                  layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                }
+                _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
+              }).catch(function(){
+                var layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
+              });
+          })(color, routePoints.slice(), lineOpacity, cacheKey, team);
+        }
+      }
+      teamsDone++;
+      maybeFit();
+    }
+
+    function _resolveCoords(idx, coords) {
+      jobCoords[idx] = coords;
+      pending--;
+      if (pending === 0) _onAllResolved();
+    }
+
+    teamJobList.forEach(function(j, idx) {
+      // Sprint 7-map: prefer DB coords from PentaClients; fall back to legacy
+      // geocodeAddress only for clients not yet backfilled.
+      var pc = window.PentaClients && window.PentaClients.getClient ? window.PentaClients.getClient(j.clientId) : null;
+      if (pc && pc.lat != null && pc.lng != null) {
+        _resolveCoords(idx, { lat: Number(pc.lat), lng: Number(pc.lng) });
+      } else {
+        var addr = getClientAddrForJob(j);
+        geocodeAddress(addr, function(coords) { _resolveCoords(idx, coords); });
+      }
     });
   }
 
