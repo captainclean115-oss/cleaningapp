@@ -15746,13 +15746,23 @@ async function loadWeekHours() {
       var cacheData = {};
       Object.keys(weekHours).forEach(function(team) {
         var d = weekHours[team];
-        cacheData[team] = {
+        var entry = {
           days: d.days,
           starts: d.starts ? d.starts.map(function(s){ return s ? s.toISOString() : null; }) : [],
           ends: d.ends ? d.ends.map(function(s){ return s ? s.toISOString() : null; }) : [],
           lunch: d.lunch,
           total: d.total
         };
+        cacheData[team] = entry;
+        // Sprint 6.10: also alias-write under the team's current PentaTeams name
+        // (covers renames — legacy 'B1' jobs keep their cache, but if PentaTeams
+        // has a team named 'B1', we'd also key under its current name).
+        if (window.PentaTeams && typeof window.PentaTeams.getByName === 'function') {
+          var pt = window.PentaTeams.getByName(team);
+          if (pt && pt.name && pt.name !== team) {
+            cacheData[pt.name] = entry;
+          }
+        }
       });
       localStorage.setItem('weekHours_cache', JSON.stringify(cacheData));
 
@@ -20433,12 +20443,17 @@ function appUnlockEmployee(emp) {
   setTimeout(() => { try { renderPortalFormCards(); renderPortalCustomFormCards(); } catch(e){} }, 200);
   // staff-panel-inner is already stretch/full-width from HTML
 
-  // Set team badge
+  // Set team badge — Sprint 6.10: PentaTeams color (DB) takes precedence
+  // over legacy hardcoded map. Label drops 'Team ' prefix so modern names
+  // ('Team 1', 'Crew Alpha') don't render as 'Team Team 1'.
+  // This is the PREVIEW-flow badge writer (manager → 👁️ Preview / View as team).
+  // The real-employee login flow has its own copy in loginSuccess.
   const COLORS = { B1:'#7c3aed', B3:'#db2777', B5:'#6b7280', S1:'#ca8a04', S3:'#9333ea', M1:'#dc2626', M2:'#2563eb', M3:'#16a34a' };
-  const color = COLORS[emp.team] || '#6b7280';
+  const _ptBadgeP = (emp && emp.team_id && window.PentaTeams) ? window.PentaTeams.getById(emp.team_id) : null;
+  const color = (_ptBadgeP && _ptBadgeP.color) || COLORS[emp.team] || '#6b7280';
   const badge = document.getElementById('team-badge');
   if (badge) {
-    badge.textContent = 'Team ' + emp.team;
+    badge.textContent = emp.team || 'No team';
     badge.style.background = color + '22';
     badge.style.color = color;
     badge.style.border = '1px solid ' + color + '44';
@@ -20591,9 +20606,14 @@ function pentaExitEmployeePreview() {
     var nav = document.querySelector('.bottom-nav'); if (nav) nav.style.display = '';
   } catch(e) {}
 
+  var returnToStaff = sessionStorage.getItem('penta_preview_return_to_staff') === '1';
+  sessionStorage.removeItem('penta_preview_return_to_staff');
+
   try {
     if (fromAdmin && typeof openAdminScreen === 'function') {
       openAdminScreen();
+    } else if (returnToStaff && typeof openStaffSheet === 'function') {
+      openStaffSheet();
     } else if (typeof showTab === 'function') {
       showTab(sessionStorage.getItem('cc_tab') || 'home');
     }
@@ -21236,6 +21256,7 @@ window.viewAsTeam = function() {
   var teamEmps = emps.filter(function(e) { return e.team_id === team.id && e.status !== 'terminated'; });
   if (!teamEmps.length) { alert('No active employees in "' + team.name + '"'); return; }
   if (typeof pentaEnterEmployeePreview === 'function') {
+    try { sessionStorage.setItem('penta_preview_return_to_staff', '1'); } catch (e) {}
     pentaEnterEmployeePreview(teamEmps[0]);
   } else {
     alert('Preview as ' + team.name + ' (impersonating ' + teamEmps[0].name + ') — preview UI not available');
@@ -21751,7 +21772,7 @@ function renderStaffView() {
       </div>
       <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
         <button onclick="openContentViewAsEmployee('${emp.id||emp.name}', '${(emp.name||'').replace(/'/g,'&#39;')}')" style="background:linear-gradient(135deg,#6c8fff,#a78bfa);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">📸 Share</button>
-        ${(emp.status === 'active' && (typeof isPermitted !== 'function' || isPermitted('manager','preview_as_employee'))) ? `<button class="penta-staff-preview-btn" title="Preview as this employee" onclick="pentaEnterEmployeePreview(getStaffList()[${idx}])">👁️ Preview</button>` : ''}
+        ${(emp.status === 'active' && (typeof isPermitted !== 'function' || isPermitted('manager','preview_as_employee'))) ? `<button class="penta-staff-preview-btn" title="Preview as this employee" onclick="try{sessionStorage.setItem('penta_preview_return_to_staff','1');}catch(e){} pentaEnterEmployeePreview(getStaffList()[${idx}])">👁️ Preview</button>` : ''}
         <button onclick="showStaffTab('edit')" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">✏ Edit</button>
       </div>
     </div>
@@ -22988,11 +23009,15 @@ function loginSuccess() {
   setTimeout(() => renderPortalSubmittedForms(), 100);
   setTimeout(() => { try { renderPortalFormCards(); renderPortalCustomFormCards(); } catch(e){} }, 200);
 
-  // Set team badge
+  // Set team badge — Sprint 6.10: PentaTeams color (DB-stored teams.color)
+  // takes precedence over legacy TEAM_COLORS map. Label drops the 'Team '
+  // prefix so modern names ('Team 1', 'Crew Alpha') don't render as
+  // 'Team Team 1'. Legacy 2-char strings ('B1') still read fine on their own.
   const team = currentEmployee.team;
-  const color = TEAM_COLORS[team] || '#6b7280';
+  const _ptBadge = (currentEmployee.team_id && window.PentaTeams) ? window.PentaTeams.getById(currentEmployee.team_id) : null;
+  const color = (_ptBadge && _ptBadge.color) || TEAM_COLORS[team] || '#6b7280';
   const badge = document.getElementById('team-badge');
-  badge.textContent = 'Team ' + team;
+  badge.textContent = team || 'No team';
   badge.style.background = color + '22';
   badge.style.color = color;
   badge.style.border = '1px solid ' + color + '44';
@@ -23181,6 +23206,15 @@ function renderSchedule() {
     String(viewDate.getMonth()+1).padStart(2,'0') + '-' +
     String(viewDate.getDate()).padStart(2,'0');
   const team = currentEmployee ? currentEmployee.team : '';
+  // Sprint 6.10: precompute employee's team color from PentaTeams cache,
+  // fall back to legacy TEAM_COLORS for legacy team strings, then gray.
+  const _empTeamColor = (function() {
+    if (currentEmployee && currentEmployee.team_id && window.PentaTeams) {
+      var t = window.PentaTeams.getById(currentEmployee.team_id);
+      if (t && t.color) return t.color;
+    }
+    return TEAM_COLORS[team] || '#6b7280';
+  })();
 
   // Day-aware section title.
   var dayOffsetMs = viewStartMs - todayStartMs;
@@ -23219,7 +23253,14 @@ function renderSchedule() {
         if (j.date !== todayStr) return false;
         var teamMatch = (j.team === team ||
           (j.team||'').trim().toUpperCase() === (team||'').trim().toUpperCase() ||
-          (j.fromClientEdit && !j.team));
+          (j.fromClientEdit && !j.team) ||
+          // Sprint 6.10: tolerant match — if employee has team_id and the job's
+          // team string resolves (by name) to the same team, count as match.
+          (function(){
+            if (!j.team || !currentEmployee || !currentEmployee.team_id || !window.PentaTeams) return false;
+            var jt = window.PentaTeams.getByName(j.team);
+            return !!(jt && jt.id === currentEmployee.team_id);
+          })());
         if (!teamMatch) return false;
         // Migration 008: hide paused/inactive clients from employee schedule
         if (j.clientId && typeof PentaClients !== 'undefined' && PentaClients.getClient) {
@@ -23365,7 +23406,7 @@ function renderSchedule() {
     const clientNotes = permanentNotes; // keep for detail panel
     const pkg = (clientObj && clientObj.pkg) || ex.pkg || '';
 
-    return `<div class="job-item" style="border-left:3px solid ${TEAM_COLORS[team] || '#6b7280'}${isDone ? ';opacity:0.6' : ''}">
+    return `<div class="job-item" style="border-left:3px solid ${_empTeamColor}${isDone ? ';opacity:0.6' : ''}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between">
         <div>
           <div class="job-num">${t('job')} ${i+1} ${t('of')} ${jobs.length}${j.time ? ' · ' + (()=>{ const [h,m]=j.time.split(':'); const hr=parseInt(h); return (hr%12||12)+':'+m+' '+(hr>=12?'PM':'AM'); })() : ''}</div>
@@ -23873,7 +23914,20 @@ function renderHours() {
       : localStorage.getItem(weekKey);
     if (weekData) {
       var data = JSON.parse(weekData);
-      teamData = data[currentEmployee.team];
+      // Sprint 6.10: try candidate keys — current name, legacy team_text,
+      // PentaTeams-resolved name. Covers cache keyed under any of those.
+      var _hourKeys = [];
+      if (currentEmployee.team) _hourKeys.push(currentEmployee.team);
+      if (currentEmployee.team_text && _hourKeys.indexOf(currentEmployee.team_text) === -1) {
+        _hourKeys.push(currentEmployee.team_text);
+      }
+      if (currentEmployee.team_id && window.PentaTeams) {
+        var _ptHr = window.PentaTeams.getById(currentEmployee.team_id);
+        if (_ptHr && _ptHr.name && _hourKeys.indexOf(_ptHr.name) === -1) _hourKeys.push(_ptHr.name);
+      }
+      for (var _hki = 0; _hki < _hourKeys.length; _hki++) {
+        if (data[_hourKeys[_hki]]) { teamData = data[_hourKeys[_hki]]; break; }
+      }
       if (teamData) {
         // Check for per-employee overrides
         var empCache = JSON.parse(localStorage.getItem('empHours_cache') || '{}');
@@ -23958,7 +24012,20 @@ function renderPastWeeks() {
       var weekData = localStorage.getItem(archived[i]);
       if (!weekData) continue;
       var data = JSON.parse(weekData);
-      var teamData = data[currentEmployee.team];
+      // Sprint 6.10: same candidate-key lookup as the current-week path.
+      var _hourKeys2 = [];
+      if (currentEmployee.team) _hourKeys2.push(currentEmployee.team);
+      if (currentEmployee.team_text && _hourKeys2.indexOf(currentEmployee.team_text) === -1) {
+        _hourKeys2.push(currentEmployee.team_text);
+      }
+      if (currentEmployee.team_id && window.PentaTeams) {
+        var _ptHr2 = window.PentaTeams.getById(currentEmployee.team_id);
+        if (_ptHr2 && _ptHr2.name && _hourKeys2.indexOf(_ptHr2.name) === -1) _hourKeys2.push(_ptHr2.name);
+      }
+      var teamData = null;
+      for (var _hki2 = 0; _hki2 < _hourKeys2.length; _hki2++) {
+        if (data[_hourKeys2[_hki2]]) { teamData = data[_hourKeys2[_hki2]]; break; }
+      }
       if (!teamData) continue;
 
       // Parse week dates from key: weekHours_YYYY-MM-DD_YYYY-MM-DD
@@ -25144,7 +25211,16 @@ function _empTodayJobsCount() {
     var today = new Date();
     var key = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
     var team = currentEmployee.team || '';
-    return jobs.filter(function(j) { return j.date === key && !j.cancelled && j.team === team; }).length;
+    return jobs.filter(function(j) {
+      if (j.date !== key || j.cancelled) return false;
+      if (j.team === team) return true;
+      // Sprint 6.10: tolerant — match if job's team string resolves to same team_id.
+      if (j.team && currentEmployee.team_id && window.PentaTeams) {
+        var jt = window.PentaTeams.getByName(j.team);
+        if (jt && jt.id === currentEmployee.team_id) return true;
+      }
+      return false;
+    }).length;
   } catch(e) { return 0; }
 }
 
