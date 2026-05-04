@@ -27219,6 +27219,10 @@ var CLIENT_PRICES = {'sodano': '$305.00', 'downing': '$310.00', 'mulready': '$19
   document.addEventListener('touchstart', function(e) {
     var nav = document.getElementById('cal-nav-swipe');
     if (!nav) return;
+    // Sprint 6.11.1: don't capture if touch lands inside any Leaflet map.
+    // Leaflet handles its own pan/pinch; this swipe handler was misfiring on
+    // pinch-zoom (one finger's lift → dx>60 → calMove → wrong day's pins).
+    if (e.target.closest && e.target.closest('.leaflet-container')) return;
     var calView = document.getElementById('cal-view');
     if (calView && calView.classList.contains('active') && e.touches.length === 1) {
       // Don't capture if touch starts inside a horizontally scrollable row
@@ -27234,6 +27238,8 @@ var CLIENT_PRICES = {'sodano': '$305.00', 'downing': '$310.00', 'mulready': '$19
   document.addEventListener('touchend', function(e) {
     var nav = document.getElementById('cal-nav-swipe');
     if (!nav || !startX) return;
+    // Sprint 6.11.1: defensive guard — same as touchstart above.
+    if (e.target.closest && e.target.closest('.leaflet-container')) return;
     var calView = document.getElementById('cal-view');
     if (!calView || !calView.classList.contains('active')) return;
     var dx = e.changedTouches[0].clientX - startX;
