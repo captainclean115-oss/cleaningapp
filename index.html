@@ -3957,12 +3957,20 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
 
       <div style="display:flex;align-items:center;gap:8px">
-        <button id="map-view-btn" onclick="openScheduleMap()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">🗺 Map</button>
         <button onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
       </div>
     </div>
   </div>
   <div id="cal-body"></div>
+  <!-- Sprint 6.11: always-visible map below schedule + expand-overlay button -->
+  <div id="schedule-inline-map-wrap" style="margin:16px 16px 0;border-top:1px solid var(--border);padding-top:12px">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">📍 Schedule Map</div>
+    <div style="position:relative">
+      <div id="schedule-inline-map" style="height:400px;width:100%;background:var(--surface2);border-radius:8px;overflow:hidden"></div>
+      <button onclick="openScheduleMap()" title="Open fullscreen map"
+        style="position:absolute;bottom:12px;right:12px;width:32px;height:32px;background:rgba(0,0,0,0.6);border:none;color:#fff;font-size:16px;border-radius:6px;cursor:pointer;z-index:1000;display:flex;align-items:center;justify-content:center;line-height:1">⛶</button>
+    </div>
+  </div>
   <div class="bottom-pad"></div>
 </div>
 
@@ -7845,6 +7853,13 @@ function getWeekStart(d) {
 }
 
 function renderCal() {
+  // Sprint 6.11: PentaTeams cache is canonical for team color.
+  // Manager color changes via Manage Teams reflect on next render.
+  // Falls back to legacy team_colors_map for un-migrated team strings (B1/B3/...).
+  const _calTeamColor = (t) => {
+    const pt = (window.PentaTeams && window.PentaTeams.getByName) ? window.PentaTeams.getByName(t) : null;
+    return (pt && pt.color) || team_colors_map[t] || '#6b7280';
+  };
   const today = new Date(); today.setHours(0,0,0,0);
   const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -7893,7 +7908,7 @@ function renderCal() {
       bodyHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 12px">';
       bodyHtml += '<button onclick="window.calTeamFilter=null;renderCal()" style="font-size:13px;padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:'+(window.calTeamFilter?'var(--surface2)':'var(--accent)')+';color:'+(window.calTeamFilter?'var(--muted)':'#fff')+';">All</button>';
       allTeams.forEach(function(t) {
-        var tc2 = team_colors_map[t] || '#6b7280';
+        var tc2 = _calTeamColor(t);
         var active = window.calTeamFilter === t;
         bodyHtml += '<button onclick="window.calTeamFilter=&quot;'+t+'&quot;;renderCal()" style="font-size:13px;padding:5px 12px;border-radius:20px;border:1px solid '+tc2+'44;background:'+(active?tc2:'var(--surface2)')+';color:'+(active?'#fff':'var(--text)')+';">'+t+'</button>';
       });
@@ -7908,7 +7923,7 @@ function renderCal() {
       // Collect all team data first
       var teamRows = [];
       teamsWithJobs.forEach(function(team) {
-        var tc = team_colors_map[team] || '#6b7280';
+        var tc = _calTeamColor(team);
         var teamJobs = (window.calTeamFilter
           ? (window.calTeamFilter === team ? dayJobs.filter(function(j){ return j.team === team; }) : [])
           : dayJobs.filter(function(j){ return j.team === team; }))
@@ -8150,7 +8165,7 @@ function renderCal() {
       gridHtml += `<div class="wg-col">
         <div class="wg-head${isTd?' today':''}">${DAYS[d.getDay()]}</div>
         <div class="wg-num${isTd?' today':''}" style="cursor:pointer" onclick="calDate=new Date(${d.getTime()});setCalMode('day')">${d.getDate()}</div>
-        ${visible.map(j => `<div class="wg-job${j.done?' done':''}" style="border-left-color:${(team_colors_map[(j.team||(getClientExtras(j.clientId||'')).team||'')] || '#6b7280')}" onclick="calDate=new Date(${d.getTime()});setCalMode('day')" title="${j.clientName}">${j.flexible?'~':(j.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time):'?')} ${j.clientName.split(' ')[0]}</div>`).join('')}
+        ${visible.map(j => `<div class="wg-job${j.done?' done':''}" style="border-left-color:${_calTeamColor(j.team||(getClientExtras(j.clientId||'')).team||'')}" onclick="calDate=new Date(${d.getTime()});setCalMode('day')" title="${j.clientName}">${j.flexible?'~':(j.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time):'?')} ${j.clientName.split(' ')[0]}</div>`).join('')}
         ${extra > 0 ? `<div class="wg-more">+${extra} more</div>` : ''}
         <div class="wg-add" onclick="calDate=new Date(${d.getTime()});openJobModal(null)">+</div>
       </div>`;
@@ -8158,6 +8173,8 @@ function renderCal() {
     gridHtml += '</div>';
     document.getElementById('cal-body').innerHTML = gridHtml;
   }
+  // Sprint 6.11: refresh inline schedule map whenever schedule re-renders.
+  try { if (typeof renderInlineScheduleMap === 'function') renderInlineScheduleMap(); } catch (e) { console.warn('[6.11] inline map refresh failed', e); }
 }
 
 function toggleJobDone(id) {
@@ -26467,19 +26484,25 @@ var _geocodeCache = {};
 
 function getClientAddrForJob(j) {
   var c = PentaClients.getClient(j.clientId);
+  if (!c) return (j.addr || '');
+
+  // Sprint 6.11: prefer the client's own record over the legacy CLIENT_ADDRS
+  // hardcoded map. CLIENT_ADDRS is keyed by lastname only, so duplicate
+  // lastnames (e.g. two Downeys) all collide on one entry. Using the
+  // client record first means each client geocodes to its actual address.
+  // CLIENT_ADDRS stays as fallback for legacy clients with empty addr fields;
+  // Sprint 7 deletes the map once we verify every client has a real addr.
   var addr = '';
-  if (c) {
-    var ln = c.ln.toLowerCase().replace(/[^a-z \-]/g,'').trim();
-    if (CLIENT_ADDRS[ln]) {
-      addr = CLIENT_ADDRS[ln];
-    } else {
-      addr = (c.addr||'');
-      if (c.city) addr += ', ' + c.city;
-      if (c.zip) addr += ' ' + c.zip;
-    }
+  if (c.addr && c.addr.trim()) {
+    addr = c.addr.trim();
+    if (c.city) addr += ', ' + c.city;
+    if (c.zip) addr += ' ' + c.zip;
   } else {
-    addr = j.addr || '';
+    var ln = (c.ln || '').toLowerCase().replace(/[^a-z \-]/g,'').trim();
+    if (CLIENT_ADDRS[ln]) addr = CLIENT_ADDRS[ln];
   }
+
+  if (!addr) addr = j.addr || '';
   if (addr && !/\bMA\b/i.test(addr)) addr += ', MA';
   return addr;
 }
@@ -26509,69 +26532,83 @@ function closeScheduleMap() {
   if (o) o.remove();
 }
 
-function openScheduleMap() {
+// Sprint 6.11 — extracted core renderer + inline map state.
+// Color reads PentaTeams cache dynamically — manager color changes
+// reflect on next render with no manual sync.
+var _inlineScheduleMap = null;
+
+function _scheduleMapDayJobs() {
   var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
-  // Only jobs for selected date, exclude auto-generated, sort by time
-  var dayJobs = jobs.filter(function(j){ return j.date === dateStr && !j.autoGenerated && j.team; })
+  return jobs.filter(function(j){ return j.date === dateStr && !j.autoGenerated && j.team; })
     .sort(function(a,b){
       function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; if(/am/i.test(t)&&h===12)h=0; return h*60+m; }
       return tm(a.time)-tm(b.time);
     });
+}
 
-  // Offices
+function _osrmCacheGet(key) {
+  try { var c = JSON.parse(localStorage.getItem('osrm_cache') || '{}'); return c[key] || null; }
+  catch(e) { return null; }
+}
+function _osrmCacheSet(key, geometry) {
+  try {
+    var c = JSON.parse(localStorage.getItem('osrm_cache') || '{}');
+    c[key] = geometry;
+    var ks = Object.keys(c);
+    if (ks.length > 200) {
+      var trimmed = {};
+      ks.slice(-200).forEach(function(k){ trimmed[k] = c[k]; });
+      c = trimmed;
+    }
+    localStorage.setItem('osrm_cache', JSON.stringify(c));
+  } catch(e) {}
+}
+
+function _renderScheduleMapCore(containerId, opts) {
+  opts = opts || {};
+  var container = document.getElementById(containerId);
+  if (!container) return null;
+  if (typeof L === 'undefined') {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Map library not loaded. Check connection.</div>';
+    return null;
+  }
+
+  var dayJobs = opts.dayJobs || _scheduleMapDayJobs();
+  var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
+  var activeFilter = window.calTeamFilter || null;
+  var statusEl = opts.statusId ? document.getElementById(opts.statusId) : null;
+
   var offices = {
     abington: {name:'Abington Office', addr:'800 Brockton Ave, Abington, MA', lat:42.1048, lng:-70.9454, teams:['B1','B3','B5','S1','S3']},
     marlborough: {name:'Marlborough Office', addr:'910 Boston Post Rd E, Marlborough, MA', lat:42.3483, lng:-71.5220, teams:['M1','M2','M3']}
   };
 
-  // Create overlay
-  var o = document.getElementById('schedule-map-overlay');
-  if (o) o.remove();
-  var d = document.createElement('div');
-  d.id = 'schedule-map-overlay';
-  d.style.cssText = 'position:fixed;inset:0;z-index:9998;background:var(--bg);display:flex;flex-direction:column';
-  
-  var DAYS2 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  var MONTHS2 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  var dateLabel = DAYS2[calDate.getDay()]+' '+MONTHS2[calDate.getMonth()]+' '+calDate.getDate();
-  
-  d.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:relative;z-index:2">'
-    +'<div style="font-size:16px;font-weight:700">📍 '+dateLabel+' Schedule Map</div>'
-    +'<button onclick="closeScheduleMap()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">✕</button>'
-    +'</div>'
-    +'<div id="ff-map" style="flex:1;width:100%"></div>'
-    +'<div id="ff-map-status" style="position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:8px 16px;border-radius:20px;font-size:13px;display:none">Geocoding addresses...</div>';
-  
-  document.body.appendChild(d);
-
-  // Init Leaflet map
-  setTimeout(function() {
-    if (typeof L === 'undefined') { 
-      document.getElementById('ff-map').innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Map library not loaded. Please check connection.</div>';
-      return; 
+  // Legacy fallback colors for jobs whose team string isn't in PentaTeams cache.
+  // Once Sprint 7 migrates job.team to team_id FK, this map can be deleted.
+  var teamColors = {
+    'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280',
+    'S1':'#ca8a04','S3':'#9333ea',
+    'M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'
+  };
+  function _teamColor(team) {
+    // PentaTeams.getByName is the canonical source — color updates reflect
+    // here on next render without any manual sync after PentaTeams.rename().
+    if (window.PentaTeams && window.PentaTeams.getByName) {
+      var t = window.PentaTeams.getByName(team);
+      if (t && t.color) return t.color;
     }
-    var map = L.map('ff-map').setView([42.2, -71.2], 10);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap © CARTO',
-      maxZoom: 19,
-      subdomains: 'abcd'
-    }).addTo(map);
-    // Grey overlay to mute colors further
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
-      attribution: '',
-      maxZoom: 19,
-      subdomains: 'abcd',
-      opacity: 0.7
-    }).addTo(map);
+    return teamColors[team] || '#6b7280';
+  }
 
-    // Team colors for map
-    var teamColors = {
-      'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280',
-      'S1':'#ca8a04','S3':'#9333ea',
-      'M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'
-    };
+  var map = L.map(containerId).setView([42.2, -71.2], 10);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap © CARTO', maxZoom: 19, subdomains: 'abcd'
+  }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+    attribution: '', maxZoom: 19, subdomains: 'abcd', opacity: 0.7
+  }).addTo(map);
 
-    // Plot offices
+  if (opts.includeOffices !== false) {
     Object.values(offices).forEach(function(off) {
       var icon = L.divIcon({
         className:'',
@@ -26582,83 +26619,353 @@ function openScheduleMap() {
         .addTo(map)
         .bindPopup('<strong>'+off.name+'</strong><br>'+off.addr+'<br><small>Teams: '+off.teams.join(', ')+'</small>');
     });
+  }
 
-    // Group jobs by team
-    var byTeam = {};
-    dayJobs.forEach(function(j) {
-      var t = j.team || 'Unknown';
-      if (!byTeam[t]) byTeam[t] = [];
-      byTeam[t].push(j);
+  var byTeam = {};
+  dayJobs.forEach(function(j) {
+    var t = j.team || 'Unknown';
+    if (!byTeam[t]) byTeam[t] = [];
+    byTeam[t].push(j);
+  });
+
+  if (statusEl && Object.keys(byTeam).length) statusEl.style.display = 'block';
+
+  var teamList = Object.keys(byTeam);
+  var teamsDone = 0;
+
+  function processTeam(team) {
+    var teamJobList = byTeam[team];
+    var color = _teamColor(team);
+    // Sprint 6.11: filter dim-not-hide (non-matching teams → opacity 0.25)
+    var dim = activeFilter && team !== activeFilter;
+    var pinOpacity = dim ? 0.25 : 1.0;
+    var lineOpacity = dim ? 0.20 : 0.80;
+    var office = (team==='M1'||team==='M2'||team==='M3') ? offices.marlborough : offices.abington;
+    var routePoints = [[office.lat, office.lng]];
+    var pending = teamJobList.length;
+    var jobCoords = new Array(teamJobList.length).fill(null);
+
+    if (pending === 0) {
+      teamsDone++;
+      if (teamsDone === teamList.length && statusEl) statusEl.style.display = 'none';
+      return;
+    }
+
+    teamJobList.sort(function(a,b){
+      function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; return h*60+m; }
+      return tm(a.time)-tm(b.time);
     });
-
-    var statusEl = document.getElementById('ff-map-status');
-    if (statusEl) statusEl.style.display = 'block';
-
-    // Geocode and plot each team
-    var teamList = Object.keys(byTeam);
-    var teamsDone = 0;
-
-    function processTeam(team) {
-      var teamJobList = byTeam[team];
-      var color = teamColors[team] || '#6b7280';
-      var office = (team==='M1'||team==='M2'||team==='M3') ? offices.marlborough : offices.abington;
-      var routePoints = [[office.lat, office.lng]];
-      var pending = teamJobList.length;
-      var jobCoords = new Array(teamJobList.length).fill(null);
-
-      if (pending === 0) { teamsDone++; if (teamsDone===teamList.length && statusEl) statusEl.style.display='none'; return; }
-
-      // Sort team jobs by time before geocoding
-      teamJobList.sort(function(a,b){
-        function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; return h*60+m; }
-        return tm(a.time)-tm(b.time);
-      });
-      teamJobList.forEach(function(j, idx) {
-        var addr = getClientAddrForJob(j);
-        geocodeAddress(addr, function(coords) {
-          jobCoords[idx] = coords;
-          pending--;
-          if (pending === 0) {
-            // All geocoded - plot markers and route in time order
-            jobCoords.forEach(function(coords, idx2) {
-              if (!coords) return;
-              var j2 = teamJobList[idx2];
-              var name = j2.clientName || '';
-              var pinHtml = '<div style="position:relative;width:28px;height:36px">'
-                +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
-                +'<div style="position:absolute;top:7px;left:7px;width:14px;height:14px;border-radius:50%;background:#fff;opacity:0.7"></div>'
-                +'</div>';
-              var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
-              L.marker([coords.lat, coords.lng], {icon:dotIcon})
-                .addTo(map)
-                .bindPopup('<strong>'+name+'</strong><br>'+j2.addr+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
-              routePoints.push([coords.lat, coords.lng]);
-            });
-            // Draw route line back to office
-            routePoints.push([office.lat, office.lng]);
-            if (routePoints.length > 2) {
+    teamJobList.forEach(function(j, idx) {
+      var addr = getClientAddrForJob(j);
+      geocodeAddress(addr, function(coords) {
+        jobCoords[idx] = coords;
+        pending--;
+        if (pending === 0) {
+          jobCoords.forEach(function(coords, idx2) {
+            if (!coords) return;
+            var j2 = teamJobList[idx2];
+            var name = j2.clientName || '';
+            // Sprint 6.11: numbered pin label (1=first by time, 2=second, etc.)
+            var positionNum = idx2 + 1;
+            var pinHtml = '<div style="position:relative;width:28px;height:36px">'
+              +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
+              +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
+              +'</div>';
+            var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
+            L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
+              .addTo(map)
+              .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
+            routePoints.push([coords.lat, coords.lng]);
+          });
+          routePoints.push([office.lat, office.lng]);
+          if (routePoints.length > 2) {
+            // Sprint 6.11: OSRM cache (key: team + date + ordered job ids)
+            var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
+            var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
+            var cached = _osrmCacheGet(cacheKey);
+            if (cached) {
+              L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
+            } else {
               var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
               var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
-              (function(c, rp) {
+              (function(c, rp, lo, ck) {
                 fetch(osrmUrl)
                   .then(function(r){ return r.json(); })
                   .then(function(data) {
                     if (data && data.routes && data.routes[0]) {
-                      L.geoJSON(data.routes[0].geometry, {style:{color:c,weight:3,opacity:0.8}}).addTo(map);
-                    } else { L.polyline(rp,{color:c,weight:3,opacity:0.8}).addTo(map); }
-                  }).catch(function(){ L.polyline(rp,{color:c,weight:3,opacity:0.8}).addTo(map); });
-              })(color, routePoints.slice());
+                      _osrmCacheSet(ck, data.routes[0].geometry);
+                      L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
+                    } else {
+                      L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                    }
+                  }).catch(function(){
+                    L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                  });
+              })(color, routePoints.slice(), lineOpacity, cacheKey);
             }
-            teamsDone++;
-            if (teamsDone === teamList.length && statusEl) statusEl.style.display = 'none';
           }
-        });
+          teamsDone++;
+          if (teamsDone === teamList.length && statusEl) statusEl.style.display = 'none';
+        }
       });
+    });
+  }
+
+  teamList.forEach(processTeam);
+
+  // Modal-only fit (one shot when modal opens). Inline path manages its own
+  // fit via renderInlineScheduleMap so user zoom/pan isn't disrupted.
+  if (opts.fitBoundsOnReady !== false) {
+    setTimeout(function() {
+      try {
+        var allBounds = L.latLngBounds([]);
+        Object.values(offices).forEach(function(o){ allBounds.extend([o.lat, o.lng]); });
+        map.eachLayer(function(layer) {
+          if (layer instanceof L.Marker) allBounds.extend(layer.getLatLng());
+        });
+        if (allBounds.isValid()) map.fitBounds(allBounds, { padding: [40, 40] });
+      } catch(e) {}
+    }, 1500);
+  }
+
+  return map;
+}
+
+function openScheduleMap() {
+  var dayJobs = _scheduleMapDayJobs();
+  var DAYS2 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var MONTHS2 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var dateLabel = DAYS2[calDate.getDay()]+' '+MONTHS2[calDate.getMonth()]+' '+calDate.getDate();
+
+  var o = document.getElementById('schedule-map-overlay');
+  if (o) o.remove();
+  var d = document.createElement('div');
+  d.id = 'schedule-map-overlay';
+  d.style.cssText = 'position:fixed;inset:0;z-index:9998;background:var(--bg);display:flex;flex-direction:column';
+  d.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:relative;z-index:2">'
+    +'<div style="font-size:16px;font-weight:700">📍 '+dateLabel+' Schedule Map</div>'
+    +'<button onclick="closeScheduleMap()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">✕</button>'
+    +'</div>'
+    +'<div id="ff-map" style="flex:1;width:100%"></div>'
+    +'<div id="ff-map-status" style="position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:8px 16px;border-radius:20px;font-size:13px;display:none">Geocoding addresses...</div>';
+  document.body.appendChild(d);
+  setTimeout(function() {
+    _renderScheduleMapCore('ff-map', { dayJobs: dayJobs, statusId: 'ff-map-status', includeOffices: true });
+  }, 200);
+}
+
+// Sprint 6.11 Issue #1 fix — singleton inline map.
+// Module state below: map instance, tracked data layers, last-render fingerprint.
+// User zoom/pan is preserved across re-renders by NEVER tearing down the map.
+//   - filter-only change → walk layers, mutate opacity, return
+//   - date/jobs change   → clear data layers, replot, fitBounds only if date changed
+//   - no change          → no-op
+var _inlineDataLayers = [];   // [{layer, team, kind: 'marker'|'line'}]
+var _lastInlineDateStr = null;
+var _lastInlineJobsHash = null;
+var _lastInlineFilter = null;
+
+function _inlineJobsHash(dayJobs) {
+  return dayJobs.map(function(j){ return (j.id||'') + ':' + (j.team||'') + ':' + (j.time||''); }).join('|');
+}
+
+function _applyInlineFilterOpacity(filter) {
+  for (var i = 0; i < _inlineDataLayers.length; i++) {
+    var item = _inlineDataLayers[i];
+    if (item.team === '__office') continue;
+    var dim = filter && item.team !== filter;
+    if (item.kind === 'marker') {
+      try { item.layer.setOpacity(dim ? 0.25 : 1.0); } catch(e) {}
+    } else {
+      try { item.layer.setStyle({ opacity: dim ? 0.20 : 0.80 }); } catch(e) {}
+    }
+  }
+}
+
+function renderInlineScheduleMap() {
+  var container = document.getElementById('schedule-inline-map');
+  if (!container) return;
+  if (typeof L === 'undefined') {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Map library not loaded.</div>';
+    return;
+  }
+
+  var dayJobs = _scheduleMapDayJobs();
+  var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
+  var activeFilter = window.calTeamFilter || null;
+  var jobsHash = _inlineJobsHash(dayJobs);
+
+  // Path A: first ever inline render — create singleton map + tile layers.
+  if (!_inlineScheduleMap) {
+    if (container._leaflet_id) { delete container._leaflet_id; }
+    _inlineScheduleMap = L.map('schedule-inline-map').setView([42.2, -71.2], 10);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap © CARTO', maxZoom: 19, subdomains: 'abcd'
+    }).addTo(_inlineScheduleMap);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+      attribution: '', maxZoom: 19, subdomains: 'abcd', opacity: 0.7
+    }).addTo(_inlineScheduleMap);
+  }
+
+  // Path B: filter-only change — walk layers, mutate opacity, done.
+  if (dateStr === _lastInlineDateStr && jobsHash === _lastInlineJobsHash) {
+    if (activeFilter !== _lastInlineFilter) {
+      _applyInlineFilterOpacity(activeFilter);
+      _lastInlineFilter = activeFilter;
+    }
+    return;
+  }
+
+  // Path C: date or jobs changed — full re-plot.
+  // Clear ONLY data layers (markers + polylines); leave tile layers untouched.
+  for (var di = 0; di < _inlineDataLayers.length; di++) {
+    try { _inlineScheduleMap.removeLayer(_inlineDataLayers[di].layer); } catch(e) {}
+  }
+  _inlineDataLayers = [];
+
+  var dateChanged = dateStr !== _lastInlineDateStr;
+  _lastInlineDateStr = dateStr;
+  _lastInlineJobsHash = jobsHash;
+  _lastInlineFilter = activeFilter;
+
+  _plotInlineMapData(_inlineScheduleMap, dayJobs, dateStr, activeFilter, dateChanged);
+}
+
+function _plotInlineMapData(map, dayJobs, dateStr, activeFilter, doFitBounds) {
+  var offices = {
+    abington: {name:'Abington Office', addr:'800 Brockton Ave, Abington, MA', lat:42.1048, lng:-70.9454, teams:['B1','B3','B5','S1','S3']},
+    marlborough: {name:'Marlborough Office', addr:'910 Boston Post Rd E, Marlborough, MA', lat:42.3483, lng:-71.5220, teams:['M1','M2','M3']}
+  };
+  var teamColors = {
+    'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280',
+    'S1':'#ca8a04','S3':'#9333ea',
+    'M1':'#dc2626','M2':'#2563eb','M3':'#16a34a'
+  };
+  function _teamColor(team) {
+    if (window.PentaTeams && window.PentaTeams.getByName) {
+      var t = window.PentaTeams.getByName(team);
+      if (t && t.color) return t.color;
+    }
+    return teamColors[team] || '#6b7280';
+  }
+
+  // Office markers (always full opacity; not subject to team filter)
+  Object.values(offices).forEach(function(off) {
+    var icon = L.divIcon({
+      className:'',
+      html:'<div style="width:26px;height:26px;border-radius:50%;background:#1e40af;border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;font-size:13px">🏠</div>',
+      iconSize:[26,26], iconAnchor:[13,13]
+    });
+    var m = L.marker([off.lat, off.lng], {icon:icon})
+      .addTo(map)
+      .bindPopup('<strong>'+off.name+'</strong><br>'+off.addr+'<br><small>Teams: '+off.teams.join(', ')+'</small>');
+    _inlineDataLayers.push({ layer: m, team: '__office', kind: 'marker' });
+  });
+
+  var byTeam = {};
+  dayJobs.forEach(function(j) {
+    var t = j.team || 'Unknown';
+    if (!byTeam[t]) byTeam[t] = [];
+    byTeam[t].push(j);
+  });
+
+  var teamList = Object.keys(byTeam);
+  var teamsDone = 0;
+  var bounds = L.latLngBounds([]);
+  Object.values(offices).forEach(function(o){ bounds.extend([o.lat, o.lng]); });
+
+  function maybeFit() {
+    if (!doFitBounds) return;
+    if (teamsDone !== teamList.length) return;
+    try {
+      _inlineDataLayers.forEach(function(item){
+        if (item.kind === 'marker') bounds.extend(item.layer.getLatLng());
+      });
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40] });
+    } catch(e) {}
+  }
+
+  if (teamList.length === 0) { maybeFit(); return; }
+
+  function processTeam(team) {
+    var teamJobList = byTeam[team];
+    var color = _teamColor(team);
+    var dim = activeFilter && team !== activeFilter;
+    var pinOpacity = dim ? 0.25 : 1.0;
+    var lineOpacity = dim ? 0.20 : 0.80;
+    var office = (team==='M1'||team==='M2'||team==='M3') ? offices.marlborough : offices.abington;
+    var routePoints = [[office.lat, office.lng]];
+    var pending = teamJobList.length;
+    var jobCoords = new Array(teamJobList.length).fill(null);
+
+    if (pending === 0) {
+      teamsDone++; maybeFit(); return;
     }
 
-    teamList.forEach(processTeam);
+    teamJobList.sort(function(a,b){
+      function tm(t){ if(!t)return 9999; var p=t.replace(/[apm\s]/gi,'').split(':'); var h=parseInt(p[0])||0,m=parseInt(p[1])||0; if(/pm/i.test(t)&&h!==12)h+=12; return h*60+m; }
+      return tm(a.time)-tm(b.time);
+    });
+    teamJobList.forEach(function(j, idx) {
+      var addr = getClientAddrForJob(j);
+      geocodeAddress(addr, function(coords) {
+        jobCoords[idx] = coords;
+        pending--;
+        if (pending === 0) {
+          jobCoords.forEach(function(coords, idx2) {
+            if (!coords) return;
+            var j2 = teamJobList[idx2];
+            var name = j2.clientName || '';
+            var positionNum = idx2 + 1;
+            var pinHtml = '<div style="position:relative;width:28px;height:36px">'
+              +'<div style="width:28px;height:28px;border-radius:50% 50% 50% 0;background:'+color+';transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.4)"></div>'
+              +'<div style="position:absolute;top:4px;left:0;width:28px;text-align:center;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);line-height:18px">'+positionNum+'</div>'
+              +'</div>';
+            var dotIcon = L.divIcon({className:'',html:pinHtml,iconSize:[28,36],iconAnchor:[14,36]});
+            var marker = L.marker([coords.lat, coords.lng], {icon:dotIcon, opacity: pinOpacity})
+              .addTo(map)
+              .bindPopup('<strong>'+name+'</strong><br>'+(j2.addr||'')+'<br><small>Team '+team+(j2.time?' · '+j2.time:'')+'</small>');
+            _inlineDataLayers.push({ layer: marker, team: team, kind: 'marker' });
+            routePoints.push([coords.lat, coords.lng]);
+          });
+          routePoints.push([office.lat, office.lng]);
+          if (routePoints.length > 2) {
+            var orderedJobIds = teamJobList.map(function(j){ return j.id || ''; }).join('_');
+            var cacheKey = 'osrm_' + team + '_' + dateStr + '_' + orderedJobIds;
+            var cached = _osrmCacheGet(cacheKey);
+            if (cached) {
+              var gj = L.geoJSON(cached, {style:{color:color, weight:3, opacity: lineOpacity}}).addTo(map);
+              _inlineDataLayers.push({ layer: gj, team: team, kind: 'line' });
+            } else {
+              var routeCoords = routePoints.map(function(p){ return p[1]+','+p[0]; }).join(';');
+              var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'+routeCoords+'?overview=full&geometries=geojson';
+              (function(c, rp, lo, ck, tm) {
+                fetch(osrmUrl)
+                  .then(function(r){ return r.json(); })
+                  .then(function(data) {
+                    var layer;
+                    if (data && data.routes && data.routes[0]) {
+                      _osrmCacheSet(ck, data.routes[0].geometry);
+                      layer = L.geoJSON(data.routes[0].geometry, {style:{color:c, weight:3, opacity: lo}}).addTo(map);
+                    } else {
+                      layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                    }
+                    _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
+                  }).catch(function(){
+                    var layer = L.polyline(rp, {color:c, weight:3, opacity: lo}).addTo(map);
+                    _inlineDataLayers.push({ layer: layer, team: tm, kind: 'line' });
+                  });
+              })(color, routePoints.slice(), lineOpacity, cacheKey, team);
+            }
+          }
+          teamsDone++;
+          maybeFit();
+        }
+      });
+    });
+  }
 
-  }, 200);
+  teamList.forEach(processTeam);
 }
 
 function closeCalJobCard() {
