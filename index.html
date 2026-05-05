@@ -12724,7 +12724,7 @@ var CLAIRE_TOOLS = [
   { name: 'edit_client', description: 'Edit any field on a client profile: phone, email, address, city, zip, package, notes, or any other field', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, field:{type:'string',description:'Field to edit: ph, em, addr, city, zip, pkg, notes, fn, ln'}, value:{type:'string',description:'New value'} }, required:['client','field','value'] } },
   { name: 'change_price', description: 'Change a client cleaning price for all their future scheduled jobs', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, price:{type:'string',description:'New price amount (just the number)'} }, required:['client','price'] } },
   { name: 'record_payment', description: 'Record a payment received from a client. Reduces their balance.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, amount:{type:'string',description:'Payment amount'}, method:{type:'string',description:'Payment method: cash, check, credit card, venmo, zelle'} }, required:['client','amount'] } },
-  { name: 'generate_quote', description: 'Generate a cleaning quote for an address. Looks up square footage and bathrooms to calculate price.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'Desired frequency: weekly, biweekly, monthly, one-time'} }, required:['address'] } },
+  { name: 'compute_quote', description: 'Compute a cleaning quote backend-only. Geocodes the address, looks up sq ft + baths from MassGIS, applies pricing settings, returns structured JSON with formattedPrice, hours, cleaners, breakdown, and a ready-to-send sms_text. NEVER renders UI. ALWAYS call this BEFORE quoting a price to the user. Present the result inline in chat and WAIT for explicit user confirmation before calling send_text.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'weekly | biweekly | triweekly | monthly | once'}, square_feet:{type:'number',description:'Optional override if MassGIS lookup fails or user supplies it'}, baths:{type:'number',description:'Optional override (defaults to MassGIS or 2)'}, team_size:{type:'number',description:'Default 3'} }, required:['address','frequency'] } },
   { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
   { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
   { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } },
@@ -12737,6 +12737,7 @@ var CLAIRE_TOOLS = [
   { name: 'cancellation_analysis', description: 'Who cancels most and how often. Returns total cancellations, unique-clients-cancelled count, top cancellers, breakdown by team and day-of-week. Use for "who are my top cancellers" or "is Tuesday a problem day".', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: last_30_days, last_90_days, last_year, all_time (default all_time)'}, limit:{type:'number',description:'Max top cancellers to return (default 10)'} } } },
   { name: 'team_performance', description: 'Team metrics rollup — jobs completed, revenue, avg per job, client count, cancellations per team. Use for "which team is doing best" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: this_month, last_month, last_90_days (default last_30_days)'} } } },
   { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention. Defaults to active clients only; pass client_status="all" to include paused/inactive.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
+  { name: 'send_text', description: 'Send an SMS via RingCentral. ONLY call this AFTER the user has explicitly confirmed (e.g. "yes", "send it", "go ahead"). NEVER call without prior confirmation. NEVER call in the same response that produced a quote — quote first, wait, then send. Returns success or error.', input_schema: { type:'object', properties: { phone:{type:'string',description:'Phone number — any format, will be normalized to E.164'}, message:{type:'string',description:'SMS body (plain text, no markdown)'} }, required:['phone','message'] } },
   { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
@@ -12799,7 +12800,14 @@ async function processVoiceCommand(text) {
     +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data Tom doesn\'t have in the app.\n'
     +'\nCite specific numbers from data. Never guess. If Tom asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
-    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, generate quotes, send invoices, add reminders). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
+    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
+    +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
+    +'QUOTE FLOW (follow this exactly when the user asks for a quote):\n'
+    +'1. ALWAYS call compute_quote first. Pass the address and the frequency the user asked for (weekly | biweekly | triweekly | monthly | once). compute_quote does the math backend-only — it does NOT render anything.\n'
+    +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?"\n'
+    +'3. WAIT for the user to say yes / send it / confirm. Do NOT call send_text in the same turn as compute_quote.\n'
+    +'4. After the user confirms, call send_text with phone=<their phone> and message=<the sms_text from compute_quote>. Then report what came back.\n'
+    +'If compute_quote returns sqft_missing, ask the user for the square footage and call compute_quote again with square_feet provided. Do NOT make up a sqft estimate.\n\n'
     +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
@@ -12906,7 +12914,7 @@ async function processVoiceCommand(text) {
           toolsCalledCount++;
           var resStr;
           try {
-            resStr = executeClaireToolCall(tu, textReply);
+            resStr = await executeClaireToolCall(tu, textReply);
           } catch (te) {
             resStr = 'Tool ' + tu.name + ' threw: ' + (te && te.message ? te.message : String(te));
           }
@@ -13006,10 +13014,10 @@ function _claireRenderSmsButton(link) {
   _claireRenderBubble('claire', html);
 }
 
-function executeClaireToolCall(toolCall, message) {
+async function executeClaireToolCall(toolCall, message) {
   _claireActing = true;
   _claireLastToolResult = '';
-  try { _executeClaireToolCallInner(toolCall, message); }
+  try { await _executeClaireToolCallInner(toolCall, message); }
   finally { setTimeout(function(){ _claireActing = false; }, 0); }
   return _claireLastToolResult || ('Executed ' + toolCall.name + '.');
 }
@@ -13026,7 +13034,7 @@ function _claireAmendLastToolResult(extra) {
     }
   }
 }
-function _executeClaireToolCallInner(toolCall, message) {
+async function _executeClaireToolCallInner(toolCall, message) {
   var input = toolCall.input || {};
   var name = toolCall.name;
 
@@ -13378,11 +13386,83 @@ function _executeClaireToolCallInner(toolCall, message) {
     _claireLastToolResult = 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance: $'+Math.round(oldBal)+' -> $'+Math.round(rpClient.bal)+'. Done.';
     claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
 
-  // ── GENERATE QUOTE ──
-  } else if (name === 'generate_quote') {
-    claireReply('Looking up property info for '+input.address+'...');
-    generateClaireQuote(input.address, input.frequency || 'biweekly', message);
-    _claireLastToolResult = 'Started property lookup for '+input.address+' at '+(input.frequency || 'biweekly')+' frequency. Result will appear in the quote UI.';
+  // ── COMPUTE QUOTE (v7.4: backend-only — no UI side-effects) ──
+  } else if (name === 'compute_quote') {
+    var cqAddress = input.address || '';
+    var cqFreqRaw = (input.frequency || 'once').toLowerCase();
+    var freqMap = { 'weekly':'weekly', 'biweekly':'biweekly', 'every 2 weeks':'biweekly', 'every two weeks':'biweekly', 'triweekly':'triweekly', 'every 3 weeks':'triweekly', 'monthly':'monthly', 'one-time':'once', 'onetime':'once', 'one time':'once', 'once':'once', 'deep clean':'once', 'deep-clean':'once' };
+    var cqFreq = freqMap[cqFreqRaw] || 'once';
+    var cqFreqLabel = ({ once:'one-time', weekly:'per week', biweekly:'every 2 weeks', triweekly:'every 3 weeks', monthly:'per month' })[cqFreq];
+    var cqTeam = parseInt(input.team_size) || 3;
+
+    // 1. Geocode (callback-style → wrap in Promise)
+    var coords = null;
+    try {
+      await new Promise(function(resolve){
+        try { geocodeAddress(cqAddress, function(c){ coords = c; resolve(); }); }
+        catch(e){ resolve(); }
+      });
+    } catch(_e) {}
+    if (!coords) {
+      _claireLastToolResult = JSON.stringify({ error:'address_not_found', message:'Could not geocode "'+cqAddress+'". Ask the user to confirm the full address with city and state.' });
+      return;
+    }
+
+    // 2. MassGIS sqft + baths (skip if user supplied square_feet)
+    var sqft = parseFloat(input.square_feet) || 0;
+    var baths = parseFloat(input.baths) || 0;
+    if (!sqft) {
+      try {
+        var mgUrl = 'https://gis.massgis.state.ma.us/ArcGIS/rest/services/massgis_cache/L3Parcels_and_Assess/MapServer/1/query'
+          + '?geometry=' + encodeURIComponent('{"x":'+coords.lng+',"y":'+coords.lat+',"spatialReference":{"wkid":4326}}')
+          + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelWithin'
+          + '&outFields=LIVING_AREA,NUM_BATHS,BLDG_AREA,GROSS_AREA&returnGeometry=false&f=json';
+        var mgResp = await fetch(mgUrl);
+        var mgData = await mgResp.json();
+        if (mgData.features && mgData.features.length > 0) {
+          var attrs = mgData.features[0].attributes;
+          sqft = parseFloat(attrs.LIVING_AREA || attrs.BLDG_AREA || attrs.GROSS_AREA || 0);
+          if (!baths) baths = parseFloat(attrs.NUM_BATHS || 0);
+        }
+      } catch(_e) {}
+    }
+    if (!sqft) {
+      _claireLastToolResult = JSON.stringify({ error:'sqft_missing', address:cqAddress, message:'Could not find sqft for '+cqAddress+' in MassGIS. Ask the user for the square footage and call compute_quote again with square_feet provided.' });
+      return;
+    }
+    if (!baths) baths = 2;
+
+    // 3. Pure compute
+    var qResult = _computeQuotePure({ sqft, baths, frequency: cqFreq, teamSize: cqTeam });
+    if (!qResult) {
+      _claireLastToolResult = JSON.stringify({ error:'compute_failed', address:cqAddress });
+      return;
+    }
+
+    // 4. Pre-build the SMS text so send_text can use it verbatim
+    var smsText = _buildQuoteSmsText({
+      firstName: '', address: cqAddress, sqftDisplay: Math.round(sqft).toLocaleString(),
+      formattedPrice: qResult.formattedPrice, isOneTime: qResult.isOneTime,
+      frequencyLabel: cqFreqLabel, teamSize: cqTeam,
+      oven:false, fridge:false, walls:false, windows:false, windowCount:0,
+    });
+
+    _claireLastToolResult = JSON.stringify({
+      ok: true,
+      address: cqAddress,
+      sqft: Math.round(sqft),
+      baths,
+      frequency: cqFreq,
+      frequency_label: cqFreqLabel,
+      formatted_price: qResult.formattedPrice,
+      price_low: qResult.priceLow,
+      price_high: qResult.priceHigh,
+      hours: qResult.hoursStr,
+      cleaners: cqTeam,
+      presentation_style: qResult.presentationStyle,
+      breakdown: qResult.breakdown,
+      sms_text: smsText,
+    });
     return;
 
   // ── EDIT EMPLOYEE HOURS ──
@@ -13789,6 +13869,44 @@ function _executeClaireToolCallInner(toolCall, message) {
       +'High — '+(arcHigh.map(_arcRow).join('; ')||'none')+'. '
       +'Medium — '+(arcMed.map(_arcRow).join('; ')||'none')+'.';
 
+  // ── SEND TEXT (v7.4: direct RC SMS — used by quote flow) ──
+  } else if (name === 'send_text') {
+    if (typeof rcToken === 'undefined' || !rcToken) {
+      _claireLastToolResult = JSON.stringify({ error:'rc_not_connected', message:'RingCentral is not connected. The user must connect RC in the Messages tab before texts can be sent.' });
+      return;
+    }
+    var stDigits = (input.phone||'').replace(/\D/g,'');
+    if (stDigits.length < 10) {
+      _claireLastToolResult = JSON.stringify({ error:'bad_phone', phone:input.phone });
+      return;
+    }
+    var stE164 = stDigits.length === 10 ? '+1'+stDigits : '+'+stDigits;
+    var stMsg = input.message || '';
+    if (!stMsg.trim()) {
+      _claireLastToolResult = JSON.stringify({ error:'empty_message' });
+      return;
+    }
+    try {
+      var stMyNum = await getMyRCNumber();
+      if (!stMyNum) {
+        _claireLastToolResult = JSON.stringify({ error:'no_rc_number', message:'Could not resolve sender RC number.' });
+        return;
+      }
+      var stData = await rcFetch('/account/~/extension/~/sms', {
+        method: 'POST',
+        body: JSON.stringify({ from:{phoneNumber:stMyNum}, to:[{phoneNumber:stE164}], text: stMsg })
+      });
+      if (stData && stData.id) {
+        try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
+        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.id });
+      } else {
+        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', detail: stData });
+      }
+    } catch(stE) {
+      _claireLastToolResult = JSON.stringify({ error:'rc_exception', message: stE.message || String(stE) });
+    }
+    return;
+
   } else if (name === 'send_response_to') {
     var srRecipient = String(input.recipient||'').trim();
     var srContent = String(input.content||'').trim();
@@ -13918,57 +14036,8 @@ function _executeClaire_legacy(action, message) {
   }
 }
 
-async function generateClaireQuote(address, frequency, aiMessage) {
-  try {
-    // Geocode the address
-    var coords = null;
-    await new Promise(function(resolve) {
-      geocodeAddress(address, function(c) { coords = c; resolve(); });
-    });
-    if (!coords) { claireReply('I couldn\'t find that address. Try including the city and state.'); return; }
-
-    // Try to get square footage from MassGIS
-    var sqft = 0, baths = 0;
-    try {
-      var url = 'https://gis.massgis.state.ma.us/ArcGIS/rest/services/massgis_cache/L3Parcels_and_Assess/MapServer/1/query'
-        + '?geometry=' + encodeURIComponent('{"x":'+coords.lng+',"y":'+coords.lat+',"spatialReference":{"wkid":4326}}')
-        + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelWithin'
-        + '&outFields=LIVING_AREA,NUM_BATHS,BLDG_AREA,GROSS_AREA&returnGeometry=false&f=json';
-      var r = await fetch(url);
-      var d = await r.json();
-      if (d.features && d.features.length > 0) {
-        var a = d.features[0].attributes;
-        sqft = parseFloat(a.LIVING_AREA || a.BLDG_AREA || a.GROSS_AREA || 0);
-        baths = parseFloat(a.NUM_BATHS || 0);
-      }
-    } catch(e) {}
-
-    if (!sqft) { claireReply('I found the address but couldn\'t get the square footage from public records. You may need to ask the homeowner.'); return; }
-
-    // Calculate quote based on sqft and frequency
-    // Base rate: ~$0.10-0.12/sqft for biweekly, adjusted by frequency
-    var baseRate = 0.11;
-    var freqMultiplier = { 'weekly':0.85, 'biweekly':1.0, 'every 2 weeks':1.0, 'monthly':1.15, 'one-time':1.35 };
-    var mult = freqMultiplier[(frequency||'biweekly').toLowerCase()] || 1.0;
-    var basePrice = Math.round(sqft * baseRate * mult);
-    // Add per-bathroom charge
-    basePrice += Math.round(baths * 15);
-    // Round to nearest $5
-    basePrice = Math.round(basePrice / 5) * 5;
-    // Clamp to reasonable range
-    if (basePrice < 150) basePrice = 150;
-    if (basePrice > 800) basePrice = 800;
-
-    var freqLabel = frequency || 'biweekly';
-    claireReply('Here\'s the quote for <strong>'+address+'</strong>:<br><br>'
-      +'🏠 <strong>'+Math.round(sqft).toLocaleString()+' sq ft</strong> · '+Math.round(baths)+' bath'+(baths!==1?'s':'')+'<br>'
-      +'📋 Frequency: <strong>'+freqLabel+'</strong><br>'
-      +'💰 Estimated price: <strong>$'+basePrice+'</strong> per clean<br><br>'
-      +'<span style="font-size:11px;color:var(--muted)">Based on property records + standard pricing. Adjust as needed for condition, extras, etc.</span>');
-  } catch(e) {
-    claireReply('Had trouble looking up that property. Try giving me the full address with city and state.');
-  }
-}
+// v7.4: generateClaireQuote removed — superseded by compute_quote tool handler
+// (returns structured JSON instead of side-effecting chat with hardcoded $0.11/sqft math).
 
 function claireSendSms(clientId, msgText) {
   var c = PentaClients.getClient(clientId);
@@ -19015,32 +19084,12 @@ async function sendQuote() {
   const windows  = document.getElementById('qt-windows').checked;
   const windowCount = parseInt((document.getElementById('qt-window-count')||{}).value) || 0;
 
-  const nl = '\n';
-
-  // What's included summary
-  const included = [
-    '✔ Kitchen: counters, sink, appliance exteriors, microwave, cabinet doors, stove top, floor',
-    '✔ Bathrooms: toilets, tubs, showers, sinks, mirrors, floors (hands & knees)',
-    '✔ All rooms: dust furniture, baseboards, ledges, ceiling fans, remove cobwebs',
-    '✔ Vacuum all carpets, stairs & under beds · Mop all hard floors',
-    '✔ Empty trash · Disinfect all high-touch surfaces (switches, knobs, handles)',
-    oven   ? '✔ Inside oven deep clean (+$50)' : null,
-    fridge ? '✔ Inside refrigerator deep clean (+$50)' : null,
-    walls  ? '✔ Walls wiped down (+1hr)' : null,
-    windows && windowCount > 0 ? '✔ Windows cleaned (' + windowCount + ')' : null,
-  ].filter(Boolean).join(nl);
-
-  const msg =
-    'Hi ' + (fn.trim() || 'there') + '! 👋 Here is your personalized cleaning quote from The Maids:' + nl + nl +
-    (addr ? '📍 ' + addr + nl : '') +
-    (sqftDisp ? '📐 ' + sqftDisp + ' sq ft' + nl : '') +
-    nl +
-    '💰 ' + price + (isOneTime ? ' estimate' : ' ' + freq) + nl +
-    '👥 Professional team of ' + _qtTeam + nl + nl +
-    "✨ What's included every visit:" + nl +
-    included + nl + nl +
-    (isOneTime ? '📝 Final price confirmed after walkthrough — no surprises!' + nl + nl : '') +
-    'Reply YES to book or call us anytime! We look forward to serving you 🏠';
+  // v7.4: shared template helper — same wording as Claire's send_text path
+  const msg = _buildQuoteSmsText({
+    firstName: fn, address: addr, sqftDisplay: sqftDisp,
+    formattedPrice: price, isOneTime, frequencyLabel: freq, teamSize: _qtTeam,
+    oven, fridge, walls, windows, windowCount,
+  });
 
   // Show editable compose modal
   openQuoteCompose(phone.trim(), msg);
@@ -19269,6 +19318,8 @@ function loadPricingSettings() {
     discBiweekly: s.discBiweekly || 20,
     discTriweekly:s.discTriweekly|| 15,
     discMonthly:  s.discMonthly  || 10,
+    // v7.4: quote presentation style for one-time quotes
+    quoteStyle:   s.quoteStyle    || 'range',
   };
 }
 
@@ -19297,6 +19348,7 @@ function loadPricingForm() {
   set('ps-pets1', s.pets1); set('ps-pets2', s.pets2);
   set('ps-disc-weekly', s.discWeekly); set('ps-disc-biweekly', s.discBiweekly);
   set('ps-disc-triweekly', s.discTriweekly); set('ps-disc-monthly', s.discMonthly);
+  set('ps-quote-style', s.quoteStyle);
 }
 
 let _customAddons = JSON.parse(localStorage.getItem('qt_custom_addons') || '[]');
@@ -19358,6 +19410,7 @@ function savePricingSettings() {
     discBiweekly: get('ps-disc-biweekly') || 20,
     discTriweekly: get('ps-disc-triweekly') || 15,
     discMonthly: get('ps-disc-monthly') || 10,
+    quoteStyle: (document.getElementById('ps-quote-style') || {}).value || 'range',
   };
   localStorage.setItem('qt_pricing', JSON.stringify(s));
   // Update discount map
@@ -19759,6 +19812,133 @@ function selectFreq(freq, btn) {
   recalcQuote();
 }
 
+// v7.4: Pure quote calculator — DOM-free. Used by recalcQuote (UI path)
+// AND Claire's compute_quote tool. Same math, two call sites.
+function _computeQuotePure(args) {
+  const sqft = parseFloat(args.sqft) || 0;
+  if (!sqft) return null;
+  const baths   = parseFloat(args.baths) || 2;
+  const kids    = parseInt(args.kids) || 0;
+  const pets    = parseInt(args.pets) || 0;
+  const oven    = !!args.oven;
+  const fridge  = !!args.fridge;
+  const cabinets = !!args.cabinets;
+  const walls   = !!args.walls;
+  const windows = !!args.windows;
+  const windowCount = parseInt(args.windowCount) || 10;
+  const customAddons = Array.isArray(args.customAddons) ? args.customAddons : [];
+  const frequency = args.frequency || 'once';
+  const teamSize = parseInt(args.teamSize) || 3;
+  const override = parseFloat(args.override) || 0;
+
+  const PS = loadPricingSettings();
+  const BASE_RATE    = PS.rate3;
+  const BASE_SQFT_HR = PS.sqft3;
+
+  let hours = sqft / BASE_SQFT_HR;
+  hours += (baths - 1) * 0.25;
+  if (kids === 1) hours += PS.kids1 / 60;
+  if (kids === 2) hours += PS.kids2 / 60;
+  if (pets === 1) hours += PS.pets1 / 60;
+  if (pets === 2) hours += PS.pets2 / 60;
+  if (walls)   hours += (PS.walls  / 60) / teamSize;
+  if (windows) hours += (windowCount * PS.window / 60) / teamSize;
+  hours = Math.ceil(hours * 4) / 4;
+
+  let addOnFlat = 0;
+  if (oven)     addOnFlat += PS.oven;
+  if (fridge)   addOnFlat += PS.fridge;
+  if (cabinets) addOnFlat += PS.cabinets || 70;
+  customAddons.forEach(function(a){ if (a && a.checked) addOnFlat += parseFloat(a.price) || 0; });
+
+  const baseHourly = Math.round(hours * BASE_RATE);
+  const basePrice  = baseHourly + addOnFlat;
+  const _qtDiscMap = { once:0, weekly:(PS.discWeekly||25)/100, biweekly:(PS.discBiweekly||20)/100, triweekly:(PS.discTriweekly||15)/100, monthly:(PS.discMonthly||10)/100 };
+  const discount   = _qtDiscMap[frequency] || 0;
+  const finalPrice = override || Math.round(basePrice * (1 - discount));
+
+  const hh = Math.floor(hours);
+  const mm = Math.round((hours - hh) * 60);
+  const hoursStr = hh + 'h' + (mm > 0 ? ' ' + mm + 'm' : '');
+
+  const lowHourly  = Math.max(0, Math.round((hours - 0.5) * BASE_RATE));
+  const highHourly = Math.round((hours + 0.5) * BASE_RATE);
+  const priceLow   = Math.max(50, Math.round((lowHourly  + addOnFlat) * (1 - discount)));
+  const priceHigh  = Math.round((highHourly + addOnFlat) * (1 - discount));
+  const isOneTime = frequency === 'once';
+
+  // Presentation style — only affects one-time quotes (recurring is always single price)
+  const style = PS.quoteStyle || 'range';
+  let formattedPrice;
+  if (!isOneTime) {
+    formattedPrice = '$' + finalPrice.toLocaleString();
+  } else if (style === 'midpoint') {
+    formattedPrice = '$' + Math.round((priceLow + priceHigh) / 2).toLocaleString();
+  } else if (style === 'high_end') {
+    formattedPrice = '$' + priceHigh.toLocaleString();
+  } else if (style === 'set_price') {
+    formattedPrice = '$' + finalPrice.toLocaleString();
+  } else { // 'range'
+    formattedPrice = '$' + priceLow.toLocaleString() + ' – $' + priceHigh.toLocaleString();
+  }
+
+  const breakdown = [
+    sqft.toLocaleString() + ' sq ft = ' + hoursStr,
+    baths > 1 ? baths + ' bathrooms (+' + Math.round((baths-1)*15) + 'm)' : null,
+    kids > 0  ? 'Kids (+' + (kids===1?20:30) + 'm)' : null,
+    pets > 0  ? 'Pets (+' + (pets===1?20:30) + 'm)' : null,
+    oven      ? 'Inside oven (+$50)' : null,
+    fridge    ? 'Inside fridge (+$50)' : null,
+    cabinets  ? 'Inside cabinets (+$70)' : null,
+    walls     ? 'Walls (+60m)' : null,
+    windows   ? windowCount + ' windows (+' + (windowCount*5) + 'm)' : null,
+    '$' + BASE_RATE + '/hr × ' + hoursStr + ' = $' + baseHourly + (addOnFlat ? ' + $' + addOnFlat + ' add-ons' : ''),
+    discount > 0 ? Math.round(discount*100) + '% recurring discount = -$' + (basePrice - finalPrice) : null,
+    override  ? 'Manual override applied' : null,
+  ].filter(Boolean);
+
+  return { price: finalPrice, priceLow, priceHigh, hours, hoursStr,
+           baseHourly, addOnFlat, discount, isOneTime, breakdown,
+           presentationStyle: style, formattedPrice, basePrice };
+}
+
+// v7.4: Quote SMS template — extracted from sendQuote() so Claire's
+// compute_quote → send_text path produces identical wording to manual sends.
+function _buildQuoteSmsText(args) {
+  const firstName = (args.firstName || '').trim();
+  const address = args.address || '';
+  const sqftDisplay = args.sqftDisplay || '';
+  const formattedPrice = args.formattedPrice || '';
+  const isOneTime = !!args.isOneTime;
+  const frequencyLabel = args.frequencyLabel || '';
+  const teamSize = parseInt(args.teamSize) || 3;
+  const oven = !!args.oven, fridge = !!args.fridge, walls = !!args.walls;
+  const windows = !!args.windows;
+  const windowCount = parseInt(args.windowCount) || 0;
+  const nl = '\n';
+  const included = [
+    '✔ Kitchen: counters, sink, appliance exteriors, microwave, cabinet doors, stove top, floor',
+    '✔ Bathrooms: toilets, tubs, showers, sinks, mirrors, floors (hands & knees)',
+    '✔ All rooms: dust furniture, baseboards, ledges, ceiling fans, remove cobwebs',
+    '✔ Vacuum all carpets, stairs & under beds · Mop all hard floors',
+    '✔ Empty trash · Disinfect all high-touch surfaces (switches, knobs, handles)',
+    oven   ? '✔ Inside oven deep clean (+$50)' : null,
+    fridge ? '✔ Inside refrigerator deep clean (+$50)' : null,
+    walls  ? '✔ Walls wiped down (+1hr)' : null,
+    windows && windowCount > 0 ? '✔ Windows cleaned (' + windowCount + ')' : null,
+  ].filter(Boolean).join(nl);
+  return 'Hi ' + (firstName || 'there') + '! 👋 Here is your personalized cleaning quote from The Maids:' + nl + nl +
+    (address ? '📍 ' + address + nl : '') +
+    (sqftDisplay ? '📐 ' + sqftDisplay + ' sq ft' + nl : '') +
+    nl +
+    '💰 ' + formattedPrice + (isOneTime ? ' estimate' : ' ' + frequencyLabel) + nl +
+    '👥 Professional team of ' + teamSize + nl + nl +
+    "✨ What's included every visit:" + nl +
+    included + nl + nl +
+    (isOneTime ? '📝 Final price confirmed after walkthrough — no surprises!' + nl + nl : '') +
+    'Reply YES to book or call us anytime! We look forward to serving you 🏠';
+}
+
 function recalcQuote() {
   const sqftEl = document.getElementById('qt-sqft');
   const sqft = sqftEl ? (parseFloat(sqftEl.value) || 0) : 0;
@@ -19777,91 +19957,33 @@ function recalcQuote() {
   const walls    = document.getElementById('qt-walls').checked;
   const windows = document.getElementById('qt-windows').checked;
   const windowCount = parseInt(document.getElementById('qt-window-count').value) || 10;
+  const override = parseFloat((document.getElementById('qt-override') || {}).value) || 0;
 
-  const PS           = loadPricingSettings();
-  const BASE_RATE    = PS.rate3;
-  const BASE_SQFT_HR = PS.sqft3;
-  const teamSize     = _qtTeam || 3;
-
-  // Base hours from sqft
-  let hours = sqft / BASE_SQFT_HR;
-
-  // Bathrooms: +15 min each above 1
-  hours += (baths - 1) * 0.25;
-
-  // Kids / pets (from settings)
-  if (kids === 1) hours += PS.kids1 / 60;
-  if (kids === 2) hours += PS.kids2 / 60;
-  if (pets === 1) hours += PS.pets1 / 60;
-  if (pets === 2) hours += PS.pets2 / 60;
-
-  // Walls and windows (from settings, 1-person task divided by team)
-  if (walls)   hours += (PS.walls  / 60) / teamSize;
-  if (windows) hours += (windowCount * PS.window / 60) / teamSize;
-
-  // Round to nearest 15 min
-  hours = Math.ceil(hours * 4) / 4;
-
-  // Flat add-ons (from settings)
-  let addOnFlat = 0;
-  if (oven)     addOnFlat += PS.oven;
-  if (fridge)   addOnFlat += PS.fridge;
-  if (cabinets) addOnFlat += PS.cabinets || 70;
-  // Custom add-ons
-  (_customAddons || []).forEach(a => {
+  // v7.4: delegate calc to _computeQuotePure (DOM-free). recalcQuote owns DOM I/O.
+  const customAddons = (_customAddons || []).map(function(a){
     const el = document.getElementById('qt-custom-' + a.id);
-    if (el && el.checked) addOnFlat += a.price;
+    return { id:a.id, price:a.price, checked: !!(el && el.checked) };
   });
-
-  const baseHourly = Math.round(hours * BASE_RATE);
-  const basePrice  = baseHourly + addOnFlat;
-  const discount   = _qtDiscounts[_qtFreq] || 0;
-  const override   = parseFloat((document.getElementById('qt-override') || {}).value) || 0;
-  const finalPrice = override || Math.round(basePrice * (1 - discount));
-
-  // Breakdown
-  const hh = Math.floor(hours);
-  const mm = Math.round((hours - hh) * 60);
-  const timeStr = hh + 'h' + (mm > 0 ? ' ' + mm + 'm' : '');
-  const items = [
-    sqft.toLocaleString() + ' sq ft = ' + timeStr,
-    baths > 1 ? baths + ' bathrooms (+' + Math.round((baths-1)*15) + 'm)' : null,
-    kids > 0  ? 'Kids (+' + (kids===1?20:30) + 'm)' : null,
-    pets > 0  ? 'Pets (+' + (pets===1?20:30) + 'm)' : null,
-    oven      ? 'Inside oven (+$50)' : null,
-    fridge    ? 'Inside fridge (+$50)' : null,
-    cabinets  ? 'Inside cabinets (+$70)' : null,
-    walls     ? 'Walls (+60m)' : null,
-    windows   ? windowCount + ' windows (+' + (windowCount*5) + 'm)' : null,
-    '$' + BASE_RATE + '/hr × ' + timeStr + ' = $' + baseHourly + (addOnFlat ? ' + $' + addOnFlat + ' add-ons' : ''),
-    discount > 0 ? Math.round(discount*100) + '% recurring discount = -$' + (basePrice - finalPrice) : null,
-    override  ? 'Manual override applied' : null,
-  ].filter(Boolean);
-
-  // Price range: ±0.5hr on hourly portion, keep add-ons fixed
-  const isOneTime = _qtFreq === 'once';
-  const lowHourly  = Math.max(0, Math.round((hours - 0.5) * BASE_RATE));
-  const highHourly = Math.round((hours + 0.5) * BASE_RATE);
-  const priceLow   = Math.max(50, Math.round((lowHourly  + addOnFlat) * (1 - discount)));
-  const priceHigh  = Math.round((highHourly + addOnFlat) * (1 - discount));
-  const priceDisplay = isOneTime
-    ? '$' + priceLow.toLocaleString() + ' – $' + priceHigh.toLocaleString()
-    : '$' + finalPrice.toLocaleString();
+  const result = _computeQuotePure({
+    sqft, baths, kids, pets, oven, fridge, cabinets, walls, windows, windowCount,
+    customAddons, frequency: _qtFreq, teamSize: _qtTeam || 3, override,
+  });
+  if (!result) return;
 
   const qrEl = document.getElementById('qt-result');
   if (qrEl) { qrEl.style.display = 'block'; qrEl.style.visibility = 'visible'; }
-  document.getElementById('qt-price').textContent = priceDisplay;
+  document.getElementById('qt-price').textContent = result.formattedPrice;
   document.getElementById('qt-freq-label').textContent = _qtFreqLabels[_qtFreq] || '';
-  document.getElementById('qt-orig-price').textContent = isOneTime
+  document.getElementById('qt-orig-price').textContent = result.isOneTime
     ? 'Exact price confirmed at first visit'
-    : discount > 0 ? 'One-time: $' + basePrice : '';
-  document.getElementById('qt-breakdown').innerHTML = items.map(i => '<div>· ' + i + '</div>').join('');
+    : result.discount > 0 ? 'One-time: $' + result.basePrice : '';
+  document.getElementById('qt-breakdown').innerHTML = result.breakdown.map(function(i){ return '<div>· ' + i + '</div>'; }).join('');
   const ovSec = document.getElementById('qt-override-section');
   if (ovSec) ovSec.style.display = 'block';
 
   // Store for SMS
-  window._qtLastPrice = priceDisplay;
-  window._qtLastIsOneTime = isOneTime;
+  window._qtLastPrice = result.formattedPrice;
+  window._qtLastIsOneTime = result.isOneTime;
 }
 
 
@@ -30734,6 +30856,17 @@ function _p3dPage(dir) {
           <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">Every 3 weeks</div><input class="field-input" id="ps-disc-triweekly" type="number" placeholder="15" style="width:100%"></div>
           <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">Monthly</div><input class="field-input" id="ps-disc-monthly" type="number" placeholder="10" style="width:100%"></div>
         </div>
+      </div>
+
+      <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:20px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin-bottom:12px">Quote Presentation (one-time)</div>
+        <select class="field-input" id="ps-quote-style" style="width:100%">
+          <option value="range">Price range — "$280 – $340"</option>
+          <option value="midpoint">Midpoint — "$310"</option>
+          <option value="high_end">High end — "$340"</option>
+          <option value="set_price">Set price — "$310" (no range)</option>
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4">Recurring quotes are always shown as a single discounted price. This setting only affects one-time/deep-clean quotes.</div>
       </div>
 
       <button onclick="savePricingSettings()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer">Save Pricing</button>
