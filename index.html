@@ -23270,10 +23270,14 @@ function renderStaffList() {
       </div>`;
     }
     const langLabel = {en:'EN',es:'ES',pt:'PT',cv:'KR'}[emp.lang||'en']||'EN';
+    // v9.5.1: ⭐ for team_leader, nothing for team_member.
+    const _leaderStar = (emp.position === 'team_leader')
+      ? ' <span title="Team Leader" style="color:#F59E0B;font-size:13px;margin-left:2px">★</span>'
+      : '';
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;${emp.status==='inactive'?'opacity:0.5':''}">
       <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:15px;font-weight:600">${emp.name}</div>
+        <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
@@ -24093,6 +24097,10 @@ async function saveStaffEmployee() {
         }
         // Phase 6.3a Migration 014: 10 new columns added by ALTER TABLE.
         // Same conditional !== undefined gate as the rest of the patch.
+        // v9.5.1 hotfix: position was missing from the dual-write patch
+        // builder, so manager edits to Role never persisted to DB (only
+        // new-hire INSERTs included it via Object.assign(emp)). Add here.
+        if (emp.position !== undefined) patch.position = emp.position || 'team_member';
         if (emp.shirtSize !== undefined) patch.shirt_size = emp.shirtSize || null;
         if (emp.pantsSize !== undefined) patch.pants_size = emp.pantsSize || null;
         if (emp.workAuth !== undefined) patch.work_auth = emp.workAuth || null;
@@ -27999,10 +28007,14 @@ function renderStaffSubview() {
         <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
       </div>`;
     }
+    // v9.5.1: ⭐ for team_leader, nothing for team_member.
+    const _leaderStar = (emp.position === 'team_leader')
+      ? ' <span title="Team Leader" style="color:#F59E0B;font-size:13px;margin-left:2px">★</span>'
+      : '';
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;${emp.status==='inactive'?'opacity:0.5':''}">
       <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:15px;font-weight:600">${emp.name}</div>
+        <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
           ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
