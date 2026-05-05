@@ -2696,6 +2696,45 @@ html.pre-auth #filter-row { display: none !important; }
   display: grid; grid-template-columns: repeat(3, 1fr);
   gap: 10px; margin-bottom: 14px;
 }
+/* Polish: 4-card variant for stats row + icons */
+.inv-summary-4 { grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.inv-sum-icon {
+  font-size: 18px; margin-bottom: 4px;
+}
+.inv-summary-4 .inv-sum-card { padding: 10px 6px; }
+.inv-summary-4 .inv-sum-label { font-size: 9px; }
+.inv-summary-4 .inv-sum-value { font-size: 18px; }
+/* Horizontal scrolling category filter chips */
+.inv-cat-chips {
+  display: flex; gap: 8px; margin-bottom: 14px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.inv-cat-chips::-webkit-scrollbar { display: none; }
+.inv-cat-chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 20px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(255,255,255,0.78);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px; font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.inv-cat-chip:active { transform: scale(0.96); }
+.inv-cat-chip.active { color: #fff; }
+.inv-cat-chip-count {
+  font-size: 10px; font-weight: 800;
+  padding: 1px 6px; border-radius: 8px;
+  background: rgba(0,0,0,0.22);
+  color: inherit;
+  min-width: 16px; text-align: center;
+}
 .inv-sum-card {
   background: rgba(255,255,255,0.08);
   backdrop-filter: blur(30px) saturate(180%);
@@ -29082,22 +29121,66 @@ function syncSheets() {
 var INVENTORY_KEY = 'inventory_v1';
 var INVENTORY_FLAGS_KEY = 'inventory_flags_v1';
 
+// Inventory polish: 5-category taxonomy. Old taxonomy ('Chemicals',
+// 'Supplies', 'Paper') gets remapped at load via _migrateInvCategories.
+var INV_CAT_COLORS = {
+  'Cleaning Supplies': { color:'#3B82F6', icon:'\u{1F9F4}', short:'Cleaning' },
+  'Equipment':         { color:'#F59E0B', icon:'\u{1F527}', short:'Equipment' },
+  'Vehicles':          { color:'#10B981', icon:'\u{1F690}', short:'Vehicles' },
+  'PPE':               { color:'#F97316', icon:'\u{1F9BA}', short:'PPE' },
+  'Office':            { color:'#8B5CF6', icon:'\u{1F4CB}', short:'Office' },
+};
+function getInvCatColor(cat) {
+  return (INV_CAT_COLORS[cat] || { color:'#9CA3AF', icon:'\u{1F4E6}', short: cat || '\u2014' });
+}
+function _migrateInvCategories(arr) {
+  // Old taxonomy → new. Idempotent.
+  var map = { 'Chemicals': 'Cleaning Supplies', 'Supplies': 'Cleaning Supplies', 'Paper': 'Cleaning Supplies' };
+  // Items that should land in PPE rather than Cleaning Supplies under the new taxonomy.
+  var ppeIds = { 'inv_gloves': 1 };
+  // Items that should land in Equipment (already in Equipment in old taxonomy, so noop here).
+  arr.forEach(function(p) {
+    if (ppeIds[p.id]) p.cat = 'PPE';
+    else if (map[p.cat]) p.cat = map[p.cat];
+  });
+  return arr;
+}
+
 var INVENTORY_SEED = [
-  { id:'inv_bona',     name:'Bona Pro Series Hardwood Floor Cleaner', cat:'Chemicals', stock:8,  max:12,  unit:'gallons',    rule:'per_job', rate:0.3,  cost:28 },
-  { id:'inv_simgreen', name:'Simple Green All-Purpose Cleaner',       cat:'Chemicals', stock:4,  max:6,   unit:'gallons',    rule:'per_job', rate:0.4,  cost:18 },
-  { id:'inv_mf50',     name:'Microfiber Cloths (bulk pack of 50)',    cat:'Supplies',  stock:85, max:150, unit:'cloths',     rule:'per_job', rate:2,    cost:24 },
-  { id:'inv_tpk',      name:'Toilet Paper (Kirkland 30-pack)',        cat:'Paper',     stock:2,  max:8,   unit:'packs',      rule:'per_job', rate:0.5,  cost:22 },
-  { id:'inv_bounty',   name:'Paper Towels (Bounty 12-pack)',          cat:'Paper',     stock:3,  max:10,  unit:'packs',      rule:'per_job', rate:0.3,  cost:28 },
-  { id:'inv_clorox',   name:'Clorox Disinfecting Wipes (canister)',   cat:'Chemicals', stock:6,  max:24,  unit:'canisters',  rule:'per_job', rate:0.2,  cost:8 },
-  { id:'inv_windex',   name:'Glass Cleaner (Windex gallon)',          cat:'Chemicals', stock:3,  max:8,   unit:'gallons',    rule:'per_job', rate:0.25, cost:14 },
-  { id:'inv_vacbag',   name:'Vacuum Bags (Sanitaire 24-pack)',        cat:'Equipment', stock:18, max:24,  unit:'packs',      rule:'per_job', rate:0.1,  cost:19 },
-  { id:'inv_gloves',   name:'Rubber Gloves (nitrile 100-pack)',       cat:'Supplies',  stock:2,  max:6,   unit:'boxes',      rule:'per_job', rate:1,    cost:16 },
-  { id:'inv_barmop',   name:'Bar Mop Towels (12-pack)',               cat:'Supplies',  stock:14, max:24,  unit:'packs',      rule:'per_job', rate:1,    cost:15 },
-  { id:'inv_magic',    name:'Mr. Clean Magic Erasers (30-pack)',      cat:'Chemicals', stock:5,  max:20,  unit:'packs',      rule:'per_job', rate:0.15, cost:22 },
-  { id:'inv_lysol',    name:'Toilet Bowl Cleaner (Lysol)',            cat:'Chemicals', stock:5,  max:12,  unit:'bottles',    rule:'per_job', rate:0.2,  cost:6 },
-  { id:'inv_mophead',  name:'Mop Heads (replacement 6-pack)',         cat:'Equipment', stock:8,  max:12,  unit:'packs',      rule:'per_job', rate:0.05, cost:18 },
-  { id:'inv_dustpan',  name:'Dust Pans (stand-up)',                   cat:'Equipment', stock:8,  max:8,   unit:'units',      rule:'manual',  rate:0,    cost:22 },
-  { id:'inv_trash',    name:'Trash Bags (33-gallon, 100-pack)',       cat:'Paper',     stock:4,  max:10,  unit:'boxes',      rule:'per_job', rate:0.5,  cost:18 }
+  // ── Cleaning Supplies (10) ──
+  { id:'inv_bona',     name:'Bona Pro Series Hardwood Floor Cleaner', cat:'Cleaning Supplies', stock:8,  max:12,  unit:'gallons',    rule:'per_job', rate:0.3,  cost:28 },
+  { id:'inv_simgreen', name:'Simple Green All-Purpose Cleaner',       cat:'Cleaning Supplies', stock:4,  max:6,   unit:'gallons',    rule:'per_job', rate:0.4,  cost:18 },
+  { id:'inv_mf50',     name:'Microfiber Cloths (bulk pack of 50)',    cat:'Cleaning Supplies', stock:85, max:150, unit:'cloths',     rule:'per_job', rate:2,    cost:24 },
+  { id:'inv_tpk',      name:'Toilet Paper (Kirkland 30-pack)',        cat:'Cleaning Supplies', stock:2,  max:8,   unit:'packs',      rule:'per_job', rate:0.5,  cost:22 },
+  { id:'inv_bounty',   name:'Paper Towels (Bounty 12-pack)',          cat:'Cleaning Supplies', stock:3,  max:10,  unit:'packs',      rule:'per_job', rate:0.3,  cost:28 },
+  { id:'inv_clorox',   name:'Clorox Disinfecting Wipes (canister)',   cat:'Cleaning Supplies', stock:6,  max:24,  unit:'canisters',  rule:'per_job', rate:0.2,  cost:8 },
+  { id:'inv_windex',   name:'Glass Cleaner (Windex gallon)',          cat:'Cleaning Supplies', stock:3,  max:8,   unit:'gallons',    rule:'per_job', rate:0.25, cost:14 },
+  { id:'inv_barmop',   name:'Bar Mop Towels (12-pack)',               cat:'Cleaning Supplies', stock:14, max:24,  unit:'packs',      rule:'per_job', rate:1,    cost:15 },
+  { id:'inv_magic',    name:'Mr. Clean Magic Erasers (30-pack)',      cat:'Cleaning Supplies', stock:5,  max:20,  unit:'packs',      rule:'per_job', rate:0.15, cost:22 },
+  { id:'inv_lysol',    name:'Toilet Bowl Cleaner (Lysol)',            cat:'Cleaning Supplies', stock:5,  max:12,  unit:'bottles',    rule:'per_job', rate:0.2,  cost:6 },
+  { id:'inv_trash',    name:'Trash Bags (33-gallon, 100-pack)',       cat:'Cleaning Supplies', stock:4,  max:10,  unit:'boxes',      rule:'per_job', rate:0.5,  cost:18 },
+  { id:'inv_floorstrip', name:'Floor Stripper (concentrate gallon)',   cat:'Cleaning Supplies', stock:1,  max:4,   unit:'gallons',   rule:'manual',  rate:0,    cost:42 },
+  { id:'inv_grout',    name:'Grout Cleaner (heavy-duty)',             cat:'Cleaning Supplies', stock:7,  max:8,   unit:'bottles',    rule:'manual',  rate:0,    cost:14 },
+  // ── Equipment (5) ──
+  { id:'inv_vacbag',   name:'Vacuum Bags (Sanitaire 24-pack)',        cat:'Equipment',   stock:18, max:24,  unit:'packs',      rule:'per_job', rate:0.1,  cost:19 },
+  { id:'inv_mophead',  name:'Mop Heads (replacement 6-pack)',         cat:'Equipment',   stock:8,  max:12,  unit:'packs',      rule:'per_job', rate:0.05, cost:18 },
+  { id:'inv_dustpan',  name:'Dust Pans (stand-up)',                   cat:'Equipment',   stock:8,  max:8,   unit:'units',      rule:'manual',  rate:0,    cost:22 },
+  { id:'inv_squeegee', name:'Window Squeegee (commercial-grade)',     cat:'Equipment',   stock:3,  max:6,   unit:'units',      rule:'manual',  rate:0,    cost:28 },
+  { id:'inv_buckets',  name:'Cleaning Buckets (5-gallon)',            cat:'Equipment',   stock:6,  max:12,  unit:'units',      rule:'manual',  rate:0,    cost:9 },
+  // ── Vehicles (4) ──
+  { id:'inv_motoroil', name:'5W-30 Motor Oil (5-quart jug)',          cat:'Vehicles',    stock:2,  max:6,   unit:'jugs',       rule:'manual',  rate:0,    cost:28 },
+  { id:'inv_wiperfluid', name:'Windshield Wiper Fluid (gallon)',       cat:'Vehicles',   stock:5,  max:12,  unit:'gallons',    rule:'manual',  rate:0,    cost:6 },
+  { id:'inv_airfresh', name:'Vehicle Air Fresheners (12-pack)',       cat:'Vehicles',    stock:8,  max:12,  unit:'packs',      rule:'manual',  rate:0,    cost:18 },
+  { id:'inv_tirepump', name:'Portable Tire Inflator',                 cat:'Vehicles',    stock:3,  max:4,   unit:'units',      rule:'manual',  rate:0,    cost:48 },
+  // ── PPE (4) ──
+  { id:'inv_gloves',   name:'Nitrile Gloves (100-pack box)',          cat:'PPE',         stock:2,  max:6,   unit:'boxes',      rule:'per_job', rate:1,    cost:16 },
+  { id:'inv_kn95',     name:'KN95 Masks (50-pack)',                   cat:'PPE',         stock:4,  max:8,   unit:'packs',      rule:'manual',  rate:0,    cost:22 },
+  { id:'inv_goggles',  name:'Safety Goggles (anti-fog)',              cat:'PPE',         stock:8,  max:10,  unit:'pairs',      rule:'manual',  rate:0,    cost:12 },
+  { id:'inv_kneepads', name:'Knee Pads (gel-filled, pair)',           cat:'PPE',         stock:5,  max:8,   unit:'pairs',      rule:'manual',  rate:0,    cost:24 },
+  // ── Office (3) ──
+  { id:'inv_toner',    name:'HP Printer Toner (cartridge)',           cat:'Office',      stock:1,  max:3,   unit:'cartridges', rule:'manual',  rate:0,    cost:78 },
+  { id:'inv_invpaper', name:'Invoice Paper (case, 5000 sheets)',      cat:'Office',      stock:2,  max:4,   unit:'cases',      rule:'manual',  rate:0,    cost:42 },
+  { id:'inv_sharpie',  name:'Sharpie Markers (12-pack)',              cat:'Office',      stock:3,  max:6,   unit:'packs',      rule:'manual',  rate:0,    cost:14 }
 ];
 
 function loadInventory() {
@@ -29107,6 +29190,15 @@ function loadInventory() {
       localStorage.setItem(INVENTORY_KEY, JSON.stringify(INVENTORY_SEED));
       return INVENTORY_SEED.slice();
     }
+    // Polish: migrate old categories + merge in any new seed items the user
+    // doesn't yet have. Idempotent — preserves their stock/edits on existing items.
+    _migrateInvCategories(arr);
+    var existingIds = {}; arr.forEach(function(p){ existingIds[p.id] = 1; });
+    var added = false;
+    INVENTORY_SEED.forEach(function(seedItem) {
+      if (!existingIds[seedItem.id]) { arr.push(JSON.parse(JSON.stringify(seedItem))); added = true; }
+    });
+    if (added) localStorage.setItem(INVENTORY_KEY, JSON.stringify(arr));
     return arr;
   } catch(e) { return INVENTORY_SEED.slice(); }
 }
@@ -29166,6 +29258,40 @@ function calculateInventoryStatus(p) {
   return { status: status, runoutDate: runoutDate, daysUntilRunout: daysUntilRunout, confidence: confidence };
 }
 
+// Polish: filter state for the category-chip strip.
+window._invFilter = window._invFilter || 'all';
+function setInvFilter(cat) {
+  window._invFilter = cat || 'all';
+  renderInvCategoryChips();
+  renderInventoryProducts();
+}
+function renderInvCategoryChips() {
+  var el = document.getElementById('inv-cat-chips');
+  if (!el) return;
+  var inv = loadInventory();
+  var counts = { all: inv.length };
+  inv.forEach(function(p){ counts[p.cat] = (counts[p.cat] || 0) + 1; });
+  var cats = ['Cleaning Supplies','Equipment','Vehicles','PPE','Office'];
+  var active = window._invFilter || 'all';
+  var html = '';
+  // "All" chip — neutral
+  html += '<button class="inv-cat-chip' + (active === 'all' ? ' active' : '') + '" '
+    + 'onclick="setInvFilter(\'all\')">All <span class="inv-cat-chip-count">' + (counts.all || 0) + '</span></button>';
+  cats.forEach(function(c) {
+    var info = getInvCatColor(c);
+    var n = counts[c] || 0;
+    var isActive = active === c;
+    var bg = isActive ? info.color : 'rgba(255,255,255,0.08)';
+    var color = isActive ? '#fff' : info.color;
+    var border = isActive ? info.color : 'rgba(255,255,255,0.14)';
+    html += '<button class="inv-cat-chip' + (isActive ? ' active' : '') + '" '
+      + 'style="background:'+bg+';color:'+color+';border-color:'+border+'" '
+      + 'onclick="setInvFilter(\''+c+'\')">' + info.icon + ' ' + info.short
+      + ' <span class="inv-cat-chip-count" style="background:rgba(0,0,0,0.18);color:inherit">' + n + '</span></button>';
+  });
+  el.innerHTML = html;
+}
+
 function calcInventoryCounts() {
   var inv = loadInventory();
   var reorder = 0, coming = 0, monthly = 0;
@@ -29218,13 +29344,21 @@ function toggleInvRoadmap() {
 
 // ── Render ──────────────────────────────────────────────────────────────
 function _invSwatch(p) {
-  // Deterministic colour per product from id hash so same product always
-  // gets the same swatch.
-  var h = 0; for (var i = 0; i < p.id.length; i++) h = (h * 31 + p.id.charCodeAt(i)) | 0;
-  var hues = [210, 270, 30, 160, 340, 195, 55];
-  var hue = hues[Math.abs(h) % hues.length];
+  // Polish: swatch color = category color so all items in a category share
+  // a coherent visual identity. Initials still derived from product name.
+  var cat = getInvCatColor(p.cat);
+  var col = cat.color;
+  // Build a slightly darker gradient-end for depth (HSL shift via simple darken).
   var initials = (p.name || '').split(/\s+/).slice(0,2).map(function(w){return w[0];}).join('').toUpperCase();
-  return '<div class="inv-card-swatch" style="background:linear-gradient(135deg,hsl('+hue+',70%,50%),hsl('+((hue+30)%360)+',65%,35%))">'+initials+'</div>';
+  return '<div class="inv-card-swatch" style="background:linear-gradient(135deg,'+col+',' + _invDarken(col, 18) + ')">'+initials+'</div>';
+}
+function _invDarken(hex, pct) {
+  // Simple darken: drop each RGB channel by pct%. Returns "rgb(...)".
+  var h = hex.replace('#','');
+  if (h.length === 3) h = h.split('').map(function(c){return c+c;}).join('');
+  var r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
+  var f = (100 - pct) / 100;
+  return 'rgb(' + Math.max(0, Math.round(r*f)) + ',' + Math.max(0, Math.round(g*f)) + ',' + Math.max(0, Math.round(b*f)) + ')';
 }
 function _invStatusLabel(s) {
   if (s.status === 'empty')    return 'EMPTY';
@@ -29246,6 +29380,11 @@ function renderInventoryProducts() {
   var list = document.getElementById('inv-product-list');
   if (!list) return;
   var inv = loadInventory().slice();
+  // Polish: category filter
+  var filter = window._invFilter || 'all';
+  if (filter !== 'all') {
+    inv = inv.filter(function(p){ return p.cat === filter; });
+  }
   var flags = loadInventoryFlags();
   var withStatus = inv.map(function(p) { return { p:p, s: calculateInventoryStatus(p) }; });
   withStatus.sort(function(a,b) {
@@ -29258,29 +29397,49 @@ function renderInventoryProducts() {
     var pct = p.max ? Math.max(0, Math.min(100, (p.stock / p.max) * 100)) : 0;
     var fillCls = s.status === 'ok' ? 'ok' : s.status;
     var flagCount = (flags[p.id] && flags[p.id].length) ? flags[p.id].length : 0;
-    var flagHtml = flagCount > 0 ? '<span class="inv-flag-pill">⚠ '+flagCount+' flagged</span>' : '';
+    var flagHtml = flagCount > 0 ? '<span class="inv-flag-pill">\u26a0 '+flagCount+' flagged</span>' : '';
+    var catInfo = getInvCatColor(p.cat);
+    var catPillStyle = 'background:' + catInfo.color + '22;color:' + catInfo.color + ';border:1px solid ' + catInfo.color + '55';
     return ''
-      + '<div class="inv-card" onclick="openInvDetail(\''+p.id+'\')">'
+      + '<div class="inv-card" style="border-left:4px solid '+catInfo.color+'" onclick="openInvDetail(\''+p.id+'\')">'
       +   _invSwatch(p)
       +   '<div class="inv-card-body">'
       +     '<div class="inv-card-name">'+_escapeInv(p.name)+'</div>'
-      +     '<div class="inv-card-meta"><span class="inv-cat-pill">'+_escapeInv(p.cat)+'</span>'+flagHtml+'</div>'
+      +     '<div class="inv-card-meta"><span class="inv-cat-pill" style="'+catPillStyle+'">'+catInfo.icon+' '+_escapeInv(p.cat)+'</span>'+flagHtml+'</div>'
       +     '<div class="inv-stock-row"><span>Stock</span><span class="inv-stock-num">'+p.stock+' of '+p.max+' '+_escapeInv(p.unit||'')+'</span></div>'
       +     '<div class="inv-stock-bar"><div class="inv-stock-fill '+fillCls+'" style="width:'+pct+'%"></div></div>'
       +     '<div class="inv-status-line"><span class="inv-status-pill '+s.status+'">'+_invStatusLabel(s)+'</span></div>'
       +     '<div class="inv-runout">'+_invRunoutStr(s)+'</div>'
       +   '</div>'
       + '</div>';
-  }).join('') || '<div style="text-align:center;color:rgba(255,255,255,0.55);padding:40px 20px;font-size:13px">No products yet. Tap + to add your first.</div>';
+  }).join('') || '<div style="text-align:center;color:rgba(255,255,255,0.55);padding:40px 20px;font-size:13px">No products in this category. Try another filter.</div>';
 }
 function renderInventorySummary() {
   var c = calcInventoryCounts();
-  document.getElementById('inv-sum-reorder').textContent = c.needsReorder;
-  document.getElementById('inv-sum-coming').textContent = c.comingUp;
-  document.getElementById('inv-sum-spend').textContent = '$' + c.monthlySpend.toLocaleString();
+  var inv = loadInventory();
+  var totalEl = document.getElementById('inv-sum-total');
+  if (totalEl) totalEl.textContent = inv.length;
+  var reorderEl = document.getElementById('inv-sum-reorder');
+  if (reorderEl) reorderEl.textContent = c.needsReorder;
+  var spendEl = document.getElementById('inv-sum-spend');
+  if (spendEl) spendEl.textContent = '$' + c.monthlySpend.toLocaleString();
+  // Last restock — read from localStorage; default to "4 days ago" for fresh demos.
+  var restockEl = document.getElementById('inv-sum-restock');
+  if (restockEl) {
+    var iso = localStorage.getItem('inventory_last_restock_v1');
+    if (!iso) {
+      var d = new Date(); d.setDate(d.getDate() - 4);
+      iso = d.toISOString();
+      localStorage.setItem('inventory_last_restock_v1', iso);
+    }
+    var d2 = new Date(iso);
+    var days = Math.max(0, Math.floor((Date.now() - d2.getTime()) / 86400000));
+    restockEl.textContent = days === 0 ? 'Today' : days === 1 ? '1 day ago' : days + 'd ago';
+  }
 }
 function renderInventoryAll() {
   renderInventorySummary();
+  renderInvCategoryChips();
   renderInventoryProducts();
   renderInvRoadmap();
   renderMcProducts();
@@ -29394,6 +29553,16 @@ function invDetailSave() {
   saveInventory(inv);
   closeInvDetail();
   renderInventoryAll();
+  try {
+    // Polish: bump last-restock when stock went up after a save.
+    var _allAfter = loadInventory();
+    var _row = _allAfter.find(function(x){ return x.id === _invDetailId; });
+    if (_row && _row._lastSeenStock != null && _row.stock > _row._lastSeenStock) {
+      localStorage.setItem("inventory_last_restock_v1", new Date().toISOString());
+    }
+    if (_row) { _row._lastSeenStock = _row.stock; saveInventory(_allAfter); }
+  } catch(e) {}
+
 }
 function invDetailDelete() {
   if (!confirm('Delete this product?')) return;
@@ -32188,20 +32357,29 @@ function _p3dPage(dir) {
 
     <!-- Shop the Web pane -->
     <div id="inv-pane-web">
-      <div class="inv-summary">
+      <div class="inv-summary inv-summary-4">
+        <div class="inv-sum-card">
+          <div class="inv-sum-icon">📦</div>
+          <div class="inv-sum-label">Total Items</div>
+          <div class="inv-sum-value" id="inv-sum-total">0</div>
+        </div>
         <div class="inv-sum-card red">
+          <div class="inv-sum-icon">⚠️</div>
           <div class="inv-sum-label">Needs Reorder</div>
           <div class="inv-sum-value" id="inv-sum-reorder">0</div>
         </div>
-        <div class="inv-sum-card yellow">
-          <div class="inv-sum-label">Coming Up</div>
-          <div class="inv-sum-value" id="inv-sum-coming">0</div>
-        </div>
         <div class="inv-sum-card green">
+          <div class="inv-sum-icon">💵</div>
           <div class="inv-sum-label">Est. Monthly</div>
           <div class="inv-sum-value" id="inv-sum-spend">$0</div>
         </div>
+        <div class="inv-sum-card">
+          <div class="inv-sum-icon">📅</div>
+          <div class="inv-sum-label">Last Restock</div>
+          <div class="inv-sum-value" id="inv-sum-restock">—</div>
+        </div>
       </div>
+      <div class="inv-cat-chips" id="inv-cat-chips"></div>
       <div id="inv-product-list"></div>
     </div>
 
