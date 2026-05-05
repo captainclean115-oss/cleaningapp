@@ -6197,6 +6197,206 @@ window.PentaGeocode = (function() {
   };
 })();
 
+// =====================================================================
+// PentaForms — Sprint 8: Supabase-backed employee form submissions.
+// Mirrors PentaEmployees pattern: in-memory cache, listSync() for hot-path
+// reads, onChange() for re-renders, _hydrate() for initial load, realtime
+// subscription so manager dashboards update live when employees submit.
+// =====================================================================
+window.PentaForms = (function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  var _cache = [];
+  var _cacheReady = false;
+  var _hydrating = null;
+  var _listeners = [];
+  var _realtimeChannel = null;
+
+  function _notify() {
+    for (var i = 0; i < _listeners.length; i++) {
+      try { _listeners[i](); } catch (e) { console.warn('[PentaForms] listener threw', e); }
+    }
+  }
+
+  async function _businessId() {
+    try {
+      var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+      var bid = sess && sess.user && sess.user.user_metadata && sess.user.user_metadata.business_id;
+      if (bid) return bid;
+    } catch (e) {}
+    if (_cache && _cache.length && _cache[0].business_id) return _cache[0].business_id;
+    if (window.PentaEmployees && window.PentaEmployees.listSync) {
+      var emps = window.PentaEmployees.listSync();
+      if (emps && emps.length && emps[0].business_id) return emps[0].business_id;
+    }
+    return null;
+  }
+
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    var sb = SB();
+    if (!sb) return false;
+    _hydrating = (async function() {
+      var bid = await _businessId();
+      if (!bid) { _hydrating = null; return false; }
+      var res = await sb.from('forms')
+        .select('*')
+        .eq('business_id', bid)
+        .order('created_at', { ascending: false });
+      if (res.error) {
+        console.error('[PentaForms] hydrate error', res.error);
+        _hydrating = null;
+        return false;
+      }
+      _cache = res.data || [];
+      _cacheReady = true;
+      _notify();
+      _setupRealtime(sb, bid);
+      _hydrating = null;
+      return true;
+    })();
+    return _hydrating;
+  }
+
+  function _setupRealtime(sb, bid) {
+    if (_realtimeChannel) return;
+    try {
+      _realtimeChannel = sb.channel('penta-forms-' + bid)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'forms', filter: 'business_id=eq.' + bid },
+          function(payload) {
+            if (payload.eventType === 'INSERT' && payload.new) {
+              if (!_cache.find(function(r){ return r.id === payload.new.id; })) _cache.unshift(payload.new);
+            } else if (payload.eventType === 'UPDATE' && payload.new) {
+              for (var i = 0; i < _cache.length; i++) {
+                if (_cache[i].id === payload.new.id) { _cache[i] = payload.new; break; }
+              }
+            } else if (payload.eventType === 'DELETE' && payload.old) {
+              _cache = _cache.filter(function(r){ return r.id !== payload.old.id; });
+            }
+            _notify();
+          })
+        .subscribe();
+    } catch (e) { console.warn('[PentaForms] realtime subscribe failed (non-fatal)', e); }
+  }
+
+  function listSync() { return Array.isArray(_cache) ? _cache.slice() : []; }
+  function isReady()  { return _cacheReady; }
+  async function ready()   { if (!_cacheReady) await _hydrate(); }
+  async function list()    { if (!_cacheReady) await _hydrate(); return _cache.slice(); }
+
+  function onChange(fn) {
+    _listeners.push(fn);
+    return function unsub() {
+      var i = _listeners.indexOf(fn);
+      if (i >= 0) _listeners.splice(i, 1);
+    };
+  }
+
+  async function insert(formData) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaForms.insert: no Supabase client');
+
+    var empId = formData.employee_id;
+    if (!empId) {
+      try {
+        var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+        var uid = sess && sess.user && sess.user.id;
+        if (uid && window.PentaEmployees && window.PentaEmployees.getByAuthUserId) {
+          var match = window.PentaEmployees.getByAuthUserId(uid);
+          if (match) empId = match.id;
+        }
+      } catch (e) {}
+    }
+    if (!empId) throw new Error('PentaForms.insert: could not resolve employee_id from auth');
+
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaForms.insert: business_id could not be derived');
+
+    var row = {
+      business_id: bid,
+      employee_id: empId,
+      type: formData.type,
+      payload: formData.payload || {},
+      status: formData.status || 'pending',
+    };
+    if (formData.manager_note) row.manager_note = formData.manager_note;
+    if (formData.resolved_at)  row.resolved_at = formData.resolved_at;
+    if (formData.created_at)   row.created_at = formData.created_at;
+
+    var res = await sb.from('forms').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) { _cache.unshift(res.data); _notify(); }
+    return res.data;
+  }
+
+  async function update(id, patch) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaForms.update: no Supabase client');
+    if (!id) throw new Error('PentaForms.update: id required');
+    var res = await sb.from('forms').update(patch).eq('id', id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _cache.length; i++) {
+        if (_cache[i].id === id) { _cache[i] = res.data; break; }
+      }
+      _notify();
+    }
+    return res.data;
+  }
+
+  async function remove(id) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaForms.remove: no Supabase client');
+    var res = await sb.from('forms').delete().eq('id', id);
+    if (res.error) throw res.error;
+    _cache = _cache.filter(function(r){ return r.id !== id; });
+    _notify();
+    return true;
+  }
+
+  return {
+    list: list, listSync: listSync, insert: insert, update: update, remove: remove,
+    onChange: onChange, isReady: isReady, ready: ready, _hydrate: _hydrate,
+  };
+})();
+
+// Auto-hydrate PentaForms once supabase client is up.
+(function pentaPrimeFormsHydrate() {
+  if (!window.PentaForms || !window.PentaForms._hydrate) return;
+  function kick() {
+    var p = window.PentaForms._hydrate();
+    if (p && typeof p.then === 'function') {
+      p.then(function(ok) {
+        if (!ok) setTimeout(function() { try { window.PentaForms._hydrate(); } catch (e) {} }, 1000);
+      });
+    }
+  }
+  function whenClientReady(cb) {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) return cb(sb);
+    var tries = 0;
+    var iv = setInterval(function() {
+      var c = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (c || ++tries > 50) { clearInterval(iv); if (c) cb(c); }
+    }, 100);
+  }
+  whenClientReady(function(sb) {
+    kick();
+    try { sb.auth.onAuthStateChange(function(evt) {
+      if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
+    }); } catch (e) {}
+  });
+})();
+
+// Re-render forms UI when PentaForms cache updates.
+if (window.PentaForms && window.PentaForms.onChange) {
+  window.PentaForms.onChange(function() {
+    try { if (typeof renderStaffForms === 'function') renderStaffForms(); } catch (e) {}
+    try { if (typeof renderPortalSubmittedForms === 'function') renderPortalSubmittedForms(); } catch (e) {}
+  });
+}
+
 // Phase 6.3a: re-render employee-driven UI when the facade cache updates.
 // listSync() returns [] on cold cache; once _hydrate resolves, the cache
 // populates and these subscriptions trigger fresh renders. Without this,
@@ -22402,40 +22602,53 @@ function renderStaffView() {
   }
 }
 
-function saveFormDecision(formIdx, status, note) {
+// Sprint 8: keyed by form UUID (not array index). fid is the DOM-safe id used
+// by the textarea/body/arrow elements (works for both DB and legacy rows).
+async function saveFormDecision(formId, status, fid) {
+  const noteEl = document.getElementById('fnote-' + fid);
+  const note = noteEl ? noteEl.value.trim() : '';
+  const reviewedDisplay = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+
+  // Path A: DB-backed form (formId is a real uuid)
+  if (formId && window.PentaForms && window.PentaForms.update) {
+    const patch = { manager_note: note };
+    if (status !== null) {
+      patch.status = status;
+      patch.resolved_at = new Date().toISOString();
+    }
+    try {
+      await window.PentaForms.update(formId, patch);
+      // PentaForms.update fires onChange -> renderStaffForms re-runs automatically
+    } catch (e) {
+      console.error('[forms] update failed', e);
+      alert('Could not save: ' + (e.message || e));
+    }
+    return;
+  }
+
+  // Path B: legacy localStorage-only form (no DB row yet)
   const allForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  if (!allForms[formIdx]) return;
-  allForms[formIdx].managerStatus = status;
-  allForms[formIdx].managerNote = note;
-  allForms[formIdx].reviewedAt = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const ts = (fid || '').replace(/^local_/, '');
+  const idx = allForms.findIndex(f => String(f.timestamp || '') === ts);
+  if (idx < 0) return;
+  if (status !== null) allForms[idx].managerStatus = status;
+  allForms[idx].managerNote = note;
+  allForms[idx].reviewedAt = reviewedDisplay;
   localStorage.setItem('emp_forms', JSON.stringify(allForms));
-  // Update submittedForms array too
   if (typeof submittedForms !== 'undefined') {
-    const pi = submittedForms.findIndex((f,i) => i === formIdx || (f.timestamp === allForms[formIdx].timestamp));
-    if (pi >= 0) { submittedForms[pi] = allForms[formIdx]; }
+    const pi = submittedForms.findIndex(f => String(f.timestamp||'') === ts);
+    if (pi >= 0) submittedForms[pi] = allForms[idx];
   }
   renderStaffForms();
 }
 
-function saveFormDecision(formIdx, status) {
-  const noteEl = document.getElementById('fnote-' + formIdx);
-  const note = noteEl ? noteEl.value.trim() : '';
-  const allForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  if (!allForms[formIdx]) return;
-  if (status !== null) allForms[formIdx].managerStatus = status;
-  allForms[formIdx].managerNote = note;
-  allForms[formIdx].reviewedAt = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-  localStorage.setItem('emp_forms', JSON.stringify(allForms));
-  renderStaffForms();
-}
-
-function toggleFormCard(gi) {
-  const body = document.getElementById('fcard-body-' + gi);
-  const arrow = document.getElementById('fcard-arrow-' + gi);
+function toggleFormCard(fid) {
+  const body = document.getElementById('fcard-body-' + fid);
+  const arrow = document.getElementById('fcard-arrow-' + fid);
   if (!body) return;
   const isOpen = body.style.display !== 'none';
   body.style.display = isOpen ? 'none' : 'block';
-  if (arrow) arrow.textContent = isOpen ? '›' : '⌄';
+  if (arrow) arrow.textContent = isOpen ? '\u203a' : '\u2304';
 }
 
 function renderStaffForms() {
@@ -22445,72 +22658,87 @@ function renderStaffForms() {
   const idx = parseInt((document.getElementById('staff-edit-idx') || {}).value);
   const list = getStaffList();
   const emp = list[idx];
-  const allForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  const sigs = JSON.parse(localStorage.getItem('emp_signatures') || '{}');
+  // Sprint 8: source of truth is PentaForms cache (Supabase). localStorage
+  // mirror is kept by submitForm for offline use only.
+  const allForms = (window.PentaForms && window.PentaForms.listSync)
+    ? window.PentaForms.listSync()
+    : JSON.parse(localStorage.getItem('emp_forms') || '[]');
 
   if (!emp) { el.innerHTML = '<div style="color:var(--muted);padding:20px 0">No employee selected</div>'; return; }
 
+  // FK match on employee_id is authoritative now (no more name fuzzy-match).
+  // Fallback to legacy fields supports any localStorage forms not yet backfilled.
   const empForms = allForms.filter(f => {
-    if (!f.employee) return false;
+    if (f.employee_id && emp.id && f.employee_id === emp.id) return true;
     if (f.employeeId && emp.id && f.employeeId === emp.id) return true;
-    const a = (f.employee||'').trim().toLowerCase();
-    const b = (emp.name||'').trim().toLowerCase();
-    return a === b || a.includes(b) || b.includes(a);
+    if (f.employee) {
+      const a = (f.employee||'').trim().toLowerCase();
+      const b = (emp.name||'').trim().toLowerCase();
+      return a === b || a.includes(b) || b.includes(a);
+    }
+    return false;
   });
 
-  const sig = sigs[emp.name + '_sig'];
-  const tl = {timeoff:'🏖 Time Off',callout:'📵 Call Out',supplies:'📦 Supplies',incident:'⚠️ Incident',equipment:'🔧 Equipment',vehicle:'🚗 Vehicle'};
+  const tl = {timeoff:'\ud83c\udfd6 Time Off',callout:'\ud83d\udcf5 Call Out',supplies:'\ud83d\udce6 Supplies',incident:'\u26a0\ufe0f Incident',equipment:'\ud83d\udd27 Equipment',vehicle:'\ud83d\ude97 Vehicle'};
   const fl = {'f-start':'From','f-end':'To','f-date':'Date','f-reason':'Reason','f-notes':'Notes','f-items':'Items','f-urgency':'Urgency','f-datetime':'Date/Time','f-location':'Location','f-what':'What happened','f-injured':'Injured','f-equip-type':'Equipment','f-equip-issue':'Issue','f-vehicle-issue':'Issue','f-vehicle-team':'Team','f-mileage':'Mileage','f-paid':'Paid'};
 
-  let html = '';
+  // Translate row to a unified shape so DB rows and legacy localStorage rows
+  // render through the same template.
+  const norm = (f) => ({
+    fid: f.id || ('local_' + (f.timestamp || Math.random())),
+    formId: f.id || null,
+    type: f.type,
+    data: f.payload || f.data || {},
+    status: f.status || f.managerStatus || 'pending',
+    managerNote: f.manager_note || f.managerNote || '',
+    resolvedAt: f.resolved_at || f.reviewedAt || null,
+    createdAt: f.created_at || f.timestamp || null,
+    dateStr: f.dateStr || (f.created_at ? new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : ''),
+  });
 
+  let html = '';
   html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:10px">Submitted Forms</div>';
 
   if (!empForms.length) {
     html += '<div style="color:var(--muted);font-size:13px;padding:8px 0">No forms submitted yet</div>';
   } else {
-    // Sort: pending first, then by date
-    empForms.sort((a, b) => {
-      const ap = !a.managerStatus || a.managerStatus === 'pending';
-      const bp = !b.managerStatus || b.managerStatus === 'pending';
+    const rows = empForms.map(norm);
+    rows.sort((a, b) => {
+      const ap = a.status === 'pending';
+      const bp = b.status === 'pending';
       if (ap && !bp) return -1;
       if (!ap && bp) return 1;
-      return new Date(b.timestamp||0) - new Date(a.timestamp||0);
+      return new Date(b.createdAt||0) - new Date(a.createdAt||0);
     });
-    empForms.forEach(f => {
-      const gi = allForms.indexOf(f);
-      const isPending = !f.managerStatus || f.managerStatus === 'pending';
-      const sc = f.managerStatus === 'approved' ? 'var(--green)' : f.managerStatus === 'denied' ? 'var(--red)' : '#f59e0b';
-      const sl = f.managerStatus === 'approved' ? '✓ Approved' : f.managerStatus === 'denied' ? '✗ Denied' : '⏳ Pending';
+    rows.forEach(f => {
+      const isPending = f.status === 'pending';
+      const sc = f.status === 'approved' ? 'var(--green)' : f.status === 'denied' ? 'var(--red)' : '#f59e0b';
+      const sl = f.status === 'approved' ? '\u2713 Approved' : f.status === 'denied' ? '\u2717 Denied' : '\u23f3 Pending';
       const fh = Object.entries(f.data||{}).filter(([k,v])=>v&&String(v).trim()).map(([k,v])=>'<b>'+(fl[k]||k.replace('f-',''))+':</b> '+v).join('<br>');
+      const formIdAttr = f.formId ? ('\'' + f.formId + '\'') : 'null';
 
-      // Collapsed header (always shown)
       html += '<div style="background:var(--surface2);border-radius:12px;margin-bottom:10px;border-left:3px solid '+sc+';overflow:hidden">';
-      
-      // Clickable header row - always visible
-      html += '<div onclick="toggleFormCard('+gi+')" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer">';
+      html += '<div onclick="toggleFormCard(\''+f.fid+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer">';
       html += '<div><div style="font-size:14px;font-weight:700">'+(tl[f.type]||f.type)+'</div>';
       html += '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+(f.dateStr||'')+'</div></div>';
       html += '<div style="display:flex;align-items:center;gap:8px">';
       html += '<span style="font-size:11px;color:'+sc+';font-weight:600">'+sl+'</span>';
-      html += '<span id="fcard-arrow-'+gi+'" style="font-size:16px;color:var(--muted);transition:.2s">'+(isPending ? '⌄' : '›')+'</span>';
+      html += '<span id="fcard-arrow-'+f.fid+'" style="font-size:16px;color:var(--muted);transition:.2s">'+(isPending ? '\u2304' : '\u203a')+'</span>';
       html += '</div></div>';
 
-      // Expandable body - open for pending, collapsed for decided
-      html += '<div id="fcard-body-'+gi+'" style="display:'+(isPending?'block':'none')+';padding:0 14px 14px">';
+      html += '<div id="fcard-body-'+f.fid+'" style="display:'+(isPending?'block':'none')+';padding:0 14px 14px">';
       if (fh) html += '<div style="font-size:13px;line-height:1.7;margin-bottom:10px;padding-top:4px;border-top:1px solid var(--border)">'+fh+'</div>';
       if (f.managerNote) html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.2);border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:10px"><b>Note:</b> '+f.managerNote+'</div>';
-      if (f.reviewedAt) html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Reviewed '+f.reviewedAt+'</div>';
-      
-      // Action area
-      html += '<textarea id="fnote-'+gi+'" placeholder="Add a note..." style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;resize:none;min-height:52px;margin-bottom:8px;box-sizing:border-box">'+(f.managerNote||'')+'</textarea>';
+      if (f.resolvedAt) html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Reviewed '+f.resolvedAt+'</div>';
+
+      html += '<textarea id="fnote-'+f.fid+'" placeholder="Add a note..." style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;resize:none;min-height:52px;margin-bottom:8px;box-sizing:border-box">'+(f.managerNote||'')+'</textarea>';
       html += '<div style="display:flex;gap:8px">';
-      html += '<button onclick="saveFormDecision('+gi+',\'approved\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">✓ Approve</button>';
-      html += '<button onclick="saveFormDecision('+gi+',\'denied\')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.25);color:var(--red);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">✗ Deny</button>';
-      html += '<button onclick="saveFormDecision('+gi+',null)" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer">💬 Note</button>';
+      html += '<button onclick="saveFormDecision('+formIdAttr+',\'approved\',\''+f.fid+'\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2713 Approve</button>';
+      html += '<button onclick="saveFormDecision('+formIdAttr+',\'denied\',\''+f.fid+'\')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.25);color:var(--red);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2717 Deny</button>';
+      html += '<button onclick="saveFormDecision('+formIdAttr+',null,\''+f.fid+'\')" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer">\ud83d\udcac Note</button>';
       html += '</div>';
-      html += '</div>'; // end body
-      html += '</div>'; // end card
+      html += '</div>';
+      html += '</div>';
     });
   }
 
@@ -25065,6 +25293,19 @@ function submitForm(type) {
 
   submittedForms.push(entry);
   localStorage.setItem('emp_forms', JSON.stringify(submittedForms));
+
+  // Sprint 8: persist to Supabase forms table. localStorage above remains as
+  // an offline buffer + fallback if the DB call fails. Errors surface to the user.
+  if (window.PentaForms && window.PentaForms.insert) {
+    window.PentaForms.insert({
+      type: type,
+      payload: entry.data || {},
+    }).catch(function(err) {
+      console.error('[forms] insert failed', err);
+      try { alert('Submitted locally, but cloud sync failed: ' + (err.message || err) + '\nThe manager may not see this until you re-submit.'); } catch (e) {}
+    });
+  }
+
   // Also log to main app updates
   const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
   const typeLabels2 = {timeoff:'Time Off Request',callout:'Call Out',supplies:'Supply Request',incident:'Incident Report',equipment:'Equipment Issue',vehicle:'Vehicle Issue'};
