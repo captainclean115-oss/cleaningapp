@@ -6913,7 +6913,7 @@ function render(force) {
     let starsHtml = '';
     if (_ov !== null) {
       let _s = '';
-      for (let i = 1; i <= 5; i++) _s += '<span style="opacity:' + (i <= _ov ? '1' : '0.35') + ';font-size:13px;letter-spacing:1px">&#11088;</span>';
+      for (let i = 1; i <= 5; i++) { const filled = i <= _ov; _s += '<span style="font-size:16px;letter-spacing:1px;color:' + (filled ? '#F59E0B' : '#9CA3AF') + ';text-shadow:0 1px 1.5px rgba(0,0,0,0.18)">' + (filled ? '★' : '☆') + '</span>'; }
       starsHtml = '<div class="card-stars" data-cid="' + c.id + '" onclick="event.stopPropagation();openScoreCard(this)" style="flex-shrink:0;cursor:pointer">' + _s + '</div>';
     }
     const isExp = expandedId === c.id;
