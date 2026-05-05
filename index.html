@@ -7822,7 +7822,11 @@ function _pentaTeamNames() {
     var t = window.PentaTeams.listSync();
     if (t && t.length) return t.map(function(x){ return x.name; });
   }
-  return _pentaTeamNames();
+  // v7.2 fix: was `return _pentaTeamNames();` — Sprint 7 Phase 3 op #2
+  // (replace_all on the hardcoded array literal) ate our own fallback inside
+  // the helper. PentaTeams returning [] before hydration → infinite recursion
+  // → renderCal silently crashed → schedule never populated on first load.
+  return ['B1','B3','B5','S1','S3','M1','M2','M3'];
 }
 function _pentaTeamColor(name, fallback) {
   if (window.PentaTeams && window.PentaTeams.getByName) {
@@ -7930,14 +7934,7 @@ function showTab(tab) {
   const csPlaceholder = document.getElementById('topbar-placeholder');
   if (csToggle) csToggle.style.display = tab === 'clients' ? '' : 'none';
   if (csPlaceholder) csPlaceholder.style.display = tab === 'clients' ? 'none' : '';
-  if (tab === 'cal') {
-    // Sprint 7 hammer fix for first-load empty schedule: belt-and-suspenders
-    // renderCal calls cover any race where the first paint sees stale state
-    // (jobs not hydrated, layout not ready, etc.). Last one wins. Cheap.
-    renderCal();
-    setTimeout(renderCal, 50);
-    setTimeout(renderCal, 250);
-  }
+  if (tab === 'cal') renderCal();
   if (tab === 'tasks') {
     pendingUpdates = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
     renderTasks(); renderMainEmployees(); renderActivityLog();
@@ -8043,21 +8040,6 @@ function _renderTeamListForFilter(team, dayJobs) {
 }
 
 function renderCal() {
-  // [DIAG-v7.1] TEMP — strip after first-load bug diagnosed
-  try {
-    var _diagCalDateStr = (typeof calDate !== 'undefined' && calDate && calDate.toISOString) ? calDate.toISOString().slice(0,10) : '?';
-    var _diagDj = (typeof jobsForDate === 'function' && typeof calDate !== 'undefined') ? jobsForDate(calDate).length : -1;
-    var _diagBefore = (document.getElementById('cal-body') || {}).innerHTML;
-    console.log('[renderCal] ENTER', {
-      t: Date.now(),
-      calMode: typeof calMode !== 'undefined' ? calMode : '?',
-      calDate: _diagCalDateStr,
-      dj: _diagDj,
-      calBodyLen: _diagBefore ? _diagBefore.length : -1,
-      calViewActive: !!(document.getElementById('cal-view') && document.getElementById('cal-view').classList.contains('active')),
-      stack: (new Error().stack || '').split('\n').slice(1, 5).join(' <- ').replace(/https?:\/\/[^\/]+\//g, '')
-    });
-  } catch(_e) { console.warn('[renderCal] entry log failed', _e); }
   // Sprint 6.11: PentaTeams cache is canonical for team color.
   // Manager color changes via Manage Teams reflect on next render.
   // Falls back to legacy team_colors_map for un-migrated team strings (B1/B3/...).
@@ -8107,12 +8089,8 @@ function renderCal() {
     });
     let bodyHtml = '<div class="cal-body">';
     if (dayJobs.length === 0) {
-      // [DIAG-v7.1]
-      try { console.log('[renderCal] EMPTY-BRANCH', { dj: dayJobs.length, totalJobs: jobs.length, calDateKey: dateKey(calDate) }); } catch(_e){}
       bodyHtml += '<div class="cal-empty">No jobs scheduled</div>';
     } else {
-      // [DIAG-v7.1]
-      try { console.log('[renderCal] DATA-BRANCH', { dj: dayJobs.length, allTeamsLen: allTeams.length, teamsWithJobsLen: teamsWithJobs.length }); } catch(_e){}
       // Team filter bubbles at top
       bodyHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 12px">';
       bodyHtml += '<button onclick="window.calTeamFilter=null;renderCal()" style="font-size:13px;padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:'+(window.calTeamFilter?'var(--surface2)':'var(--accent)')+';color:'+(window.calTeamFilter?'var(--muted)':'#fff')+';">All</button>';
@@ -8315,11 +8293,7 @@ function renderCal() {
     }
     bodyHtml += '</div>';
 
-    // [DIAG-v7.1]
-    try { console.log('[renderCal] WRITE', { stripLen: stripHtml.length, bodyLen: bodyHtml.length, calBodyExistedBefore: !!document.getElementById('cal-body') }); } catch(_e){}
     document.getElementById('cal-body').innerHTML = stripHtml + bodyHtml;
-    // [DIAG-v7.1]
-    try { console.log('[renderCal] DONE', { calBodyLenAfter: (document.getElementById('cal-body') || {}).innerHTML?.length || 0 }); } catch(_e){}
     // Sprint 7: inline filter list mode — attach action buttons to each rendered card
     if (window.calTeamFilter) {
       try {
