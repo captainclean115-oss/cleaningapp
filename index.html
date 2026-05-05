@@ -6355,9 +6355,42 @@ window.PentaForms = (function() {
     return true;
   }
 
+  // Sprint 9 Phase A: compute impact and persist to row. Returns the
+  // updated form. Safe to call repeatedly (recompute button uses this).
+  async function computeAndPersistImpact(form) {
+    if (!form || !form.id) throw new Error('computeAndPersistImpact: form id required');
+    if (typeof _computeFormImpact !== 'function') {
+      console.warn('[PentaForms] _computeFormImpact unavailable — skipping');
+      return form;
+    }
+    var impact = _computeFormImpact(form);
+    var patch = {
+      impact_severity: impact.severity,
+      impact_reason: impact.reason || '',
+    };
+    return await update(form.id, patch);
+  }
+
+  // Auto-impact: after hydrate, scan pending forms missing impact_severity,
+  // compute + persist. Fire-and-forget; failures are logged not thrown.
+  function _autoImpactScan() {
+    if (!_cacheReady) return;
+    var pending = _cache.filter(function(f) {
+      return f && f.status === 'pending' && !f.impact_severity;
+    });
+    if (!pending.length) return;
+    pending.forEach(function(f) {
+      computeAndPersistImpact(f).catch(function(err) {
+        console.warn('[PentaForms] auto-impact failed for', f.id, err);
+      });
+    });
+  }
+
   return {
     list: list, listSync: listSync, insert: insert, update: update, remove: remove,
+    computeAndPersistImpact: computeAndPersistImpact,
     onChange: onChange, isReady: isReady, ready: ready, _hydrate: _hydrate,
+    _autoImpactScan: _autoImpactScan,
   };
 })();
 
@@ -6395,6 +6428,22 @@ if (window.PentaForms && window.PentaForms.onChange) {
     try { if (typeof renderStaffForms === 'function') renderStaffForms(); } catch (e) {}
     try { if (typeof renderPortalSubmittedForms === 'function') renderPortalSubmittedForms(); } catch (e) {}
   });
+}
+
+// Sprint 9 Phase A: kick the auto-impact scan once schedule data is loaded.
+// jobs/dailyAssignments populate at boot from localStorage; PentaEmployees
+// hydrates over Supabase. We need both before _computeFormImpact is meaningful.
+// Run scan on every PentaForms cache change AND after PentaEmployees hydrate
+// (idempotent — already-classified forms are skipped).
+if (window.PentaForms && window.PentaForms._autoImpactScan) {
+  window.PentaForms.onChange(function() {
+    try { window.PentaForms._autoImpactScan(); } catch (e) {}
+  });
+  if (window.PentaEmployees && window.PentaEmployees.onChange) {
+    window.PentaEmployees.onChange(function() {
+      try { window.PentaForms._autoImpactScan(); } catch (e) {}
+    });
+  }
 }
 
 // Phase 6.3a: re-render employee-driven UI when the facade cache updates.
@@ -15521,6 +15570,116 @@ function saveDailyAssignments() {
   localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 9 Phase A — Impact Rules Engine
+// Deterministic severity classifier for time-off / call-out / early-leave
+// forms. Returns { severity: 'green'|'yellow'|'red', reason: string,
+// affectedDates: [...] }. Used by PentaForms.computeAndPersistImpact.
+// Pure function: no DOM, no DB writes. Reads jobs[], PentaEmployees cache,
+// and dailyAssignments via getEmployeeTeam/getTeamEmployees helpers.
+// ═══════════════════════════════════════════════════════════════════════
+function _computeFormImpact(form) {
+  if (!form || !form.type) {
+    return { severity: 'green', reason: 'Form missing type', affectedDates: [] };
+  }
+  // 1. Affected dates per form type
+  var dates = [];
+  var pl = form.payload || {};
+  if (form.type === 'callout' && pl['f-date']) {
+    dates = [pl['f-date']];
+  } else if (form.type === 'timeoff' && pl['f-start']) {
+    var s = pl['f-start'];
+    var e = pl['f-end'] || s;
+    var sd = new Date(s + 'T00:00:00');
+    var ed = new Date(e + 'T00:00:00');
+    if (isNaN(sd) || isNaN(ed) || ed < sd) {
+      dates = [s];
+    } else {
+      var cur = new Date(sd);
+      while (cur <= ed) {
+        dates.push(cur.toISOString().slice(0,10));
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+  } else {
+    return { severity: 'green', reason: 'No schedule impact for this form type', affectedDates: [] };
+  }
+  if (!dates.length) {
+    return { severity: 'green', reason: 'No date specified', affectedDates: [] };
+  }
+
+  // 2. Resolve employee
+  var emp = (window.PentaEmployees && window.PentaEmployees.getById)
+    ? window.PentaEmployees.getById(form.employee_id) : null;
+  if (!emp) {
+    return { severity: 'green', reason: 'Employee not found in roster', affectedDates: dates };
+  }
+  var empName = emp.name || ((emp.first_name || '') + ' ' + (emp.last_name || '')).trim() || 'Employee';
+
+  var sevOrder = { green: 0, yellow: 1, red: 2 };
+  var worst = { severity: 'green', reason: 'No coverage concerns', date: null };
+
+  dates.forEach(function(dateStr) {
+    var team = (typeof getEmployeeTeam === 'function')
+      ? getEmployeeTeam(emp.id, dateStr)
+      : (emp.defaultTeam || emp.team || null);
+    if (!team) return; // no team that day → no impact
+
+    var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+      ? jobs.filter(function(j){ return j.date === dateStr && j.team === team && !j.cancelled; })
+      : [];
+    if (!teamJobs.length) return; // no jobs → green for this day
+
+    var teamEmps = (typeof getTeamEmployees === 'function')
+      ? getTeamEmployees(team, dateStr) : [];
+    var others = teamEmps.filter(function(e){ return e.id !== emp.id; });
+    var jobCount = teamJobs.length;
+
+    var driversTotal = teamEmps.filter(function(e){ return e.is_driver; });
+    var leadersTotal = teamEmps.filter(function(e){ return e.is_team_leader; });
+    var otherDrivers = others.filter(function(e){ return e.is_driver; });
+    var otherLeaders = others.filter(function(e){ return e.is_team_leader; });
+
+    var sev = 'green';
+    var reason = '';
+
+    // RED triggers (most severe first)
+    if (others.length === 0) {
+      sev = 'red';
+      reason = team + ' has ' + jobCount + ' job' + (jobCount===1?'':'s') + ' on ' + dateStr + ' and would drop to 0 employees';
+    } else if (others.length === 1) {
+      sev = 'red';
+      reason = team + ' has ' + jobCount + ' job' + (jobCount===1?'':'s') + ' on ' + dateStr + ' and would drop to 1 employee';
+    } else if (emp.is_driver && otherDrivers.length === 0 && driversTotal.length > 0) {
+      sev = 'red';
+      reason = empName + ' is the only driver on ' + team + ' for ' + dateStr;
+    } else if (emp.is_team_leader && otherLeaders.length === 0 && leadersTotal.length > 0) {
+      sev = 'red';
+      reason = empName + ' is the only team leader on ' + team + ' for ' + dateStr;
+    } else if (jobCount >= 5 && (others.length / Math.max(teamEmps.length, 1)) <= 0.5) {
+      sev = 'red';
+      reason = team + ' has ' + jobCount + ' jobs on ' + dateStr + ' and would lose 50%+ of capacity';
+    }
+    // YELLOW triggers
+    else if (jobCount >= 4 && others.length === 2) {
+      sev = 'yellow';
+      reason = team + ' has ' + jobCount + ' jobs on ' + dateStr + ' and would drop to 2 employees';
+    } else if (emp.is_driver && otherDrivers.length === 1 && driversTotal.length === 2) {
+      sev = 'yellow';
+      reason = empName + ' is one of two drivers on ' + team + ' for ' + dateStr;
+    } else if (emp.is_team_leader && otherLeaders.length >= 1) {
+      sev = 'yellow';
+      reason = empName + ' is team leader and one other leader is scheduled on ' + dateStr;
+    }
+
+    if (sevOrder[sev] > sevOrder[worst.severity]) {
+      worst = { severity: sev, reason: reason, date: dateStr };
+    }
+  });
+
+  return { severity: worst.severity, reason: worst.reason, affectedDates: dates, worstDate: worst.date };
+}
+
 function getEmployeeTeam(employeeId, dateStr) {
   const key = dateStr + '_' + employeeId;
   if (dailyAssignments[key] !== undefined) {
@@ -22848,6 +23007,22 @@ function toggleFormCard(fid) {
   if (arrow) arrow.textContent = isOpen ? '\u203a' : '\u2304';
 }
 
+// Sprint 9 Phase A: manual recompute button. Looks up the form from cache,
+// re-runs _computeFormImpact, persists, fires onChange → row re-renders.
+async function recomputeFormImpact(formId) {
+  if (!formId || !window.PentaForms) return;
+  var cache = window.PentaForms.listSync ? window.PentaForms.listSync() : [];
+  var form = cache.find(function(f){ return f.id === formId; });
+  if (!form) { if (typeof showToast === 'function') showToast('Form not found', 'error'); return; }
+  try {
+    await window.PentaForms.computeAndPersistImpact(form);
+    if (typeof showToast === 'function') showToast('Impact updated', 'success');
+  } catch (e) {
+    console.error('[forms] recompute failed', e);
+    if (typeof showToast === 'function') showToast('Recompute failed: ' + (e.message || e), 'error');
+  }
+}
+
 function renderStaffForms() {
   const el = document.getElementById('staff-forms-content');
   if (!el) return;
@@ -22891,6 +23066,9 @@ function renderStaffForms() {
     resolvedAt: f.resolved_at || f.reviewedAt || null,
     createdAt: f.created_at || f.timestamp || null,
     dateStr: f.dateStr || (f.created_at ? new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : ''),
+    // Sprint 9 Phase A: impact classification (computed at submission, persisted)
+    impactSeverity: f.impact_severity || null,
+    impactReason: f.impact_reason || '',
   });
 
   let html = '';
@@ -22915,10 +23093,19 @@ function renderStaffForms() {
       const formIdAttr = f.formId ? ('\'' + f.formId + '\'') : 'null';
 
       html += '<div style="background:var(--surface2);border-radius:12px;margin-bottom:10px;border-left:3px solid '+sc+';overflow:hidden">';
+      // Sprint 9 Phase A: severity dot in the header (left of status pill).
+      // Only shown when impact has been computed (otherwise grey "computing" dot).
+      var dotColor = '#9CA3AF', dotTitle = 'Impact computing\u2026';
+      if (f.impactSeverity === 'red')    { dotColor = '#FF3B30'; dotTitle = 'High impact'; }
+      if (f.impactSeverity === 'yellow') { dotColor = '#FFD60A'; dotTitle = 'Watch'; }
+      if (f.impactSeverity === 'green')  { dotColor = '#34C759'; dotTitle = 'No impact'; }
+      var dotHtml = '<span title="'+dotTitle+'" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+dotColor+';box-shadow:0 0 0 2px var(--surface),0 0 0 3px '+dotColor+'33;flex-shrink:0"></span>';
+
       html += '<div onclick="toggleFormCard(\''+f.fid+'\')" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;cursor:pointer">';
       html += '<div><div style="font-size:14px;font-weight:700">'+(tl[f.type]||f.type)+'</div>';
       html += '<div style="font-size:11px;color:var(--muted);margin-top:2px">'+(f.dateStr||'')+'</div></div>';
-      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<div style="display:flex;align-items:center;gap:10px">';
+      html += dotHtml;
       html += '<span style="font-size:11px;color:'+sc+';font-weight:600">'+sl+'</span>';
       html += '<span id="fcard-arrow-'+f.fid+'" style="font-size:16px;color:var(--muted);transition:.2s">'+(isPending ? '\u2304' : '\u203a')+'</span>';
       html += '</div></div>';
@@ -22928,6 +23115,24 @@ function renderStaffForms() {
       if (f.managerNote) html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.2);border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:10px"><b>Note:</b> '+f.managerNote+'</div>';
       if (f.resolvedAt) html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Reviewed '+f.resolvedAt+'</div>';
 
+      // Sprint 9 Phase A: impact reason + recompute button (only for DB-backed rows).
+      if (f.formId && (f.impactSeverity || f.impactReason)) {
+        var reasonBg = f.impactSeverity === 'red'    ? 'rgba(255,59,48,0.10)'
+                      : f.impactSeverity === 'yellow' ? 'rgba(255,214,10,0.12)'
+                      : 'rgba(52,199,89,0.10)';
+        var reasonBorder = f.impactSeverity === 'red'    ? 'rgba(255,59,48,0.30)'
+                          : f.impactSeverity === 'yellow' ? 'rgba(255,214,10,0.35)'
+                          : 'rgba(52,199,89,0.25)';
+        html += '<div style="background:'+reasonBg+';border:1px solid '+reasonBorder+';border-radius:10px;padding:10px 12px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">'
+          + '<div style="flex:1;font-size:13px;line-height:1.5"><b>Impact:</b> '+(f.impactReason || 'No coverage concerns')+'</div>'
+          + '<button onclick="event.stopPropagation();recomputeFormImpact(\''+f.formId+'\')" title="Recompute" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:13px;padding:4px 8px;border-radius:6px;cursor:pointer;flex-shrink:0">\u21bb</button>'
+          + '</div>';
+      } else if (f.formId && !f.impactSeverity) {
+        html += '<div style="background:rgba(156,163,175,0.10);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:10px">'
+          + '<div>Impact analysis pending\u2026</div>'
+          + '<button onclick="event.stopPropagation();recomputeFormImpact(\''+f.formId+'\')" title="Recompute" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:13px;padding:4px 8px;border-radius:6px;cursor:pointer">\u21bb</button>'
+          + '</div>';
+      }
       html += '<textarea id="fnote-'+f.fid+'" placeholder="Add a note..." style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;resize:none;min-height:52px;margin-bottom:8px;box-sizing:border-box">'+(f.managerNote||'')+'</textarea>';
       html += '<div style="display:flex;gap:8px">';
       html += '<button onclick="saveFormDecision('+formIdAttr+',\'approved\',\''+f.fid+'\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2713 Approve</button>';
