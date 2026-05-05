@@ -2449,6 +2449,7 @@ body.home-dragging, body.home-dragging * {
   width: 100%; background: var(--surface2); border: 1px solid var(--border);
   border-radius: var(--radius-sm); color: var(--text); font-family: 'DM Sans', sans-serif;
   font-size: 15px; padding: 11px 14px; outline: none;
+  min-width: 0; /* v9.3.1: keeps inputs from forcing grid columns wider than 1fr on iOS Safari (number-input intrinsic min-width is ~200px otherwise). */
 }
 
 /* iOS Safari auto-zooms when a focused input has font-size < 16px.
@@ -32377,8 +32378,7 @@ function _p3dPage(dir) {
       <button onclick="finalizeBooking()" style="width:100%;background:var(--green);border:none;color:#000;font-family:'DM Sans',sans-serif;font-size:16px;font-weight:700;padding:16px;border-radius:12px;cursor:pointer;margin-bottom:10px">✓ Save as New Client</button>
       <button onclick="closeQuoteTool()" style="width:100%;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;padding:8px;cursor:pointer">Cancel</button>
     </div>
-  </div>
-    </div><!-- end qt-panel-quote -->
+  </div><!-- v9.3.1: was followed by a stray </div> at this indent that prematurely closed the modal inner wrapper, dumping qt-panel-pricing as a sibling and breaking the grid layout. Removed. -->
 
     <!-- PRICING SETTINGS PANEL -->
     <div id="qt-panel-pricing" style="display:none;padding:20px 20px 40px;box-sizing:border-box;width:100%">
