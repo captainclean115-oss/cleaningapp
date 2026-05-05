@@ -6397,6 +6397,67 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
       .catch(function() { target.innerHTML = _pillHTML('none'); });
   }
 
+  // v7.6: batched render — one Supabase query for all pills instead of N.
+  // targets = NodeList or Array of elements with [data-roster-id]. Resolves
+  // each rosterId → employee via the local cache (already in memory), then
+  // does a single .in('employee_id', [...]) lookup on employee_invites,
+  // groups results client-side, picks latest per employee, and renders.
+  async function pentaRenderInvitePillsBatch(targets) {
+    if (!targets || !targets.length) return;
+    try { if (window.PentaEmployees) await window.PentaEmployees.ready(); } catch (e) {}
+    var rows = [];
+    try { rows = await window.PentaEmployees.list(); } catch (e) { rows = []; }
+
+    // Build {rosterId, employee, target} working set, render placeholders.
+    var work = [];
+    for (var i = 0; i < targets.length; i++) {
+      var t = targets[i];
+      if (!t) continue;
+      var rid = t.getAttribute && t.getAttribute('data-roster-id');
+      if (!rid) { t.innerHTML = ''; continue; }
+      var emp = rows.find(function(r) { return String(r.legacy_roster_id || '') === String(rid); });
+      if (!emp) { t.innerHTML = ''; continue; }
+      // If the employee already has auth_user_id, they are active — no DB hit needed.
+      if (emp.auth_user_id) { t.innerHTML = _pillHTML('active'); continue; }
+      t.innerHTML = '<span style="font-size:11px;color:var(--muted)">…</span>';
+      work.push({ rid: rid, emp: emp, target: t });
+    }
+    if (!work.length) return;
+
+    var sb = SB(); if (!sb) {
+      work.forEach(function(w) { w.target.innerHTML = _pillHTML('none'); });
+      return;
+    }
+    var empIds = work.map(function(w) { return w.emp.id; });
+    var latestByEmp = {};
+    try {
+      var res = await sb.from('employee_invites')
+        .select('employee_id, accepted_at, revoked_at, expires_at, created_at')
+        .in('employee_id', empIds)
+        .order('created_at', { ascending: false });
+      if (!res.error && Array.isArray(res.data)) {
+        // First occurrence per employee_id is the latest because the query
+        // is ordered desc by created_at.
+        for (var k = 0; k < res.data.length; k++) {
+          var inv = res.data[k];
+          if (!latestByEmp[inv.employee_id]) latestByEmp[inv.employee_id] = inv;
+        }
+      }
+    } catch (e) { /* fall through — render 'none' for unresolved */ }
+
+    work.forEach(function(w) {
+      var inv = latestByEmp[w.emp.id];
+      var state = 'none';
+      if (inv) {
+        if (inv.accepted_at) state = 'active';
+        else if (inv.revoked_at) state = 'revoked';
+        else if (new Date(inv.expires_at).getTime() < Date.now()) state = 'expired';
+        else state = 'invited';
+      }
+      w.target.innerHTML = _pillHTML(state);
+    });
+  }
+
   function _chipText(s) {
     if (s.state === 'active')  return '🟢 Active';
     if (s.state === 'invited') return '🟡 Invited' + (s.at ? ' ' + _relativeTime(s.at) : '');
@@ -6631,6 +6692,7 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
   window.pentaGenerateInviteToken      = pentaGenerateInviteToken;
   window.pentaInviteStatus             = pentaInviteStatus;
   window.pentaRenderInvitePill         = pentaRenderInvitePill;
+  window.pentaRenderInvitePillsBatch   = pentaRenderInvitePillsBatch;
   window.pentaRenderInviteChip         = pentaRenderInviteChip;
   window.pentaSendInvite               = pentaSendInvite;
   window.pentaShowInviteSendModal      = pentaShowInviteSendModal;
@@ -22095,12 +22157,17 @@ function renderStaffList() {
   if (!list.length) html = '<div style="color:var(--muted);text-align:center;padding:30px;font-size:13px">No staff yet. Tap + Add to get started.</div>';
   document.getElementById('staff-list').innerHTML = html;
 
-  // Lazy-populate invite status pills on each card (Sprint 4 Phase 4B).
+  // v7.6: batched invite pill render — single .in() query instead of N round trips.
   try {
     var pills = document.querySelectorAll('#staff-list [data-invite-pill]');
-    for (var pi = 0; pi < pills.length; pi++) {
-      var rid = pills[pi].getAttribute('data-roster-id');
-      if (rid && typeof pentaRenderInvitePill === 'function') pentaRenderInvitePill(rid, pills[pi]);
+    if (pills.length && typeof pentaRenderInvitePillsBatch === 'function') {
+      pentaRenderInvitePillsBatch(pills);
+    } else if (pills.length && typeof pentaRenderInvitePill === 'function') {
+      // Fallback if batch helper somehow missing
+      for (var pi = 0; pi < pills.length; pi++) {
+        var rid = pills[pi].getAttribute('data-roster-id');
+        if (rid) pentaRenderInvitePill(rid, pills[pi]);
+      }
     }
   } catch (e) { console.warn('[invite-pill] render failed', e); }
 }
@@ -26556,13 +26623,27 @@ async function submitApplication() {
 // ─────────────────────────────────────────
 // CLIENTS / STAFF SUB-TOGGLE
 // ─────────────────────────────────────────
-function showStaffView() {
+async function showStaffView() {
   document.getElementById('clients-subview').style.display = 'none';
   document.getElementById('staff-subview').style.display = 'block';
   // Update topbar label
   const titleEl = document.querySelector('.topbar-inner span[onclick]');
-  // Render staff list into inline subview
+
+  // v7.6: show spinner immediately on cold cache so the user sees feedback
+  // instead of a blank panel while PentaEmployees hydrates.
+  const _staffListEl = document.getElementById('staff-subview-list');
+  const _coldCache = !window.PentaEmployees || !window.PentaEmployees.isReady || !window.PentaEmployees.isReady();
+  if (_staffListEl && _coldCache) {
+    _staffListEl.innerHTML = '<div style="text-align:center;padding:48px 20px;color:var(--muted)">'
+      + '<div style="display:inline-block;width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite"></div>'
+      + '<div style="margin-top:12px;font-size:13px">Loading staff…</div>'
+      + '</div>';
+  }
+  if (window.PentaEmployees && window.PentaEmployees.ready) {
+    try { await window.PentaEmployees.ready(); } catch (_e) {}
+  }
   renderStaffSubview();
+
   // Update search/filter/stats visibility
   const searchWrap = document.querySelector('.search-wrap');
   const filterRow = document.getElementById('filter-row');
