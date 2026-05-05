@@ -6355,8 +6355,8 @@ window.PentaForms = (function() {
     return true;
   }
 
-  // Sprint 9 Phase A: compute impact and persist to row. Returns the
-  // updated form. Safe to call repeatedly (recompute button uses this).
+  // Sprint 9 Phase A+B: compute impact + suggestion and persist to row.
+  // Safe to call repeatedly (recompute button uses this).
   async function computeAndPersistImpact(form) {
     if (!form || !form.id) throw new Error('computeAndPersistImpact: form id required');
     if (typeof _computeFormImpact !== 'function') {
@@ -6368,6 +6368,21 @@ window.PentaForms = (function() {
       impact_severity: impact.severity,
       impact_reason: impact.reason || '',
     };
+    // Phase B: also compute + persist suggestion for yellow/red.
+    if ((impact.severity === 'yellow' || impact.severity === 'red')
+        && typeof _computeFormSuggestion === 'function') {
+      var sug = _computeFormSuggestion(form, impact);
+      patch.suggested_action = sug || null;
+      // Phase B escalation: if no viable suggestion, mark as red w/ explanation.
+      if (!sug && impact.severity === 'red') {
+        patch.impact_reason = (impact.reason || '') + ' — No coverage available, manual reschedule required';
+      } else if (!sug && impact.severity === 'yellow') {
+        // Yellow with no suggestion → still yellow, but flag it.
+        patch.impact_reason = (impact.reason || '') + ' — No automatic coverage option found';
+      }
+    } else {
+      patch.suggested_action = null;
+    }
     return await update(form.id, patch);
   }
 
@@ -15680,6 +15695,242 @@ function _computeFormImpact(form) {
   return { severity: worst.severity, reason: worst.reason, affectedDates: dates, worstDate: worst.date };
 }
 
+// Sprint 9 Phase B — Suggestion Engine
+// Two strategies, ranked by least disruptive:
+//   Strategy 1 (swap): pull a same-role employee from a slack team
+//   Strategy 2 (move): move this team's jobs to a nearby team with capacity
+// Returns { strategy, summary, payload, disruption } or null if neither works.
+// Pure function: no DB writes, no DOM. Reads jobs[] + PentaEmployees + PentaClients.
+function _haversineMiles(lat1, lng1, lat2, lng2) {
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return null;
+  var R = 3958.8;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) *
+          Math.sin(dLng/2) * Math.sin(dLng/2);
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function _computeFormSuggestion(form, impact) {
+  // Only suggest for yellow/red. Green = no action needed.
+  if (!impact || impact.severity === 'green') return null;
+  if (!impact.affectedDates || !impact.affectedDates.length) return null;
+
+  // Compute on the WORST date — that's the day we need coverage on.
+  var dateStr = impact.worstDate || impact.affectedDates[0];
+  var emp = (window.PentaEmployees && window.PentaEmployees.getById)
+    ? window.PentaEmployees.getById(form.employee_id) : null;
+  if (!emp) return null;
+
+  var team = (typeof getEmployeeTeam === 'function')
+    ? getEmployeeTeam(emp.id, dateStr)
+    : (emp.defaultTeam || emp.team || null);
+  if (!team) return null;
+
+  var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+    ? jobs.filter(function(j){ return j.date === dateStr && j.team === team && !j.cancelled; })
+    : [];
+  if (!teamJobs.length) return null;
+
+  var teamEmps = (typeof getTeamEmployees === 'function')
+    ? getTeamEmployees(team, dateStr) : [];
+  var others = teamEmps.filter(function(e){ return e.id !== emp.id; });
+
+  var needsDriver = !!emp.is_driver && others.filter(function(e){ return e.is_driver; }).length === 0;
+  var needsLeader = !!emp.is_team_leader && others.filter(function(e){ return e.is_team_leader; }).length === 0;
+
+  // ── Strategy 1: pull employee from a slack team ──
+  var swap = null;
+  try {
+    var allTeamNames = [];
+    if (window.PentaTeams && window.PentaTeams.listSync) {
+      var ts = window.PentaTeams.listSync();
+      allTeamNames = (ts || []).map(function(t){ return t.name; });
+    }
+    if (!allTeamNames.length && typeof getUnifiedRoster === 'function') {
+      var seen = {};
+      getUnifiedRoster().forEach(function(e){
+        var t = (typeof getEmployeeTeam === 'function') ? getEmployeeTeam(e.id, dateStr) : null;
+        if (t) seen[t] = 1;
+      });
+      allTeamNames = Object.keys(seen);
+    }
+    var slackCandidates = [];
+    allTeamNames.forEach(function(t) {
+      if (t === team) return;
+      var teamEmpsT = (typeof getTeamEmployees === 'function') ? getTeamEmployees(t, dateStr) : [];
+      if (teamEmpsT.length < 4) return;
+      var teamJobsT = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+        ? jobs.filter(function(j){ return j.date === dateStr && j.team === t && !j.cancelled; })
+        : [];
+      if (teamJobsT.length >= 4) return;
+      // Find a candidate matching the role we need, who is NOT a leader of their team
+      teamEmpsT.forEach(function(cand) {
+        if (cand.is_team_leader) return; // never poach a leader from their own team
+        if (needsDriver && !cand.is_driver) return;
+        if (needsLeader && !cand.is_team_leader) return;
+        slackCandidates.push({
+          target_employee_id: cand.id,
+          target_employee_name: cand.name || ((cand.first_name||'') + ' ' + (cand.last_name||'')).trim(),
+          source_team: t,
+          source_team_employees: teamEmpsT.length,
+          source_team_jobs: teamJobsT.length,
+          original_team: team,
+        });
+      });
+    });
+    if (slackCandidates.length) {
+      // Pick the one with the most slack (most employees, fewest jobs)
+      slackCandidates.sort(function(a, b) {
+        var slackA = a.source_team_employees - a.source_team_jobs;
+        var slackB = b.source_team_employees - b.source_team_jobs;
+        return slackB - slackA;
+      });
+      var best = slackCandidates[0];
+      swap = {
+        strategy: 'swap',
+        summary: 'Pull ' + best.target_employee_name + ' from ' + best.source_team
+          + ' (' + best.source_team_employees + ' employees on ' + best.source_team_jobs
+          + ' jobs ' + dateStr + ') to cover ' + team,
+        payload: { type: 'swap', target_employee_id: best.target_employee_id,
+          target_employee_name: best.target_employee_name,
+          original_team: best.original_team, date: dateStr },
+        disruption: 1,
+      };
+    }
+  } catch (e) { console.warn('[suggestion] strategy 1 failed', e); }
+
+  // ── Strategy 2: move this team's jobs to nearby teams with capacity ──
+  // For each affected job, find the closest-by-haversine team that has
+  // capacity (current jobs < 4-week avg). Aggregate moves and score.
+  var move = null;
+  try {
+    var typicalByTeam = {};
+    function _typical(t) {
+      if (typicalByTeam[t] != null) return typicalByTeam[t];
+      var counts = {};
+      var todayMs = Date.now();
+      (jobs || []).forEach(function(j) {
+        if (j.team !== t || j.cancelled) return;
+        var d = new Date(j.date + 'T00:00:00');
+        var diff = (todayMs - d.getTime()) / 86400000;
+        if (diff < 0 || diff > 28) return;
+        counts[j.date] = (counts[j.date] || 0) + 1;
+      });
+      var vs = Object.values(counts);
+      var avg = vs.length ? vs.reduce(function(a,b){return a+b;},0) / vs.length : 4;
+      typicalByTeam[t] = avg;
+      return avg;
+    }
+
+    var moves = [];
+    var totalDistance = 0;
+    var allViable = true;
+
+    teamJobs.forEach(function(j) {
+      var client = (window.PentaClients && window.PentaClients.getClient)
+        ? window.PentaClients.getClient(j.clientId) : null;
+      var clientLat = client && client.lat;
+      var clientLng = client && client.lng;
+      var clientName = (j.clientName || (client ? ((client.fn||'') + ' ' + (client.ln||'')).trim() : 'Client'));
+
+      var bestAlt = null;
+      allTeamNames.forEach(function(t) {
+        if (t === team) return;
+        var teamJobsT = (jobs || []).filter(function(jj){ return jj.date === dateStr && jj.team === t && !jj.cancelled; });
+        if (teamJobsT.length >= _typical(t)) return; // no capacity
+
+        // Distance: compare to nearest job already on team t that day
+        var minDist = null;
+        teamJobsT.forEach(function(jt) {
+          var c2 = (window.PentaClients && window.PentaClients.getClient)
+            ? window.PentaClients.getClient(jt.clientId) : null;
+          var d = _haversineMiles(clientLat, clientLng, c2 && c2.lat, c2 && c2.lng);
+          if (d != null && (minDist == null || d < minDist)) minDist = d;
+        });
+        if (minDist == null) minDist = 99; // unknown distance — penalize but allow
+        if (minDist > 10) return; // out of 10-mile radius
+
+        if (!bestAlt || minDist < bestAlt.distance_miles) {
+          bestAlt = { to_team: t, distance_miles: minDist };
+        }
+      });
+
+      if (!bestAlt) { allViable = false; return; }
+      moves.push({
+        job_id: j.id, client_name: clientName, client_id: j.clientId,
+        from_team: team, to_team: bestAlt.to_team,
+        distance_miles: Math.round(bestAlt.distance_miles * 10) / 10,
+        time: j.time || null,
+      });
+      totalDistance += bestAlt.distance_miles;
+    });
+
+    if (allViable && moves.length) {
+      var summaryStr = moves.length === 1
+        ? 'Move ' + moves[0].client_name + (moves[0].time ? ' at ' + moves[0].time : '')
+            + ' to ' + moves[0].to_team + ' (' + moves[0].distance_miles + ' mi from their next job)'
+        : 'Move ' + moves.length + ' jobs to neighboring teams (avg '
+            + Math.round(totalDistance / moves.length * 10) / 10 + ' mi from their next jobs)';
+      move = {
+        strategy: 'move',
+        summary: summaryStr,
+        payload: { type: 'move', date: dateStr, moves: moves },
+        // 2 per job + 0.1 per mile of distance
+        disruption: moves.length * 2 + totalDistance * 0.1,
+      };
+    }
+  } catch (e) { console.warn('[suggestion] strategy 2 failed', e); }
+
+  // Pick lower-disruption strategy. Tie → prefer swap (less client-side surprise).
+  if (swap && move) return swap.disruption <= move.disruption ? swap : move;
+  return swap || move;
+}
+
+// Sprint 9 Phase B — Suggestion executor.
+// Strategy 'swap': bring the target employee onto the absent employee's team for the day.
+// Strategy 'move': for each job in payload.moves, set j.team = to_team and saveJobs().
+// Returns { ok: true, summary } or { ok: false, error }.
+function _executeFormSuggestion(suggestion) {
+  if (!suggestion || !suggestion.payload) return { ok: false, error: 'No suggestion payload' };
+  var payload = suggestion.payload;
+  try {
+    if (payload.type === 'swap') {
+      if (typeof assignEmployee !== 'function') {
+        return { ok: false, error: 'assignEmployee not available' };
+      }
+      assignEmployee(payload.target_employee_id, payload.original_team, payload.date);
+      var summary = 'Assigned ' + (payload.target_employee_name || 'employee')
+        + ' to ' + payload.original_team + ' on ' + payload.date;
+      try { logPendingUpdate('Coverage swap', summary, 'Manager'); } catch (e) {}
+      try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
+      return { ok: true, summary: summary };
+    }
+    if (payload.type === 'move') {
+      if (typeof jobs === 'undefined' || !Array.isArray(jobs) || typeof saveJobs !== 'function') {
+        return { ok: false, error: 'jobs/saveJobs not available' };
+      }
+      var movedCount = 0;
+      var movedSummary = [];
+      payload.moves.forEach(function(mv) {
+        var j = jobs.find(function(x){ return x.id === mv.job_id; });
+        if (!j) return;
+        j.team = mv.to_team;
+        movedCount++;
+        movedSummary.push(mv.client_name + ' → ' + mv.to_team);
+      });
+      saveJobs();
+      try { logPendingUpdate('Job move (coverage)', movedSummary.join('; '), 'Manager'); } catch (e) {}
+      try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
+      return { ok: true, summary: 'Moved ' + movedCount + ' job' + (movedCount===1?'':'s') };
+    }
+    return { ok: false, error: 'Unknown strategy: ' + payload.type };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
 function getEmployeeTeam(employeeId, dateStr) {
   const key = dateStr + '_' + employeeId;
   if (dailyAssignments[key] !== undefined) {
@@ -23023,6 +23274,59 @@ async function recomputeFormImpact(formId) {
   }
 }
 
+// Sprint 9 Phase B: Approve Suggestion → execute swap / job-move on the
+// schedule + persist suggestion_executed=true. Independent of form approve/deny.
+async function approveFormSuggestion(formId) {
+  if (!formId || !window.PentaForms) return;
+  var cache = window.PentaForms.listSync ? window.PentaForms.listSync() : [];
+  var form = cache.find(function(f){ return f.id === formId; });
+  if (!form) { if (typeof showToast === 'function') showToast('Form not found', 'error'); return; }
+  if (!form.suggested_action) {
+    if (typeof showToast === 'function') showToast('No suggestion to approve', 'error');
+    return;
+  }
+  if (form.suggestion_executed) {
+    if (typeof showToast === 'function') showToast('Already executed', 'info');
+    return;
+  }
+  if (typeof _executeFormSuggestion !== 'function') {
+    if (typeof showToast === 'function') showToast('Executor unavailable', 'error');
+    return;
+  }
+  var result = _executeFormSuggestion(form.suggested_action);
+  if (!result.ok) {
+    console.error('[forms] suggestion execute failed', result);
+    if (typeof showToast === 'function') showToast('Could not execute: ' + result.error, 'error');
+    return;
+  }
+  try {
+    await window.PentaForms.update(formId, { suggestion_executed: true });
+    if (typeof showToast === 'function') showToast(result.summary || 'Done', 'success');
+  } catch (e) {
+    console.error('[forms] suggestion mark-executed failed', e);
+    if (typeof showToast === 'function') showToast('Saved locally; cloud sync failed', 'error');
+  }
+}
+
+// Sprint 9 Phase B: Deny Suggestion → just flag suggestion_executed=false
+// (already the default), record the manager's intent so the row reflects denial.
+async function denyFormSuggestion(formId) {
+  if (!formId || !window.PentaForms) return;
+  try {
+    // We use suggested_action's status field to mark denial. Setting it to
+    // null would lose the suggestion record; instead annotate the jsonb.
+    var cache = window.PentaForms.listSync ? window.PentaForms.listSync() : [];
+    var form = cache.find(function(f){ return f.id === formId; });
+    if (!form || !form.suggested_action) return;
+    var annotated = Object.assign({}, form.suggested_action, { denied: true, denied_at: new Date().toISOString() });
+    await window.PentaForms.update(formId, { suggested_action: annotated });
+    if (typeof showToast === 'function') showToast('Suggestion denied', 'info');
+  } catch (e) {
+    console.error('[forms] deny suggestion failed', e);
+    if (typeof showToast === 'function') showToast('Could not save: ' + (e.message || e), 'error');
+  }
+}
+
 function renderStaffForms() {
   const el = document.getElementById('staff-forms-content');
   if (!el) return;
@@ -23069,6 +23373,9 @@ function renderStaffForms() {
     // Sprint 9 Phase A: impact classification (computed at submission, persisted)
     impactSeverity: f.impact_severity || null,
     impactReason: f.impact_reason || '',
+    // Sprint 9 Phase B: suggested action (jsonb) + executed flag
+    suggestedAction: f.suggested_action || null,
+    suggestionExecuted: !!f.suggestion_executed,
   });
 
   let html = '';
@@ -23133,10 +23440,35 @@ function renderStaffForms() {
           + '<button onclick="event.stopPropagation();recomputeFormImpact(\''+f.formId+'\')" title="Recompute" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:13px;padding:4px 8px;border-radius:6px;cursor:pointer">\u21bb</button>'
           + '</div>';
       }
+      // Sprint 9 Phase B: suggestion box + dual approve/deny pair (yellow/red only).
+      if (f.formId && f.suggestedAction && (f.impactSeverity === 'yellow' || f.impactSeverity === 'red')) {
+        var sa = f.suggestedAction;
+        var execStateStr = '';
+        var btnRowStyle = 'display:flex;gap:8px;margin-bottom:10px';
+        if (f.suggestionExecuted) {
+          execStateStr = '<div style="font-size:11px;color:var(--green);font-weight:700;margin-top:6px">\u2713 Executed</div>';
+        } else if (sa.denied) {
+          execStateStr = '<div style="font-size:11px;color:var(--red);font-weight:700;margin-top:6px">\u2717 Denied</div>';
+        }
+        html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.30);border-radius:10px;padding:10px 12px;margin-bottom:10px">'
+          + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:4px">Suggested Solution</div>'
+          + '<div style="font-size:13px;line-height:1.5">'+(sa.summary || '(no summary)')+'</div>'
+          + execStateStr
+          + '</div>';
+        if (!f.suggestionExecuted && !sa.denied) {
+          html += '<div style="'+btnRowStyle+'">';
+          html += '<button onclick="approveFormSuggestion(\''+f.formId+'\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2713 Approve Suggestion</button>';
+          html += '<button onclick="denyFormSuggestion(\''+f.formId+'\')" style="flex:1;background:rgba(248,113,113,0.10);border:1px solid rgba(248,113,113,0.25);color:var(--red);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2717 Deny Suggestion</button>';
+          html += '</div>';
+        }
+      }
       html += '<textarea id="fnote-'+f.fid+'" placeholder="Add a note..." style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px 10px;outline:none;resize:none;min-height:52px;margin-bottom:8px;box-sizing:border-box">'+(f.managerNote||'')+'</textarea>';
       html += '<div style="display:flex;gap:8px">';
-      html += '<button onclick="saveFormDecision('+formIdAttr+',\'approved\',\''+f.fid+'\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2713 Approve</button>';
-      html += '<button onclick="saveFormDecision('+formIdAttr+',\'denied\',\''+f.fid+'\')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.25);color:var(--red);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2717 Deny</button>';
+      // Sprint 9 Phase B: relabeled to clarify these decide the form itself,
+      // separate from the suggestion approve/deny pair above.
+      var formActionLabels = (f.type === 'timeoff' || f.type === 'callout') ? ['Approve ' + (f.type === 'timeoff' ? 'Time Off' : 'Call Out'), 'Deny ' + (f.type === 'timeoff' ? 'Time Off' : 'Call Out')] : ['Approve', 'Deny'];
+      html += '<button onclick="saveFormDecision('+formIdAttr+',\'approved\',\''+f.fid+'\')" style="flex:1;background:rgba(52,211,153,0.15);border:1px solid rgba(52,211,153,0.3);color:var(--green);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2713 ' + formActionLabels[0] + '</button>';
+      html += '<button onclick="saveFormDecision('+formIdAttr+',\'denied\',\''+f.fid+'\')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.25);color:var(--red);font-size:13px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer">\u2717 ' + formActionLabels[1] + '</button>';
       html += '<button onclick="saveFormDecision('+formIdAttr+',null,\''+f.fid+'\')" style="flex:1;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer">\ud83d\udcac Note</button>';
       html += '</div>';
       html += '</div>';
