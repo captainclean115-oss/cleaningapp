@@ -1078,31 +1078,31 @@ body {
 /* ── Rewards sub-page styling ── */
 .reward-section-label {
   font-size: 11px; font-weight: 700;
-  color: rgba(255,255,255,0.55);
+  color: var(--muted); /* v9.3.2: was rgba white */
   text-transform: uppercase; letter-spacing: 0.08em;
   padding: 0 22px 10px;
 }
 .reward-card {
   display: flex; align-items: center; gap: 10px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.04); /* v9.3.2: was rgba(255,255,255,0.06) — white-on-white invisible */
+  border: 1px solid var(--border);
   border-radius: 14px;
   padding: 10px;
-  color: #fff;
+  color: var(--text); /* v9.3.2: was #fff */
   font-family: 'DM Sans', sans-serif;
   text-align: left;
   cursor: pointer;
   transition: transform 0.12s, background 0.2s;
   -webkit-tap-highlight-color: transparent;
 }
-.reward-card:active { transform: scale(0.97); background: rgba(255,255,255,0.10); }
-.reward-card.locked { opacity: 0.42; cursor: default; }
+.reward-card:active { transform: scale(0.97); background: rgba(0,0,0,0.07); }
+.reward-card.locked { opacity: 0.5; cursor: default; }
 .reward-card-icon {
   flex: 0 0 auto;
   width: 44px; height: 44px; border-radius: 22.37%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px; font-weight: 700; color: #fff;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.22);
+  font-size: 18px; font-weight: 700; color: #fff; /* keeps white — sits on colored gradient */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.22);
   letter-spacing: 0;
 }
 .reward-card-body { min-width: 0; flex: 1; }
@@ -1112,29 +1112,29 @@ body {
 }
 .reward-card-cost {
   font-size: 11px; font-weight: 600;
-  color: rgba(255,255,255,0.6);
+  color: var(--muted); /* v9.3.2: was rgba white */
 }
 .reward-earn-row {
   display: flex; align-items: flex-start; gap: 12px;
-  padding: 12px 10px; border-bottom: 1px solid rgba(255,255,255,0.08);
+  padding: 12px 10px; border-bottom: 1px solid var(--border); /* v9.3.2 */
 }
 .reward-earn-pts {
   flex: 0 0 auto;
   font-size: 13px; font-weight: 800;
-  color: #34D399;
+  color: var(--green); /* keeps green emphasis */
   min-width: 42px; padding-top: 2px;
 }
 .reward-earn-body { min-width: 0; flex: 1; }
-.reward-earn-label { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 2px; }
-.reward-earn-hint  { font-size: 12px; color: rgba(255,255,255,0.55); line-height: 1.4; }
+.reward-earn-label { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 2px; } /* v9.3.2 */
+.reward-earn-hint  { font-size: 12px; color: var(--muted); line-height: 1.4; } /* v9.3.2 */
 
 .reward-row {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 10px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--border); /* v9.3.2 */
 }
 .reward-row-me {
-  background: rgba(142,123,255,0.10);
+  background: rgba(142,123,255,0.12); /* purple tint readable on white */
   border-radius: 10px;
   border-bottom-color: transparent;
 }
@@ -1144,19 +1144,19 @@ body {
 }
 .reward-row-name {
   flex: 1; min-width: 0;
-  font-size: 14px; font-weight: 600; color: #fff;
+  font-size: 14px; font-weight: 600; color: var(--text); /* v9.3.2 */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .reward-row-pts {
   flex: 0 0 auto;
-  font-size: 14px; font-weight: 800; color: #fff;
+  font-size: 14px; font-weight: 800; color: var(--text); /* v9.3.2 */
   min-width: 48px; text-align: right;
   letter-spacing: -0.02em;
 }
 .reward-gift-btn {
   flex: 0 0 auto;
   background: linear-gradient(135deg,#FF6482,#FF2D55);
-  border: none; color: #fff;
+  border: none; color: #fff; /* keeps white — sits on pink gradient */
   font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 700;
   padding: 6px 14px; border-radius: 16px;
   cursor: pointer;
@@ -1275,8 +1275,12 @@ body {
    bg currently renders light on body, so white-on-light was invisible.
    Sprint 8 cleanup: replace hardcoded #fff with --text/--muted theme tokens. */
 #tab-rewards {
-  background: linear-gradient(180deg, #0f1419 0%, #1a1f2e 100%);
-  color: #fff;
+  /* v9.3.2: was dark gradient + white text. Flipped to light-on-white for
+     consistency with Files/Content/Learn/Quote Tool. Per-element colors
+     re-skinned below (.reward-card, .reward-row, etc.) */
+  background: var(--surface);
+  color: var(--text);
+  min-height: 100vh; /* fill viewport even with sparse content */
 }
 #portal-screen:not(.in-subpage) #tab-rewards {
   display: none !important;
@@ -1554,7 +1558,7 @@ body.home-dragging, body.home-dragging * {
   /* Sits ABOVE the bottom-nav zone so the locked nav stays fully visible. */
   position: fixed; top: 0; left: 0; right: 0;
   bottom: calc(110px + env(safe-area-inset-bottom));
-  background: transparent;
+  background: var(--surface); /* v9.3.2: was transparent — bled home icons through */
   z-index: 260;
   flex-direction: column;
   overflow: hidden;
@@ -3372,7 +3376,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 #penta-learn-screen {
   position: fixed; inset: 0;
   z-index: 9000;
-  background: var(--bg);
+  background: var(--surface); /* v9.3.2: was var(--bg) which is transparent — bled home icons through */
   display: flex; flex-direction: column;
   overflow-y: auto;
   font-family: 'DM Sans', sans-serif;
@@ -4188,7 +4192,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   </div>
 </div>
 
-<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:transparent;flex-direction:column">
+<div id="files-view" style="display:none;position:fixed;top:0;left:0;right:0;bottom:calc(110px + env(safe-area-inset-bottom));z-index:260;background:var(--surface);flex-direction:column">
   <div style="flex:0 0 auto;background:rgba(15,17,23,0.95);backdrop-filter:blur(20px);padding:calc(var(--safe-top) + 12px) 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button onclick="closeFiles()" style="background:none;border:none;color:var(--accent);font-size:22px;cursor:pointer;padding:0 4px">‹</button>
     <div style="flex:1">
@@ -27183,8 +27187,8 @@ function renderEmployeeRewards() {
 
   // ── Hero: points + tier ──
   var hero = '<div style="text-align:center;padding:28px 20px 16px">'
-    + '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.55);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Your Points</div>'
-    + '<div style="font-size:64px;font-weight:800;color:#fff;line-height:1;letter-spacing:-0.02em;margin-bottom:10px">' + myPts + '</div>'
+    + '<div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Your Points</div>'
+    + '<div style="font-size:64px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.02em;margin-bottom:10px">' + myPts + '</div>'
     + '<div style="display:inline-block;padding:6px 18px;border-radius:999px;background:' + t.color + '22;color:' + t.color + ';font-weight:700;font-size:13px;letter-spacing:0.02em">' + t.name + ' Tier</div>'
     + '</div>';
 
@@ -27226,12 +27230,12 @@ function renderEmployeeRewards() {
     + board.slice(0, 24).map(function(row, i) {
         var isMe = (row.id === meId);
         var medal = i === 0 ? '1' : i === 1 ? '2' : i === 2 ? '3' : String(i+1);
-        var medalColor = i === 0 ? '#FCD34D' : i === 1 ? '#E5E7EB' : i === 2 ? '#F59E0B' : 'rgba(255,255,255,0.4)';
+        var medalColor = i === 0 ? '#F59E0B' : i === 1 ? '#9CA3AF' : i === 2 ? '#B45309' : 'var(--muted)'; /* v9.3.2: gold/silver/bronze tweaked for visibility on white; 4+ uses muted */
         var giftBtn = (isMe || myPts <= 0) ? ''
           : '<button class="reward-gift-btn" onclick="empRewardsGiftOpen(\'' + row.id + '\')">Gift</button>';
         return '<div class="reward-row' + (isMe ? ' reward-row-me' : '') + '">'
           +   '<div class="reward-row-rank" style="color:' + medalColor + '">' + medal + '</div>'
-          +   '<div class="reward-row-name">' + row.name + (isMe ? ' <span style="color:rgba(255,255,255,0.5);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
+          +   '<div class="reward-row-name">' + row.name + (isMe ? ' <span style="color:var(--muted);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
           +   '<div class="reward-row-pts">' + row.pts + '</div>'
           +   giftBtn
           + '</div>';
@@ -32100,8 +32104,8 @@ function _p3dPage(dir) {
   <div id="tab-handbook" style="display:none"></div>
 
   <div id="tab-rewards" class="section" style="display:none">
-    <div class="section-title" style="color:#fff;opacity:0.7">My Rewards</div>
-    <div id="employee-rewards-body" style="color:#fff"></div>
+    <div class="section-title" style="color:var(--text);opacity:0.7">My Rewards</div>
+    <div id="employee-rewards-body" style="color:var(--text)"></div>
   </div>
 
   <div style="height:20px"></div>
