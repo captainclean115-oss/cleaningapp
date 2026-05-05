@@ -219,7 +219,8 @@ body {
 }
 .client-card:active { opacity: .95; }
 .client-card.expanded { border-color: var(--border2); }
-.client-card + .client-card { border-top: 0.5px solid rgba(42,40,64,0.08); }
+/* Sprint 7 polish: pronounced separator between client list items */
+.client-card + .client-card { border-top: 1.5px solid rgba(42,40,64,0.18); }
 .card-top { display: flex; align-items: center; gap: 10px; }
 .avatar {
   width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
@@ -231,6 +232,21 @@ body {
 .card-sub { font-size: 13px; color: var(--text-on-light-soft); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 .freq-pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; white-space: nowrap; }
+/* Sprint 7 polish: freq-chip — square 40×40 chip in client list, replacing the
+   avatar slot. Bigger + bolder than the legacy pill, saturated iOS-style colors. */
+.freq-chip {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; color: #fff;
+  letter-spacing: -0.02em; flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+.freq-chip.f-wek { background: #22C55E; }   /* Weekly — vivid green */
+.freq-chip.f-eow { background: #06B6D4; }   /* Biweekly — cyan */
+.freq-chip.f-etw { background: #3B82F6; }   /* Every 3wk — blue */
+.freq-chip.f-efw { background: #8B5CF6; }   /* Monthly+ — violet */
+.freq-chip.f-mon { background: #F59E0B; }   /* Monthly — amber */
+.freq-chip.f-oms { background: #EF4444; }   /* OMS / Custom — red */
 .bal-pill { font-size: 11px; font-weight: 600; font-family: 'DM Mono', monospace; }
 
 /* ── EXPANDED CARD ── */
@@ -6625,6 +6641,8 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
 
 const FREQ_CLASS = {'RMS - WEK':'f-wek','RMS - ETW':'f-etw','RMS - EOW':'f-eow','RMS - EFW':'f-efw','RMS - MON':'f-mon','OMS':'f-oms'};
 const FREQ_LABEL = {'RMS - WEK':'Weekly','RMS - ETW':'Every 3wk','RMS - EOW':'Every 2wk','RMS - EFW':'Monthly+','RMS - MON':'Monthly','OMS':'One-time'};
+// Sprint 7 polish: short codes for the freq-chip in client list (40×40 chip)
+const FREQ_SHORT = {'RMS - WEK':'WEK','RMS - ETW':'ETW','RMS - EOW':'EOW','RMS - EFW':'EFW','RMS - MON':'MON','OMS':'CUST'};
 const PREF_TIME_LABEL = {
   'anytime':   'Anytime',
   'morning':   'Morning',
@@ -6886,10 +6904,18 @@ function render(force) {
 
   list.innerHTML = filtered.map(c => {
     const name = cleanName(c);
-    const ini = initials(c.fn, c.ln);
-    const av = avClass(c.id);
     const fc = FREQ_CLASS[c.fc] || 'f-mon';
     const fl = FREQ_LABEL[c.fc] || c.freq;
+    const fcShort = FREQ_SHORT[c.fc] || 'CUST';
+    // Sprint 7 polish: stars rendered once and placed in card-right (was inside name-row)
+    const _sc = getClientScores(c);
+    const _ov = getOverallStars(_sc);
+    let starsHtml = '';
+    if (_ov !== null) {
+      let _s = '';
+      for (let i = 1; i <= 5; i++) _s += '<span style="opacity:' + (i <= _ov ? '1' : '0.35') + ';font-size:13px;letter-spacing:1px">&#11088;</span>';
+      starsHtml = '<div class="card-stars" data-cid="' + c.id + '" onclick="event.stopPropagation();openScoreCard(this)" style="flex-shrink:0;cursor:pointer">' + _s + '</div>';
+    }
     const isExp = expandedId === c.id;
     const d = daysUntil(c.next);
     const dStr = d === null ? '' : d < 0 ? `${Math.abs(d)}d overdue` : d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `in ${d}d`;
@@ -6975,16 +7001,16 @@ function render(force) {
 
     return `<div class="client-card${isExp?' expanded':''}" data-id="${c.id}" style="${c.status==='paused'?'opacity:0.75':''}">
       <div class="card-top" onclick="toggleCard('${c.id}',event)" style="cursor:pointer">
-        <div class="avatar ${av}">${ini}</div>
+        <div class="freq-chip ${fc}" title="${fl}">${fcShort}</div>
         <div class="card-main">
-          ${(function(){var sc=getClientScores(c),ov=getOverallStars(sc);var starsHtml='';if(ov!==null){var s='';for(var i=1;i<=5;i++)s+='<span style="opacity:'+(i<=ov?'1':'0.35')+';font-size:14px;letter-spacing:1px">&#11088;</span>';starsHtml='<div class="card-stars" data-cid="'+c.id+'" onclick="event.stopPropagation();openScoreCard(this)" style="flex-shrink:0;cursor:pointer;margin-left:8px">'+s+'</div>';}return '<div class="card-name-row" style="display:flex;align-items:baseline;gap:6px"><div class="card-name" style="flex:1;min-width:0">'+name+'</div>'+starsHtml+'</div>';})()}
+          <div class="card-name-row" style="display:flex;align-items:baseline;gap:6px"><div class="card-name" style="flex:1;min-width:0">${name}</div></div>
           <div class="card-sub">${c.city}${c.addr ? ' · ' + c.addr : ''}</div>
           ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[prefDayFormat(c.pref_day), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
         <div class="card-right">
+          ${starsHtml}
           ${c.status === 'paused' ? '<span class="freq-pill" style="background:#f59e0b;color:#000">PAUSED</span>' : ''}
           ${c.status === 'inactive' ? '<span class="freq-pill" style="background:#6b7280;color:#fff">INACTIVE</span>' : ''}
-          <span class="freq-pill ${fc}">${fl}</span>
           ${balStr}
           ${dStr && c.status !== 'paused' && c.status !== 'inactive' ? `<span style="font-size:10px;color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--muted)'}">${dStr}</span>` : ''}
         </div>
