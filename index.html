@@ -12804,10 +12804,11 @@ async function processVoiceCommand(text) {
     +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
     +'QUOTE FLOW (follow this exactly when the user asks for a quote):\n'
     +'1. ALWAYS call compute_quote first. Pass the address and the frequency the user asked for (weekly | biweekly | triweekly | monthly | once). compute_quote does the math backend-only — it does NOT render anything.\n'
-    +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?"\n'
+    +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text, sqft_source. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?" If sqft_source is "state_median" or starts with "book_average:", append a line like "Note: sqft estimated from <town> averages — confirm if you have actuals." If sqft_source is "massgis_res_area" or "massgis_bld_area_estimate" or "user_provided", no caveat needed.\n'
     +'3. WAIT for the user to say yes / send it / confirm. Do NOT call send_text in the same turn as compute_quote.\n'
     +'4. After the user confirms, call send_text with phone=<their phone> and message=<the sms_text from compute_quote>. Then report what came back.\n'
-    +'If compute_quote returns sqft_missing, ask the user for the square footage and call compute_quote again with square_feet provided. Do NOT make up a sqft estimate.\n\n'
+    +'If compute_quote returns non_ma_address (geocoded outside MA), tell the user: "That address looks like it\'s outside MA — auto-lookup is MA-only right now. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
+    +'If compute_quote returns address_not_found, ask the user to confirm the full address with city and state, then retry.\n\n'
     +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
@@ -13386,7 +13387,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
     _claireLastToolResult = 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance: $'+Math.round(oldBal)+' -> $'+Math.round(rpClient.bal)+'. Done.';
     claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
 
-  // ── COMPUTE QUOTE (v7.4: backend-only — no UI side-effects) ──
+  // ── COMPUTE QUOTE (v7.5: MA-gated cascade — MassGIS → book avg → state median) ──
   } else if (name === 'compute_quote') {
     var cqAddress = input.address || '';
     var cqFreqRaw = (input.frequency || 'once').toLowerCase();
@@ -13395,51 +13396,93 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var cqFreqLabel = ({ once:'one-time', weekly:'per week', biweekly:'every 2 weeks', triweekly:'every 3 weeks', monthly:'per month' })[cqFreq];
     var cqTeam = parseInt(input.team_size) || 3;
 
-    // 1. Geocode (callback-style → wrap in Promise)
+    // 1. Geocode + state extraction via Nominatim (addressdetails=1).
+    //    Direct fetch (skips the local geocodeAddress helper because we need
+    //    state + city, not just lat/lng).
     var coords = null;
+    var nState = '';
+    var nCity = '';
     try {
-      await new Promise(function(resolve){
-        try { geocodeAddress(cqAddress, function(c){ coords = c; resolve(); }); }
-        catch(e){ resolve(); }
-      });
+      var nomUrl = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' + encodeURIComponent(cqAddress);
+      var nomResp = await fetch(nomUrl, { headers: { 'User-Agent': 'Penta/1.0', 'Accept-Language': 'en' } });
+      var nomData = await nomResp.json();
+      if (nomData && nomData[0]) {
+        coords = { lat: parseFloat(nomData[0].lat), lng: parseFloat(nomData[0].lon) };
+        var nAddr = nomData[0].address || {};
+        nState = (nAddr.state_code || nAddr.state || '').toUpperCase();
+        nCity = nAddr.city || nAddr.town || nAddr.village || nAddr.hamlet || '';
+      }
     } catch(_e) {}
     if (!coords) {
-      _claireLastToolResult = JSON.stringify({ error:'address_not_found', message:'Could not geocode "'+cqAddress+'". Ask the user to confirm the full address with city and state.' });
+      _claireLastToolResult = JSON.stringify({ error:'address_not_found', address:cqAddress, message:'Could not geocode "'+cqAddress+'". Ask the user to confirm the full address with city and state.' });
       return;
     }
 
-    // 2. MassGIS sqft + baths (skip if user supplied square_feet)
+    // 2. MA fingerprint check — bail if outside MA before running the cascade.
+    var stateNormalized = nState.replace(/MASSACHUSETTS/i, 'MA');
+    var isMA = stateNormalized === 'MA';
+    if (!isMA && !parseFloat(input.square_feet)) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'non_ma_address',
+        address: cqAddress,
+        detected_state: nState || 'unknown',
+        message: 'Address appears to be outside MA (detected: ' + (nState || 'unknown') + '). I can only auto-lookup square footage for MA addresses. Ask the user to provide the square footage, then call compute_quote again with square_feet provided.'
+      });
+      return;
+    }
+
+    // 3. Sqft cascade — user override → MassGIS → book avg → state median.
     var sqft = parseFloat(input.square_feet) || 0;
     var baths = parseFloat(input.baths) || 0;
-    if (!sqft) {
+    var sqftSource = sqft ? 'user_provided' : '';
+    var massgisStyle = '', massgisYear = 0;
+
+    // 3a. MassGIS new endpoint
+    if (!sqft && isMA) {
       try {
-        var mgUrl = 'https://gis.massgis.state.ma.us/ArcGIS/rest/services/massgis_cache/L3Parcels_and_Assess/MapServer/1/query'
+        var mgUrl = 'https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/Massachusetts_Property_Tax_Parcels/FeatureServer/0/query'
           + '?geometry=' + encodeURIComponent('{"x":'+coords.lng+',"y":'+coords.lat+',"spatialReference":{"wkid":4326}}')
-          + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelWithin'
-          + '&outFields=LIVING_AREA,NUM_BATHS,BLDG_AREA,GROSS_AREA&returnGeometry=false&f=json';
+          + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects'
+          + '&outFields=SITE_ADDR,CITY,RES_AREA,BLD_AREA,STYLE,YEAR_BUILT,USE_CODE&returnGeometry=false&f=json';
         var mgResp = await fetch(mgUrl);
         var mgData = await mgResp.json();
         if (mgData.features && mgData.features.length > 0) {
-          var attrs = mgData.features[0].attributes;
-          sqft = parseFloat(attrs.LIVING_AREA || attrs.BLDG_AREA || attrs.GROSS_AREA || 0);
-          if (!baths) baths = parseFloat(attrs.NUM_BATHS || 0);
+          var attrs = mgData.features[0].attributes || {};
+          // Prefer RES_AREA (residential living area). Fall back to BLD_AREA × 0.7
+          // (rough estimate excluding garage/basement/outbuildings).
+          var resArea = parseFloat(attrs.RES_AREA) || 0;
+          var bldArea = parseFloat(attrs.BLD_AREA) || 0;
+          if (resArea > 0) { sqft = resArea; sqftSource = 'massgis_res_area'; }
+          else if (bldArea > 0) { sqft = Math.round(bldArea * 0.7); sqftSource = 'massgis_bld_area_estimate'; }
+          massgisStyle = attrs.STYLE || '';
+          massgisYear = parseInt(attrs.YEAR_BUILT) || 0;
         }
       } catch(_e) {}
     }
-    if (!sqft) {
-      _claireLastToolResult = JSON.stringify({ error:'sqft_missing', address:cqAddress, message:'Could not find sqft for '+cqAddress+' in MassGIS. Ask the user for the square footage and call compute_quote again with square_feet provided.' });
-      return;
-    }
-    if (!baths) baths = 2;
 
-    // 3. Pure compute
+    // 3b. Book average for this city (median of existing clients with _sqft)
+    var bookCity = nCity || '';
+    if (!sqft && bookCity) {
+      var bookSqft = _computeBookAverageSqft(bookCity);
+      if (bookSqft > 0) { sqft = bookSqft; sqftSource = 'book_average:' + bookCity; }
+    }
+
+    // 3c. MA state median fallback (single-family median ~1850)
+    if (!sqft) {
+      sqft = 1850;
+      sqftSource = 'state_median';
+    }
+
+    if (!baths) baths = 2;  // No source provides baths anymore. 2 is the standard.
+
+    // 4. Pure compute
     var qResult = _computeQuotePure({ sqft, baths, frequency: cqFreq, teamSize: cqTeam });
     if (!qResult) {
       _claireLastToolResult = JSON.stringify({ error:'compute_failed', address:cqAddress });
       return;
     }
 
-    // 4. Pre-build the SMS text so send_text can use it verbatim
+    // 5. Pre-build the SMS text so send_text can use it verbatim
     var smsText = _buildQuoteSmsText({
       firstName: '', address: cqAddress, sqftDisplay: Math.round(sqft).toLocaleString(),
       formattedPrice: qResult.formattedPrice, isOneTime: qResult.isOneTime,
@@ -13451,6 +13494,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
       ok: true,
       address: cqAddress,
       sqft: Math.round(sqft),
+      sqft_source: sqftSource,
       baths,
       frequency: cqFreq,
       frequency_label: cqFreqLabel,
@@ -13462,6 +13506,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
       presentation_style: qResult.presentationStyle,
       breakdown: qResult.breakdown,
       sms_text: smsText,
+      property_style: massgisStyle || undefined,
+      year_built: massgisYear || undefined,
     });
     return;
 
@@ -19278,6 +19324,8 @@ function finalizeBooking() {
     _textOk: (document.getElementById('qt-text-ok') || {}).checked || false,
     _quotedPrice: price, _team: _qtTeam,
     _sqft: (document.getElementById('qt-sqft') || {}).value || '',
+    // v7.5: capture baths so book averages can include bath data later
+    _baths: (document.getElementById('qt-baths') || {}).value || '',
   };
   PentaClients.addClient(newClient);
   saveClientEdits(newId, newClient);
@@ -19810,6 +19858,29 @@ function selectFreq(freq, btn) {
     }
   });
   recalcQuote();
+}
+
+// v7.5: Median sqft for a given city, computed from Tom's existing client
+// book. Empty result is fine — caller falls through to state median.
+function _computeBookAverageSqft(city) {
+  if (!city || !window.PentaClients || !PentaClients.list) return 0;
+  var target = String(city).trim().toLowerCase();
+  if (!target) return 0;
+  var clients;
+  try { clients = PentaClients.list(); } catch(_e) { return 0; }
+  if (!Array.isArray(clients)) return 0;
+  var sqfts = [];
+  for (var i = 0; i < clients.length; i++) {
+    var c = clients[i];
+    if (!c) continue;
+    if (String(c.city || '').trim().toLowerCase() !== target) continue;
+    var n = parseFloat(c._sqft) || 0;
+    if (n > 0) sqfts.push(n);
+  }
+  if (!sqfts.length) return 0;
+  sqfts.sort(function(a,b){ return a - b; });
+  var mid = Math.floor(sqfts.length / 2);
+  return sqfts.length % 2 ? sqfts[mid] : Math.round((sqfts[mid - 1] + sqfts[mid]) / 2);
 }
 
 // v7.4: Pure quote calculator — DOM-free. Used by recalcQuote (UI path)
