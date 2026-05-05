@@ -6448,6 +6448,218 @@ window.PentaForms = (function() {
   };
 })();
 
+// =====================================================================
+// PentaSettings — v9.4: server-backed per-user settings (Anthropic API
+// key, Claire photo, RC token, Geotab session, etc.) Persisted on
+// public.users.settings (jsonb). Solves iOS Safari ↔ home-screen-PWA
+// localStorage isolation: settings survive across both display modes
+// because the source of truth is the DB.
+// =====================================================================
+window.PentaSettings = (function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  // Keys mirrored between localStorage and users.settings jsonb.
+  var SYNC_KEYS = [
+    'claire_api_key', 'anthropic_api_key',
+    'claire_photo', 'claire_did_image_url', 'claire_did_proxy', 'claire_did_key',
+    'rc_token', 'rc_refresh', 'rc_token_expiry',
+    'gps_session', 'gps_server',
+  ];
+
+  var _cache = {};        // last-known DB settings
+  var _ready = false;
+  var _loading = null;
+  var _listeners = [];
+
+  function _notify() {
+    for (var i = 0; i < _listeners.length; i++) {
+      try { _listeners[i](); } catch (e) { console.warn('[PentaSettings] listener threw', e); }
+    }
+  }
+
+  async function _authUserId() {
+    try {
+      var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+      if (sess && sess.user && sess.user.id) return sess.user.id;
+    } catch (e) {}
+    var sb = SB();
+    if (!sb) return null;
+    try {
+      var r = await sb.auth.getUser();
+      return r && r.data && r.data.user && r.data.user.id || null;
+    } catch (e) { return null; }
+  }
+
+  // Bidirectional sync: DB → localStorage for keys we don't have locally,
+  // localStorage → DB for keys we have locally but DB doesn't. DB wins on
+  // conflict (most-recent-across-devices is more likely there).
+  async function load() {
+    if (_loading) return _loading;
+    var sb = SB();
+    if (!sb) return false;
+    _loading = (async function() {
+      var uid = await _authUserId();
+      if (!uid) { _loading = null; return false; }
+
+      var res = await sb.from('users').select('settings').eq('id', uid).maybeSingle();
+      if (res.error) {
+        console.warn('[PentaSettings] load error', res.error);
+        _loading = null;
+        return false;
+      }
+      var dbSettings = (res.data && res.data.settings) || {};
+      _cache = Object.assign({}, dbSettings);
+
+      // Compute the merged set: DB keys overwrite local; local keys not in DB
+      // get pushed up. After this loop, BOTH stores have the merged values.
+      var pushUp = {};
+      var pushedAny = false;
+      SYNC_KEYS.forEach(function(k) {
+        var dbVal = dbSettings[k];
+        var lsVal = null;
+        try { lsVal = localStorage.getItem(k); } catch (e) {}
+        if (dbVal != null && dbVal !== '') {
+          // DB has it — mirror to localStorage (overwrite local)
+          try { localStorage.setItem(k, typeof dbVal === 'string' ? dbVal : JSON.stringify(dbVal)); } catch (e) {}
+        } else if (lsVal != null && lsVal !== '') {
+          // Local has it, DB doesn't — push up
+          pushUp[k] = lsVal;
+          pushedAny = true;
+        }
+      });
+
+      if (pushedAny) {
+        var merged = Object.assign({}, dbSettings, pushUp);
+        var up = await sb.from('users').update({ settings: merged }).eq('id', uid);
+        if (up.error) console.warn('[PentaSettings] backfill push-up failed', up.error);
+        else { _cache = merged; }
+      }
+
+      _ready = true;
+      _loading = null;
+      _notify();
+      return true;
+    })();
+    return _loading;
+  }
+
+  function get(key) {
+    // Prefer cache if loaded; otherwise localStorage.
+    if (_ready && _cache[key] != null) return _cache[key];
+    try { return localStorage.getItem(key) || null; } catch (e) { return null; }
+  }
+
+  // Persist to BOTH localStorage and users.settings.
+  // Errors on the DB side are logged but don't block the local write.
+  async function set(key, value) {
+    if (!key) return false;
+    if (value == null) value = '';
+    try { localStorage.setItem(key, String(value)); } catch (e) {}
+    _cache[key] = value;
+    var sb = SB();
+    if (!sb) return false;
+    var uid = await _authUserId();
+    if (!uid) return false;
+    // Read-modify-write because Postgres jsonb update is atomic per-row;
+    // settings is small so the round-trip cost is negligible.
+    try {
+      var cur = await sb.from('users').select('settings').eq('id', uid).maybeSingle();
+      var s = (cur.data && cur.data.settings) || {};
+      s[key] = value;
+      var res = await sb.from('users').update({ settings: s }).eq('id', uid);
+      if (res.error) { console.warn('[PentaSettings] set DB write failed', res.error); return false; }
+      return true;
+    } catch (e) { console.warn('[PentaSettings] set threw', e); return false; }
+  }
+
+  async function remove(key) {
+    try { localStorage.removeItem(key); } catch (e) {}
+    if (key in _cache) delete _cache[key];
+    var sb = SB();
+    if (!sb) return false;
+    var uid = await _authUserId();
+    if (!uid) return false;
+    try {
+      var cur = await sb.from('users').select('settings').eq('id', uid).maybeSingle();
+      var s = (cur.data && cur.data.settings) || {};
+      if (key in s) { delete s[key]; }
+      var res = await sb.from('users').update({ settings: s }).eq('id', uid);
+      if (res.error) console.warn('[PentaSettings] remove DB write failed', res.error);
+      return !res.error;
+    } catch (e) { return false; }
+  }
+
+  function onChange(fn) {
+    _listeners.push(fn);
+    return function unsub() {
+      var i = _listeners.indexOf(fn);
+      if (i >= 0) _listeners.splice(i, 1);
+    };
+  }
+
+  function isReady() { return _ready; }
+
+  return {
+    load: load, get: get, set: set, remove: remove,
+    onChange: onChange, isReady: isReady, _SYNC_KEYS: SYNC_KEYS,
+  };
+})();
+
+// Auto-prime PentaSettings once auth resolves. After successful sync,
+// re-init the modules that read these keys at module-load time
+// (Claire API key, Claire photo, RingCentral, Geotab) so they pick up
+// the freshly-synced values without a page reload.
+(function pentaPrimeSettings() {
+  if (!window.PentaSettings) return;
+
+  function reHydrateConsumers() {
+    // Claire API key — re-read into in-memory _claireApiKey.
+    try {
+      if (typeof _claireApiKey !== 'undefined') {
+        var k = localStorage.getItem('claire_api_key') || localStorage.getItem('anthropic_api_key') || '';
+        if (k && _claireApiKey !== k) _claireApiKey = k;
+      }
+    } catch (e) {}
+    // Claire photo — re-apply across all .claire-* avatar elements.
+    try { if (typeof applyClairePhoto === 'function') applyClairePhoto(); } catch (e) {}
+    // RingCentral — re-init from localStorage.
+    try { if (typeof rcInit === 'function') rcInit(); } catch (e) {}
+    // Geotab — re-init from localStorage.
+    try { if (typeof gpsInit === 'function') gpsInit(); } catch (e) {}
+  }
+
+  function whenAuth(cb) {
+    var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+    if (sess && sess.user && sess.user.id) return cb();
+    var tries = 0;
+    var iv = setInterval(function() {
+      var s = (window.PentaAuth && window.PentaAuth.session) || null;
+      if ((s && s.user && s.user.id) || ++tries > 100) {
+        clearInterval(iv);
+        if (s && s.user && s.user.id) cb();
+      }
+    }, 100);
+    // Also listen to auth state changes for sign-in mid-session.
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (sb && sb.auth && sb.auth.onAuthStateChange) {
+        sb.auth.onAuthStateChange(function(evt) {
+          if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') {
+            clearInterval(iv);
+            cb();
+          }
+        });
+      }
+    } catch (e) {}
+  }
+
+  whenAuth(function() {
+    window.PentaSettings.load().then(function(ok) {
+      if (ok) reHydrateConsumers();
+    });
+  });
+})();
+
 // Auto-hydrate PentaForms once supabase client is up.
 (function pentaPrimeFormsHydrate() {
   if (!window.PentaForms || !window.PentaForms._hydrate) return;
@@ -10186,6 +10398,8 @@ function setClaireApiKey() {
   if (key && key.startsWith('sk-')) {
     localStorage.setItem('claire_api_key', key);
     _claireApiKey = key;
+    // v9.4: also push to users.settings so it survives iOS storage isolation.
+    try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_api_key', key); } catch (e) {}
     claireReply('API key saved! I\'m ready to help.');
   }
 }
@@ -11243,6 +11457,8 @@ function claireSavePhoto(dataUrlOrUrl) {
     alert('Image too large to store. Try a smaller photo.');
     return;
   }
+  // v9.4: also persist to users.settings (cross-device, cross-display-mode)
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_photo', dataUrlOrUrl); } catch (e) {}
   applyClairePhoto();
   // Update preview
   var prev = document.getElementById('claire-photo-preview');
@@ -18267,6 +18483,7 @@ async function gpsAuthenticate() {
   };
 
   localStorage.setItem('gps_session', JSON.stringify(gpsSession));
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('gps_session', JSON.stringify(gpsSession)); } catch (e) {}
   localStorage.setItem('gps_server', GEOTAB_SERVER);
   return gpsSession;
 }
@@ -18822,6 +19039,7 @@ function rcInit() {
   if (accessToken) {
     rcToken = accessToken;
     localStorage.setItem('rc_token', accessToken);
+    try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', accessToken); } catch (e) {}
     // Clean URL
     window.history.replaceState({}, document.title, window.location.pathname);
     showTab('messages');
@@ -18908,10 +19126,12 @@ async function rcExchangeCode(code) {
     if (data.access_token) {
       rcToken = data.access_token;
       localStorage.setItem('rc_token', rcToken);
-      if (data.refresh_token) localStorage.setItem('rc_refresh', data.refresh_token);
+      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
+      if (data.refresh_token) { localStorage.setItem('rc_refresh', data.refresh_token); try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {} }
       // Save expiry (RC tokens last 1 hour = 3600 seconds)
       const expiry = Date.now() + (data.expires_in || 3600) * 1000;
       localStorage.setItem('rc_token_expiry', expiry.toString());
+      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
       window.history.replaceState({}, document.title, window.location.pathname);
       showTab('messages');
       loadInbox();
@@ -18965,9 +19185,11 @@ async function rcRefreshToken() {
     if (data.access_token) {
       rcToken = data.access_token;
       localStorage.setItem('rc_token', rcToken);
-      if (data.refresh_token) localStorage.setItem('rc_refresh', data.refresh_token);
+      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
+      if (data.refresh_token) { localStorage.setItem('rc_refresh', data.refresh_token); try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {} }
       const expiry = Date.now() + (data.expires_in || 3600) * 1000;
       localStorage.setItem('rc_token_expiry', expiry.toString());
+      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
       return true;
     }
   } catch(e) {}
