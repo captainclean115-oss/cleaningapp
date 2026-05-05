@@ -12931,28 +12931,53 @@ function _churnHash(s) {
   return Math.abs(h) % 100;
 }
 
+// v9.2: 20 fake demo clients. Doesn't depend on PentaClients so the
+// modal always populates regardless of the user's real client list.
+// Drawer also reads from this array (lookups by id).
+var _CHURN_DEMO_CLIENTS = [
+  // ── RED (6) — high risk ─────────────────────────────────────────
+  { id:'churn_demo_01', fn:'Sarah',     ln:'Mitchell',   addr:'47 Beacon St',       city:'Plymouth',   tier:'red',    score:88, reason:'3 missed cleans',                          lastVisitDaysAgo:45, ltv:4200, suggestedAction:'Schedule manager call',  missedCount:3 },
+  { id:'churn_demo_02', fn:'David',     ln:'Chen',       addr:'122 Elm Ave',        city:'Hingham',    tier:'red',    score:92, reason:'Balance overdue 90+ days',                lastVisitDaysAgo:28, ltv:5800, suggestedAction:'Schedule manager call',  missedCount:0 },
+  { id:'churn_demo_03', fn:'Linda',     ln:'Rodriguez',  addr:'8 Lincoln Rd',       city:'Duxbury',    tier:'red',    score:85, reason:'Complaint logged Apr 12 — unresolved',   lastVisitDaysAgo:14, ltv:3900, suggestedAction:'Schedule manager call',  missedCount:0 },
+  { id:'churn_demo_04', fn:"Michael",   ln:"O'Brien",    addr:'215 Webster St',     city:'Marshfield', tier:'red',    score:95, reason:'Asked to pause indefinitely',             lastVisitDaysAgo:60, ltv:6450, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  { id:'churn_demo_05', fn:'Patricia',  ln:'Walsh',      addr:'33 Oak Lane',        city:'Pembroke',   tier:'red',    score:78, reason:'Frequency dropped from weekly to monthly', lastVisitDaysAgo:21, ltv:7800, suggestedAction:'Schedule manager call',  missedCount:0 },
+  { id:'churn_demo_06', fn:'James',     ln:'Thompson',   addr:'99 Court St',        city:'Plymouth',   tier:'red',    score:90, reason:'No response to 3 outreach attempts',     lastVisitDaysAgo:38, ltv:4100, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  // ── YELLOW (8) — medium risk ────────────────────────────────────
+  { id:'churn_demo_07', fn:'Jennifer',  ln:'Lee',        addr:'58 Center St',       city:'Hingham',    tier:'yellow', score:62, reason:'2 reschedules in 30 days',                lastVisitDaysAgo:11, ltv:3200, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  { id:'churn_demo_08', fn:'Robert',    ln:'Garcia',     addr:'17 Maple Dr',        city:'Duxbury',    tier:'yellow', score:58, reason:'Balance overdue 30 days',                 lastVisitDaysAgo:8,  ltv:4750, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  { id:'churn_demo_09', fn:'Emily',     ln:'Davis',      addr:'41 Tremont St',      city:'Marshfield', tier:'yellow', score:65, reason:'Rating dropped from 5 to 3 stars',        lastVisitDaysAgo:14, ltv:5200, suggestedAction:'Offer 10% loyalty discount', missedCount:0 },
+  { id:'churn_demo_10', fn:'Christopher', ln:'Park',     addr:'124 Washington St',  city:'Pembroke',   tier:'yellow', score:55, reason:'Cancelled last clean same-day',           lastVisitDaysAgo:12, ltv:2900, suggestedAction:'Send check-in SMS',       missedCount:1 },
+  { id:'churn_demo_11', fn:'Amanda',    ln:'Foster',     addr:'76 Bay Rd',          city:'Duxbury',    tier:'yellow', score:60, reason:'Frequency dropped biweekly to monthly',   lastVisitDaysAgo:18, ltv:3600, suggestedAction:'Offer 10% loyalty discount', missedCount:0 },
+  { id:'churn_demo_12', fn:'Daniel',    ln:'Kim',        addr:'22 Forest St',       city:'Hingham',    tier:'yellow', score:48, reason:'Complaint logged but resolved',           lastVisitDaysAgo:6,  ltv:4400, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  { id:'churn_demo_13', fn:'Rachel',    ln:'Nguyen',     addr:'195 Summer St',      city:'Plymouth',   tier:'yellow', score:52, reason:'Missed 1 last clean',                     lastVisitDaysAgo:16, ltv:2750, suggestedAction:'Send check-in SMS',       missedCount:1 },
+  { id:'churn_demo_14', fn:'Brian',     ln:'Sullivan',   addr:'65 South Main St',   city:'Marshfield', tier:'yellow', score:45, reason:'Switched preferred day twice',            lastVisitDaysAgo:9,  ltv:3150, suggestedAction:'Send check-in SMS',       missedCount:0 },
+  // ── GREEN (6) — stable, shown for contrast ──────────────────────
+  { id:'churn_demo_15', fn:'Maria',     ln:'Lopez',      addr:'38 Harvard St',      city:'Hingham',    tier:'green',  score:8,  reason:'Perfect attendance 12 months',           lastVisitDaysAgo:5,  ltv:8400, suggestedAction:'Send thank-you note',     missedCount:0 },
+  { id:'churn_demo_16', fn:'John',      ln:'Anderson',   addr:'102 King St',        city:'Duxbury',    tier:'green',  score:12, reason:'Rating 5 stars consistent',              lastVisitDaysAgo:3,  ltv:7200, suggestedAction:'Send thank-you note',     missedCount:0 },
+  { id:'churn_demo_17', fn:'Susan',     ln:'Park',       addr:'51 Pleasant St',     city:'Pembroke',   tier:'green',  score:5,  reason:'Referral source',                        lastVisitDaysAgo:4,  ltv:9100, suggestedAction:'Send thank-you note',     missedCount:0 },
+  { id:'churn_demo_18', fn:'Thomas',    ln:'Reed',       addr:'28 Park Ave',        city:'Plymouth',   tier:'green',  score:18, reason:'Renewed annual contract',                lastVisitDaysAgo:2,  ltv:11600, suggestedAction:'Send thank-you note',    missedCount:0 },
+  { id:'churn_demo_19', fn:'Karen',     ln:'White',      addr:'184 Ocean St',       city:'Marshfield', tier:'green',  score:22, reason:'Added rooms to scope',                   lastVisitDaysAgo:7,  ltv:5400, suggestedAction:'Send thank-you note',     missedCount:0 },
+  { id:'churn_demo_20', fn:'Mark',      ln:'Johnson',    addr:'14 Hill St',         city:'Hingham',    tier:'green',  score:15, reason:'Tipped on last 3 visits',                lastVisitDaysAgo:6,  ltv:6800, suggestedAction:'Send thank-you note',     missedCount:0 },
+];
+
 function _churnComputeAtRisk() {
-  // Returns array of { client, score, tier ('red'|'yellow'), reason } sorted red-first.
-  if (!window.PentaClients || !PentaClients.listSync) return [];
-  var clients = PentaClients.listSync();
-  if (!Array.isArray(clients) || !clients.length) return [];
-  // Deterministic: take first ~12 active clients and synthesize scores
-  var pool = clients
-    .filter(function(c){ return c && (c.status || 'active') === 'active'; })
-    .slice(0, 12)
-    .map(function(c) {
-      var score = _churnHash(c.id || c.fn + c.ln);
-      var tier = score >= 75 ? 'red' : score >= 45 ? 'yellow' : 'green';
-      var reason = CHURN_REASONS[_churnHash('r' + (c.id||'')) % CHURN_REASONS.length];
-      return { client: c, score: score, tier: tier, reason: reason };
-    })
-    .filter(function(r){ return r.tier !== 'green'; })
-    .sort(function(a, b) {
-      if (a.tier !== b.tier) return a.tier === 'red' ? -1 : 1;
-      return b.score - a.score;
-    })
-    .slice(0, 7);
-  return pool;
+  // v9.2: returns the full 20 demo clients sorted by tier severity then score.
+  // Wraps each in { client, score, tier, reason } for the existing render path.
+  var tierOrder = { red: 0, yellow: 1, green: 2 };
+  return _CHURN_DEMO_CLIENTS.slice().sort(function(a, b) {
+    var d = tierOrder[a.tier] - tierOrder[b.tier];
+    if (d !== 0) return d;
+    return b.score - a.score;
+  }).map(function(c) {
+    return { client: c, score: c.score, tier: c.tier, reason: c.reason };
+  });
+}
+
+function _churnDemoLookup(id) {
+  for (var i = 0; i < _CHURN_DEMO_CLIENTS.length; i++) {
+    if (_CHURN_DEMO_CLIENTS[i].id === id) return _CHURN_DEMO_CLIENTS[i];
+  }
+  return null;
 }
 
 function openChurnDemo() {
@@ -12966,25 +12991,33 @@ function openChurnDemo() {
   var sheet = document.createElement('div');
   sheet.style.cssText = 'background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
 
+  // v9.2: include greens for contrast. Header reflects "risk overview", not "flagged".
+  var redCount = atRisk.filter(function(r){ return r.tier === 'red'; }).length;
+  var yellowCount = atRisk.filter(function(r){ return r.tier === 'yellow'; }).length;
+  var greenCount = atRisk.filter(function(r){ return r.tier === 'green'; }).length;
   var header = '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
-    + '<div><div style="font-size:18px;font-weight:700">🔥 Churn Risk</div>'
-    + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+atRisk.length+' '+(atRisk.length === 1 ? 'client' : 'clients')+' flagged · demo data</div></div>'
-    + '<button onclick="closeChurnDemo()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">×</button>'
+    + '<div><div style="font-size:18px;font-weight:700">\ud83d\udd25 Churn Risk</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+atRisk.length+' clients \u00b7 '
+    +   '<span style="color:#FF3B30;font-weight:600">'+redCount+' high</span> \u00b7 '
+    +   '<span style="color:#FFD60A;font-weight:600">'+yellowCount+' watch</span> \u00b7 '
+    +   '<span style="color:#34C759;font-weight:600">'+greenCount+' healthy</span> \u00b7 demo data'
+    + '</div></div>'
+    + '<button onclick="closeChurnDemo()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">\u00d7</button>'
     + '</div>';
 
   var body = '<div style="padding:14px 16px 28px">';
   if (!atRisk.length) {
-    body += '<div style="text-align:center;color:var(--muted);padding:40px 20px;font-size:13px">No clients flagged. Bring some in to see the demo populate.</div>';
+    body += '<div style="text-align:center;color:var(--muted);padding:40px 20px;font-size:13px">No demo clients loaded.</div>';
   } else {
     atRisk.forEach(function(r) {
       var c = r.client;
-      var stripe = r.tier === 'red' ? '#FF3B30' : '#FFD60A';
-      var label = r.tier === 'red' ? 'High risk' : 'Watch';
+      var stripe = r.tier === 'red' ? '#FF3B30' : r.tier === 'yellow' ? '#FFD60A' : '#34C759';
+      var label = r.tier === 'red' ? 'High risk' : r.tier === 'yellow' ? 'Watch' : 'Healthy';
       var name = ((c.fn||'') + ' ' + (c.ln||'')).trim();
       body += '<div onclick="openChurnDetail(\''+ String(c.id||'').replace(/\'/g,"\\'") +'\')" style="background:var(--surface2);border-radius:12px;margin-bottom:10px;border-left:4px solid '+stripe+';padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:12px">'
         + '<div style="flex:1;min-width:0">'
         + '<div style="font-size:14px;font-weight:700">'+name+'</div>'
-        + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+(c.city||'')+'</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+(c.city||'')+(c.ltv ? ' \u00b7 $'+c.ltv.toLocaleString()+' LTV' : '')+'</div>'
         + '<div style="font-size:12px;color:'+stripe+';margin-top:6px;font-weight:600">'+r.reason+'</div>'
         + '</div>'
         + '<div style="text-align:right;flex-shrink:0">'
@@ -13009,30 +13042,28 @@ function closeChurnDemo() {
 
 function openChurnDetail(clientId) {
   closeChurnDetail();
-  if (!window.PentaClients || !PentaClients.getClient) return;
-  var c = PentaClients.getClient(clientId);
+  // v9.2: drawer reads from demo array (not PentaClients).
+  var c = _churnDemoLookup(clientId);
   if (!c) return;
   var name = ((c.fn||'') + ' ' + (c.ln||'')).trim();
+  var stripe = c.tier === 'red' ? '#FF3B30' : c.tier === 'yellow' ? '#FFD60A' : '#34C759';
 
-  // Pull last 6 visits from real jobs if available; otherwise synthesize 6 dates
+  // Synthesize 6 visits. Most recent = lastVisitDaysAgo back, ~14 days apart.
+  // For RED with missedCount > 0, mark the last N as missed (red ✗).
+  // YELLOW with missedCount > 0, only the most recent N missed.
   var visits = [];
-  try {
-    if (typeof jobs !== 'undefined' && Array.isArray(jobs)) {
-      visits = jobs
-        .filter(function(j){ return j.clientId === c.id && j.date && new Date(j.date) <= new Date(); })
-        .sort(function(a,b){ return new Date(b.date) - new Date(a.date); })
-        .slice(0, 6)
-        .map(function(j){ return { date: j.date, team: j.team || '—', price: j.price || '' }; });
-    }
-  } catch(e) {}
-  if (!visits.length) {
-    var today = new Date();
-    for (var v = 0; v < 6; v++) {
-      var d = new Date(today.getTime() - (v * 14 + 7) * 86400000);
-      visits.push({ date: d.toISOString().slice(0,10), team: ['B1','B3','M1'][v % 3], price: '' });
-    }
+  var today = new Date();
+  var teams = ['B1','B3','M1','S1','M3','B5'];
+  var startDays = c.lastVisitDaysAgo || 7;
+  var missed = c.missedCount || 0;
+  for (var i = 0; i < 6; i++) {
+    var d = new Date(today.getTime() - (startDays + i*14) * 86400000);
+    visits.push({
+      date: d.toISOString().slice(0,10),
+      team: teams[i % teams.length],
+      missed: i < missed,
+    });
   }
-
   var lastContact = visits[0] ? visits[0].date : 'N/A';
 
   var drawer = document.createElement('div');
@@ -13044,29 +13075,54 @@ function openChurnDetail(clientId) {
   sheet.style.cssText = 'background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
 
   var html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
-    + '<div style="font-size:17px;font-weight:700">'+name+'</div>'
-    + '<button onclick="closeChurnDetail()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">×</button>'
+    + '<div><div style="font-size:17px;font-weight:700">'+name+'</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+(c.addr||'')+(c.city ? ', '+c.city : '')+'</div></div>'
+    + '<button onclick="closeChurnDetail()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">\u00d7</button>'
     + '</div>';
 
   html += '<div style="padding:16px 20px 24px">';
+
+  // Risk header strip
+  html += '<div style="background:'+stripe+'15;border:1px solid '+stripe+'55;border-radius:10px;padding:10px 12px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center">'
+    + '<div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:700">Risk reason</div>'
+    +   '<div style="font-size:14px;color:'+stripe+';font-weight:700;margin-top:2px">'+(c.reason||'')+'</div></div>'
+    + '<div style="text-align:right"><div style="font-size:24px;font-weight:800;color:'+stripe+'">'+(c.score||0)+'</div>'
+    +   '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">score</div></div>'
+    + '</div>';
+
+  // Last 6 visits with ✓/✗ status
   html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Last 6 visits</div>';
   html += '<div style="background:var(--surface2);border-radius:10px;padding:8px 12px;margin-bottom:18px">';
   visits.forEach(function(v, i) {
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0'+(i < visits.length - 1 ? ';border-bottom:1px solid var(--border)' : '')+'">'
-      + '<div style="font-size:13px">'+v.date+'</div>'
-      + '<div style="font-size:12px;color:var(--muted)">Team '+v.team+(v.price ? ' · $'+v.price : '')+'</div>'
+    var mark = v.missed ? '<span style="color:#FF3B30;font-weight:700">\u2717</span>' : '<span style="color:#34C759;font-weight:700">\u2713</span>';
+    var rowStyle = v.missed ? 'opacity:0.8' : '';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0'+(i < visits.length - 1 ? ';border-bottom:1px solid var(--border)' : '')+';'+rowStyle+'">'
+      + '<div style="font-size:13px;display:flex;align-items:center;gap:8px">'+mark+' '+v.date+(v.missed ? ' <span style="font-size:11px;color:#FF3B30">missed</span>' : '')+'</div>'
+      + '<div style="font-size:12px;color:var(--muted)">Team '+v.team+'</div>'
       + '</div>';
   });
   html += '</div>';
 
-  html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Last contact</div>';
-  html += '<div style="font-size:13px;color:var(--text);margin-bottom:18px">'+lastContact+'</div>';
+  // Lifetime value + last contact
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">'
+    + '<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:4px">Lifetime value</div>'
+    +   '<div style="font-size:15px;color:var(--text);font-weight:700">$'+(c.ltv||0).toLocaleString()+'</div></div>'
+    + '<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:4px">Last contact</div>'
+    +   '<div style="font-size:13px;color:var(--text)">'+lastContact+'</div></div>'
+    + '</div>';
 
+  // Suggested action callout
   html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Suggested action</div>';
-  html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text);margin-bottom:14px">Send a check-in SMS to re-engage before they churn.</div>';
+  html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text);margin-bottom:14px">'+(c.suggestedAction||'Send check-in SMS')+'</div>';
+
+  // Action button — label matches the suggested action
+  var btnIcon = '\ud83d\udcb1';
+  if (c.suggestedAction && /thank/i.test(c.suggestedAction)) btnIcon = '\ud83d\udc8c';
+  else if (c.suggestedAction && /discount/i.test(c.suggestedAction)) btnIcon = '\ud83c\udf81';
+  else if (c.suggestedAction && /call/i.test(c.suggestedAction)) btnIcon = '\ud83d\udcde';
 
   html += '<div style="display:flex;gap:10px">';
-  html += '<button onclick="sendChurnCheckIn(\''+ String(c.id||'').replace(/\'/g,"\\'") +'\')" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:13px;border-radius:11px;cursor:pointer">📱 Send Check-in SMS</button>';
+  html += '<button onclick="sendChurnCheckIn(\''+ String(c.id||'').replace(/\'/g,"\\'") +'\')" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:13px;border-radius:11px;cursor:pointer">'+btnIcon+' '+(c.suggestedAction||'Send check-in SMS')+'</button>';
   html += '<button onclick="closeChurnDetail()" style="flex:0 0 auto;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:13px 18px;border-radius:11px;cursor:pointer">Close</button>';
   html += '</div>';
   html += '</div>';
