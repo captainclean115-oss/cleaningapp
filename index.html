@@ -11931,8 +11931,8 @@ var HOME_APPS = [
   // Roadmap: predictive churn detection. Yellow→red warns about at-risk
   // clients, matching what the feature will do when built.
   { id: 'churn',      permKey: 'churn_icon', label: 'Churn',      grad: 'linear-gradient(135deg,#FFD60A 0%,#FF3B30 100%)',
-    iconHtml: LUCIDE['alert-triangle'], soon: true,
-    go: function(){ _launcherComingSoon('Churn'); } },
+    iconHtml: LUCIDE['alert-triangle'],
+    go: function(){ if (typeof openChurnDemo === 'function') openChurnDemo(); } },
   { id: 'analytics',  permKey: 'analytics_icon', label: 'Analytics',  grad: 'linear-gradient(135deg,#38bdf8 0%,#0369a1 100%)',
     iconHtml: LUCIDE['bar-chart-3'], go: function(){ _launcherComingSoon('Analytics'); } },
   { id: 'school',     permKey: 'school_icon', label: 'School',     grad: 'linear-gradient(135deg,#FF9F0A 0%,#FF6482 100%)',
@@ -11949,7 +11949,7 @@ var HOME_APPS = [
 //
 // Migration: if only legacy 'home_app_order' exists, wrap it into one page.
 // ═══════════════════════════════════════════════════════════════════════
-var HOME_PAGE_CAPACITY = 16; // 4 cols × 4 rows per page feels right on phones
+var HOME_PAGE_CAPACITY = 20; // v7.7: bumped from 16 so all current HOME_APPS fit on page 1
 var DEFAULT_DOCK = ['cal', 'gps', 'messages']; // Claire is always the fixed center — not stored here
 var DOCK_MAX = 6; // total non-Claire slots the dock can hold (3 per side max)
 
@@ -12014,6 +12014,22 @@ function _homeState() {
       }
     });
   })();
+
+  // v7.7: one-time consolidation. If all slots fit in HOME_PAGE_CAPACITY,
+  // collapse pages 1+ into page 0. Helps users whose old layout was forced
+  // to spill onto page 2 by the previous cap of 16. Idempotent.
+  (function _v77ConsolidateIfFits() {
+    var totalSlots = 0;
+    for (var pi = 0; pi < pages.length; pi++) totalSlots += pages[pi].length;
+    if (totalSlots <= HOME_PAGE_CAPACITY && pages.length > 1) {
+      var merged = [];
+      for (var pj = 0; pj < pages.length; pj++) {
+        for (var sj = 0; sj < pages[pj].length; sj++) merged.push(pages[pj][sj]);
+      }
+      pages = [merged, []]; // keep an empty page 1 for paging UI
+    }
+  })();
+
   window.__homeStateCache = { pages: pages, dock: dock };
   return window.__homeStateCache;
 }
@@ -12787,6 +12803,187 @@ function _launcherComingSoon(name) {
 // Public alias — matches the spec name so external prompts/tests can call
 // showComingSoon('Churn') and get the same toast.
 function showComingSoon(name) { return _launcherComingSoon(name); }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Churn Demo (v7.7) — demo-grade churn-risk feature.
+// Pulls 5-7 real clients from PentaClients, synthesizes deterministic risk
+// scores from the client id (so re-opens stay stable), shows red+yellow
+// at-risk tiers, opens a detail drawer per client. "Send check-in SMS"
+// fires a toast only — no real RC SMS goes out (demo only).
+// ═══════════════════════════════════════════════════════════════════════
+var CHURN_REASONS = [
+  '3 missed last cleans',
+  'balance overdue 60+ days',
+  'complaint logged Apr 12',
+  'frequency dropped from weekly → monthly',
+  'no contact in 90 days',
+  'rated last clean 2★',
+  'cancelled 2 of last 3 visits',
+];
+
+function _churnHash(s) {
+  // Tiny deterministic hash (string → 0..99 risk score)
+  var h = 0, str = String(s || '');
+  for (var i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return Math.abs(h) % 100;
+}
+
+function _churnComputeAtRisk() {
+  // Returns array of { client, score, tier ('red'|'yellow'), reason } sorted red-first.
+  if (!window.PentaClients || !PentaClients.listSync) return [];
+  var clients = PentaClients.listSync();
+  if (!Array.isArray(clients) || !clients.length) return [];
+  // Deterministic: take first ~12 active clients and synthesize scores
+  var pool = clients
+    .filter(function(c){ return c && (c.status || 'active') === 'active'; })
+    .slice(0, 12)
+    .map(function(c) {
+      var score = _churnHash(c.id || c.fn + c.ln);
+      var tier = score >= 75 ? 'red' : score >= 45 ? 'yellow' : 'green';
+      var reason = CHURN_REASONS[_churnHash('r' + (c.id||'')) % CHURN_REASONS.length];
+      return { client: c, score: score, tier: tier, reason: reason };
+    })
+    .filter(function(r){ return r.tier !== 'green'; })
+    .sort(function(a, b) {
+      if (a.tier !== b.tier) return a.tier === 'red' ? -1 : 1;
+      return b.score - a.score;
+    })
+    .slice(0, 7);
+  return pool;
+}
+
+function openChurnDemo() {
+  closeChurnDemo();
+  var atRisk = _churnComputeAtRisk();
+  var modal = document.createElement('div');
+  modal.id = 'churn-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  modal.onclick = function(e){ if (e.target === modal) closeChurnDemo(); };
+
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
+
+  var header = '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    + '<div><div style="font-size:18px;font-weight:700">🔥 Churn Risk</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+atRisk.length+' '+(atRisk.length === 1 ? 'client' : 'clients')+' flagged · demo data</div></div>'
+    + '<button onclick="closeChurnDemo()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">×</button>'
+    + '</div>';
+
+  var body = '<div style="padding:14px 16px 28px">';
+  if (!atRisk.length) {
+    body += '<div style="text-align:center;color:var(--muted);padding:40px 20px;font-size:13px">No clients flagged. Bring some in to see the demo populate.</div>';
+  } else {
+    atRisk.forEach(function(r) {
+      var c = r.client;
+      var stripe = r.tier === 'red' ? '#FF3B30' : '#FFD60A';
+      var label = r.tier === 'red' ? 'High risk' : 'Watch';
+      var name = ((c.fn||'') + ' ' + (c.ln||'')).trim();
+      body += '<div onclick="openChurnDetail(\''+ String(c.id||'').replace(/\'/g,"\\'") +'\')" style="background:var(--surface2);border-radius:12px;margin-bottom:10px;border-left:4px solid '+stripe+';padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:12px">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:14px;font-weight:700">'+name+'</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-top:2px">'+(c.city||'')+'</div>'
+        + '<div style="font-size:12px;color:'+stripe+';margin-top:6px;font-weight:600">'+r.reason+'</div>'
+        + '</div>'
+        + '<div style="text-align:right;flex-shrink:0">'
+        + '<div style="font-size:20px;font-weight:800;color:'+stripe+'">'+r.score+'</div>'
+        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">'+label+'</div>'
+        + '</div>'
+        + '</div>';
+    });
+  }
+  body += '</div>';
+
+  sheet.innerHTML = header + body;
+  modal.appendChild(sheet);
+  document.body.appendChild(modal);
+}
+
+function closeChurnDemo() {
+  var m = document.getElementById('churn-modal');
+  if (m) m.remove();
+  closeChurnDetail();
+}
+
+function openChurnDetail(clientId) {
+  closeChurnDetail();
+  if (!window.PentaClients || !PentaClients.getClient) return;
+  var c = PentaClients.getClient(clientId);
+  if (!c) return;
+  var name = ((c.fn||'') + ' ' + (c.ln||'')).trim();
+
+  // Pull last 6 visits from real jobs if available; otherwise synthesize 6 dates
+  var visits = [];
+  try {
+    if (typeof jobs !== 'undefined' && Array.isArray(jobs)) {
+      visits = jobs
+        .filter(function(j){ return j.clientId === c.id && j.date && new Date(j.date) <= new Date(); })
+        .sort(function(a,b){ return new Date(b.date) - new Date(a.date); })
+        .slice(0, 6)
+        .map(function(j){ return { date: j.date, team: j.team || '—', price: j.price || '' }; });
+    }
+  } catch(e) {}
+  if (!visits.length) {
+    var today = new Date();
+    for (var v = 0; v < 6; v++) {
+      var d = new Date(today.getTime() - (v * 14 + 7) * 86400000);
+      visits.push({ date: d.toISOString().slice(0,10), team: ['B1','B3','M1'][v % 3], price: '' });
+    }
+  }
+
+  var lastContact = visits[0] ? visits[0].date : 'N/A';
+
+  var drawer = document.createElement('div');
+  drawer.id = 'churn-detail';
+  drawer.style.cssText = 'position:fixed;inset:0;z-index:520;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  drawer.onclick = function(e){ if (e.target === drawer) closeChurnDetail(); };
+
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
+
+  var html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
+    + '<div style="font-size:17px;font-weight:700">'+name+'</div>'
+    + '<button onclick="closeChurnDetail()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">×</button>'
+    + '</div>';
+
+  html += '<div style="padding:16px 20px 24px">';
+  html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Last 6 visits</div>';
+  html += '<div style="background:var(--surface2);border-radius:10px;padding:8px 12px;margin-bottom:18px">';
+  visits.forEach(function(v, i) {
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0'+(i < visits.length - 1 ? ';border-bottom:1px solid var(--border)' : '')+'">'
+      + '<div style="font-size:13px">'+v.date+'</div>'
+      + '<div style="font-size:12px;color:var(--muted)">Team '+v.team+(v.price ? ' · $'+v.price : '')+'</div>'
+      + '</div>';
+  });
+  html += '</div>';
+
+  html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Last contact</div>';
+  html += '<div style="font-size:13px;color:var(--text);margin-bottom:18px">'+lastContact+'</div>';
+
+  html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Suggested action</div>';
+  html += '<div style="background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.2);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text);margin-bottom:14px">Send a check-in SMS to re-engage before they churn.</div>';
+
+  html += '<div style="display:flex;gap:10px">';
+  html += '<button onclick="sendChurnCheckIn(\''+ String(c.id||'').replace(/\'/g,"\\'") +'\')" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:13px;border-radius:11px;cursor:pointer">📱 Send Check-in SMS</button>';
+  html += '<button onclick="closeChurnDetail()" style="flex:0 0 auto;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:13px 18px;border-radius:11px;cursor:pointer">Close</button>';
+  html += '</div>';
+  html += '</div>';
+
+  sheet.innerHTML = html;
+  drawer.appendChild(sheet);
+  document.body.appendChild(drawer);
+}
+
+function closeChurnDetail() {
+  var d = document.getElementById('churn-detail');
+  if (d) d.remove();
+}
+
+function sendChurnCheckIn(clientId) {
+  // Demo only — does NOT call RingCentral. Just shows a toast.
+  if (typeof showToast === 'function') showToast('Sent ✓', 'success');
+  else alert('Sent ✓');
+  closeChurnDetail();
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Payments Hub (demo). Lists every client with an outstanding balance,
