@@ -5714,6 +5714,9 @@ window.PentaGeocode = (function() {
     phone: 1,
     // role
     role: 1, is_team_leader: 1, is_driver: 1,
+    // v9.5: position is the new role-based portal permission field
+    // ('team_leader' | 'team_member'). DB column public.employees.position.
+    position: 1,
     // language
     lang: 1, culture_tag: 1, cultureTag: 1,
     // team
@@ -5809,6 +5812,9 @@ window.PentaGeocode = (function() {
     }
     if (emp.is_team_leader != null) row.is_team_leader = !!emp.is_team_leader;
     if (emp.is_driver != null) row.is_driver = !!emp.is_driver;
+    // v9.5: position string (team_leader | team_member). Default coerced
+    // server-side via NOT NULL DEFAULT, but we set explicitly to be safe.
+    if (emp.position) row.position = emp.position;
 
     // lang → culture_tag
     if (emp.lang != null) row.culture_tag = _langToCulture(emp.lang);
@@ -5902,6 +5908,8 @@ window.PentaGeocode = (function() {
     emp.role = roleArr;
     emp.is_team_leader = !!row.is_team_leader;
     emp.is_driver = !!row.is_driver;
+    // v9.5: position field for portal read-only / full-access split.
+    emp.position = row.position || 'team_member';
 
     if (row.culture_tag != null) {
       emp.culture_tag = row.culture_tag;
@@ -23310,6 +23318,7 @@ function openAddStaff() {
 
     set('staff-edit-idx', '-1');
     set('staff-name', '');    populateEmpTeamDropdown('staff-team', null);
+    set('staff-role', 'team_member');  // v9.5: default new hires to team_member
     set('staff-pin', '');     set('staff-pay', '');
     set('staff-phone', '');   set('staff-lang', 'en');
     set('staff-status', 'active');
@@ -23817,6 +23826,9 @@ function openEditStaff(idx) {
   document.getElementById('staff-zip').value = emp.zip || '';
   // Employment
   populateEmpTeamDropdown('staff-team', emp.team_id || null);
+  // v9.5: hydrate Role dropdown
+  var _roleSel = document.getElementById('staff-role');
+  if (_roleSel) _roleSel.value = emp.position || 'team_member';
   document.getElementById('staff-pay').value = emp.payRate || '';
   document.getElementById('staff-lang').value = emp.lang || 'en';
   document.getElementById('staff-status').value = emp.status || 'active';
@@ -23970,6 +23982,8 @@ async function saveStaffEmployee() {
     name,
     team_id: document.getElementById('staff-team').value || null,
     team: (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
+    // v9.5: portal permission role
+    position: ((document.getElementById('staff-role')||{}).value) || 'team_member',
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
@@ -25310,10 +25324,12 @@ function renderSchedule() {
           </a>
 
         </div>
+        ${(currentEmployee && currentEmployee.position === 'team_leader') ? `
         <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="width:100%;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
           ⚠ Report Issue
-        </button>
+        </button>` : ''}
       </div>
+      ${(currentEmployee && currentEmployee.position === 'team_leader') ? `
       <div style="display:flex;gap:8px;margin-top:8px">
         <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 8px;border-radius:10px;cursor:pointer">
           ${t('reportIncident')}
@@ -25321,7 +25337,7 @@ function renderSchedule() {
         <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="flex:1;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 8px;border-radius:10px;cursor:pointer">
           ${t('receivePayment')}
         </button>
-      </div>
+      </div>` : ''}
     </div>`;
   }).join('');
 
@@ -31269,6 +31285,12 @@ function _p3dPage(dir) {
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team</div>
           <select id="staff-team" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('staff-team', team_id) -->
+          </select>
+        </div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Role</div>
+          <select id="staff-role" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+            <option value="team_member">Team Member</option>
+            <option value="team_leader">Team Leader</option>
           </select>
         </div>
       </div>
