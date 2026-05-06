@@ -11421,14 +11421,21 @@ if ('speechSynthesis' in window) {
 
 // ── Claire photo customization ──
 function getClairePhoto() {
-  // Priority: explicit display photo -> D-ID source URL (same image usually) -> nothing.
-  // The D-ID fallback is handy because on iOS, a site added to Home Screen runs with
-  // ISOLATED localStorage from the Safari tab — so if Tom set her photo in Safari,
-  // that value is invisible in the home-screen app. Chaining means that once he sets
-  // her D-ID image URL (needed for lip-sync anyway), her face shows up too.
-  return localStorage.getItem('claire_photo')
-      || localStorage.getItem('claire_did_image_url')
-      || '';
+  // Priority: localStorage (fast, sync) -> PentaSettings cache (DB-backed,
+  // cross-device) -> empty. iOS Safari ↔ home-screen-PWA scopes have
+  // isolated localStorage; PentaSettings.get sees the merged cache
+  // populated from public.users.settings on auth + boot.
+  // v9.5.3: PentaSettings fallback added so DB-only photos surface even
+  // when this device's localStorage is empty/quota-exceeded.
+  var ls = localStorage.getItem('claire_photo')
+        || localStorage.getItem('claire_did_image_url');
+  if (ls) return ls;
+  if (window.PentaSettings && window.PentaSettings.get) {
+    return window.PentaSettings.get('claire_photo')
+        || window.PentaSettings.get('claire_did_image_url')
+        || '';
+  }
+  return '';
 }
 
 function applyClairePhoto() {
@@ -11463,15 +11470,22 @@ function closeClairePhotoPicker() {
 
 function claireSavePhoto(dataUrlOrUrl) {
   if (!dataUrlOrUrl) return;
+  // v9.5.3: write to PentaSettings (DB) FIRST so cloud sync survives
+  // localStorage quota failures on iOS (data-URL photos can be 30-100KB
+  // and easily blow past iOS PWA's 5MB localStorage budget when other
+  // caches are populated).
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_photo', dataUrlOrUrl); } catch (e) {}
+  var localOK = true;
   try {
     localStorage.setItem('claire_photo', dataUrlOrUrl);
   } catch(e) {
-    // quota exceeded (likely too big) — try downscaling if data URL
-    alert('Image too large to store. Try a smaller photo.');
-    return;
+    // Quota exceeded — DB save above still succeeded, so cross-device
+    // sync works. Just notify the user that this device's local cache
+    // didn't persist and refresh from cloud may be slow.
+    localOK = false;
+    console.warn('[claire-photo] localStorage quota exceeded; saved to DB only', e);
+    try { if (typeof showToast === 'function') showToast('Saved to cloud (local cache full)', 'info'); } catch (e2) {}
   }
-  // v9.4: also persist to users.settings (cross-device, cross-display-mode)
-  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_photo', dataUrlOrUrl); } catch (e) {}
   applyClairePhoto();
   // Update preview
   var prev = document.getElementById('claire-photo-preview');
@@ -11485,6 +11499,10 @@ function claireSavePhotoFromUrl() {
   if (!/^https?:\/\//i.test(url)) { alert('URL must start with http:// or https://'); return; }
   // URLs are usable by D-ID (unlike data URLs), so save for both display + lip-sync
   localStorage.setItem('claire_did_image_url', url);
+  // v9.5.3: also push to PentaSettings (was missed by v9.4 — only the
+  // claireSavePhoto downstream call wrote claire_photo to DB, never the
+  // claire_did_image_url key).
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_did_image_url', url); } catch (e) {}
   claireSavePhoto(url);
   _claireRefreshDidStatus();
 }
@@ -11519,6 +11537,9 @@ function _claireHandleFile(ev) {
 function claireClearPhoto() {
   localStorage.removeItem('claire_photo');
   localStorage.removeItem('claire_did_image_url');
+  // v9.5.3: also clear from DB so cross-device clear actually clears.
+  try { if (window.PentaSettings && window.PentaSettings.remove) window.PentaSettings.remove('claire_photo'); } catch (e) {}
+  try { if (window.PentaSettings && window.PentaSettings.remove) window.PentaSettings.remove('claire_did_image_url'); } catch (e) {}
   applyClairePhoto();
   var prev = document.getElementById('claire-photo-preview');
   if (prev) { prev.style.backgroundImage = 'linear-gradient(135deg,#6c8fff,#a78bfa)'; prev.textContent = 'C'; }
