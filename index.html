@@ -25459,10 +25459,20 @@ function renderSchedule() {
     // Inter-job drive (uses cached OSRM results when available)
     var jobsForDrive = sortedByTime.length >= 2 ? sortedByTime : [];
     var lastJob = sortedByTime[sortedByTime.length - 1];
-    var lastAddr = lastJob ? (typeof getClientAddrForJob === 'function' ? getClientAddrForJob(lastJob) : (lastJob.addr||'')) : '';
 
     function getBackDrive(driveSum) {
-      if (depot && lastAddr && typeof fetchDriveTime === 'function') {
+      // v9.5.7: depot has known coords; use coord path. Fall back to
+      // the address path only if the last job lacks both coords AND a
+      // resolvable PentaClients lat/lng.
+      if (!depot || !lastJob) { finish(driveSum, 20); return; }
+      var lastCoords = (typeof _getJobCoords === 'function') ? _getJobCoords(lastJob) : null;
+      if (lastCoords && typeof fetchDriveTimeByCoords === 'function') {
+        fetchDriveTimeByCoords(lastCoords, { lat: depot.lat, lng: depot.lng },
+          function(mins) { finish(driveSum, mins != null ? mins : 20); });
+        return;
+      }
+      var lastAddr = (typeof getClientAddrForJob === 'function') ? getClientAddrForJob(lastJob) : (lastJob.addr||'');
+      if (lastAddr && typeof fetchDriveTime === 'function') {
         fetchDriveTime(lastAddr, depot.addr, function(mins) { finish(driveSum, mins != null ? mins : 20); });
       } else {
         finish(driveSum, 20);
@@ -28529,6 +28539,59 @@ function getDriveTimeCacheKey(addr1, addr2) {
   return a < b ? a + '||' + b : b + '||' + a;
 }
 
+// v9.5.7: coord-keyed cache for the new path that skips Nominatim entirely.
+// Keys are rounded to ~1m (5 decimals) so sub-meter coord drift doesn't
+// fragment the cache.
+var _driveTimeCoordsCache = {};
+function _coordKey(c1, c2) {
+  function r(n){ return (Math.round(n * 100000) / 100000).toFixed(5); }
+  var a = r(c1.lat) + ',' + r(c1.lng);
+  var b = r(c2.lat) + ',' + r(c2.lng);
+  return a < b ? a + '||' + b : b + '||' + a;
+}
+
+// v9.5.7: returns {lat, lng} from PentaClients cache, or null if the
+// client is missing or ungeocoded (geocode_status !== 'ok'). Sprint 7-map
+// geocoded 333/339 clients into the DB; this helper unlocks them for
+// drive-time calc without re-hitting Nominatim per-job.
+function _getJobCoords(job) {
+  if (!job) return null;
+  if (typeof job.lat === 'number' && typeof job.lng === 'number') {
+    return { lat: job.lat, lng: job.lng };
+  }
+  if (!window.PentaClients || !PentaClients.getClient) return null;
+  var c = PentaClients.getClient(job.clientId);
+  if (!c) return null;
+  if (typeof c.lat === 'number' && typeof c.lng === 'number') {
+    return { lat: c.lat, lng: c.lng };
+  }
+  return null;
+}
+
+// v9.5.7: drive-time call that takes coords directly and skips geocoding.
+// Use this whenever both endpoints have known lat/lng (e.g. via Migration
+// 018's clients.lat/lng or the depot constants). Falls through silently
+// if either coord is missing — caller chooses whether to retry via the
+// address-based fetchDriveTime.
+function fetchDriveTimeByCoords(c1, c2, callback) {
+  if (!c1 || !c2 || typeof c1.lat !== 'number' || typeof c2.lat !== 'number') {
+    callback(null); return;
+  }
+  var key = _coordKey(c1, c2);
+  if (_driveTimeCoordsCache[key] !== undefined) {
+    callback(_driveTimeCoordsCache[key]); return;
+  }
+  var url = 'https://router.project-osrm.org/route/v1/driving/'
+    + c1.lng + ',' + c1.lat + ';' + c2.lng + ',' + c2.lat + '?overview=false';
+  fetch(url).then(function(r){ return r.json(); }).then(function(data) {
+    if (data && data.routes && data.routes[0]) {
+      var mins = Math.round(data.routes[0].duration / 60);
+      _driveTimeCoordsCache[key] = mins;
+      callback(mins);
+    } else { callback(null); }
+  }).catch(function(){ callback(null); });
+}
+
 function fetchDriveTime(addr1, addr2, callback) {
   var key = getDriveTimeCacheKey(addr1, addr2);
   if (_driveTimeCache[key] !== undefined) { callback(_driveTimeCache[key]); return; }
@@ -28561,13 +28624,22 @@ function calcTeamDriveTimes(teamJobs, callback) {
   for (var i = 0; i < teamJobs.length - 1; i++) {
     (function(idx) {
       var j1 = teamJobs[idx], j2 = teamJobs[idx + 1];
-      var a1 = getClientAddrForJob(j1), a2 = getClientAddrForJob(j2);
-      if (!a1 || !a2) { results[idx] = { fromId: j1.id, toId: j2.id, mins: null }; done++; if (done === pending) callback(results); return; }
-      fetchDriveTime(a1, a2, function(mins) {
+      // v9.5.7: try cached coords from PentaClients first. If both jobs
+      // have coords we skip Nominatim entirely. Falls back to address-
+      // based fetchDriveTime only for the ~6 ungeocoded clients.
+      var c1 = _getJobCoords(j1), c2 = _getJobCoords(j2);
+      function recordResult(mins) {
         results[idx] = { fromId: j1.id, toId: j2.id, mins: mins };
         done++;
         if (done === pending) callback(results);
-      });
+      }
+      if (c1 && c2) {
+        fetchDriveTimeByCoords(c1, c2, recordResult);
+        return;
+      }
+      var a1 = getClientAddrForJob(j1), a2 = getClientAddrForJob(j2);
+      if (!a1 || !a2) { recordResult(null); return; }
+      fetchDriveTime(a1, a2, recordResult);
     })(i);
   }
 }
@@ -28622,18 +28694,23 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
       if (idx >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
       var c = teamJobs[idx], n = teamJobs[idx + 1];
       var cEnd = (jobStartMins(c) || 0) + getJobDurationMins(c);
+      // v9.5.7: coords-first; falls back to address geocode only when
+      // a client is missing lat/lng.
+      var rc1 = _getJobCoords(c), rc2 = _getJobCoords(n);
+      function applyDrive(mins) {
+        var dr = mins || 15;
+        var ns2 = cEnd + dr;
+        n.time = String(Math.floor(ns2/60)).padStart(2,'0') + ':' + String(ns2%60).padStart(2,'0');
+        idx++; asyncPass();
+      }
+      if (rc1 && rc2) { fetchDriveTimeByCoords(rc1, rc2, applyDrive); return; }
       var ad1 = getClientAddrForJob(c), ad2 = getClientAddrForJob(n);
       if (!ad1 || !ad2) {
         var ns = cEnd + 15;
         n.time = String(Math.floor(ns/60)).padStart(2,'0') + ':' + String(ns%60).padStart(2,'0');
         idx++; asyncPass(); return;
       }
-      fetchDriveTime(ad1, ad2, function(mins) {
-        var dr = mins || 15;
-        var ns2 = cEnd + dr;
-        n.time = String(Math.floor(ns2/60)).padStart(2,'0') + ':' + String(ns2%60).padStart(2,'0');
-        idx++; asyncPass();
-      });
+      fetchDriveTime(ad1, ad2, applyDrive);
     }
     asyncPass();
   }
