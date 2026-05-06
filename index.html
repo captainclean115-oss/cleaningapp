@@ -19258,6 +19258,13 @@ function initSheets() {
 
 // Check for OAuth callback token on page load
 function rcInit() {
+  // v9.5.6: 5-second cooldown. rcInit is called from 3 sites (OAuth
+  // callback, manager unlock, PentaSettings prime). Without this guard,
+  // the unlock + prime calls fire within ~500ms of each other and both
+  // try to refresh the same token in parallel.
+  if (window._rcInitLastRunAt && Date.now() - window._rcInitLastRunAt < 5000) return;
+  window._rcInitLastRunAt = Date.now();
+
   // Check URL hash for token (implicit flow) or code (auth code flow)
   const params = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace('#',''));
@@ -19405,32 +19412,64 @@ async function rcFetch(path, opts={}) {
   return resp.json();
 }
 
+// v9.5.6: in-flight promise cache. Boot fires rcInit twice (line ~22312
+// manager unlock + line ~6644 PentaSettings prime). Without dedup, both
+// rcInits call rcRefreshToken concurrently — RC rotates the refresh token
+// on the first POST, returning 400 invalid_grant on the second.
+let _rcRefreshPromise = null;
 async function rcRefreshToken() {
-  const refresh = localStorage.getItem('rc_refresh');
-  if (!refresh) return false;
-  try {
-    const resp = await fetch('https://platform.ringcentral.com/restapi/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refresh,
-        client_id: RC_CLIENT_ID
-      })
-    });
-    const data = await resp.json();
-    if (data.access_token) {
-      rcToken = data.access_token;
-      localStorage.setItem('rc_token', rcToken);
-      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
-      if (data.refresh_token) { localStorage.setItem('rc_refresh', data.refresh_token); try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {} }
-      const expiry = Date.now() + (data.expires_in || 3600) * 1000;
-      localStorage.setItem('rc_token_expiry', expiry.toString());
-      try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
-      return true;
+  if (_rcRefreshPromise) return _rcRefreshPromise;
+  _rcRefreshPromise = (async function() {
+    try {
+      // v9.5.6: localStorage → PentaSettings fallback. iOS PWA localStorage
+      // can be empty on fresh install or after rcLogout, but the DB-backed
+      // copy survives. Closes the boot-timing race where PentaSettings.load
+      // hasn't mirrored DB → localStorage yet.
+      var refresh = localStorage.getItem('rc_refresh');
+      if (!refresh && window.PentaSettings && window.PentaSettings.get) {
+        refresh = window.PentaSettings.get('rc_refresh') || '';
+        if (refresh) {
+          // Mirror back to localStorage now that we have it.
+          try { localStorage.setItem('rc_refresh', refresh); } catch (e) {}
+        }
+      }
+      if (!refresh) return false;
+      const resp = await fetch('https://platform.ringcentral.com/restapi/oauth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refresh,
+          client_id: RC_CLIENT_ID
+        })
+      });
+      // v9.5.6: log actual 400 body. Was silently swallowed before, leaving
+      // us guessing whether it's invalid_grant (stale), invalid_request
+      // (malformed), or invalid_client (RC config issue).
+      if (!resp.ok) {
+        var errBody = '';
+        try { errBody = await resp.text(); } catch (e) {}
+        console.warn('[RC] refresh failed', resp.status, errBody.slice(0, 300));
+        return false;
+      }
+      const data = await resp.json();
+      if (data.access_token) {
+        rcToken = data.access_token;
+        localStorage.setItem('rc_token', rcToken);
+        try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
+        if (data.refresh_token) { localStorage.setItem('rc_refresh', data.refresh_token); try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {} }
+        const expiry = Date.now() + (data.expires_in || 3600) * 1000;
+        localStorage.setItem('rc_token_expiry', expiry.toString());
+        try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
+        return true;
+      }
+    } catch(e) {
+      console.warn('[RC] refresh threw', e && e.message);
     }
-  } catch(e) {}
-  return false;
+    return false;
+  })();
+  try { return await _rcRefreshPromise; }
+  finally { _rcRefreshPromise = null; }
 }
 
 function rcLogout() {
@@ -19438,6 +19477,16 @@ function rcLogout() {
   localStorage.removeItem('rc_token');
   localStorage.removeItem('rc_refresh');
   localStorage.removeItem('rc_token_expiry');
+  // v9.5.6: also clear from PentaSettings (DB). Without this, a dead
+  // token in users.settings gets re-mirrored to localStorage on every
+  // boot — refresh fails, rcLogout fires, localStorage cleared, next
+  // boot re-mirrors the dead token, infinite loop. Now the wipe is
+  // durable across devices and reloads.
+  try { if (window.PentaSettings && window.PentaSettings.remove) {
+    window.PentaSettings.remove('rc_token');
+    window.PentaSettings.remove('rc_refresh');
+    window.PentaSettings.remove('rc_token_expiry');
+  }} catch (e) {}
   document.getElementById('rc-auth-section').style.display = 'block';
   document.getElementById('rc-inbox-section').style.display = 'none';
   updateRCStatus('Connect to RingCentral to see your SMS inbox');
