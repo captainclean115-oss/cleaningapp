@@ -14396,25 +14396,75 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var cqFreqLabel = ({ once:'one-time', weekly:'per week', biweekly:'every 2 weeks', triweekly:'every 3 weeks', monthly:'per month' })[cqFreq];
     var cqTeam = parseInt(input.team_size) || 3;
 
-    // 1. Geocode + state extraction via Nominatim (addressdetails=1).
-    //    Direct fetch (skips the local geocodeAddress helper because we need
-    //    state + city, not just lat/lng).
+    // 1. Geocode + state extraction via Nominatim, with Photon fallback.
+    //    v9.5.5: auto-append ", MA, USA" when the user typed a bare address
+    //    (matches the qtFetchSuggestions UI pattern). Penta is MA-only;
+    //    this nudges Nominatim to return the right municipality and reliably
+    //    populates state_code='MA' in the response.
+    var addrForGeo = cqAddress;
+    if (!/\b(MA|Massachusetts|USA|United States)\b/i.test(addrForGeo)) {
+      addrForGeo = addrForGeo.trim() + ', MA, USA';
+    }
+
     var coords = null;
     var nState = '';
     var nCity = '';
+
+    // Try Nominatim first.
     try {
-      var nomUrl = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' + encodeURIComponent(cqAddress);
+      var nomUrl = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' + encodeURIComponent(addrForGeo);
       var nomResp = await fetch(nomUrl, { headers: { 'User-Agent': 'Penta/1.0', 'Accept-Language': 'en' } });
-      var nomData = await nomResp.json();
-      if (nomData && nomData[0]) {
-        coords = { lat: parseFloat(nomData[0].lat), lng: parseFloat(nomData[0].lon) };
-        var nAddr = nomData[0].address || {};
-        nState = (nAddr.state_code || nAddr.state || '').toUpperCase();
-        nCity = nAddr.city || nAddr.town || nAddr.village || nAddr.hamlet || '';
+      // v9.5.5: explicit 429 handling. Returning a structured throttled
+      // error is much better UX than the silent address_not_found path,
+      // which the LLM has been paraphrasing as "what's the sqft?".
+      if (nomResp.status === 429) {
+        _claireLastToolResult = JSON.stringify({
+          error: 'geocoder_throttled',
+          message: 'The address geocoder is rate-limited right now. Tell the user to try this quote again in about a minute.'
+        });
+        return;
+      }
+      if (nomResp.ok) {
+        var nomData = await nomResp.json();
+        if (nomData && nomData[0]) {
+          coords = { lat: parseFloat(nomData[0].lat), lng: parseFloat(nomData[0].lon) };
+          var nAddr = nomData[0].address || {};
+          nState = (nAddr.state_code || nAddr.state || '').toUpperCase();
+          nCity = nAddr.city || nAddr.town || nAddr.village || nAddr.hamlet || '';
+        }
       }
     } catch(_e) {}
+
+    // v9.5.5: Photon fallback if Nominatim missed entirely OR returned
+    // a result without state_code. Photon (Komoot) doesn't rate-limit
+    // anonymous queries and often has complementary coverage.
+    if (!coords || !nState) {
+      try {
+        var phUrl = 'https://photon.komoot.io/api/?limit=1&q=' + encodeURIComponent(addrForGeo);
+        var phResp = await fetch(phUrl);
+        if (phResp.ok) {
+          var phData = await phResp.json();
+          var feat = phData && phData.features && phData.features[0];
+          if (feat && feat.geometry && Array.isArray(feat.geometry.coordinates)) {
+            var pc = feat.geometry.coordinates; // [lng, lat]
+            if (!coords) coords = { lat: pc[1], lng: pc[0] };
+            var pp = feat.properties || {};
+            if (!nState) {
+              // Photon's "state" is the full name (e.g., "Massachusetts").
+              // Normalize to 2-letter code so the MA fingerprint check works.
+              var s = (pp.state || '').trim();
+              if (/massachusetts/i.test(s)) nState = 'MA';
+              else if (/^[A-Z]{2}$/.test(s)) nState = s.toUpperCase();
+              else if (s) nState = s.toUpperCase().slice(0, 2);
+            }
+            if (!nCity) nCity = pp.city || pp.locality || pp.county || pp.name || '';
+          }
+        }
+      } catch(_e2) {}
+    }
+
     if (!coords) {
-      _claireLastToolResult = JSON.stringify({ error:'address_not_found', address:cqAddress, message:'Could not geocode "'+cqAddress+'". Ask the user to confirm the full address with city and state.' });
+      _claireLastToolResult = JSON.stringify({ error:'address_not_found', address:cqAddress, message:'Could not geocode "'+cqAddress+'" via Nominatim or Photon. Ask the user to confirm the full address with city and state.' });
       return;
     }
 
