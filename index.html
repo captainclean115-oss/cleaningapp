@@ -4618,11 +4618,16 @@ window.PentaClients = (function() {
     return parts[1] + '/' + parts[2] + '/' + parts[0];
   }
 
+  // v9.5.4 helper: drop trailing comma/semicolon (CSV import artifact) at
+  // read time so even if the DB row hasn't been cleaned, in-memory matches work.
+  function _stripTrailing(s) {
+    return s == null ? s : String(s).replace(/[,;]+\s*$/, '').replace(/^\s+|\s+$/g, '');
+  }
   function _transformRow(r) {
     return {
       id: r.external_id,
-      fn: r.first_name,
-      ln: r.last_name,
+      fn: _stripTrailing(r.first_name),
+      ln: _stripTrailing(r.last_name),
       addr: r.address,
       city: r.city,
       zip: r.zip_code,
@@ -13842,19 +13847,82 @@ async function processVoiceCommand(text) {
   }
 }
 
-function findClient(name) {
-  if (!name) return null;
-  var lower = name.toLowerCase();
-  var best = null, bestScore = 0;
+// v9.5.4: name normalizer. Strips trailing comma/semicolon + whitespace
+// (CSV import artifacts). KEEPS trailing periods (Jr., Sr., Inc.).
+function _cleanName(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/[,;]+\s*$/, '').trim();
+}
+
+// v9.5.4: ranked client matcher. Returns [] when no candidates.
+//   1000 = exact full name "Alex Strong" or reversed "Strong Alex"
+//    900 = exact match on first OR last name alone ("Strong" → Alex Strong)
+//    800 = prefix match on first or last ("Stro" → Strong)
+//    700 = substring match anywhere ("ong" → Strong)
+//    500 = multi-token: every search token hits some name field
+function findClients(query) {
+  if (!query) return [];
+  var q = _cleanName(query);
+  if (!q) return [];
+  var tokens = q.split(/\s+/).filter(Boolean);
+  var scored = [];
   PentaClients.forEachClient(function(c) {
-    var full = (c.fn+' '+c.ln).toLowerCase();
-    var rev = (c.ln+' '+c.fn).toLowerCase();
-    if (full === lower || rev === lower) { best = c; bestScore = 100; }
-    else if (bestScore < 90 && lower.includes(c.ln.toLowerCase()) && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 90; }
-    else if (bestScore < 80 && c.ln.length > 3 && lower.includes(c.ln.toLowerCase())) { best = c; bestScore = 80; }
-    else if (bestScore < 70 && c.fn.length > 3 && lower.includes(c.fn.toLowerCase())) { best = c; bestScore = 70; }
+    var fn = _cleanName(c.fn);
+    var ln = _cleanName(c.ln);
+    if (!fn && !ln) return;
+    var full = (fn + ' ' + ln).trim();
+    var rev = (ln + ' ' + fn).trim();
+    var score = 0;
+    if (q === full || q === rev) score = 1000;
+    else if (q === fn || q === ln) score = 900;
+    else if ((fn && fn.indexOf(q) === 0) || (ln && ln.indexOf(q) === 0)) score = 800;
+    else if ((fn && fn.indexOf(q) >= 0) || (ln && ln.indexOf(q) >= 0)) score = 700;
+    else if (tokens.length > 1 && tokens.every(function(t) {
+      return (fn && fn.indexOf(t) >= 0) || (ln && ln.indexOf(t) >= 0);
+    })) score = 500;
+    if (score > 0) scored.push({ client: c, score: score });
   });
-  return best;
+  scored.sort(function(a, b) { return b.score - a.score; });
+  return scored.map(function(x) { return x.client; });
+}
+
+// Backwards-compat: single best match. Existing callers (lookup_*, info-only
+// handlers) still work without code change.
+function findClient(name) { return findClients(name)[0] || null; }
+
+// Levenshtein distance for "did you mean" suggestions when zero matches.
+function _lev(a, b) {
+  a = String(a || ''); b = String(b || '');
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  var m = [];
+  for (var i = 0; i <= a.length; i++) { m[i] = [i]; }
+  for (var j = 0; j <= b.length; j++) { m[0][j] = j; }
+  for (var i2 = 1; i2 <= a.length; i2++) {
+    for (var j2 = 1; j2 <= b.length; j2++) {
+      m[i2][j2] = a[i2-1] === b[j2-1]
+        ? m[i2-1][j2-1]
+        : 1 + Math.min(m[i2-1][j2], m[i2][j2-1], m[i2-1][j2-1]);
+    }
+  }
+  return m[a.length][b.length];
+}
+
+// Returns { matches: [...], suggestions: [closest 3] }. Used by the
+// ambiguity-prone tool handlers (cancel/move/change_frequency/record_payment)
+// to surface disambiguation prompts via the LLM round.
+function findClientWithSuggestions(query) {
+  var matches = findClients(query);
+  if (matches.length) return { matches: matches, suggestions: [] };
+  var q = _cleanName(query);
+  if (!q) return { matches: [], suggestions: [] };
+  var all = [];
+  PentaClients.forEachClient(function(c) {
+    var full = (_cleanName(c.fn) + ' ' + _cleanName(c.ln)).trim();
+    if (!full) return;
+    all.push({ client: c, dist: _lev(q, full) });
+  });
+  all.sort(function(a, b) { return a.dist - b.dist; });
+  return { matches: [], suggestions: all.slice(0, 3).map(function(x) { return x.client; }) };
 }
 
 // Tools that return information to Claire rather than perform an action.
@@ -13935,8 +14003,24 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── CANCEL ──
   } else if (name === 'cancel_clean') {
-    var client2 = findClient(input.client);
-    if (!client2) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
+    var _cancelLookup = findClientWithSuggestions(input.client);
+    if (_cancelLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'client_not_found',
+        query: input.client,
+        suggestions: _cancelLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    if (_cancelLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_client',
+        query: input.client,
+        candidates: _cancelLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    var client2 = _cancelLookup.matches[0];
     var targetDate = input.date || dateKey(new Date());
     var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
     if (job) {
@@ -13955,8 +14039,24 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── MOVE CLEAN ──
   } else if (name === 'move_clean') {
-    var client3 = findClient(input.client);
-    if (!client3) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
+    var _moveLookup = findClientWithSuggestions(input.client);
+    if (_moveLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'client_not_found',
+        query: input.client,
+        suggestions: _moveLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    if (_moveLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_client',
+        query: input.client,
+        candidates: _moveLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    var client3 = _moveLookup.matches[0];
     // Normalize a job's date to YYYY-MM-DD regardless of stored format
     function _normDate(d){
       if (!d) return '';
@@ -14120,8 +14220,24 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── CHANGE FREQUENCY ──
   } else if (name === 'change_frequency') {
-    var fClient = findClient(input.client);
-    if (!fClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
+    var _freqLookup = findClientWithSuggestions(input.client);
+    if (_freqLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'client_not_found',
+        query: input.client,
+        suggestions: _freqLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    if (_freqLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_client',
+        query: input.client,
+        candidates: _freqLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    var fClient = _freqLookup.matches[0];
 
     // Map frequency words to codes and intervals
     var freqMap = {
@@ -14240,8 +14356,24 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── RECORD PAYMENT ──
   } else if (name === 'record_payment') {
-    var rpClient = findClient(input.client);
-    if (!rpClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
+    var _payLookup = findClientWithSuggestions(input.client);
+    if (_payLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'client_not_found',
+        query: input.client,
+        suggestions: _payLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    if (_payLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_client',
+        query: input.client,
+        candidates: _payLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
+      });
+      return;
+    }
+    var rpClient = _payLookup.matches[0];
     var payAmt = parseFloat(input.amount.replace(/[$,]/g,'')) || 0;
     var oldBal = rpClient.bal || 0;
     PentaClients.setField(rpClient.id, 'bal', Math.max(0, oldBal - payAmt));
