@@ -15150,6 +15150,16 @@ function parseScheduleCommand(lower, original) {
   return { client: client, clientName: clientName, date: date, time: time, timeDisplay: timeDisplay, team: team };
 }
 
+// v9.5.2: clientExtras must be declared BEFORE initSheets() can run.
+// initSheets is called from the OAuth-callback boot path below at
+// `rcInit(); initSheets();`. The original declaration at line ~18883
+// is in the temporal dead zone at this point, so accessing clientExtras
+// from initSheets threw "Cannot access 'clientExtras' before initialization".
+// Hoisted here as `var` (function-scoped, no TDZ) and seeded from any
+// prior assignment if module re-loaded.
+var clientExtras = window.clientExtras || {};
+window.clientExtras = clientExtras;
+
 // Main app init deferred until login (see appUnlockManager)
 // RC OAuth callback check must run on page load
 if (window.location.search.includes('code=')) {
@@ -18880,7 +18890,10 @@ function toggleGPSCard(id) {
 // ─────────────────────────────────────────
 
 const SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQftLO0w89RWAB8dC2XSjTOwPSvj6yY7O8186e95t6TRIAPQft15rExsS_QIzmx2g/pub?gid=1641231302&single=true&output=csv';
-let clientExtras = {}; // keyed by customer ID
+// v9.5.2: clientExtras is now declared near top of script (before the OAuth
+// callback boot block) to avoid TDZ when initSheets runs early. Keeping a
+// non-redeclaring comment here so the historical anchor stays meaningful.
+// (Was: `let clientExtras = {}; // keyed by customer ID`)
 
 async function syncFromSheets(silent=false) {
   try {
@@ -19177,6 +19190,14 @@ async function rcFetch(path, opts={}) {
     if (refreshed) return rcFetch(path, opts);
     rcLogout();
     return null;
+  }
+  // v9.5.2: explicit 429 handling so callers can distinguish "throttled"
+  // from "no records". Without this, loadInbox treated 429 as empty
+  // result + bounced the user to the Connect button.
+  if (resp.status === 429) {
+    var retryAfter = parseInt(resp.headers.get('Retry-After')) || 60;
+    console.warn('[RC] 429 throttled on', path, '— retry-after', retryAfter, 's');
+    return { __rateLimited: true, retryAfter: retryAfter };
   }
   return resp.json();
 }
@@ -21486,6 +21507,13 @@ async function rcFetchAllPages(path) {
   while (nextPath && pageCount < 20) {
     pageCount++;
     const data = await rcFetch(nextPath);
+    // v9.5.2: 429 → abort pagination, propagate flag so caller can
+    // schedule a retry without bouncing the user to Connect.
+    if (data && data.__rateLimited) {
+      allRecords.__rateLimited = true;
+      allRecords.retryAfter = data.retryAfter;
+      return allRecords;
+    }
     if (!data || !data.records || data.records.length === 0) break;
     allRecords = allRecords.concat(data.records);
     // Check for next page URI and strip to just the path
@@ -21501,6 +21529,13 @@ async function rcFetchAllPages(path) {
 }
 
 async function loadInbox() {
+  // v9.5.2: 30s cooldown — RC throttles aggressively, and loadInbox is
+  // called from 4+ sites at boot. Without this, a single unlock fires
+  // ~28 RC requests in 2 seconds. Skip if we already fetched recently.
+  if (window._rcInboxRetryPending) return;
+  if (window._lastLoadInboxAt && (Date.now() - window._lastLoadInboxAt) < 30000) return;
+  window._lastLoadInboxAt = Date.now();
+
   updateRCStatus('Loading messages...');
   document.getElementById('rc-auth-section').style.display = 'none';
   document.getElementById('rc-inbox-section').style.display = 'block';
@@ -21510,7 +21545,21 @@ async function loadInbox() {
   const records = await rcFetchAllPages(
     '/account/~/extension/~/message-store?messageType=SMS&dateFrom=' + encodeURIComponent(sixMonthsAgo)
   );
-  
+
+  // v9.5.2: distinguish 429 throttle from empty/auth-fail. Throttle
+  // schedules a single delayed retry; empty/auth-fail still bounces to Connect.
+  if (records && records.__rateLimited) {
+    var wait = (records.retryAfter || 60);
+    updateRCStatus('Rate limited \u2014 retrying in ' + wait + 's');
+    window._rcInboxRetryPending = true;
+    setTimeout(function() {
+      window._rcInboxRetryPending = false;
+      window._lastLoadInboxAt = 0;  // bypass cooldown for the scheduled retry
+      loadInbox();
+    }, (wait + 5) * 1000);
+    return;
+  }
+
   if (!records || records.length === 0) {
     updateRCStatus('Could not load messages. Tap to reconnect.');
     document.getElementById('rc-auth-section').style.display = 'block';
@@ -22075,9 +22124,10 @@ function appUnlockManager() {
   setTimeout(function() {
     if (typeof gpsInit === 'function') gpsInit();
   }, 1000);
-  setTimeout(function() {
-    if (typeof rcInit === 'function' && window.rcToken) loadInbox();
-  }, 1500);
+  // v9.5.2: removed unconditional setTimeout(loadInbox, 1500). It was
+  // a redundant fetch — showTab('messages') already calls loadInbox when
+  // the user lands on the messages tab, and the 2-min auto-refresh covers
+  // the rest. Kept causing ~28 RC requests at boot and triggering 429.
 }
 
 function appUnlockEmployee(emp) {
