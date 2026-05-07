@@ -6702,6 +6702,7 @@ window.PentaJobs = (function() {
   var _cacheReady = false;
   var _hydrating = null;
   var _listeners = [];
+  var _realtimeChannel = null;  // v10.2.0 Phase 5: postgres_changes subscription handle
 
   function _notify() {
     for (var i = 0; i < _listeners.length; i++) {
@@ -6898,6 +6899,7 @@ window.PentaJobs = (function() {
       }
       _cache = allRows.map(_transformRow).filter(function(x){ return x !== null; });
       _cacheReady = true;
+      _setupRealtime(sb, bid);  // v10.2.0 Phase 5: idempotent — guarded by _realtimeChannel
       _notify();
       _hydrating = null;
       return true;
@@ -7051,6 +7053,39 @@ window.PentaJobs = (function() {
     return true;
   }
 
+  // v10.2.0 Phase 5: Supabase realtime subscription for cross-device live updates.
+  // Pattern lifted verbatim from PentaForms (L6324). Single subscribe per session
+  // via _realtimeChannel guard. Failure is non-fatal — facade keeps working,
+  // just no live updates until next reconnect.
+  // Echo handling: local writes already pushed the row to _cache before the echo
+  // arrives, so INSERT does a find-by-id skip; UPDATE/DELETE are idempotent.
+  function _setupRealtime(sb, bid) {
+    if (_realtimeChannel) return;
+    try {
+      _realtimeChannel = sb.channel('penta-jobs-' + bid)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'jobs', filter: 'business_id=eq.' + bid },
+          function(payload) {
+            if (payload.eventType === 'INSERT' && payload.new) {
+              var r = _transformRow(payload.new);
+              if (r && !_cache.find(function(x){ return x.id === r.id; })) _cache.push(r);
+            } else if (payload.eventType === 'UPDATE' && payload.new) {
+              var r2 = _transformRow(payload.new);
+              if (!r2) return;
+              var found = false;
+              for (var i = 0; i < _cache.length; i++) {
+                if (_cache[i].id === r2.id) { _cache[i] = r2; found = true; break; }
+              }
+              if (!found) _cache.push(r2);  // catches race where INSERT was missed
+            } else if (payload.eventType === 'DELETE' && payload.old) {
+              _cache = _cache.filter(function(r){ return r.id !== payload.old.id; });
+            }
+            _notify();
+          })
+        .subscribe();
+    } catch (e) { console.warn('[PentaJobs] realtime subscribe failed (non-fatal)', e); }
+  }
+
   return {
     list: list, listSync: listSync, getById: getById,
     insert: insert, insertBatch: insertBatch, update: update, remove: remove,
@@ -7058,6 +7093,7 @@ window.PentaJobs = (function() {
     removeByLegacyPrefix: removeByLegacyPrefix,
     onChange: onChange, isReady: isReady, ready: ready,
     _hydrate: _hydrate, _transformRow: _transformRow, _transformRowForWrite: _transformRowForWrite,
+    _setupRealtime: _setupRealtime,
   };
 })();
 
@@ -7122,6 +7158,7 @@ window.PentaAssignments = (function() {
   var _cacheReady = false;
   var _hydrating = null;
   var _listeners = [];
+  var _realtimeChannel = null;  // v10.2.0 Phase 5: postgres_changes subscription handle
 
   function _notify() {
     for (var i = 0; i < _listeners.length; i++) {
@@ -7237,6 +7274,7 @@ window.PentaAssignments = (function() {
       _cache = allRows;
       _rebuildIndex();
       _cacheReady = true;
+      _setupRealtime(sb, bid);  // v10.2.0 Phase 5: idempotent — guarded by _realtimeChannel
       _notify();
       _hydrating = null;
       return true;
@@ -7356,11 +7394,47 @@ window.PentaAssignments = (function() {
     return true;
   }
 
+  // v10.2.0 Phase 5: Supabase realtime subscription. Pattern matches PentaJobs's
+  // realtime block above; difference: soft-delete arrives as UPDATE with
+  // deleted_at set, so the UPDATE branch routes those to cache-removal.
+  // Cache stores raw DB rows (no _transformRow on this facade), so payload.new
+  // can be stashed directly.
+  function _setupRealtime(sb, bid) {
+    if (_realtimeChannel) return;
+    try {
+      _realtimeChannel = sb.channel('penta-assignments-' + bid)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'daily_assignments', filter: 'business_id=eq.' + bid },
+          function(payload) {
+            if (payload.eventType === 'INSERT' && payload.new) {
+              if (payload.new.deleted_at) return;
+              if (!_cache.find(function(x){ return x.id === payload.new.id; })) _cache.push(payload.new);
+            } else if (payload.eventType === 'UPDATE' && payload.new) {
+              if (payload.new.deleted_at) {
+                // Soft-delete — remove from active cache.
+                _cache = _cache.filter(function(r){ return r.id !== payload.new.id; });
+              } else {
+                var found = false;
+                for (var i = 0; i < _cache.length; i++) {
+                  if (_cache[i].id === payload.new.id) { _cache[i] = payload.new; found = true; break; }
+                }
+                if (!found) _cache.push(payload.new);
+              }
+            } else if (payload.eventType === 'DELETE' && payload.old) {
+              _cache = _cache.filter(function(r){ return r.id !== payload.old.id; });
+            }
+            _rebuildIndex();
+            _notify();
+          })
+        .subscribe();
+    } catch (e) { console.warn('[PentaAssignments] realtime subscribe failed (non-fatal)', e); }
+  }
+
   return {
     listSync: listSync, isReady: isReady, ready: ready,
     forDate: forDate, forEmployee: forEmployee, getEmployeeTeam: getEmployeeTeam,
     assign: assign, unassign: unassign,
-    onChange: onChange, _hydrate: _hydrate,
+    onChange: onChange, _hydrate: _hydrate, _setupRealtime: _setupRealtime,
   };
 })();
 
