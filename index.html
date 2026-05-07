@@ -7280,6 +7280,30 @@ window.PentaAssignments = (function() {
   // employee can only be on one team per day. The unique constraint
   // (business_id, date, team, employee_id) WHERE deleted_at IS NULL
   // guarantees this server-side too.
+  // v10.1.1: resolve a legacy roster id (e_*) to the Supabase uuid.
+  // Call sites pass mixed shapes — uuid from PentaEmployees lookups, or
+  // 'e_*' from EMPLOYEE_ROSTER fallback / DOM-driven handlers. The
+  // daily_assignments.employee_id column is a uuid FK; legacy strings
+  // fail Postgres's type check and 400 the request.
+  async function _resolveEmployeeId(empId) {
+    if (!empId) return null;
+    var s = String(empId);
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return s;
+    if (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId) {
+      var row = window.PentaEmployees.getByLegacyRosterId(s);
+      if (row && row.id) return row.id;
+      // Cold cache — wait for hydrate once and retry.
+      if (window.PentaEmployees.ready) {
+        try {
+          await window.PentaEmployees.ready();
+          var row2 = window.PentaEmployees.getByLegacyRosterId(s);
+          if (row2 && row2.id) return row2.id;
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+
   async function assign(dateStr, team, employeeId) {
     var sb = SB();
     if (!sb) throw new Error('PentaAssignments.assign: no Supabase client');
@@ -7287,8 +7311,13 @@ window.PentaAssignments = (function() {
     var bid = await _businessId();
     if (!bid) throw new Error('PentaAssignments.assign: business_id could not be derived');
 
+    // v10.1.1: resolve mixed-shape employee id (uuid OR legacy e_*) to uuid
+    // BEFORE any cache lookup or DB write. _byKey is uuid-keyed.
+    var dbEmpId = await _resolveEmployeeId(employeeId);
+    if (!dbEmpId) throw new Error('PentaAssignments.assign: could not resolve employee id ' + JSON.stringify(employeeId));
+
     // Check existing active assignment for this employee on this date.
-    var existing = _byKey[dateStr + '_' + employeeId];
+    var existing = _byKey[dateStr + '_' + dbEmpId];
     if (existing && existing.team === team) return existing;  // no-op
 
     // Soft-delete any existing active row for this (date, employee) pair.
@@ -7299,7 +7328,7 @@ window.PentaAssignments = (function() {
     }
 
     var ins = await sb.from('daily_assignments').insert({
-      business_id: bid, date: dateStr, team: team, employee_id: employeeId
+      business_id: bid, date: dateStr, team: team, employee_id: dbEmpId
     }).select().maybeSingle();
     if (ins.error) throw ins.error;
     if (ins.data) _cache.push(ins.data);
@@ -7311,7 +7340,12 @@ window.PentaAssignments = (function() {
   async function unassign(dateStr, team, employeeId) {
     var sb = SB();
     if (!sb) throw new Error('PentaAssignments.unassign: no Supabase client');
-    var existing = _byKey[dateStr + '_' + employeeId];
+    // v10.1.1: same legacy → uuid resolution as assign(). Unresolvable id
+    // returns false (matches the existing "no existing assignment" path —
+    // unassign is called speculatively, no need to throw).
+    var dbEmpId = await _resolveEmployeeId(employeeId);
+    if (!dbEmpId) return false;
+    var existing = _byKey[dateStr + '_' + dbEmpId];
     if (!existing) return false;
     if (team && existing.team !== team) return false;  // not the assignment they meant
     var res = await sb.from('daily_assignments').update({ deleted_at: new Date().toISOString() }).eq('id', existing.id);
