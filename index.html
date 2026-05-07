@@ -6322,8 +6322,10 @@ window.PentaForms = (function() {
   }
 
   function _setupRealtime(sb, bid) {
+    console.log('[PentaForms._setupRealtime] called with bid=' + bid);
     if (_realtimeChannel) return;
     try {
+      console.log('[PentaForms._setupRealtime] about to subscribe');
       _realtimeChannel = sb.channel('penta-forms-' + bid)
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'forms', filter: 'business_id=eq.' + bid },
@@ -6339,7 +6341,9 @@ window.PentaForms = (function() {
             }
             _notify();
           })
-        .subscribe();
+        .subscribe(function(status){
+          console.log('[PentaForms._setupRealtime] status=' + status);
+        });
     } catch (e) { console.warn('[PentaForms] realtime subscribe failed (non-fatal)', e); }
   }
 
@@ -7060,8 +7064,10 @@ window.PentaJobs = (function() {
   // Echo handling: local writes already pushed the row to _cache before the echo
   // arrives, so INSERT does a find-by-id skip; UPDATE/DELETE are idempotent.
   function _setupRealtime(sb, bid) {
+    console.log('[PentaJobs._setupRealtime] called with bid=' + bid);
     if (_realtimeChannel) return;
     try {
+      console.log('[PentaJobs._setupRealtime] about to subscribe');
       _realtimeChannel = sb.channel('penta-jobs-' + bid)
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'jobs', filter: 'business_id=eq.' + bid },
@@ -7082,7 +7088,9 @@ window.PentaJobs = (function() {
             }
             _notify();
           })
-        .subscribe();
+        .subscribe(function(status){
+          console.log('[PentaJobs._setupRealtime] status=' + status);
+        });
     } catch (e) { console.warn('[PentaJobs] realtime subscribe failed (non-fatal)', e); }
   }
 
@@ -7400,8 +7408,10 @@ window.PentaAssignments = (function() {
   // Cache stores raw DB rows (no _transformRow on this facade), so payload.new
   // can be stashed directly.
   function _setupRealtime(sb, bid) {
+    console.log('[PentaAssignments._setupRealtime] called with bid=' + bid);
     if (_realtimeChannel) return;
     try {
+      console.log('[PentaAssignments._setupRealtime] about to subscribe');
       _realtimeChannel = sb.channel('penta-assignments-' + bid)
         .on('postgres_changes',
           { event: '*', schema: 'public', table: 'daily_assignments', filter: 'business_id=eq.' + bid },
@@ -7426,7 +7436,9 @@ window.PentaAssignments = (function() {
             _rebuildIndex();
             _notify();
           })
-        .subscribe();
+        .subscribe(function(status){
+          console.log('[PentaAssignments._setupRealtime] status=' + status);
+        });
     } catch (e) { console.warn('[PentaAssignments] realtime subscribe failed (non-fatal)', e); }
   }
 
