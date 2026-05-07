@@ -4,7 +4,15 @@
 //
 // Called by /accept-invite.html with { token, password }.
 // Validates the invite token, creates the auth.users row, links to employees,
-// upserts the public.users row with role='employee', marks the invite accepted.
+// upserts the public.users row, marks the invite accepted.
+//
+// v9.6.1: handle the case where v9.6's manager-hire flow pre-inserted a
+// public.users row with role='manager'. Without this, the upsert below
+// hardcoded role='employee' AND the pre-existing row's auto-generated id
+// didn't match the new authUserId — so the upsert tried to INSERT and
+// collided on email/business unique. Now we look up the pre-existing row
+// first, preserve role + manager_permissions, and delete the orphan so
+// the auth-keyed row can land cleanly.
 
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
@@ -100,8 +108,41 @@ serve(async (req) => {
     if (updErr) return json(500, { error: "Failed to update password", detail: updErr.message });
   }
 
-  // public.users role row — used by RLS policies and by the manager-side
-  // role checks (set-employee-password reads from here).
+  // v9.6.1: look for a pre-existing public.users row created by the
+  // manager-hire flow (saveStaffEmployee inserts one at hire-time with
+  // role='manager' + an auto-generated id, before the invitee has an
+  // auth user). Preserve role + manager_permissions; delete the orphan
+  // so the auth-keyed upsert below can land without collisions.
+  let preserveRole: string = "employee";
+  let preservePerms: Record<string, unknown> = {};
+  try {
+    const { data: pre } = await admin
+      .from("users")
+      .select("id, role, manager_permissions")
+      .eq("business_id", employee.business_id)
+      .ilike("email", employee.email)
+      .maybeSingle();
+    if (pre) {
+      if (pre.role === "manager" || pre.role === "admin" || pre.role === "owner") {
+        preserveRole = pre.role as string;
+        preservePerms = (pre.manager_permissions as Record<string, unknown>) || {};
+      }
+      if (pre.id !== authUserId) {
+        // Orphan row from v9.6 pre-insert. Delete it; the upsert below
+        // recreates the row keyed by authUserId with preserved role.
+        const { error: delErr } = await admin.from("users").delete().eq("id", pre.id);
+        if (delErr) {
+          console.error("[accept-invite] pre-row delete failed:", JSON.stringify(delErr));
+          // Non-fatal — try the upsert anyway. Worst case, the upsert
+          // collides and we surface that error to the caller.
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[accept-invite] pre-row lookup threw:", e);
+    // Continue to upsert — preserveRole defaults to 'employee'.
+  }
+
   const { error: pubUserErr } = await admin
     .from("users")
     .upsert(
@@ -109,10 +150,11 @@ serve(async (req) => {
         id: authUserId,
         auth_user_id: authUserId,
         business_id: employee.business_id,
-        role: "employee",
+        role: preserveRole,
         email: employee.email,
         first_name: employee.first_name,
         last_name: employee.last_name,
+        ...(preserveRole === "manager" ? { manager_permissions: preservePerms } : {}),
       },
       { onConflict: "id" }
     );
