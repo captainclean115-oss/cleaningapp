@@ -6709,17 +6709,69 @@ window.PentaJobs = (function() {
     }
   }
 
+  // v10.0.6: ported from PentaTeams. _businessId needs timeout-bounded
+  // awaits because PentaEmployees.ready() can stall indefinitely on
+  // cold incognito boot (no localStorage cache to bootstrap from).
+  var _lastError = null;
+  function _withTimeout(promise, label, ms) {
+    var timer;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error('STALL@' + label + ' (' + ms + 'ms)')); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() { clearTimeout(timer); });
+  }
+
   async function _businessId() {
+    // Path A: piggyback on PentaEmployees cache (instant if hydrated, no network).
     try {
-      var sess = (window.PentaAuth && window.PentaAuth.session) || null;
-      var bid = sess && sess.user && sess.user.user_metadata && sess.user.user_metadata.business_id;
-      if (bid) return bid;
-    } catch (e) {}
-    if (window.PentaEmployees && window.PentaEmployees.listSync) {
-      var emps = window.PentaEmployees.listSync();
-      if (emps && emps.length && emps[0].business_id) return emps[0].business_id;
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        var rows = window.PentaEmployees.listSync();
+        if (rows && rows.length && rows[0].business_id) {
+          console.debug('[PentaJobs._businessId] Path A hit:', rows[0].business_id);
+          return rows[0].business_id;
+        }
+        console.debug('[PentaJobs._businessId] Path A miss (cache empty), trying ready()');
+        try {
+          await _withTimeout(window.PentaEmployees.ready(), 'PentaEmployees.ready', 3000);
+          var rows2 = window.PentaEmployees.listSync();
+          if (rows2 && rows2.length && rows2[0].business_id) {
+            console.debug('[PentaJobs._businessId] Path A post-ready hit:', rows2[0].business_id);
+            return rows2[0].business_id;
+          }
+        } catch (eA) {
+          console.warn('[PentaJobs._businessId] Path A timed out:', eA.message);
+        }
+      }
+    } catch (e) { console.debug('[PentaJobs._businessId] Path A threw', e); }
+
+    // Path B: own auth-and-users query, each await timeout-wrapped.
+    try {
+      var sb = SB();
+      if (!sb) { console.warn('[PentaJobs._businessId] no sb client'); }
+      else {
+        console.debug('[PentaJobs._businessId] Path B: sb.auth.getUser()');
+        var ures = await _withTimeout(sb.auth.getUser(), 'auth.getUser', 3000);
+        var user = ures && ures.data && ures.data.user;
+        console.debug('[PentaJobs._businessId] Path B user:', user && user.id);
+        if (user) {
+          console.debug('[PentaJobs._businessId] Path B: query users table');
+          var pres = await _withTimeout(
+            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            'users.select',
+            3000
+          );
+          console.debug('[PentaJobs._businessId] Path B users result:', pres);
+          var bid = pres && pres.data && pres.data.business_id;
+          if (bid) return bid;
+        }
+      }
+    } catch (eB) {
+      _lastError = eB;
+      console.warn('[PentaJobs._businessId] Path B failed:', eB.message);
     }
-    if (_cache && _cache.length && _cache[0].business_id) return _cache[0].business_id;
+
+    // All paths exhausted — return null so callers can fail loudly.
+    console.error('[PentaJobs._businessId] all paths failed (A: cache miss, B: auth/users query)');
     return null;
   }
 
@@ -7084,16 +7136,69 @@ window.PentaAssignments = (function() {
     }
   }
 
+  // v10.0.6: ported from PentaTeams. _businessId needs timeout-bounded
+  // awaits because PentaEmployees.ready() can stall indefinitely on
+  // cold incognito boot (no localStorage cache to bootstrap from).
+  var _lastError = null;
+  function _withTimeout(promise, label, ms) {
+    var timer;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error('STALL@' + label + ' (' + ms + 'ms)')); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() { clearTimeout(timer); });
+  }
+
   async function _businessId() {
+    // Path A: piggyback on PentaEmployees cache (instant if hydrated, no network).
     try {
-      var sess = (window.PentaAuth && window.PentaAuth.session) || null;
-      var bid = sess && sess.user && sess.user.user_metadata && sess.user.user_metadata.business_id;
-      if (bid) return bid;
-    } catch (e) {}
-    if (window.PentaEmployees && window.PentaEmployees.listSync) {
-      var emps = window.PentaEmployees.listSync();
-      if (emps && emps.length && emps[0].business_id) return emps[0].business_id;
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        var rows = window.PentaEmployees.listSync();
+        if (rows && rows.length && rows[0].business_id) {
+          console.debug('[PentaAssignments._businessId] Path A hit:', rows[0].business_id);
+          return rows[0].business_id;
+        }
+        console.debug('[PentaAssignments._businessId] Path A miss (cache empty), trying ready()');
+        try {
+          await _withTimeout(window.PentaEmployees.ready(), 'PentaEmployees.ready', 3000);
+          var rows2 = window.PentaEmployees.listSync();
+          if (rows2 && rows2.length && rows2[0].business_id) {
+            console.debug('[PentaAssignments._businessId] Path A post-ready hit:', rows2[0].business_id);
+            return rows2[0].business_id;
+          }
+        } catch (eA) {
+          console.warn('[PentaAssignments._businessId] Path A timed out:', eA.message);
+        }
+      }
+    } catch (e) { console.debug('[PentaAssignments._businessId] Path A threw', e); }
+
+    // Path B: own auth-and-users query, each await timeout-wrapped.
+    try {
+      var sb = SB();
+      if (!sb) { console.warn('[PentaAssignments._businessId] no sb client'); }
+      else {
+        console.debug('[PentaAssignments._businessId] Path B: sb.auth.getUser()');
+        var ures = await _withTimeout(sb.auth.getUser(), 'auth.getUser', 3000);
+        var user = ures && ures.data && ures.data.user;
+        console.debug('[PentaAssignments._businessId] Path B user:', user && user.id);
+        if (user) {
+          console.debug('[PentaAssignments._businessId] Path B: query users table');
+          var pres = await _withTimeout(
+            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            'users.select',
+            3000
+          );
+          console.debug('[PentaAssignments._businessId] Path B users result:', pres);
+          var bid = pres && pres.data && pres.data.business_id;
+          if (bid) return bid;
+        }
+      }
+    } catch (eB) {
+      _lastError = eB;
+      console.warn('[PentaAssignments._businessId] Path B failed:', eB.message);
     }
+
+    // All paths exhausted — return null so callers can fail loudly.
+    console.error('[PentaAssignments._businessId] all paths failed (A: cache miss, B: auth/users query)');
     return null;
   }
 
