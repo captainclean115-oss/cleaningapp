@@ -7532,6 +7532,11 @@ function _mirrorPentaJobsToInMemory() {
   var fresh = window.PentaJobs.listSync().map(_enrichJobFromCache);
   jobs.length = 0;
   Array.prototype.push.apply(jobs, fresh);
+  // v10.2.2: refresh localStorage cleanco_jobs so employee renderSchedule()
+  // (and other localStorage readers) see fresh data on cross-device cold
+  // loads. Symmetric with Phase 3f's saveDailyAssignments() in the
+  // assignments mirror.
+  try { if (typeof saveJobs === 'function') saveJobs(); } catch (e) { console.warn('[Phase 4] saveJobs failed:', e); }
   try { if (typeof renderCal === 'function') renderCal(); } catch (e) { console.warn('[PentaJobs] phase4 mirror renderCal failed', e); }
 }
 
