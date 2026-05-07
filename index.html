@@ -7434,6 +7434,66 @@ function _mirrorPentaJobsToInMemory() {
 })();
 
 
+// =====================================================================
+// Sprint 10 Phase 3f: bridge PentaAssignments cache → in-memory
+// `dailyAssignments` object. Parallels the Phase 4 PentaJobs mirror.
+//
+// MERGE semantics (NOT blanket overwrite): for each key in the Supabase
+// cache, write Supabase's value into dailyAssignments. Keys that exist
+// only locally are PRESERVED — protects against the in-flight-write
+// race where a fresh local mutation (T+0) hasn't been confirmed by
+// Supabase yet, and a mirror firing at T+50ms would otherwise blow it
+// away. Once the local write's _notify lands (T+200ms-ish), the cache
+// catches up and the next mirror reconciles cleanly.
+//
+// This is intentionally different from Phase 4's mirror, which fully
+// replaces jobs[]. Jobs are the source of truth for their own writes
+// AND have a legacy_id resolver to dedupe. Assignments don't dedupe
+// in-memory the same way — the localStorage object IS the surface,
+// so we merge.
+//
+// Triggers: onChange (any cache mutation, including hydrate), ready()
+// resolution, and a 1.5s backup. Same belt-and-suspenders pattern as
+// Phase 4 (locked in by v10.0.7).
+// =====================================================================
+function _mirrorPentaAssignmentsToInMemory() {
+  if (typeof dailyAssignments === 'undefined') return;
+  if (!window.PentaAssignments || !window.PentaAssignments.isReady || !window.PentaAssignments.isReady()) return;
+  var rows = window.PentaAssignments.listSync();
+  // Build {`${date}_${employee_id}`: team} from cache rows.
+  var supabaseEntries = Object.create(null);
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (r && r.date && r.employee_id) {
+      supabaseEntries[r.date + '_' + r.employee_id] = r.team;
+    }
+  }
+  // Merge: Supabase wins for keys present in both; local-only keys preserved.
+  var merged = false;
+  Object.keys(supabaseEntries).forEach(function(k) {
+    if (dailyAssignments[k] !== supabaseEntries[k]) {
+      dailyAssignments[k] = supabaseEntries[k];
+      merged = true;
+    }
+  });
+  if (merged) {
+    try { saveDailyAssignments(); } catch (e) {}
+    try { if (typeof renderTeamManager === 'function') renderTeamManager(); } catch (e) {}
+  }
+}
+
+(function pentaPhase3fMirrorAssignments() {
+  if (!window.PentaAssignments || !window.PentaAssignments.ready) return;
+  if (window.PentaAssignments.onChange) {
+    window.PentaAssignments.onChange(_mirrorPentaAssignmentsToInMemory);
+  }
+  window.PentaAssignments.ready().then(function() {
+    _mirrorPentaAssignmentsToInMemory();
+    setTimeout(_mirrorPentaAssignmentsToInMemory, 1500);
+  });
+})();
+
+
 // Auto-hydrate PentaForms once supabase client is up.
 (function pentaPrimeFormsHydrate() {
   if (!window.PentaForms || !window.PentaForms._hydrate) return;
@@ -15005,6 +15065,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (!emp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk = input.date || dateKey(new Date());
     dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
+    // Sprint 10 Phase 3f: dual-write Claire dayoff to Supabase.
+    try { if (window.PentaAssignments) window.PentaAssignments.assign(dk, 'OFF', emp.id).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
     var dayStr = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     logPendingUpdate(emp.name+' → Day Off', dayStr);
     _claireLastToolResult = emp.name+' marked off for '+dayStr+'. Done.';
@@ -16023,6 +16085,8 @@ function _executeClaire_legacy(action, message) {
     if (emp) {
       var dk = action.date || dateKey(new Date());
       dailyAssignments[dk + '_' + emp.id] = 'OFF'; saveDailyAssignments();
+      // Sprint 10 Phase 3f: dual-write legacy Claire dayoff to Supabase.
+      try { if (window.PentaAssignments) window.PentaAssignments.assign(dk, 'OFF', emp.id).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
       logPendingUpdate(emp.name + ' → Day Off', new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
       claireReply(message || 'Got it! '+emp.name+' is off. Team roster updated.');
     } else {
@@ -16125,7 +16189,15 @@ function processVoiceCommandLocal(text) {
       emp = window.PentaEmployees.find(function(e){ return empName.toLowerCase().includes((e.name||'').toLowerCase()); });
     }
     if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
-    if (emp) { var dk=dateKey(new Date()); dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments(); logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})); claireReply('Got it! '+emp.name+' is off today.'); return; }
+    if (emp) {
+      var dk=dateKey(new Date());
+      dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments();
+      // Sprint 10 Phase 3f: dual-write voice dayoff to Supabase.
+      try { if (window.PentaAssignments) window.PentaAssignments.assign(dk, 'OFF', emp.id).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
+      logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
+      claireReply('Got it! '+emp.name+' is off today.');
+      return;
+    }
     claireReply('Couldn\'t find that employee.'); return;
   }
   // ── REMINDER ──
@@ -16747,6 +16819,8 @@ function quickAssign(empId, team, dateStr) {
   const key = dateStr + '_' + empId;
   dailyAssignments[key] = team;
   localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+  // Sprint 10 Phase 3f: dual-write quickAssign to Supabase.
+  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, empId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
   renderTeamManager();
 }
 
@@ -16954,6 +17028,9 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   if (team === 'OFF') {
     dailyAssignments[dateStr + '_' + employeeId] = 'OFF';
     saveDailyAssignments();
+    // Sprint 10 Phase 3f: dual-write OFF branch to Supabase.
+    // (The else branch routes through assignEmployee which is already dual-wired.)
+    try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, 'OFF', employeeId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
   } else {
     assignEmployee(employeeId, team, dateStr);
   }
@@ -17426,6 +17503,13 @@ function assignEmployee(employeeId, team, dateStr) {
   const key = dateStr + '_' + employeeId;
   dailyAssignments[key] = team;
   saveDailyAssignments();
+  // Sprint 10 Phase 3f: dual-write to Supabase via PentaAssignments.
+  // 'OFF' is a magic team value (employee marked off for the day) — the
+  // schema's `team text NOT NULL` column accepts it as-is, and existing
+  // readers (getEmployeeTeam at L17414, etc.) already map 'OFF' → null
+  // at read time. Auto-covers callers in Claire moveteam, schedule
+  // team-dropdown, Phase 3d 'swap' strategy, and legacy Claire moveteam.
+  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, employeeId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
 }
 
 
