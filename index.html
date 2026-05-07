@@ -8286,11 +8286,28 @@ window.addEventListener('DOMContentLoaded', function() {
     try {
       var sbBoot = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
       var dbRole = null;
+      var dbPerms = {};
       if (sbBoot) {
         try {
-          var rr = await sbBoot.from('users').select('role').eq('id', _u.id).maybeSingle();
+          // v9.6.3: also pull manager_permissions so the cache is populated
+          // by the SAME query that drives the routing decision. Without this,
+          // _pentaCachedManagerPerms stays {} and getPermissions() returns
+          // all-true defaults — the home grid never filters for managers.
+          var rr = await sbBoot.from('users').select('role, manager_permissions').eq('id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
+          dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
         } catch (e) { dbRole = null; }
+      }
+
+      // v9.6.3: write the cache trio that getCurrentAppRole + getPermissions
+      // read. Mirrors _pentaResolveRoleFromDB's effect so subsequent sync
+      // callers see the right role/perms without firing another DB round.
+      if (dbRole) {
+        try {
+          if (typeof _pentaCachedRole !== 'undefined') _pentaCachedRole = dbRole;
+          if (typeof _pentaCachedRoleUserId !== 'undefined') _pentaCachedRoleUserId = _u.id;
+          if (typeof _pentaCachedManagerPerms !== 'undefined') _pentaCachedManagerPerms = dbPerms || {};
+        } catch (cacheErr) { console.warn('[boot] role-cache write failed', cacheErr); }
       }
 
       // Anyone with a manager-tier role goes to manager home regardless of
@@ -8299,6 +8316,10 @@ window.addEventListener('DOMContentLoaded', function() {
       var managerRoles = ['owner', 'admin', 'manager', 'dispatcher', 'franchisor_admin'];
       if (dbRole && managerRoles.indexOf(dbRole) !== -1) {
         appUnlockManager();
+        // v9.6.3: cache is now hot. Re-run applyPermissions so the home grid
+        // (rendered synchronously by appUnlockManager) re-filters with the
+        // manager_permissions we just loaded.
+        try { if (typeof applyPermissions === 'function') applyPermissions(); } catch (apErr) {}
         try {
           var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
           if (_previewId) {
