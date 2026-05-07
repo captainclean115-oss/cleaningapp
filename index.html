@@ -4003,6 +4003,12 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </select>
     </div>
     <div id="staff-subview-list"></div>
+<!-- v9.6: manager admin shortcuts. Restricted to owner-equivalent roles via
+     data-permission system. -->
+<div style="display:flex;gap:8px;padding:0 16px 16px">
+  <button onclick="openInviteManagerModal()" style="flex:1;background:var(--surface2);border:1px solid var(--accent);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">+ Invite Manager</button>
+  <button onclick="openManagersPanel()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">⚙️ Managers</button>
+</div>
     <div id="applicants-list-staff" style="display:none"></div>
     <div class="bottom-pad"></div>
   </div>
@@ -12211,20 +12217,20 @@ var LUCIDE = {
 
 var HOME_APPS = [
   // Dock-default views (also addressable from the home grid if Tom drags them there)
-  { id: 'cal',      label: 'Schedule', grad: 'linear-gradient(135deg,#FF3B30,#FF6482)',
+  { id: 'cal',      permKey: 'cal_icon', label: 'Schedule', grad: 'linear-gradient(135deg,#FF3B30,#FF6482)',
     iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
-  { id: 'gps',      label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
+  { id: 'gps',      permKey: 'gps_icon', label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
   { id: 'messages', permKey: 'inbox_icon', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
     iconHtml: LUCIDE['message-circle'], go: function(){ showTab('messages'); } },
   // Grid row 1
-  { id: 'clients',  label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
+  { id: 'clients',  permKey: 'clients_icon', label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
-  { id: 'staff',    label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
+  { id: 'staff',    permKey: 'staff_icon', label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
     iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
   { id: 'quote',    permKey: 'quote_icon', label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
     iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
-  { id: 'payments', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
+  { id: 'payments', permKey: 'payments_icon', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
     iconHtml: LUCIDE['credit-card'],
     badge: function(){
       try {
@@ -22227,14 +22233,26 @@ function _pentaParseAuthToken() {
   } catch (e) { return null; }
 }
 
+// v9.6: cache for the current user's manager_permissions JSONB. Populated
+// alongside role by _pentaResolveRoleFromDB. Read by getPermissions.
+var _pentaCachedManagerPerms = null;
+
 async function _pentaResolveRoleFromDB(authUserId) {
   try {
     const c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
     if (!c) return null;
-    const { data, error } = await c.from('users').select('role').eq('id', authUserId).maybeSingle();
+    // v9.6: also pull manager_permissions (Migration 023 added the column).
+    const { data, error } = await c.from('users').select('role, manager_permissions').eq('id', authUserId).maybeSingle();
     if (error || !data) return null;
+    _pentaCachedManagerPerms = (data && data.manager_permissions) || {};
     return data.role || null;
   } catch (e) { return null; }
+}
+
+// v9.6: synchronous accessor for the cached manager_permissions blob.
+// Returns {} if no cache yet (treated permissively by getPermissions).
+function getCachedManagerPermissions() {
+  return _pentaCachedManagerPerms || {};
 }
 
 // Synchronous read. Returns whatever is cached. If the session changed since
@@ -23303,6 +23321,125 @@ function _appHtmlEscape(s) {
     .replace(/'/g, '&#39;');
 }
 
+// v9.6: open the Managers permission panel — lists every users row with
+// role='manager' and lets Tom toggle each home icon per-manager.
+async function openManagersPanel() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Supabase client not ready. Reload.'); return; }
+  var modal = document.createElement('div');
+  modal.id = 'managers-panel-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:550;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  modal.onclick = function(e){ if (e.target === modal) modal.remove(); };
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
+  sheet.innerHTML = '<div style="padding:18px 20px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1;display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:18px;font-weight:700">\u2699\ufe0f Managers</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Toggle home icons per manager</div></div><button onclick="document.getElementById(\'managers-panel-modal\').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">\u00d7</button></div><div id="managers-panel-body" style="padding:14px 16px 28px"><div style="text-align:center;color:var(--muted);padding:40px 20px">Loading\u2026</div></div>';
+  modal.appendChild(sheet); document.body.appendChild(modal);
+
+  try {
+    var resM = await sb.from('users').select('id, first_name, last_name, email, manager_permissions').eq('role', 'manager').is('deleted_at', null);
+    var managers = (resM.data || []).slice().sort(function(a,b){
+      return ((a.first_name||'') + (a.last_name||'')).localeCompare((b.first_name||'') + (b.last_name||''));
+    });
+    var body = document.getElementById('managers-panel-body');
+    if (!managers.length) {
+      body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:40px 20px;font-size:13px">No managers yet. Hire one via Staff or use Invite Manager.</div>';
+      return;
+    }
+    var html = '';
+    managers.forEach(function(m) {
+      var name = ((m.first_name||'') + ' ' + (m.last_name||'')).trim() || (m.email || '?');
+      var perms = m.manager_permissions || {};
+      // Render checklist of every HOME_APPS permKey. Skip entries that have
+      // no permKey (none should remain after v9.6 patch 1).
+      var checklist = '';
+      HOME_APPS.forEach(function(a) {
+        if (!a.permKey) return;
+        var enabled = (perms[a.permKey] !== false);
+        checklist += '<label style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface2);border-radius:8px;margin-bottom:6px;cursor:pointer">'
+          + '<span style="font-size:13px">' + (a.label || a.id) + '</span>'
+          + '<input type="checkbox" data-mgr-id="' + m.id + '" data-perm-key="' + a.permKey + '"' + (enabled ? ' checked' : '') + ' onchange="_managerPermToggle(this)" style="width:18px;height:18px;accent-color:var(--accent)">'
+          + '</label>';
+      });
+      html += '<div style="background:var(--surface2);border-radius:12px;padding:14px;margin-bottom:14px">'
+        + '<div style="font-size:15px;font-weight:700;margin-bottom:10px">' + _escapeHtmlMgr(name) + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">' + _escapeHtmlMgr(m.email || '') + '</div>'
+        + checklist
+        + '</div>';
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    document.getElementById('managers-panel-body').innerHTML = '<div style="color:var(--red);padding:20px">Could not load managers: ' + (e.message || e) + '</div>';
+  }
+}
+
+function _escapeHtmlMgr(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+// v9.6: checkbox toggle handler. Reads current row's perms, flips one key,
+// writes back to users.manager_permissions. Errors surface via alert.
+async function _managerPermToggle(input) {
+  var mgrId = input.getAttribute('data-mgr-id');
+  var key = input.getAttribute('data-perm-key');
+  var enabled = !!input.checked;
+  if (!mgrId || !key) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Supabase client not ready'); return; }
+  try {
+    var cur = await sb.from('users').select('manager_permissions').eq('id', mgrId).maybeSingle();
+    var perms = (cur.data && cur.data.manager_permissions) || {};
+    perms[key] = enabled;  // explicit true/false (false = restricted)
+    var up = await sb.from('users').update({ manager_permissions: perms }).eq('id', mgrId);
+    if (up.error) {
+      input.checked = !enabled;  // revert UI
+      alert('Could not save: ' + up.error.message);
+    }
+  } catch (e) {
+    input.checked = !enabled;
+    alert('Save threw: ' + (e.message || e));
+  }
+}
+
+// v9.6: Invite Manager flow (option B from the spec). Creates a users row
+// with role='manager' + default empty perms, then surfaces the invite URL
+// for Tom to send manually (email integration is a follow-up).
+async function openInviteManagerModal() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Supabase client not ready'); return; }
+  var fn = prompt('Manager first name?');
+  if (!fn) return;
+  var ln = prompt('Manager last name?') || '-';
+  var email = prompt('Manager email (for invite link delivery)?');
+  if (!email) return;
+  // Resolve the current business_id from any existing row.
+  var bid = null;
+  try {
+    var anyRow = await sb.from('users').select('business_id').limit(1).maybeSingle();
+    bid = anyRow.data && anyRow.data.business_id;
+  } catch (e) {}
+  if (!bid && window.PentaEmployees && window.PentaEmployees.listSync) {
+    var emps = window.PentaEmployees.listSync();
+    if (emps && emps.length && emps[0].business_id) bid = emps[0].business_id;
+  }
+  if (!bid) { alert('Could not resolve business_id. Are you signed in?'); return; }
+  try {
+    var ins = await sb.from('users').insert({
+      business_id: bid,
+      email: email,
+      first_name: fn,
+      last_name: ln,
+      role: 'manager',
+      manager_permissions: {}
+    }).select().maybeSingle();
+    if (ins.error) { alert('Insert failed: ' + ins.error.message); return; }
+    alert('Manager row created. Demo flow: have ' + fn + ' use the same accept-invite link the hire flow generates. Email integration is a follow-up.');
+  } catch (e) {
+    alert('Invite failed: ' + (e.message || e));
+  }
+}
+
 function setStaffSubtab(tab) {
   try { sessionStorage.setItem('cc_staff_subtab', tab); } catch (e) {}
   const btnStaff = document.getElementById('staff-subtab-staff');
@@ -24288,7 +24425,9 @@ async function saveStaffEmployee() {
     name,
     team_id: document.getElementById('staff-team').value || null,
     team: (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
-    // v9.5: portal permission role
+    // v9.5: portal permission role. v9.6: 'manager' also triggers a
+    // companion users-row UPSERT below (after the employees row is saved)
+    // so the person can sign in with full manager privileges.
     position: ((document.getElementById('staff-role')||{}).value) || 'team_member',
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
@@ -24421,6 +24560,63 @@ async function saveStaffEmployee() {
     }
   } catch (e) {
     console.error('[Sprint 4.1] Staff edit dual-write failed:', e);
+  }
+
+  // v9.6: when position=manager, ensure a companion users row exists with
+  // role='manager' + default manager_permissions ({}). The user's auth_user_id
+  // gets linked when they accept the SMS invite below (existing flow).
+  if (emp.position === 'manager') {
+    try {
+      var sb96 = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (sb96) {
+        // Find the just-saved employees row (we need its auth_user_id to link).
+        var rosterIdM = String(emp.id || emp.name || '');
+        var empRows96;
+        try { empRows96 = await window.PentaEmployees.list(); } catch (eL) { empRows96 = []; }
+        var supaEmp = (empRows96 || []).find(function(r){
+          return String(r.id || '') === rosterIdM || String(r.legacy_roster_id || '') === rosterIdM;
+        });
+        if (supaEmp && supaEmp.business_id) {
+          // Compose user payload. id= auth_user_id when known; otherwise leave
+          // out and let the invite-acceptance flow create+link.
+          var firstM = '', lastM = '-';
+          if (emp.name && emp.name.indexOf(' ') > -1) {
+            firstM = emp.name.split(' ')[0];
+            lastM = emp.name.split(' ').slice(1).join(' ');
+          } else { firstM = emp.name || ''; lastM = '-'; }
+          var userRow96 = {
+            business_id: supaEmp.business_id,
+            email: emp.email || (firstM.toLowerCase() + '.' + lastM.toLowerCase().replace(/\s+/g,'') + '@managers.penta.internal'),
+            first_name: firstM,
+            last_name: lastM,
+            phone: (emp.phone || '').replace(/\D/g,'') || null,
+            role: 'manager',
+            manager_permissions: {},
+          };
+          if (supaEmp.auth_user_id) {
+            userRow96.id = supaEmp.auth_user_id;
+            userRow96.auth_user_id = supaEmp.auth_user_id;
+          }
+          // Upsert by id when we have one, else by email within the business.
+          try {
+            var existing96;
+            if (userRow96.id) {
+              existing96 = await sb96.from('users').select('id').eq('id', userRow96.id).maybeSingle();
+            } else {
+              existing96 = await sb96.from('users').select('id').eq('business_id', supaEmp.business_id).eq('email', userRow96.email).maybeSingle();
+            }
+            if (existing96 && existing96.data && existing96.data.id) {
+              await sb96.from('users').update({ role: 'manager' }).eq('id', existing96.data.id);
+              console.log('[v9.6] users row promoted to manager:', existing96.data.id);
+            } else {
+              var ins96 = await sb96.from('users').insert(userRow96).select().maybeSingle();
+              if (ins96.error) console.warn('[v9.6] users insert error', ins96.error);
+              else console.log('[v9.6] users row created with role=manager');
+            }
+          } catch (ue) { console.warn('[v9.6] users upsert threw', ue); }
+        }
+      }
+    } catch (mErr) { console.warn('[v9.6] manager users-row sync failed', mErr); }
   }
 
   document.getElementById('staff-save-msg').textContent = '✓ Saved!';
@@ -30653,11 +30849,48 @@ var DEFAULT_PERMISSIONS = {
   }
 };
 function getPermissions() {
+  // v9.6: role-aware permission lookup.
+  //  - Owner: all-true. Owner sees everything regardless of any setting.
+  //  - Manager: per-user manager_permissions JSONB from public.users
+  //    (cached in _pentaCachedManagerPerms by _pentaResolveRoleFromDB).
+  //    Missing keys are treated as true (start permissive on insert).
+  //  - Employee: existing localStorage path stays.
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+
+  // Build employee perms from localStorage (unchanged behavior for employee role).
+  var employeePerms;
   try {
     var stored = JSON.parse(localStorage.getItem('permissions') || '{}') || {};
+    employeePerms = Object.assign({}, DEFAULT_PERMISSIONS.employee, stored.employee || {});
+  } catch (e) {
+    employeePerms = Object.assign({}, DEFAULT_PERMISSIONS.employee);
+  }
+
+  // Owner: nothing is restricted. Return all-true for both manager + employee
+  // namespaces so applyPermissions never hides anything for owners.
+  if (role === 'owner' || role === 'admin') {
     return {
-      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager,  stored.manager  || {}),
-      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee, stored.employee || {})
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager),
+      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee)
+    };
+  }
+
+  // Manager: merge DB perms over the all-true defaults. DB explicitly stores
+  // {key: false} when Tom has restricted that icon. Missing keys remain true.
+  if (role === 'manager') {
+    var dbPerms = (typeof getCachedManagerPermissions === 'function') ? getCachedManagerPermissions() : {};
+    return {
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager, dbPerms || {}),
+      employee: employeePerms
+    };
+  }
+
+  // Employee or unknown role: pre-v9.6 behavior.
+  try {
+    var stored2 = JSON.parse(localStorage.getItem('permissions') || '{}') || {};
+    return {
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager,  stored2.manager  || {}),
+      employee: Object.assign({}, DEFAULT_PERMISSIONS.employee, stored2.employee || {})
     };
   } catch (e) {
     return {
@@ -31682,6 +31915,7 @@ function _p3dPage(dir) {
           <select id="staff-role" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="team_member">Team Member</option>
             <option value="team_leader">Team Leader</option>
+            <option value="manager">Manager</option>
           </select>
         </div>
       </div>
