@@ -29359,8 +29359,15 @@ function jobDragEnd(e) {
   var _movedTeam = _dragJob.team;
   var _movedDate = _dragJob.date;
   var _movedId = _dragJob.id;
+  var _movedTime = _dragJob.time;
+  var _movedFlex = _dragJob.flexible;
 
   saveJobs();
+  // Sprint 10 Phase 3b: dual-write the dragged job's team/time/flexible.
+  // recalcTeamTimes (called below) dual-writes the cascade for downstream jobs.
+  if (window.PentaJobs) window.PentaJobs.update(_movedId, {
+    team: _movedTeam, time: _movedTime, flexible: _movedFlex
+  }).catch(function(e){ console.warn('[PentaJobs] jobDragEnd sync failed', e); });
   if (navigator.vibrate) navigator.vibrate(30);
 
   // Cleanup
@@ -29516,6 +29523,8 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
 
   // First pass: immediately adjust using cached drive times or default 15 min
   // Always set the time — push forward OR pull back to fit correctly
+  // Sprint 10 Phase 3b: collect mutated jobs for parallel dual-write after the loop.
+  var _touchedSync = [];
   for (var k = startIdx; k < teamJobs.length - 1; k++) {
     var curr = teamJobs[k];
     var next = teamJobs[k + 1];
@@ -29528,8 +29537,17 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
     }
     var newStart = currEnd + drive;
     next.time = String(Math.floor(newStart/60)).padStart(2,'0') + ':' + String(newStart%60).padStart(2,'0');
+    _touchedSync.push(next);
   }
   saveJobs();
+  // Sprint 10 Phase 3b: parallel dual-write each shifted job's new time.
+  // The async pass below may overwrite some of these with refined drive
+  // times; last-write-wins is acceptable (deltas are minutes, not days).
+  if (window.PentaJobs && _touchedSync.length) {
+    _touchedSync.forEach(function(j) {
+      window.PentaJobs.update(j.id, { time: j.time }).catch(function(e){ console.warn('[PentaJobs] recalcTeamTimes sync failed for', j.id, e); });
+    });
+  }
   renderCal();
 
   // Second pass: async fetch real drive times for any uncached routes, then re-adjust
@@ -29542,8 +29560,20 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
   }
   if (needsAsync) {
     var idx = startIdx;
+    // Sprint 10 Phase 3b: collect async-shifted jobs and dual-write at
+    // the terminal save (after all real drive-times applied).
+    var _touchedAsync = [];
     function asyncPass() {
-      if (idx >= teamJobs.length - 1) { saveJobs(); renderCal(); return; }
+      if (idx >= teamJobs.length - 1) {
+        saveJobs();
+        if (window.PentaJobs && _touchedAsync.length) {
+          _touchedAsync.forEach(function(j) {
+            window.PentaJobs.update(j.id, { time: j.time }).catch(function(e){ console.warn('[PentaJobs] recalcTeamTimes async sync failed for', j.id, e); });
+          });
+        }
+        renderCal();
+        return;
+      }
       var c = teamJobs[idx], n = teamJobs[idx + 1];
       var cEnd = (jobStartMins(c) || 0) + getJobDurationMins(c);
       // v9.5.7: coords-first; falls back to address geocode only when
@@ -29553,6 +29583,7 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
         var dr = mins || 15;
         var ns2 = cEnd + dr;
         n.time = String(Math.floor(ns2/60)).padStart(2,'0') + ':' + String(ns2%60).padStart(2,'0');
+        _touchedAsync.push(n);
         idx++; asyncPass();
       }
       if (rc1 && rc2) { fetchDriveTimeByCoords(rc1, rc2, applyDrive); return; }
@@ -29560,6 +29591,7 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
       if (!ad1 || !ad2) {
         var ns = cEnd + 15;
         n.time = String(Math.floor(ns/60)).padStart(2,'0') + ':' + String(ns%60).padStart(2,'0');
+        _touchedAsync.push(n);
         idx++; asyncPass(); return;
       }
       fetchDriveTime(ad1, ad2, applyDrive);
@@ -30130,6 +30162,10 @@ function nudgeJobTime(jobId, deltaMins) {
   j.time = String(Math.floor(newM/60)).padStart(2,'0') + ':' + String(newM%60).padStart(2,'0');
   j.flexible = false;
   saveJobs();
+  // Sprint 10 Phase 3b: dual-write the nudged job's time/flexible.
+  if (window.PentaJobs) window.PentaJobs.update(jobId, {
+    time: j.time, flexible: j.flexible
+  }).catch(function(e){ console.warn('[PentaJobs] nudgeJobTime sync failed', e); });
 
   // Update time display in the popup
   var hr = Math.floor(newM/60), mn = newM%60;
