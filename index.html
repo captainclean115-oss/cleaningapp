@@ -17162,14 +17162,23 @@ function _executeFormSuggestion(suggestion) {
       }
       var movedCount = 0;
       var movedSummary = [];
+      // Sprint 10 Phase 3d: collect touched jobs for parallel dual-write.
+      var _touchedFormMove = [];
       payload.moves.forEach(function(mv) {
         var j = jobs.find(function(x){ return x.id === mv.job_id; });
         if (!j) return;
         j.team = mv.to_team;
         movedCount++;
         movedSummary.push(mv.client_name + ' → ' + mv.to_team);
+        _touchedFormMove.push(j);
       });
       saveJobs();
+      // Sprint 10 Phase 3d: parallel dual-write each form-moved job's team.
+      if (window.PentaJobs && _touchedFormMove.length) {
+        _touchedFormMove.forEach(function(j) {
+          window.PentaJobs.update(j.id, { team: j.team }).catch(function(e){ console.warn('[PentaJobs] _executeFormSuggestion move sync failed for', j.id, e); });
+        });
+      }
       try { logPendingUpdate('Job move (coverage)', movedSummary.join('; '), 'Manager'); } catch (e) {}
       try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
       return { ok: true, summary: 'Moved ' + movedCount + ' job' + (movedCount===1?'':'s') };
