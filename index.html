@@ -8277,6 +8277,97 @@ window.addEventListener('DOMContentLoaded', function() {
 
   var _isEmployee = _userMeta.is_employee === true;
 
+  // v9.6.2: users.role beats user_metadata.is_employee. The Edge Function's
+  // accept-invite hardcodes is_employee=true at auth.admin.createUser time,
+  // but the user might be a manager (v9.6 hire flow pre-inserts a users row
+  // with role='manager'). Without this check, managers route to the employee
+  // portal even though their users.role says 'manager'.
+  (async function _bootRouteWithRoleCheck() {
+    try {
+      var sbBoot = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      var dbRole = null;
+      if (sbBoot) {
+        try {
+          var rr = await sbBoot.from('users').select('role').eq('id', _u.id).maybeSingle();
+          dbRole = rr && rr.data && rr.data.role;
+        } catch (e) { dbRole = null; }
+      }
+
+      // Anyone with a manager-tier role goes to manager home regardless of
+      // is_employee metadata. Employee path only fires when DB says so or
+      // when no users row exists yet (legacy employee-only invites).
+      var managerRoles = ['owner', 'admin', 'manager', 'dispatcher', 'franchisor_admin'];
+      if (dbRole && managerRoles.indexOf(dbRole) !== -1) {
+        appUnlockManager();
+        try {
+          var _previewId = sessionStorage.getItem('penta_preview_as_employee_id');
+          if (_previewId) {
+            var _emp = null;
+            if (window.PentaEmployees && window.PentaEmployees.listSync) {
+              var _all = window.PentaEmployees.listSync();
+              _emp = (_all || []).find(function(e){ return String(e.id||'') === String(_previewId) || String(e.legacy_roster_id||'') === String(_previewId); });
+            }
+            if (_emp && typeof pentaEnterEmployeePreview === 'function') {
+              setTimeout(function(){ pentaEnterEmployeePreview(_emp); }, 50);
+            }
+          }
+        } catch(e) {}
+        return;
+      }
+
+      // Employee path: respect is_employee metadata, OR dbRole==='employee',
+      // OR no users row at all (legacy invite flow).
+      if (_isEmployee || dbRole === 'employee' || !dbRole) {
+        appSelectedLang = (_userMeta.lang || 'en');
+        try {
+          var emp = await _bootResolveEmployeeFromAuth(_sbParsed);
+          if (emp) {
+            appUnlockEmployee(emp);
+          } else if (_isEmployee) {
+            console.warn('[boot] is_employee=true but no employees row matched auth_user_id', _u.id);
+            if (_pentaLogin) {
+              _pentaLogin.style.display = 'flex';
+              var msg = document.getElementById('penta-login-error');
+              if (msg) {
+                msg.textContent = "Your account isn't fully set up — contact your manager.";
+                msg.style.display = '';
+              }
+              try { pentaWireLoginForm(); } catch (e2) {}
+            }
+          } else {
+            // No employees row + no clear role → default to manager so the
+            // user can at least see something. Permission filter will gate.
+            appUnlockManager();
+          }
+        } catch (e) {
+          console.error('[boot] employee resolution failed', e);
+          appUnlockManager();
+        }
+        return;
+      }
+
+      // Fallthrough — unknown role. Default to manager (permission filter gates).
+      appUnlockManager();
+    } catch (e) {
+      console.error('[boot] role-based routing threw', e);
+      // Last resort: legacy is_employee-only behavior.
+      if (_isEmployee) {
+        (async function(){
+          try {
+            var emp2 = await _bootResolveEmployeeFromAuth(_sbParsed);
+            if (emp2) appUnlockEmployee(emp2);
+            else appUnlockManager();
+          } catch (_e) { appUnlockManager(); }
+        })();
+      } else {
+        appUnlockManager();
+      }
+    }
+  })();
+  return;
+
+  // (legacy paths below kept as dead code so a future bisect can compare;
+  // _bootRouteWithRoleCheck above replaced them in v9.6.2)
   if (_isEmployee) {
     appSelectedLang = (_userMeta.lang || 'en');
     (async function() {
