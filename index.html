@@ -7245,6 +7245,64 @@ window.PentaAssignments = (function() {
 })();
 
 
+// =====================================================================
+// Sprint 10 Phase 4: bridge PentaJobs cache → in-memory `jobs` array.
+//
+// Cross-device fresh-loads now pull the latest schedule from Supabase
+// instead of being capped by whatever localStorage has. After
+// PentaJobs._hydrate completes, the mirror replaces `jobs[]` contents
+// with cache data, ENRICHED from PentaClients with the denormalized
+// fields the DB schema doesn't store (clientName, addr, phone, color).
+//
+// Mirror fires ONCE on hydrate, NOT on every cache _notify. Reason:
+// post-hydrate cache updates fire AFTER the corresponding Phase 3
+// dual-write completes its network round-trip. A user who double-
+// clicks faster than the RTT would otherwise see their second click
+// briefly revert when the FIRST update's _notify mirrors over the
+// in-memory state. Phase 5 realtime will wire a separate listener
+// keyed to remote-origin events specifically.
+//
+// Backup mirror at +1.5s catches the brand-new-device case where
+// PentaClients's own Supabase refresh hadn't completed when the first
+// mirror ran (so clientName/addr would have fallen back to row
+// defaults). Idempotent — re-mirroring with already-fresh state is
+// the same state in/out.
+//
+// Legacy ID semantics: in-memory `jobs[]` consumers (DOM onclick
+// strings, _resolveDbId lookups, etc.) expect the LEGACY id like
+// 'seed_431' / 'freq_xxx'. The mirror swaps `id ← legacy_id || id`
+// and stashes the uuid as `db_id` so facade ops can resolve directly.
+// =====================================================================
+function _enrichJobFromCache(row) {
+  var client = (window.PentaClients && window.PentaClients.getClient) ? window.PentaClients.getClient(row.clientId) : null;
+  return Object.assign({}, row, {
+    id: row.legacy_id || row.id,
+    db_id: row.id,
+    clientName: client ? ((client.ln || '') + ', ' + (client.fn || '')) : (row.clientName || ''),
+    addr: client ? ((client.addr || '') + (client.city ? ', ' + client.city : '')) : (row.addr || ''),
+    phone: client ? (client.ph || '') : '',
+    color: (typeof _pentaTeamColor === 'function') ? _pentaTeamColor(row.team, '#6b7280') : ''
+  });
+}
+
+function _mirrorPentaJobsToInMemory() {
+  if (typeof jobs === 'undefined') return;
+  if (!window.PentaJobs || !window.PentaJobs.isReady || !window.PentaJobs.isReady()) return;
+  var fresh = window.PentaJobs.listSync().map(_enrichJobFromCache);
+  jobs.length = 0;
+  Array.prototype.push.apply(jobs, fresh);
+  try { if (typeof renderCal === 'function') renderCal(); } catch (e) { console.warn('[PentaJobs] phase4 mirror renderCal failed', e); }
+}
+
+(function pentaPhase4MirrorHydrate() {
+  if (!window.PentaJobs || !window.PentaJobs.ready) return;
+  window.PentaJobs.ready().then(function() {
+    _mirrorPentaJobsToInMemory();
+    setTimeout(_mirrorPentaJobsToInMemory, 1500);
+  });
+})();
+
+
 // Auto-hydrate PentaForms once supabase client is up.
 (function pentaPrimeFormsHydrate() {
   if (!window.PentaForms || !window.PentaForms._hydrate) return;
