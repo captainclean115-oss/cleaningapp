@@ -6792,12 +6792,22 @@ window.PentaJobs = (function() {
   // 'freq_xxx', 'seed_1', or a Date.now() ts) to the uuid Supabase
   // uses as primary key. Phase 2 carried the original ID into legacy_id
   // on every insert, so the cache is the source of truth for the map.
-  function _resolveDbId(idOrLegacy) {
+  // v10.0.3: async with one-shot auto-heal — if cache is empty AND we
+  // got a legacy ID, await _hydrate() once and retry the lookup. Fixes
+  // the boot race where Phase 3a write paths fire before _hydrate
+  // resolves (toggle Done in the first ~2s of session).
+  async function _resolveDbId(idOrLegacy) {
     if (!idOrLegacy) return null;
     var s = String(idOrLegacy);
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return s;
     for (var i = 0; i < _cache.length; i++) {
       if (_cache[i].legacy_id === s) return _cache[i].id;
+    }
+    if (!_cacheReady) {
+      await _hydrate();
+      for (var k = 0; k < _cache.length; k++) {
+        if (_cache[k].legacy_id === s) return _cache[k].id;
+      }
     }
     return null;
   }
@@ -6906,7 +6916,7 @@ window.PentaJobs = (function() {
     var sb = SB();
     if (!sb) throw new Error('PentaJobs.update: no Supabase client');
     if (!id) throw new Error('PentaJobs.update: id required');
-    var dbId = _resolveDbId(id);
+    var dbId = await _resolveDbId(id);
     if (!dbId) { console.warn('[PentaJobs] update: no row found for', id); return null; }
     var rowPatch = _transformRowForWrite(patch);
     delete rowPatch.business_id;  // never reassign business
@@ -6928,7 +6938,7 @@ window.PentaJobs = (function() {
   async function remove(id) {
     var sb = SB();
     if (!sb) throw new Error('PentaJobs.remove: no Supabase client');
-    var dbId = _resolveDbId(id);
+    var dbId = await _resolveDbId(id);
     if (!dbId) { console.warn('[PentaJobs] remove: no row found for', id); return false; }
     var res = await sb.from('jobs').delete().eq('id', dbId);
     if (res.error) throw res.error;
