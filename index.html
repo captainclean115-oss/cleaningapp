@@ -7373,13 +7373,15 @@ window.PentaAssignments = (function() {
 // with cache data, ENRICHED from PentaClients with the denormalized
 // fields the DB schema doesn't store (clientName, addr, phone, color).
 //
-// Mirror fires ONCE on hydrate, NOT on every cache _notify. Reason:
-// post-hydrate cache updates fire AFTER the corresponding Phase 3
-// dual-write completes its network round-trip. A user who double-
-// clicks faster than the RTT would otherwise see their second click
-// briefly revert when the FIRST update's _notify mirrors over the
-// in-memory state. Phase 5 realtime will wire a separate listener
-// keyed to remote-origin events specifically.
+// v10.0.7 update: mirror fires on PentaJobs.onChange (any cache
+// mutation, including hydrate completion) and on ready() resolution.
+// Phase 4 originally tried to mirror once-on-hydrate to dodge a
+// flicker race on rapid double-clicks faster than the network RTT,
+// but that broke slow cold-boots: hydrate-completes-after-mirror
+// left jobs[] populated with stale legacy localStorage data and any
+// post-mirror inserts (e.g. a Test1 just added on the primary device)
+// were invisible until manual reload. Cold-boot correctness wins;
+// the flicker race is a niche edge case to revisit if it surfaces.
 //
 // Backup mirror at +1.5s catches the brand-new-device case where
 // PentaClients's own Supabase refresh hadn't completed when the first
@@ -7415,8 +7417,18 @@ function _mirrorPentaJobsToInMemory() {
 
 (function pentaPhase4MirrorHydrate() {
   if (!window.PentaJobs || !window.PentaJobs.ready) return;
+  // v10.0.7: re-fire on every cache mutation. Catches hydrate
+  // completion that lands AFTER ready().then resolved (e.g. cold
+  // incognito boot where Path A times out at 3s before Path B
+  // succeeds), and also propagates Phase 3 dual-write _notifies.
+  if (window.PentaJobs.onChange) {
+    window.PentaJobs.onChange(_mirrorPentaJobsToInMemory);
+  }
   window.PentaJobs.ready().then(function() {
     _mirrorPentaJobsToInMemory();
+    // Belt-and-suspenders: backup mirror catches the brand-new-device
+    // race where PentaClients's own Supabase fetch hadn't completed
+    // during the first mirror. Idempotent if state is already fresh.
     setTimeout(_mirrorPentaJobsToInMemory, 1500);
   });
 })();
