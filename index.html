@@ -6793,16 +6793,32 @@ window.PentaJobs = (function() {
     _hydrating = (async function() {
       var bid = await _businessId();
       if (!bid) { _hydrating = null; return false; }
-      // Pull all non-deleted rows for the business. Date filter applied
-      // client-side; if jobs grow huge we can add a date-range filter
-      // here in v10.1.
-      var res = await sb.from('jobs').select('*').eq('business_id', bid).order('date', { ascending: true });
-      if (res.error) {
-        console.error('[PentaJobs] hydrate error', res.error);
-        _hydrating = null;
-        return false;
+      // v10.0.1 hotfix: PostgREST caps responses at 1000 rows by default.
+      // Tom's install had 2204 jobs; listSync() was truncating to 1000.
+      // Paginated loop via .range(); break on short page. Safety cap at
+      // 50 pages = 50k rows to prevent runaway on a malformed response.
+      var allRows = [];
+      var from = 0;
+      var PAGE = 1000;
+      var pages = 0;
+      while (pages < 50) {
+        var pageRes = await sb.from('jobs')
+          .select('*')
+          .eq('business_id', bid)
+          .order('date', { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (pageRes.error) {
+          console.error('[PentaJobs] hydrate error', pageRes.error);
+          _hydrating = null;
+          return false;
+        }
+        var pageData = pageRes.data || [];
+        allRows = allRows.concat(pageData);
+        pages++;
+        if (pageData.length < PAGE) break;
+        from += PAGE;
       }
-      _cache = (res.data || []).map(_transformRow).filter(function(x){ return x !== null; });
+      _cache = allRows.map(_transformRow).filter(function(x){ return x !== null; });
       _cacheReady = true;
       _notify();
       _hydrating = null;
@@ -6996,17 +7012,32 @@ window.PentaAssignments = (function() {
     _hydrating = (async function() {
       var bid = await _businessId();
       if (!bid) { _hydrating = null; return false; }
-      var res = await sb.from('daily_assignments')
-        .select('id, business_id, date, team, employee_id, created_at, deleted_at')
-        .eq('business_id', bid)
-        .is('deleted_at', null)
-        .order('date', { ascending: true });
-      if (res.error) {
-        console.error('[PentaAssignments] hydrate error', res.error);
-        _hydrating = null;
-        return false;
+      // v10.0.1 hotfix: paginated fetch. PostgREST default cap is 1000
+      // rows per response — without .range() we'd silently truncate
+      // once an install accumulates >1000 active assignments.
+      var allRows = [];
+      var from = 0;
+      var PAGE = 1000;
+      var pages = 0;
+      while (pages < 50) {
+        var pageRes = await sb.from('daily_assignments')
+          .select('id, business_id, date, team, employee_id, created_at, deleted_at')
+          .eq('business_id', bid)
+          .is('deleted_at', null)
+          .order('date', { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (pageRes.error) {
+          console.error('[PentaAssignments] hydrate error', pageRes.error);
+          _hydrating = null;
+          return false;
+        }
+        var pageData = pageRes.data || [];
+        allRows = allRows.concat(pageData);
+        pages++;
+        if (pageData.length < PAGE) break;
+        from += PAGE;
       }
-      _cache = res.data || [];
+      _cache = allRows;
       _rebuildIndex();
       _cacheReady = true;
       _notify();
