@@ -7023,18 +7023,26 @@ window.PentaJobs = (function() {
     }
   }
   function whenClientReady(cb) {
+    // v10.0.5: gate on BOTH client AND session. _hydrate's _businessId()
+    // reads PentaAuth.session.user.user_metadata.business_id which is set
+    // async by getSession() — without this gate kick() fires before
+    // session resolves and hydrate fizzles silently.
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-    if (sb) return cb(sb);
+    var ss = window.PentaAuth && window.PentaAuth.session;
+    if (sb && ss) return cb(sb);
     var tries = 0;
     var iv = setInterval(function() {
       var c = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-      if (c || ++tries > 50) { clearInterval(iv); if (c) cb(c); }
+      var s = window.PentaAuth && window.PentaAuth.session;
+      if ((c && s) || ++tries > 100) { clearInterval(iv); if (c && s) cb(c); }
     }, 100);
   }
   whenClientReady(function(sb) {
     kick();
     try { sb.auth.onAuthStateChange(function(evt) {
-      if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
+      // v10.0.5: INITIAL_SESSION is what Supabase v2 fires on cold-boot
+      // session restore — was being filtered out, leaving cold loads stuck.
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
     }); } catch (e) {}
   });
 })();
@@ -7228,18 +7236,24 @@ window.PentaAssignments = (function() {
     }
   }
   function whenClientReady(cb) {
+    // v10.0.5: gate on BOTH client AND session. Same fix as
+    // pentaPrimeJobs — _hydrate()'s _businessId() needs the session
+    // to read user_metadata.business_id.
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-    if (sb) return cb(sb);
+    var ss = window.PentaAuth && window.PentaAuth.session;
+    if (sb && ss) return cb(sb);
     var tries = 0;
     var iv = setInterval(function() {
       var c = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-      if (c || ++tries > 50) { clearInterval(iv); if (c) cb(c); }
+      var s = window.PentaAuth && window.PentaAuth.session;
+      if ((c && s) || ++tries > 100) { clearInterval(iv); if (c && s) cb(c); }
     }, 100);
   }
   whenClientReady(function(sb) {
     kick();
     try { sb.auth.onAuthStateChange(function(evt) {
-      if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
+      // v10.0.5: include INITIAL_SESSION (Supabase v2 cold-boot restore).
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
     }); } catch (e) {}
   });
 })();
