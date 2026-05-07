@@ -22377,19 +22377,32 @@ function getCurrentAppRole() {
     return null;
   }
   const uid = blob.user.id;
-  // Employee shortcut — never hits DB
+
+  // v9.6.4: cache check FIRST. If we already know this user's role
+  // (e.g. boot routing wrote 'manager' before metadata could downgrade),
+  // return it. The dual-row architecture means is_employee=true in auth
+  // metadata is no longer authoritative — managers can have BOTH
+  // employees + users rows after promotion via v9.6 hire flow.
+  if (_pentaCachedRoleUserId === uid && _pentaCachedRole) {
+    return _pentaCachedRole;
+  }
+
+  // Cold cache fallback: optimistic 'employee' from metadata while the
+  // DB query resolves. If the DB says manager-tier, the resolver writes
+  // the new value over the optimistic one. Sync callers during the
+  // window between get a stable 'employee' (matches pre-v9.6 behavior).
   const meta = blob.user.user_metadata || {};
   if (meta.is_employee === true) {
     _pentaCachedRole = 'employee';
     _pentaCachedRoleUserId = uid;
+    // Still fire the DB query — overwrites if user is actually a manager.
+    _pentaResolveRoleFromDB(uid).then(r => {
+      if (r) { _pentaCachedRole = r; _pentaCachedRoleUserId = uid; }
+    });
     return 'employee';
   }
-  // Manager-equivalent: cached if uid matches, else trigger async refresh
-  if (_pentaCachedRoleUserId === uid && _pentaCachedRole) {
-    return _pentaCachedRole;
-  }
-  // Cache miss — fire and forget. Caller gets null on this call; UI re-renders
-  // when refresh completes (auth-state-change or next render pass).
+
+  // Non-employee metadata path — hit DB.
   _pentaResolveRoleFromDB(uid).then(r => {
     _pentaCachedRole = r;
     _pentaCachedRoleUserId = uid;
@@ -22415,15 +22428,20 @@ function isManagerRole() {
         _pentaCachedRoleUserId = null;
         return;
       }
+      // v9.6.4: optimistic 'employee' from metadata while DB resolves.
+      // ALWAYS fire the DB query so a manager-tier role overwrites the
+      // metadata-based guess. Was: returned early without DB query when
+      // is_employee, leaving managers stuck on 'employee'.
       const meta = session.user.user_metadata || {};
       if (meta.is_employee === true) {
         _pentaCachedRole = 'employee';
         _pentaCachedRoleUserId = session.user.id;
-        return;
       }
       _pentaResolveRoleFromDB(session.user.id).then(r => {
-        _pentaCachedRole = r;
-        _pentaCachedRoleUserId = session.user.id;
+        if (r) {
+          _pentaCachedRole = r;
+          _pentaCachedRoleUserId = session.user.id;
+        }
       });
     });
     return true;
@@ -22441,15 +22459,21 @@ function isManagerRole() {
 (function _pentaWarmRoleCache(){
   const blob = _pentaParseAuthToken();
   if (!blob || !blob.user) return;
+  // v9.6.4: optimistic 'employee' from metadata, then ALWAYS verify
+  // against users.role. If DB says manager-tier, the resolver overwrites.
+  // Was: returned early without DB query when is_employee, so a manager
+  // with is_employee=true (set by accept-invite) stuck on 'employee'
+  // until something else triggered a refresh.
   const meta = blob.user.user_metadata || {};
   if (meta.is_employee === true) {
     _pentaCachedRole = 'employee';
     _pentaCachedRoleUserId = blob.user.id;
-    return;
   }
   _pentaResolveRoleFromDB(blob.user.id).then(r => {
-    _pentaCachedRole = r;
-    _pentaCachedRoleUserId = blob.user.id;
+    if (r) {
+      _pentaCachedRole = r;
+      _pentaCachedRoleUserId = blob.user.id;
+    }
   });
 })();
 // === end Phase 6.2a helper ===
