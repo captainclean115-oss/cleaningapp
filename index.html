@@ -7485,6 +7485,761 @@ window.PentaAssignments = (function() {
 
 
 // =====================================================================
+// PentaRewards — Sprint 11.5: Supabase-backed rewards system v1.
+// Five tables: reward_events_config (earn catalog), reward_catalog
+// (redemption catalog), reward_ledger (immutable point history),
+// reward_submissions (photo approval queue), reward_redemptions
+// (redemption fulfillment queue). Mirrors the Sprint 10 PentaJobs facade
+// pattern: paginated hydrate (.range loop), Path B businessId fallback,
+// realtime subscriptions per table, onChange listener registry.
+//
+// TODO Sprint 14+ — fire OneSignal push from approveSubmission /
+// fulfillRedemption when push infra lands so awarded reward surfaces
+// without a manual refresh.
+// =====================================================================
+window.PentaRewards = (function() {
+  function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  // Five cache slices — one per table.
+  var _eventsConfig = [];
+  var _catalog      = [];
+  var _ledger       = [];
+  var _submissions  = [];
+  var _redemptions  = [];
+
+  var _cacheReady = false;
+  var _hydrating  = null;
+  var _listeners  = [];
+  var _realtimeChannel = null;
+
+  function _notify() {
+    for (var i = 0; i < _listeners.length; i++) {
+      try { _listeners[i](); } catch (e) { console.warn('[PentaRewards] listener threw', e); }
+    }
+  }
+
+  // Lifted from PentaJobs — _businessId() needs timeout-bounded awaits
+  // because PentaEmployees.ready() can stall indefinitely on cold
+  // incognito boot (no localStorage cache to bootstrap from).
+  var _lastError = null;
+  function _withTimeout(promise, label, ms) {
+    var timer;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error('STALL@' + label + ' (' + ms + 'ms)')); }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(function() { clearTimeout(timer); });
+  }
+
+  async function _businessId() {
+    // Path A: piggyback on PentaEmployees cache (instant if hydrated, no network).
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.listSync) {
+        var rows = window.PentaEmployees.listSync();
+        if (rows && rows.length && rows[0].business_id) return rows[0].business_id;
+        try {
+          await _withTimeout(window.PentaEmployees.ready(), 'PentaEmployees.ready', 3000);
+          var rows2 = window.PentaEmployees.listSync();
+          if (rows2 && rows2.length && rows2[0].business_id) return rows2[0].business_id;
+        } catch (eA) { console.warn('[PentaRewards._businessId] Path A timed out:', eA.message); }
+      }
+    } catch (e) { console.debug('[PentaRewards._businessId] Path A threw', e); }
+
+    // Path B: own auth + users query, each await timeout-wrapped.
+    try {
+      var sb = SB();
+      if (!sb) { console.warn('[PentaRewards._businessId] no sb client'); }
+      else {
+        var ures = await _withTimeout(sb.auth.getUser(), 'auth.getUser', 3000);
+        var user = ures && ures.data && ures.data.user;
+        if (user) {
+          var pres = await _withTimeout(
+            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            'users.select',
+            3000
+          );
+          var bid = pres && pres.data && pres.data.business_id;
+          if (bid) return bid;
+        }
+      }
+    } catch (eB) {
+      _lastError = eB;
+      console.warn('[PentaRewards._businessId] Path B failed:', eB.message);
+    }
+    console.error('[PentaRewards._businessId] all paths failed');
+    return null;
+  }
+
+  // Cached current-user-id resolver. Used for granted_by / reviewed_by /
+  // fulfilled_by stamping. Prefer PentaAuth.session (sync, no network);
+  // fall back to sb.auth.getUser() if session not yet hydrated.
+  async function _currentUserId() {
+    try {
+      var ses = window.PentaAuth && window.PentaAuth.session;
+      if (ses && ses.user && ses.user.id) return ses.user.id;
+      var sb = SB();
+      if (!sb) return null;
+      var u = await sb.auth.getUser();
+      return (u && u.data && u.data.user && u.data.user.id) || null;
+    } catch (e) { return null; }
+  }
+
+  // PostgREST default 1000-row cap → paginated fetch with .range(). Same
+  // shape as PentaJobs/PentaAssignments hydrate; safety cap at 50 pages.
+  async function _fetchAll(sb, table, bid, opts) {
+    opts = opts || {};
+    var allRows = [];
+    var from = 0;
+    var PAGE = 1000;
+    var pages = 0;
+    while (pages < 50) {
+      var q = sb.from(table).select('*').eq('business_id', bid);
+      if (opts.activeOnly) q = q.is('deleted_at', null);
+      if (opts.orderBy) q = q.order(opts.orderBy.col, { ascending: opts.orderBy.asc !== false });
+      q = q.range(from, from + PAGE - 1);
+      var res = await q;
+      if (res.error) throw res.error;
+      var page = res.data || [];
+      allRows = allRows.concat(page);
+      pages++;
+      if (page.length < PAGE) break;
+      from += PAGE;
+    }
+    return allRows;
+  }
+
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    var sb = SB();
+    if (!sb) return false;
+    _hydrating = (async function() {
+      var bid = await _businessId();
+      if (!bid) { _hydrating = null; return false; }
+      try {
+        // Five parallel paginated fetches — ledger has no deleted_at
+        // (insert-only / immutable), so activeOnly:false there.
+        var results = await Promise.all([
+          _fetchAll(sb, 'reward_events_config', bid, { activeOnly: true,  orderBy: { col: 'sort_order', asc: true } }),
+          _fetchAll(sb, 'reward_catalog',       bid, { activeOnly: true,  orderBy: { col: 'sort_order', asc: true } }),
+          _fetchAll(sb, 'reward_ledger',        bid, { activeOnly: false, orderBy: { col: 'created_at', asc: true } }),
+          _fetchAll(sb, 'reward_submissions',   bid, { activeOnly: true,  orderBy: { col: 'created_at', asc: true } }),
+          _fetchAll(sb, 'reward_redemptions',   bid, { activeOnly: true,  orderBy: { col: 'created_at', asc: true } }),
+        ]);
+        _eventsConfig = results[0];
+        _catalog      = results[1];
+        _ledger       = results[2];
+        _submissions  = results[3];
+        _redemptions  = results[4];
+        _cacheReady = true;
+        _setupRealtime(sb, bid);
+        _notify();
+        _hydrating = null;
+        return true;
+      } catch (e) {
+        console.error('[PentaRewards] hydrate error', e);
+        _hydrating = null;
+        return false;
+      }
+    })();
+    return _hydrating;
+  }
+
+  function isReady() { return _cacheReady; }
+  async function ready() { if (!_cacheReady) await _hydrate(); }
+
+  function onChange(fn) {
+    _listeners.push(fn);
+    return function unsub() {
+      var i = _listeners.indexOf(fn);
+      if (i >= 0) _listeners.splice(i, 1);
+    };
+  }
+
+  // Generic INSERT/UPDATE/DELETE applier — used by the 5 realtime listeners.
+  // Echo handling: local writes already pushed to cache before the echo
+  // arrives, so INSERT does a find-by-id skip; UPDATE/DELETE are idempotent.
+  function _applyChange(arr, payload) {
+    if (payload.eventType === 'INSERT' && payload.new) {
+      if (!arr.find(function(r){ return r.id === payload.new.id; })) arr.push(payload.new);
+    } else if (payload.eventType === 'UPDATE' && payload.new) {
+      var found = false;
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i].id === payload.new.id) { arr[i] = payload.new; found = true; break; }
+      }
+      if (!found) arr.push(payload.new);
+    } else if (payload.eventType === 'DELETE' && payload.old) {
+      for (var j = 0; j < arr.length; j++) {
+        if (arr[j].id === payload.old.id) { arr.splice(j, 1); break; }
+      }
+    }
+  }
+
+  // Single channel, 5 filtered listeners — one per rewards table.
+  function _setupRealtime(sb, bid) {
+    if (_realtimeChannel) return;
+    try {
+      var filter = 'business_id=eq.' + bid;
+      _realtimeChannel = sb.channel('penta-rewards-' + bid)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_events_config', filter: filter },
+            function(p) { _applyChange(_eventsConfig, p); _notify(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_catalog', filter: filter },
+            function(p) { _applyChange(_catalog, p); _notify(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_ledger', filter: filter },
+            function(p) { _applyChange(_ledger, p); _notify(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_submissions', filter: filter },
+            function(p) { _applyChange(_submissions, p); _notify(); })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reward_redemptions', filter: filter },
+            function(p) { _applyChange(_redemptions, p); _notify(); })
+        .subscribe(function(status){ console.log('[PentaRewards._setupRealtime] status=' + status); });
+    } catch (e) { console.warn('[PentaRewards] realtime subscribe failed (non-fatal)', e); }
+  }
+
+  // ============== Local helpers ==============
+  function _sortByOrder(a, b) { return (a.sort_order || 0) - (b.sort_order || 0); }
+  function _findEvent(event_key) {
+    for (var i = 0; i < _eventsConfig.length; i++) {
+      if (_eventsConfig[i].event_key === event_key && !_eventsConfig[i].deleted_at) return _eventsConfig[i];
+    }
+    return null;
+  }
+  function _findCatalog(reward_key) {
+    for (var i = 0; i < _catalog.length; i++) {
+      if (_catalog[i].reward_key === reward_key && !_catalog[i].deleted_at) return _catalog[i];
+    }
+    return null;
+  }
+  function _findSubmission(id) {
+    for (var i = 0; i < _submissions.length; i++) {
+      if (_submissions[i].id === id) return _submissions[i];
+    }
+    return null;
+  }
+  function _findRedemption(id) {
+    for (var i = 0; i < _redemptions.length; i++) {
+      if (_redemptions[i].id === id) return _redemptions[i];
+    }
+    return null;
+  }
+  function _newUuid() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
+      var r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16);
+    });
+  }
+  function _extFromBlob(blob) {
+    if (blob && blob.name) {
+      var m = String(blob.name).match(/\.([a-z0-9]+)$/i);
+      if (m) return m[1].toLowerCase();
+    }
+    if (blob && blob.type) {
+      var t = String(blob.type).toLowerCase();
+      if (t === 'image/jpeg' || t === 'image/jpg') return 'jpg';
+      if (t === 'image/png')  return 'png';
+      if (t === 'image/webp') return 'webp';
+      if (t === 'image/heic') return 'heic';
+      if (t === 'image/heif') return 'heif';
+      if (t === 'image/gif')  return 'gif';
+    }
+    return 'jpg';
+  }
+
+  // ============== CONFIG: earn events ==============
+  function listEarnEvents() {
+    return _eventsConfig.filter(function(e){ return e.is_active && !e.deleted_at; }).slice().sort(_sortByOrder);
+  }
+  function listAllEarnEvents() {
+    return _eventsConfig.filter(function(e){ return !e.deleted_at; }).slice().sort(_sortByOrder);
+  }
+  async function upsertEarnEvent(input) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.upsertEarnEvent: no Supabase client');
+    if (!input || !input.event_key) throw new Error('PentaRewards.upsertEarnEvent: event_key required');
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.upsertEarnEvent: business_id could not be derived');
+    var existing = _findEvent(input.event_key);
+    var row = {
+      business_id: bid,
+      event_key: input.event_key,
+      label: input.label != null ? input.label : (existing ? existing.label : input.event_key),
+      points: input.points != null ? parseInt(input.points) : (existing ? existing.points : 0),
+      requires_approval: input.requires_approval != null ? !!input.requires_approval : (existing ? !!existing.requires_approval : false),
+      is_active: input.is_active != null ? !!input.is_active : (existing ? !!existing.is_active : true),
+      sort_order: input.sort_order != null ? parseInt(input.sort_order) : (existing ? existing.sort_order : 100),
+      description: input.description != null ? input.description : (existing ? existing.description : null),
+    };
+    var res = existing
+      ? await sb.from('reward_events_config').update(row).eq('id', existing.id).select().maybeSingle()
+      : await sb.from('reward_events_config').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      if (existing) {
+        for (var i = 0; i < _eventsConfig.length; i++) {
+          if (_eventsConfig[i].id === res.data.id) { _eventsConfig[i] = res.data; break; }
+        }
+      } else {
+        _eventsConfig.push(res.data);
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function deactivateEarnEvent(event_key) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.deactivateEarnEvent: no Supabase client');
+    var existing = _findEvent(event_key);
+    if (!existing) throw new Error('PentaRewards.deactivateEarnEvent: not found ' + event_key);
+    var res = await sb.from('reward_events_config').update({ is_active: false }).eq('id', existing.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _eventsConfig.length; i++) {
+        if (_eventsConfig[i].id === res.data.id) { _eventsConfig[i] = res.data; break; }
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function deleteCustomEarnEvent(event_key) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.deleteCustomEarnEvent: no Supabase client');
+    var existing = _findEvent(event_key);
+    if (!existing) throw new Error('PentaRewards.deleteCustomEarnEvent: not found ' + event_key);
+    if (existing.is_system) throw new Error('PentaRewards.deleteCustomEarnEvent: cannot delete system event ' + event_key);
+    var res = await sb.from('reward_events_config').update({ deleted_at: new Date().toISOString() }).eq('id', existing.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    _eventsConfig = _eventsConfig.filter(function(e){ return e.id !== existing.id; });
+    _notify();
+    return true;
+  }
+
+  // ============== CONFIG: catalog ==============
+  function listCatalog() {
+    return _catalog.filter(function(c){ return c.is_active && !c.deleted_at; }).slice().sort(_sortByOrder);
+  }
+  function listAllCatalog() {
+    return _catalog.filter(function(c){ return !c.deleted_at; }).slice().sort(_sortByOrder);
+  }
+  async function upsertCatalogItem(input) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.upsertCatalogItem: no Supabase client');
+    if (!input || !input.reward_key) throw new Error('PentaRewards.upsertCatalogItem: reward_key required');
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.upsertCatalogItem: business_id could not be derived');
+    var existing = _findCatalog(input.reward_key);
+    var row = {
+      business_id: bid,
+      reward_key: input.reward_key,
+      label: input.label != null ? input.label : (existing ? existing.label : input.reward_key),
+      cost_points: input.cost_points != null ? parseInt(input.cost_points) : (existing ? existing.cost_points : 1),
+      is_active: input.is_active != null ? !!input.is_active : (existing ? !!existing.is_active : true),
+      sort_order: input.sort_order != null ? parseInt(input.sort_order) : (existing ? existing.sort_order : 100),
+      description: input.description != null ? input.description : (existing ? existing.description : null),
+    };
+    var res = existing
+      ? await sb.from('reward_catalog').update(row).eq('id', existing.id).select().maybeSingle()
+      : await sb.from('reward_catalog').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      if (existing) {
+        for (var i = 0; i < _catalog.length; i++) {
+          if (_catalog[i].id === res.data.id) { _catalog[i] = res.data; break; }
+        }
+      } else {
+        _catalog.push(res.data);
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function deactivateCatalogItem(reward_key) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.deactivateCatalogItem: no Supabase client');
+    var existing = _findCatalog(reward_key);
+    if (!existing) throw new Error('PentaRewards.deactivateCatalogItem: not found ' + reward_key);
+    var res = await sb.from('reward_catalog').update({ is_active: false }).eq('id', existing.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _catalog.length; i++) {
+        if (_catalog[i].id === res.data.id) { _catalog[i] = res.data; break; }
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function deleteCustomCatalogItem(reward_key) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.deleteCustomCatalogItem: no Supabase client');
+    var existing = _findCatalog(reward_key);
+    if (!existing) throw new Error('PentaRewards.deleteCustomCatalogItem: not found ' + reward_key);
+    if (existing.is_system) throw new Error('PentaRewards.deleteCustomCatalogItem: cannot delete system item ' + reward_key);
+    var res = await sb.from('reward_catalog').update({ deleted_at: new Date().toISOString() }).eq('id', existing.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    _catalog = _catalog.filter(function(c){ return c.id !== existing.id; });
+    _notify();
+    return true;
+  }
+
+  // ============== LEDGER + BALANCE ==============
+  function getBalance(employee_id) {
+    if (!employee_id) return 0;
+    var sum = 0;
+    for (var i = 0; i < _ledger.length; i++) {
+      if (_ledger[i].employee_id === employee_id) sum += (_ledger[i].delta || 0);
+    }
+    return sum;
+  }
+  function getLedger(employee_id, limit) {
+    if (limit == null) limit = 50;
+    var rows = _ledger.filter(function(r){ return r.employee_id === employee_id; });
+    rows.sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
+    return rows.slice(0, limit);
+  }
+  function getAllBalances() {
+    var m = new Map();
+    for (var i = 0; i < _ledger.length; i++) {
+      var r = _ledger[i];
+      m.set(r.employee_id, (m.get(r.employee_id) || 0) + (r.delta || 0));
+    }
+    return m;
+  }
+
+  // ============== EARN: manager grant ==============
+  async function grantPoints(input) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.grantPoints: no Supabase client');
+    if (!input || !input.employee_id) throw new Error('PentaRewards.grantPoints: employee_id required');
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.grantPoints: business_id could not be derived');
+    var ev = input.event_key ? _findEvent(input.event_key) : null;
+    var delta = input.delta_override != null ? parseInt(input.delta_override) : (ev ? ev.points : null);
+    if (delta == null || isNaN(delta)) throw new Error('PentaRewards.grantPoints: delta_override or known event_key required');
+    var reason = input.reason_override || (ev ? ev.label : null) || 'Manager grant';
+    var uid = await _currentUserId();
+    var row = {
+      business_id: bid,
+      employee_id: input.employee_id,
+      delta: delta,
+      reason: reason,
+      event_key: input.event_key || null,
+      source: 'manager_grant',
+      granted_by: uid,
+      notes: input.notes || null,
+    };
+    var res = await sb.from('reward_ledger').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) { _ledger.push(res.data); _notify(); }
+    return res.data;
+  }
+
+  // ============== SUBMISSIONS ==============
+  async function submitPhoto(input) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.submitPhoto: no Supabase client');
+    if (!input || !input.employee_id) throw new Error('PentaRewards.submitPhoto: employee_id required');
+    if (!input.photo_blob) throw new Error('PentaRewards.submitPhoto: photo_blob required');
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.submitPhoto: business_id could not be derived');
+    var ext   = _extFromBlob(input.photo_blob);
+    var fname = _newUuid() + '.' + ext;
+    var path  = bid + '/' + input.employee_id + '/' + fname;
+    var contentType = (input.photo_blob && input.photo_blob.type) || 'image/jpeg';
+    var up = await sb.storage.from('reward-submissions').upload(path, input.photo_blob, { contentType: contentType, upsert: false });
+    if (up.error) throw up.error;
+    var row = {
+      business_id: bid,
+      employee_id: input.employee_id,
+      submission_type: 'photo',
+      photo_path: path,
+      caption: input.caption || null,
+      client_id: input.client_id || null,
+      status: 'pending',
+    };
+    var res = await sb.from('reward_submissions').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) { _submissions.push(res.data); _notify(); }
+    return res.data;
+  }
+  function listPendingSubmissions() {
+    var rows = _submissions.filter(function(s){ return s.status === 'pending' && !s.deleted_at; });
+    rows.sort(function(a, b){ return (a.created_at || '').localeCompare(b.created_at || ''); });
+    return rows;
+  }
+  function listMySubmissions(employee_id) {
+    var rows = _submissions.filter(function(s){ return s.employee_id === employee_id && !s.deleted_at; });
+    rows.sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
+    return rows;
+  }
+  async function approveSubmission(submission_id, opts) {
+    opts = opts || {};
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.approveSubmission: no Supabase client');
+    var sub = _findSubmission(submission_id);
+    if (!sub) throw new Error('PentaRewards.approveSubmission: submission not found ' + submission_id);
+    if (sub.status !== 'pending') throw new Error('PentaRewards.approveSubmission: status is ' + sub.status);
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.approveSubmission: business_id could not be derived');
+    var ekey = opts.event_key_override || 'photo_submitted';
+    var ev = _findEvent(ekey);
+    if (!ev) throw new Error('PentaRewards.approveSubmission: unknown event_key ' + ekey);
+    var uid = await _currentUserId();
+
+    // Step 1: insert ledger row (source='earn').
+    var ldRes = await sb.from('reward_ledger').insert({
+      business_id: bid,
+      employee_id: sub.employee_id,
+      delta: ev.points,
+      reason: ev.label,
+      event_key: ekey,
+      source: 'earn',
+      reference_id: sub.id,
+      granted_by: uid,
+    }).select().maybeSingle();
+    if (ldRes.error) throw ldRes.error;
+    if (ldRes.data) _ledger.push(ldRes.data);
+
+    // Step 2: update submission with approval state + ledger linkage.
+    var subRes = await sb.from('reward_submissions').update({
+      status: 'approved',
+      reviewed_by: uid,
+      reviewed_at: new Date().toISOString(),
+      awarded_event_key: ekey,
+      awarded_points: ev.points,
+      ledger_id: ldRes.data ? ldRes.data.id : null,
+    }).eq('id', sub.id).select().maybeSingle();
+    if (subRes.error) throw subRes.error;
+    if (subRes.data) {
+      for (var i = 0; i < _submissions.length; i++) {
+        if (_submissions[i].id === subRes.data.id) { _submissions[i] = subRes.data; break; }
+      }
+    }
+    _notify();
+    return subRes.data;
+  }
+  async function rejectSubmission(submission_id, rejection_reason) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.rejectSubmission: no Supabase client');
+    var sub = _findSubmission(submission_id);
+    if (!sub) throw new Error('PentaRewards.rejectSubmission: submission not found ' + submission_id);
+    if (sub.status !== 'pending') throw new Error('PentaRewards.rejectSubmission: status is ' + sub.status);
+    var uid = await _currentUserId();
+    var res = await sb.from('reward_submissions').update({
+      status: 'rejected',
+      reviewed_by: uid,
+      reviewed_at: new Date().toISOString(),
+      rejection_reason: rejection_reason || null,
+    }).eq('id', sub.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _submissions.length; i++) {
+        if (_submissions[i].id === res.data.id) { _submissions[i] = res.data; break; }
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function getSubmissionPhotoUrl(submission_id) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.getSubmissionPhotoUrl: no Supabase client');
+    var sub = _findSubmission(submission_id);
+    if (!sub) throw new Error('PentaRewards.getSubmissionPhotoUrl: submission not found ' + submission_id);
+    if (!sub.photo_path) return null;
+    var res = await sb.storage.from('reward-submissions').createSignedUrl(sub.photo_path, 3600);
+    if (res.error) throw res.error;
+    return res.data ? res.data.signedUrl : null;
+  }
+
+  // ============== REDEMPTIONS ==============
+  async function requestRedemption(employee_id, reward_key) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.requestRedemption: no Supabase client');
+    if (!employee_id) throw new Error('PentaRewards.requestRedemption: employee_id required');
+    if (!reward_key)  throw new Error('PentaRewards.requestRedemption: reward_key required');
+    var item = _findCatalog(reward_key);
+    if (!item) throw new Error('PentaRewards.requestRedemption: unknown reward_key ' + reward_key);
+    if (!item.is_active) throw new Error('PentaRewards.requestRedemption: reward is inactive');
+    if (getBalance(employee_id) < item.cost_points) throw new Error('Insufficient points');
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.requestRedemption: business_id could not be derived');
+
+    // Step 1: insert redemption row with snapshot fields.
+    var redRes = await sb.from('reward_redemptions').insert({
+      business_id: bid,
+      employee_id: employee_id,
+      reward_key: item.reward_key,
+      reward_label: item.label,
+      cost_points: item.cost_points,
+      status: 'pending',
+    }).select().maybeSingle();
+    if (redRes.error) throw redRes.error;
+    if (redRes.data) _redemptions.push(redRes.data);
+
+    // Step 2: insert ledger deduction row (source='redeem').
+    var uid = await _currentUserId();
+    var ldRes = await sb.from('reward_ledger').insert({
+      business_id: bid,
+      employee_id: employee_id,
+      delta: -item.cost_points,
+      reason: 'Redeemed: ' + item.label,
+      event_key: null,
+      source: 'redeem',
+      reference_id: redRes.data ? redRes.data.id : null,
+      granted_by: uid,
+    }).select().maybeSingle();
+    if (ldRes.error) throw ldRes.error;
+    if (ldRes.data) _ledger.push(ldRes.data);
+
+    // Step 3: link ledger_id back on the redemption row.
+    if (redRes.data && ldRes.data) {
+      var upd = await sb.from('reward_redemptions').update({ ledger_id: ldRes.data.id }).eq('id', redRes.data.id).select().maybeSingle();
+      if (upd.error) throw upd.error;
+      if (upd.data) {
+        for (var i = 0; i < _redemptions.length; i++) {
+          if (_redemptions[i].id === upd.data.id) { _redemptions[i] = upd.data; break; }
+        }
+      }
+    }
+    _notify();
+    return redRes.data;
+  }
+  function listPendingRedemptions() {
+    var rows = _redemptions.filter(function(r){ return r.status === 'pending' && !r.deleted_at; });
+    rows.sort(function(a, b){ return (a.created_at || '').localeCompare(b.created_at || ''); });
+    return rows;
+  }
+  function listMyRedemptions(employee_id) {
+    var rows = _redemptions.filter(function(r){ return r.employee_id === employee_id && !r.deleted_at; });
+    rows.sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
+    return rows;
+  }
+  async function fulfillRedemption(redemption_id, opts) {
+    opts = opts || {};
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.fulfillRedemption: no Supabase client');
+    var red = _findRedemption(redemption_id);
+    if (!red) throw new Error('PentaRewards.fulfillRedemption: not found ' + redemption_id);
+    if (red.status !== 'pending') throw new Error('PentaRewards.fulfillRedemption: status is ' + red.status);
+    var uid = await _currentUserId();
+    var res = await sb.from('reward_redemptions').update({
+      status: 'fulfilled',
+      fulfilled_by: uid,
+      fulfilled_at: new Date().toISOString(),
+      notes: opts.notes != null ? opts.notes : red.notes,
+    }).eq('id', red.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _redemptions.length; i++) {
+        if (_redemptions[i].id === res.data.id) { _redemptions[i] = res.data; break; }
+      }
+      _notify();
+    }
+    return res.data;
+  }
+  async function rejectRedemption(redemption_id, rejection_reason) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.rejectRedemption: no Supabase client');
+    var red = _findRedemption(redemption_id);
+    if (!red) throw new Error('PentaRewards.rejectRedemption: not found ' + redemption_id);
+    if (red.status !== 'pending') throw new Error('PentaRewards.rejectRedemption: status is ' + red.status);
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.rejectRedemption: business_id could not be derived');
+    var uid = await _currentUserId();
+
+    // Step 1: mark redemption rejected.
+    var res = await sb.from('reward_redemptions').update({
+      status: 'rejected',
+      rejection_reason: rejection_reason || null,
+      fulfilled_by: uid,
+      fulfilled_at: new Date().toISOString(),
+    }).eq('id', red.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    if (res.data) {
+      for (var i = 0; i < _redemptions.length; i++) {
+        if (_redemptions[i].id === res.data.id) { _redemptions[i] = res.data; break; }
+      }
+    }
+
+    // Step 2: insert reversal ledger row (positive delta refunds the deduction).
+    var ldRes = await sb.from('reward_ledger').insert({
+      business_id: bid,
+      employee_id: red.employee_id,
+      delta: red.cost_points,
+      reason: 'Redemption rejected: ' + red.reward_label,
+      event_key: null,
+      source: 'reversal',
+      reference_id: red.id,
+      granted_by: uid,
+    }).select().maybeSingle();
+    if (ldRes.error) throw ldRes.error;
+    if (ldRes.data) _ledger.push(ldRes.data);
+
+    _notify();
+    return res.data;
+  }
+
+  return {
+    // CONFIG: earn events
+    listEarnEvents: listEarnEvents, listAllEarnEvents: listAllEarnEvents,
+    upsertEarnEvent: upsertEarnEvent, deactivateEarnEvent: deactivateEarnEvent,
+    deleteCustomEarnEvent: deleteCustomEarnEvent,
+    // CONFIG: catalog
+    listCatalog: listCatalog, listAllCatalog: listAllCatalog,
+    upsertCatalogItem: upsertCatalogItem, deactivateCatalogItem: deactivateCatalogItem,
+    deleteCustomCatalogItem: deleteCustomCatalogItem,
+    // LEDGER + BALANCE
+    getBalance: getBalance, getLedger: getLedger, getAllBalances: getAllBalances,
+    // EARN
+    grantPoints: grantPoints,
+    // SUBMISSIONS
+    submitPhoto: submitPhoto,
+    listPendingSubmissions: listPendingSubmissions,
+    listMySubmissions: listMySubmissions,
+    approveSubmission: approveSubmission,
+    rejectSubmission: rejectSubmission,
+    getSubmissionPhotoUrl: getSubmissionPhotoUrl,
+    // REDEMPTIONS
+    requestRedemption: requestRedemption,
+    listPendingRedemptions: listPendingRedemptions,
+    listMyRedemptions: listMyRedemptions,
+    fulfillRedemption: fulfillRedemption,
+    rejectRedemption: rejectRedemption,
+    // LIFECYCLE
+    onChange: onChange, isReady: isReady, ready: ready,
+    _hydrate: _hydrate, _setupRealtime: _setupRealtime,
+  };
+})();
+
+(function pentaPrimeRewards() {
+  if (!window.PentaRewards || !window.PentaRewards._hydrate) return;
+  function kick() {
+    var p = window.PentaRewards._hydrate();
+    if (p && typeof p.then === 'function') {
+      p.then(function(ok) {
+        if (!ok) setTimeout(function() { try { window.PentaRewards._hydrate(); } catch (e) {} }, 1000);
+      });
+    }
+  }
+  function whenClientReady(cb) {
+    // v10.0.5: gate on BOTH client AND session. Same fix as
+    // pentaPrimeJobs — _hydrate()'s _businessId() needs the session
+    // to read user_metadata.business_id.
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var ss = window.PentaAuth && window.PentaAuth.session;
+    if (sb && ss) return cb(sb);
+    var tries = 0;
+    var iv = setInterval(function() {
+      var c = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      var s = window.PentaAuth && window.PentaAuth.session;
+      if ((c && s) || ++tries > 100) { clearInterval(iv); if (c && s) cb(c); }
+    }, 100);
+  }
+  whenClientReady(function(sb) {
+    kick();
+    try { sb.auth.onAuthStateChange(function(evt) {
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
+    }); } catch (e) {}
+  });
+})();
+
+
+// =====================================================================
 // Sprint 10 Phase 4: bridge PentaJobs cache → in-memory `jobs` array.
 //
 // Cross-device fresh-loads now pull the latest schedule from Supabase
