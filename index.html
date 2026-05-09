@@ -2634,6 +2634,280 @@ html.pre-auth #filter-row { display: none !important; }
   color: var(--text); font-family: 'DM Sans', sans-serif;
 }
 #inventory-view.active { display: flex; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Manager Rewards (Sprint 11.5 Phase 3) — fullscreen overlay,
+   5-tab UI (leaderboard / queue / grant / settings / ledger).
+   Mirrors #inventory-view shape; uses .mr- prefix for tab-internal styles.
+   ═══════════════════════════════════════════════════════════════════════ */
+#manager-rewards-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: var(--bg-gradient);
+  flex-direction: column; overflow: hidden;
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+}
+#manager-rewards-view.active { display: flex; }
+.mr-topbar {
+  flex: 0 0 auto;
+  padding: calc(var(--safe-top) + 12px) 16px 10px;
+  display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.mr-back-btn {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 50%;
+  width: 36px; height: 36px; font-size: 22px; line-height: 1;
+  cursor: pointer; flex-shrink: 0;
+}
+.mr-title-wrap { flex: 1; min-width: 0; }
+.mr-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.mr-subtitle { font-size: 12px; color: var(--muted); }
+
+.mr-tabs {
+  flex: 0 0 auto;
+  display: flex; gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+}
+.mr-tabs::-webkit-scrollbar { display: none; }
+.mr-tab {
+  background: none; border: none; color: var(--muted);
+  font: 600 14px 'DM Sans', sans-serif;
+  padding: 12px 14px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.mr-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.mr-tab[data-hidden="true"] { display: none; }
+
+.mr-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(var(--safe-bottom) + 24px);
+}
+
+.mr-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+.mr-section-header {
+  font: 700 12px 'DM Sans', sans-serif; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 10px;
+}
+.mr-section-header:first-child { margin-top: 4px; }
+
+/* Leaderboard rows */
+.mr-lb-row {
+  display: grid; grid-template-columns: 50px 44px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 10px 8px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 0.12s;
+}
+.mr-lb-row:hover { background: var(--surface2); }
+.mr-lb-rank { font: 700 16px 'DM Sans'; text-align: center; }
+.mr-lb-photo {
+  width: 40px; height: 40px; border-radius: 50%; object-fit: cover;
+  background: var(--surface2); display: block;
+}
+.mr-lb-photo-fallback {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--surface2); color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  font: 700 14px 'DM Sans';
+}
+.mr-lb-name { font-size: 14px; font-weight: 600; }
+.mr-lb-points { font: 700 16px 'DM Sans'; font-variant-numeric: tabular-nums; color: var(--accent); }
+
+/* Queue cards */
+.mr-queue-card {
+  display: flex; gap: 12px;
+  padding: 12px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 12px;
+  margin-bottom: 10px;
+}
+.mr-queue-thumb {
+  width: 80px; height: 80px; border-radius: 8px;
+  object-fit: cover; background: var(--surface);
+  flex-shrink: 0;
+}
+.mr-queue-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mr-queue-meta-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.mr-queue-name { font-weight: 600; font-size: 14px; }
+.mr-queue-tag {
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; color: var(--muted);
+}
+.mr-queue-caption { font-size: 12px; color: var(--muted); font-style: italic; }
+.mr-queue-time { font-size: 11px; color: var(--muted); }
+.mr-queue-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; flex-shrink: 0; }
+
+/* Generic buttons */
+.mr-btn {
+  padding: 8px 14px; border: 1px solid transparent;
+  border-radius: 8px; font: 600 13px 'DM Sans'; cursor: pointer;
+  white-space: nowrap;
+}
+.mr-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.mr-btn-primary { background: var(--accent); color: #fff; }
+.mr-btn-secondary { background: var(--surface2); color: var(--text); border-color: var(--border); }
+.mr-btn-success { background: rgba(52,199,89,0.18); color: #34c759; border-color: rgba(52,199,89,0.4); }
+.mr-btn-danger  { background: rgba(220,38,38,0.18); color: #f87171; border-color: rgba(220,38,38,0.4); }
+.mr-btn-icon { padding: 6px 8px; font-size: 12px; }
+
+/* Grant form */
+.mr-form { max-width: 480px; }
+.mr-field { margin-bottom: 14px; }
+.mr-field > label {
+  display: block; font: 700 11px 'DM Sans'; color: var(--muted);
+  margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.mr-field input,
+.mr-field select,
+.mr-field textarea {
+  width: 100%; padding: 10px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+  font: 14px 'DM Sans'; box-sizing: border-box;
+}
+.mr-field textarea { min-height: 64px; resize: vertical; }
+.mr-checkbox { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+
+/* Settings tables */
+.mr-settings-block { margin-bottom: 28px; }
+.mr-settings-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px;
+}
+.mr-settings-head h3 { font: 700 16px 'DM Sans'; margin: 0; }
+.mr-settings-table {
+  width: 100%; border-collapse: collapse;
+  background: var(--surface2); border-radius: 12px; overflow: hidden;
+}
+.mr-settings-table th, .mr-settings-table td {
+  padding: 10px 12px; text-align: left; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.mr-settings-table th {
+  font: 700 11px 'DM Sans'; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted);
+}
+.mr-settings-table tr:last-child td { border-bottom: none; }
+.mr-settings-table tr.editing td { background: var(--surface); }
+.mr-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mr-system-badge {
+  display: inline-block; background: var(--surface); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 6px; font-size: 9px; color: var(--muted);
+  margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: 0.06em;
+}
+
+/* Filter chips (ledger) */
+.mr-chips { display: flex; gap: 6px; margin: 12px 0 16px; flex-wrap: wrap; }
+.mr-chip {
+  padding: 6px 12px; border-radius: 16px;
+  background: var(--surface2); border: 1px solid var(--border);
+  font: 600 12px 'DM Sans'; cursor: pointer; color: var(--text);
+}
+.mr-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Ledger header */
+.mr-ledger-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px; background: var(--surface2);
+  border-radius: 12px; margin-bottom: 12px;
+}
+.mr-ledger-photo { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
+.mr-ledger-name { font: 700 18px 'DM Sans'; }
+.mr-ledger-balance {
+  margin-left: auto; font: 800 24px 'DM Sans';
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+
+/* Ledger rows */
+.mr-ledger-row {
+  display: grid; grid-template-columns: 70px 1fr auto auto;
+  gap: 10px; align-items: center;
+  padding: 10px 8px; border-bottom: 1px solid var(--border);
+}
+.mr-delta {
+  font: 700 16px 'DM Sans'; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.mr-delta-pos { color: #34c759; }
+.mr-delta-neg { color: #f87171; }
+.mr-ledger-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mr-ledger-reason { font: 600 13px 'DM Sans'; }
+.mr-ledger-by { font-size: 11px; color: var(--muted); }
+.mr-ledger-notes { font-size: 12px; color: var(--muted); font-style: italic; }
+.mr-ledger-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* Modal overlay */
+.mr-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72); backdrop-filter: blur(4px);
+  z-index: 400; display: none;
+  align-items: center; justify-content: center;
+  padding: 20px;
+}
+.mr-modal-overlay.active { display: flex; }
+.mr-modal-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 20px;
+  max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.mr-modal-title { font: 700 18px 'DM Sans'; margin: 0 0 12px; }
+.mr-modal-body { font-size: 13px; color: var(--text); }
+.mr-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+.mr-modal-note {
+  background: var(--surface2); border: 1px solid var(--border);
+  padding: 10px; border-radius: 8px; font-size: 12px;
+  color: var(--muted); margin-top: 10px;
+}
+
+/* Inactive row styling */
+.mr-inactive { opacity: 0.55; }
+
+/* v10.4.1 — explicit form-input borders + focus state. Scoped to the
+   manager-rewards view + its modal (modal lives outside the view's DOM
+   subtree, so it needs its own selector). Light-grey #d0d5dd matches the
+   spec; focus shifts to var(--accent). Applies to all text/number inputs,
+   textareas, and selects — INCLUDING the inline-edit Settings rows that
+   render into <td> cells without a .mr-field wrapper. */
+#manager-rewards-view input[type="text"],
+#manager-rewards-view input[type="number"],
+#manager-rewards-view textarea,
+#manager-rewards-view select,
+.mr-modal-card input[type="text"],
+.mr-modal-card input[type="number"],
+.mr-modal-card textarea,
+.mr-modal-card select {
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fff;
+  color: #1a1a1a;
+  font: 14px 'DM Sans', sans-serif;
+  box-sizing: border-box;
+}
+#manager-rewards-view input[type="text"]:focus,
+#manager-rewards-view input[type="number"]:focus,
+#manager-rewards-view textarea:focus,
+#manager-rewards-view select:focus,
+.mr-modal-card input[type="text"]:focus,
+.mr-modal-card input[type="number"]:focus,
+.mr-modal-card textarea:focus,
+.mr-modal-card select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#manager-rewards-view input::placeholder,
+#manager-rewards-view textarea::placeholder,
+.mr-modal-card input::placeholder,
+.mr-modal-card textarea::placeholder {
+  color: #98a2b3;
+}
 .inv-topbar {
   flex: 0 0 auto;
   padding: calc(var(--safe-top) + 12px) 16px 10px;
@@ -4112,7 +4386,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div class="content-tabs-row">
       <button class="content-tab active" id="ctab-create" onclick="contentSwitchTab('create')">Create</button>
       <button class="content-tab" id="ctab-queue" onclick="contentSwitchTab('queue')">Queue <span id="content-queue-badge" class="content-queue-badge" style="display:none">0</span></button>
-      <button class="content-tab" id="ctab-rewards" onclick="contentSwitchTab('rewards')">Rewards</button>
+      <button class="content-tab" id="ctab-rewards" onclick="contentSwitchTab('rewards')" style="display:none" data-deprecated="v10.4.0 Phase 3 — superseded by openManagerRewards()">Rewards</button>
     </div>
   </div>
 
@@ -8236,6 +8510,1011 @@ window.PentaRewards = (function() {
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED' || evt === 'USER_UPDATED') kick();
     }); } catch (e) {}
   });
+})();
+
+
+// =====================================================================
+// Manager Rewards UI — Sprint 11.5 Phase 3.
+// Renders #manager-rewards-view (5 tabs: Leaderboard, Queue, Grant,
+// Settings, Ledger). Ledger tab is hidden until drilled-in from a
+// leaderboard row tap. All data flows through PentaRewards facade
+// (+ PentaEmployees + PentaClients). Re-renders on PentaRewards.onChange
+// and PentaEmployees.onChange, debounced 200ms to absorb realtime cascades.
+// Manager-only — container has data-permission-role="manager"; render
+// guards on isManagerRole() at the top of every paint.
+// =====================================================================
+(function() {
+  var S = {
+    activeTab: 'leaderboard',
+    drilledEmployeeId: null,
+    ledgerFilter: 'all',
+    usersCache: null,
+    usersCacheLoading: false,
+    photoUrlCache: {},
+    debounceTimer: null,
+    grantForm: { employee_id: null, event_key: null, points_override: '', notes: '', custom_label: '', custom_points: '' },
+    editingEarnId: null,
+    editingCatalogId: null,
+    inFlight: false,
+  };
+
+  var TABS = [
+    { id: 'leaderboard', label: 'Leaderboard' },
+    { id: 'queue',       label: 'Queue' },
+    { id: 'grant',       label: 'Grant' },
+    { id: 'settings',    label: 'Settings' },
+    { id: 'ledger',      label: 'Ledger', hidden: true },
+  ];
+
+  // ── Open / Close ──
+  function openManagerRewards() {
+    var v = document.getElementById('manager-rewards-view');
+    if (!v) return;
+    v.classList.add('active');
+    v.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('overlay-open');
+    _render();
+  }
+  function closeManagerRewards() {
+    var v = document.getElementById('manager-rewards-view');
+    if (!v) return;
+    v.classList.remove('active');
+    v.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('overlay-open');
+    _mrCloseModal();
+  }
+
+  // ── Master render ──
+  function _render() {
+    var v = document.getElementById('manager-rewards-view');
+    if (!v || !v.classList.contains('active')) return;
+    var body = document.getElementById('mr-body');
+    var tabs = document.getElementById('mr-tabs');
+    if (!body || !tabs) return;
+
+    if (typeof isManagerRole === 'function' && !isManagerRole()) {
+      tabs.innerHTML = '';
+      body.innerHTML = '<div class="mr-empty">Manager-only view.</div>';
+      return;
+    }
+    _renderTabs();
+    var tab = S.activeTab;
+    if      (tab === 'leaderboard') _renderLeaderboard(body);
+    else if (tab === 'queue')       _renderQueue(body);
+    else if (tab === 'grant')       _renderGrant(body);
+    else if (tab === 'settings')    _renderSettings(body);
+    else if (tab === 'ledger')      _renderLedger(body);
+  }
+
+  function _renderTabs() {
+    var html = '';
+    for (var i = 0; i < TABS.length; i++) {
+      var t = TABS[i];
+      var hidden = t.hidden && t.id !== S.activeTab;
+      var hAttr = hidden ? ' data-hidden="true"' : '';
+      var aClass = (t.id === S.activeTab) ? ' active' : '';
+      html += '<button class="mr-tab' + aClass + '" role="tab"' + hAttr +
+              ' onclick="MgrRewards.switchTab(\'' + t.id + '\')">' + _esc(t.label) + '</button>';
+    }
+    document.getElementById('mr-tabs').innerHTML = html;
+  }
+
+  function switchTab(which) {
+    if (which !== 'ledger') S.drilledEmployeeId = null;
+    S.activeTab = which;
+    _render();
+  }
+
+  function _scheduleRerender() {
+    if (S.debounceTimer) clearTimeout(S.debounceTimer);
+    S.debounceTimer = setTimeout(function() {
+      var v = document.getElementById('manager-rewards-view');
+      if (v && v.classList.contains('active')) _render();
+    }, 200);
+  }
+
+  // ── TAB 1 — Leaderboard ──
+  function _renderLeaderboard(body) {
+    var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
+    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
+    var balances = (window.PentaRewards && window.PentaRewards.getAllBalances()) || new Map();
+    var rows = emps.map(function(e) { return { emp: e, balance: balances.get(e.id) || 0 }; });
+    rows.sort(function(a, b) {
+      if (b.balance !== a.balance) return b.balance - a.balance;
+      return _empName(a.emp).localeCompare(_empName(b.emp));
+    });
+    if (rows.length === 0) {
+      body.innerHTML = '<div class="mr-empty">No active employees.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '';
+      var rankCell = medal ? medal : ('#' + (i + 1));
+      html += '<div class="mr-lb-row" onclick="MgrRewards.drillToLedger(\'' + _esc(r.emp.id) + '\')">' +
+        '<div class="mr-lb-rank">' + rankCell + '</div>' +
+        _empPhotoHtml(r.emp, 'mr-lb-photo') +
+        '<div class="mr-lb-name">' + _esc(_empName(r.emp)) + '</div>' +
+        '<div class="mr-lb-points">' + r.balance.toLocaleString() + '</div>' +
+        '</div>';
+    }
+    body.innerHTML = html;
+  }
+  function drillToLedger(employee_id) {
+    S.drilledEmployeeId = employee_id;
+    S.ledgerFilter = 'all';
+    S.activeTab = 'ledger';
+    _ensureUsersCache();
+    _render();
+  }
+
+  // ── TAB 2 — Queue ──
+  function _renderQueue(body) {
+    var subs = (window.PentaRewards && window.PentaRewards.listPendingSubmissions()) || [];
+    var reds = (window.PentaRewards && window.PentaRewards.listPendingRedemptions()) || [];
+    var html = '';
+    html += '<div class="mr-section-header">Photo Submissions (' + subs.length + ')</div>';
+    if (subs.length === 0) html += '<div class="mr-empty">No pending photo submissions.</div>';
+    else for (var i = 0; i < subs.length; i++) html += _renderSubmissionCard(subs[i]);
+
+    html += '<div class="mr-section-header">Redemption Requests (' + reds.length + ')</div>';
+    if (reds.length === 0) html += '<div class="mr-empty">No pending redemption requests.</div>';
+    else for (var j = 0; j < reds.length; j++) html += _renderRedemptionCard(reds[j]);
+
+    body.innerHTML = html;
+    for (var k = 0; k < subs.length; k++) _hydrateSubmissionThumb(subs[k].id);
+  }
+  function _renderSubmissionCard(s) {
+    var emp = _empById(s.employee_id);
+    var clientLabel = '';
+    if (s.client_id && window.PentaClients && window.PentaClients.getById) {
+      var c = window.PentaClients.getById(s.client_id);
+      if (c) clientLabel = '<span class="mr-queue-tag">' + _esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'Client') + '</span>';
+    }
+    var thumbId = 'mr-thumb-' + s.id;
+    var cachedUrl = S.photoUrlCache[s.id];
+    var thumbSrc = cachedUrl ? ' src="' + _attr(cachedUrl) + '"' : '';
+    return '<div class="mr-queue-card">' +
+      '<img class="mr-queue-thumb" id="' + thumbId + '"' + thumbSrc + ' alt="">' +
+      '<div class="mr-queue-meta">' +
+        '<div class="mr-queue-meta-row">' +
+          '<span class="mr-queue-name">' + _esc(emp ? _empName(emp) : 'Unknown') + '</span>' +
+          clientLabel +
+        '</div>' +
+        (s.caption ? '<div class="mr-queue-caption">' + _esc(s.caption) + '</div>' : '') +
+        '<div class="mr-queue-time">' + _relativeTime(s.created_at) + '</div>' +
+      '</div>' +
+      '<div class="mr-queue-actions">' +
+        '<button class="mr-btn mr-btn-success" onclick="MgrRewards.openApproveSubmission(\'' + _esc(s.id) + '\')">Approve</button>' +
+        '<button class="mr-btn mr-btn-danger" onclick="MgrRewards.openRejectSubmission(\'' + _esc(s.id) + '\')">Reject</button>' +
+      '</div>' +
+    '</div>';
+  }
+  async function _hydrateSubmissionThumb(sub_id) {
+    if (S.photoUrlCache[sub_id]) return;
+    try {
+      var url = await window.PentaRewards.getSubmissionPhotoUrl(sub_id);
+      if (!url) return;
+      S.photoUrlCache[sub_id] = url;
+      var img = document.getElementById('mr-thumb-' + sub_id);
+      if (img) img.src = url;
+    } catch (e) {
+      console.warn('[MgrRewards] thumb load failed for ' + sub_id, e);
+    }
+  }
+  function _renderRedemptionCard(r) {
+    var emp = _empById(r.employee_id);
+    var bal = (window.PentaRewards.getBalance(r.employee_id) || 0);
+    return '<div class="mr-queue-card">' +
+      _empPhotoHtml(emp, 'mr-queue-thumb') +
+      '<div class="mr-queue-meta">' +
+        '<div class="mr-queue-name">' + _esc(emp ? _empName(emp) : 'Unknown') + '</div>' +
+        '<div>' + _esc(r.reward_label) + ' · <strong>' + r.cost_points.toLocaleString() + ' pts</strong></div>' +
+        '<div class="mr-queue-caption">Balance after deduction: ' + bal.toLocaleString() + ' pts</div>' +
+        '<div class="mr-queue-time">' + _relativeTime(r.created_at) + '</div>' +
+      '</div>' +
+      '<div class="mr-queue-actions">' +
+        '<button class="mr-btn mr-btn-success" onclick="MgrRewards.openFulfillRedemption(\'' + _esc(r.id) + '\')">Mark Fulfilled</button>' +
+        '<button class="mr-btn mr-btn-danger" onclick="MgrRewards.openRejectRedemption(\'' + _esc(r.id) + '\')">Reject</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // Submission action modals.
+  function openApproveSubmission(sub_id) {
+    var events = window.PentaRewards.listEarnEvents();
+    var opts = '';
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      var sel = ev.event_key === 'photo_submitted' ? ' selected' : '';
+      opts += '<option value="' + _attr(ev.event_key) + '"' + sel + '>' + _esc(ev.label) + ' — ' + ev.points + ' pts</option>';
+    }
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Approve submission</h3>' +
+      '<div class="mr-field"><label for="mr-approve-event">Award event</label>' +
+        '<select id="mr-approve-event">' + opts + '</select></div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-primary" id="mr-approve-confirm" onclick="MgrRewards.submitApproveSubmission(\'' + _esc(sub_id) + '\')">Approve & Award</button>' +
+      '</div>'
+    );
+  }
+  async function submitApproveSubmission(sub_id) {
+    if (S.inFlight) return;
+    var sel = document.getElementById('mr-approve-event');
+    var ekey = sel ? sel.value : 'photo_submitted';
+    var btn = document.getElementById('mr-approve-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.approveSubmission(sub_id, { event_key_override: ekey });
+      _mrCloseModal();
+      _toast('Submission approved', 'success');
+    } catch (e) {
+      _toast('Approve failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+  function openRejectSubmission(sub_id) {
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Reject submission</h3>' +
+      '<div class="mr-field"><label for="mr-reject-reason">Rejection reason (required)</label>' +
+        '<textarea id="mr-reject-reason" placeholder="What\'s the issue with this photo?"></textarea></div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-danger" id="mr-reject-confirm" onclick="MgrRewards.submitRejectSubmission(\'' + _esc(sub_id) + '\')">Reject</button>' +
+      '</div>'
+    );
+  }
+  async function submitRejectSubmission(sub_id) {
+    if (S.inFlight) return;
+    var ta = document.getElementById('mr-reject-reason');
+    var reason = ((ta && ta.value) || '').trim();
+    if (!reason) { _toast('Reason required', 'error'); return; }
+    var btn = document.getElementById('mr-reject-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.rejectSubmission(sub_id, reason);
+      _mrCloseModal();
+      _toast('Submission rejected', 'success');
+    } catch (e) {
+      _toast('Reject failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+
+  // Redemption action modals.
+  function openFulfillRedemption(red_id) {
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Mark redemption fulfilled</h3>' +
+      '<div class="mr-field"><label for="mr-fulfill-notes">Notes (optional)</label>' +
+        '<textarea id="mr-fulfill-notes" placeholder="e.g. Cash handed off in person"></textarea></div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-primary" id="mr-fulfill-confirm" onclick="MgrRewards.submitFulfillRedemption(\'' + _esc(red_id) + '\')">Mark Fulfilled</button>' +
+      '</div>'
+    );
+  }
+  async function submitFulfillRedemption(red_id) {
+    if (S.inFlight) return;
+    var ta = document.getElementById('mr-fulfill-notes');
+    var notes = ((ta && ta.value) || '').trim();
+    var btn = document.getElementById('mr-fulfill-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.fulfillRedemption(red_id, { notes: notes || null });
+      _mrCloseModal();
+      _toast('Marked fulfilled', 'success');
+    } catch (e) {
+      _toast('Failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+  function openRejectRedemption(red_id) {
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Reject redemption</h3>' +
+      '<div class="mr-field"><label for="mr-rred-reason">Rejection reason (required)</label>' +
+        '<textarea id="mr-rred-reason" placeholder="Why is this being rejected?"></textarea></div>' +
+      '<div class="mr-modal-note">Rejecting will refund the points to the employee.</div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-danger" id="mr-rred-confirm" onclick="MgrRewards.submitRejectRedemption(\'' + _esc(red_id) + '\')">Reject & Refund</button>' +
+      '</div>'
+    );
+  }
+  async function submitRejectRedemption(red_id) {
+    if (S.inFlight) return;
+    var ta = document.getElementById('mr-rred-reason');
+    var reason = ((ta && ta.value) || '').trim();
+    if (!reason) { _toast('Reason required', 'error'); return; }
+    var btn = document.getElementById('mr-rred-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.rejectRedemption(red_id, reason);
+      _mrCloseModal();
+      _toast('Rejected & refunded', 'success');
+    } catch (e) {
+      _toast('Failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+
+  // ── TAB 3 — Grant ──
+  function _renderGrant(body) {
+    var emps = ((window.PentaEmployees && window.PentaEmployees.listSync()) || [])
+      .filter(function(e){ return !e.deleted_at && (e.is_active !== false); }).slice();
+    emps.sort(function(a, b){ return _empName(a).localeCompare(_empName(b)); });
+    var events = window.PentaRewards.listEarnEvents();
+
+    var empOpts = '<option value="">— Select employee —</option>';
+    for (var i = 0; i < emps.length; i++) {
+      var e = emps[i];
+      var sel = (S.grantForm.employee_id === e.id) ? ' selected' : '';
+      empOpts += '<option value="' + _attr(e.id) + '"' + sel + '>' + _esc(_empName(e)) + '</option>';
+    }
+    var evOpts = '<option value="">— Select event —</option>';
+    for (var j = 0; j < events.length; j++) {
+      var ev = events[j];
+      var ese = (S.grantForm.event_key === ev.event_key) ? ' selected' : '';
+      evOpts += '<option value="' + _attr(ev.event_key) + '" data-points="' + ev.points + '"' + ese + '>' +
+                _esc(ev.label) + ' — ' + ev.points + ' pts</option>';
+    }
+    // v10.4.1: "Other (custom)" sentinel — switches the form into a free-text
+    // grant flow (custom label + custom points). Stored on grantForm.event_key
+    // as the literal '__other__'; submit-time path branches on it.
+    var otherSel = (S.grantForm.event_key === '__other__') ? ' selected' : '';
+    evOpts += '<option value="__other__"' + otherSel + '>Other (custom)</option>';
+
+    var isCustom = S.grantForm.event_key === '__other__';
+    var customReady = isCustom &&
+      (S.grantForm.custom_label || '').trim() !== '' &&
+      !isNaN(parseInt(S.grantForm.custom_points));
+    var standardReady = !isCustom && !!S.grantForm.event_key;
+    var disabled = !(S.grantForm.employee_id && (standardReady || customReady)) ? ' disabled' : '';
+
+    var middleFields;
+    if (isCustom) {
+      middleFields =
+        '<div class="mr-field"><label for="mr-grant-custom-label">Custom reason</label>' +
+          '<input id="mr-grant-custom-label" type="text" value="' + _attr(S.grantForm.custom_label) + '" placeholder="e.g. Helped train Maria" oninput="MgrRewards.grantFieldChange(\'custom_label\', this.value)"></div>' +
+        '<div class="mr-field"><label for="mr-grant-custom-pts">Custom points</label>' +
+          '<input id="mr-grant-custom-pts" type="number" value="' + _attr(S.grantForm.custom_points) + '" placeholder="Points" oninput="MgrRewards.grantFieldChange(\'custom_points\', this.value)"></div>';
+    } else {
+      middleFields =
+        '<div class="mr-field"><label for="mr-grant-pts">Override points (optional)</label>' +
+          '<input id="mr-grant-pts" type="number" value="' + _attr(S.grantForm.points_override) + '" placeholder="Defaults to event\'s point value" oninput="MgrRewards.grantFieldChange(\'points_override\', this.value)"></div>';
+    }
+
+    body.innerHTML =
+      '<div class="mr-form">' +
+        '<div class="mr-field"><label for="mr-grant-emp">Employee</label>' +
+          '<select id="mr-grant-emp" onchange="MgrRewards.grantFieldChange(\'employee_id\', this.value)">' + empOpts + '</select></div>' +
+        '<div class="mr-field"><label for="mr-grant-event">Earn event</label>' +
+          '<select id="mr-grant-event" onchange="MgrRewards.grantEventChanged(this)">' + evOpts + '</select></div>' +
+        middleFields +
+        '<div class="mr-field"><label for="mr-grant-notes">Notes (optional)</label>' +
+          '<textarea id="mr-grant-notes" oninput="MgrRewards.grantFieldChange(\'notes\', this.value)" placeholder="Why this grant?">' + _esc(S.grantForm.notes) + '</textarea></div>' +
+        '<div style="display:flex;gap:10px;margin-top:6px">' +
+          '<button class="mr-btn mr-btn-primary" id="mr-grant-btn" onclick="MgrRewards.openGrantConfirm()"' + disabled + '>Grant Points</button>' +
+        '</div>' +
+      '</div>';
+  }
+  function grantFieldChange(field, value) {
+    S.grantForm[field] = value;
+    var btn = document.getElementById('mr-grant-btn');
+    if (!btn) return;
+    var isCustom = S.grantForm.event_key === '__other__';
+    var customReady = isCustom &&
+      (S.grantForm.custom_label || '').trim() !== '' &&
+      !isNaN(parseInt(S.grantForm.custom_points));
+    var standardReady = !isCustom && !!S.grantForm.event_key;
+    btn.disabled = !(S.grantForm.employee_id && (standardReady || customReady));
+  }
+  function grantEventChanged(selectEl) {
+    var prevKey = S.grantForm.event_key;
+    var key = selectEl.value;
+    S.grantForm.event_key = key;
+
+    // Switching INTO custom: clear standard-flow override (no longer relevant)
+    // and rerender so the form swaps in the custom fields.
+    if (key === '__other__') {
+      S.grantForm.points_override = '';
+      _render();
+      return;
+    }
+    // Switching OUT of custom back to a known event: clear custom state,
+    // pre-populate override with the new event's default, then rerender to
+    // swap the custom fields back out.
+    if (prevKey === '__other__') {
+      S.grantForm.custom_label = '';
+      S.grantForm.custom_points = '';
+      var sel0 = selectEl.options[selectEl.selectedIndex];
+      var defPts0 = sel0 ? sel0.getAttribute('data-points') : '';
+      S.grantForm.points_override = defPts0 || '';
+      _render();
+      return;
+    }
+
+    // Standard → standard transition: keep DOM, just nudge the override input.
+    var sel = selectEl.options[selectEl.selectedIndex];
+    var defPts = sel ? sel.getAttribute('data-points') : '';
+    var inp = document.getElementById('mr-grant-pts');
+    if (inp && (!S.grantForm.points_override || S.grantForm.points_override === '')) {
+      inp.value = defPts || '';
+      S.grantForm.points_override = defPts || '';
+    }
+    grantFieldChange('event_key', key);
+  }
+  function openGrantConfirm() {
+    if (!S.grantForm.employee_id || !S.grantForm.event_key) return;
+    var emp = _empById(S.grantForm.employee_id);
+    var isCustom = S.grantForm.event_key === '__other__';
+
+    var pts, reasonLabel, headline, subline;
+    if (isCustom) {
+      pts = parseInt(S.grantForm.custom_points);
+      if (isNaN(pts)) return;
+      reasonLabel = (S.grantForm.custom_label || '').trim();
+      if (!reasonLabel) return;
+      headline = 'Grant <strong>' + (pts >= 0 ? '+' : '') + pts.toLocaleString() + ' pts</strong> to <strong>' +
+                 _esc(_empName(emp)) + '</strong> for: <strong>' + _esc(reasonLabel) + '</strong>';
+      subline  = '';
+    } else {
+      var ev = window.PentaRewards.listAllEarnEvents().find(function(x){ return x.event_key === S.grantForm.event_key; });
+      pts = parseInt(S.grantForm.points_override);
+      if (isNaN(pts)) pts = ev ? ev.points : 0;
+      reasonLabel = ev ? ev.label : '—';
+      headline = 'Grant <strong>' + (pts >= 0 ? '+' : '') + pts.toLocaleString() + ' pts</strong> to <strong>' +
+                 _esc(_empName(emp)) + '</strong>?';
+      subline  = '<div style="margin-top:6px;color:var(--muted)">Reason: ' + _esc(reasonLabel) + '</div>';
+    }
+    var notesLine = S.grantForm.notes
+      ? '<div style="margin-top:8px;color:var(--muted);font-style:italic">"' + _esc(S.grantForm.notes) + '"</div>'
+      : '';
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Confirm grant</h3>' +
+      '<div class="mr-modal-body">' +
+        '<div>' + headline + '</div>' +
+        subline + notesLine +
+      '</div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-primary" id="mr-grant-confirm" onclick="MgrRewards.submitGrant()">Confirm Grant</button>' +
+      '</div>'
+    );
+  }
+  async function submitGrant() {
+    if (S.inFlight) return;
+    var btn = document.getElementById('mr-grant-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    var emp = _empById(S.grantForm.employee_id);
+    var isCustom = S.grantForm.event_key === '__other__';
+
+    var grantArgs, displayPts;
+    if (isCustom) {
+      var customPts = parseInt(S.grantForm.custom_points);
+      var customLabel = (S.grantForm.custom_label || '').trim();
+      if (isNaN(customPts) || !customLabel) {
+        _toast('Custom label and points required', 'error');
+        if (btn) btn.disabled = false;
+        S.inFlight = false;
+        return;
+      }
+      grantArgs = {
+        employee_id: S.grantForm.employee_id,
+        event_key: null,
+        delta_override: customPts,
+        reason_override: customLabel,
+        notes: S.grantForm.notes || null,
+      };
+      displayPts = customPts;
+    } else {
+      var ptsRaw = S.grantForm.points_override;
+      var pts = (ptsRaw !== '' && ptsRaw != null) ? parseInt(ptsRaw) : null;
+      if (pts != null && isNaN(pts)) pts = null;
+      grantArgs = {
+        employee_id: S.grantForm.employee_id,
+        event_key: S.grantForm.event_key,
+        delta_override: pts,
+        notes: S.grantForm.notes || null,
+      };
+      displayPts = pts;
+      if (displayPts == null) {
+        var ev = window.PentaRewards.listAllEarnEvents().find(function(x){return x.event_key===S.grantForm.event_key;});
+        displayPts = ev ? ev.points : 0;
+      }
+    }
+    try {
+      await window.PentaRewards.grantPoints(grantArgs);
+      _mrCloseModal();
+      _toast('✓ Granted ' + displayPts + ' pts to ' + _empName(emp), 'success');
+      S.grantForm = { employee_id: null, event_key: null, points_override: '', notes: '', custom_label: '', custom_points: '' };
+      _render();
+    } catch (e) {
+      _toast('Grant failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+
+  // ── TAB 4 — Settings ──
+  function _renderSettings(body) {
+    var earnRows = window.PentaRewards.listAllEarnEvents();
+    var catRows  = window.PentaRewards.listAllCatalog();
+    body.innerHTML = _renderSettingsEarnBlock(earnRows) + _renderSettingsCatalogBlock(catRows);
+  }
+  function _renderSettingsEarnBlock(rows) {
+    var trs = '';
+    if (rows.length === 0) {
+      trs = '<tr><td colspan="5" class="mr-empty" style="border:none">No earn events yet.</td></tr>';
+    } else {
+      for (var i = 0; i < rows.length; i++) trs += _renderEarnRow(rows[i]);
+    }
+    return '<div class="mr-settings-block">' +
+      '<div class="mr-settings-head"><h3>Earn Events</h3>' +
+        '<button class="mr-btn mr-btn-primary" onclick="MgrRewards.openAddEarn()">+ Add Event</button></div>' +
+      '<table class="mr-settings-table"><thead><tr>' +
+        '<th>Label</th><th>Points</th><th>Approval</th><th>Active</th><th>Actions</th>' +
+      '</tr></thead><tbody>' + trs + '</tbody></table></div>';
+  }
+  function _renderEarnRow(r) {
+    var sysB = r.is_system ? '<span class="mr-system-badge">System</span>' : '';
+    if (S.editingEarnId === r.id) {
+      return '<tr class="editing">' +
+        '<td><input id="mr-ee-label" type="text" value="' + _attr(r.label) + '"></td>' +
+        '<td><input id="mr-ee-points" type="number" min="0" value="' + r.points + '" style="width:80px"></td>' +
+        '<td><label class="mr-checkbox"><input id="mr-ee-req" type="checkbox"' + (r.requires_approval ? ' checked' : '') + '> Required</label></td>' +
+        '<td><label class="mr-checkbox"><input id="mr-ee-act" type="checkbox"' + (r.is_active ? ' checked' : '') + '> Active</label></td>' +
+        '<td class="mr-row-actions">' +
+          '<button class="mr-btn mr-btn-primary mr-btn-icon" onclick="MgrRewards.saveEarnRow(\'' + _esc(r.event_key) + '\')">Save</button>' +
+          '<button class="mr-btn mr-btn-secondary mr-btn-icon" onclick="MgrRewards.cancelEarnEdit()">Cancel</button>' +
+        '</td></tr>';
+    }
+    var rowClass = r.is_active ? '' : ' class="mr-inactive"';
+    var delBtn = r.is_system
+      ? '<button class="mr-btn mr-btn-secondary mr-btn-icon" disabled title="System event — disable instead">Delete</button>'
+      : '<button class="mr-btn mr-btn-danger mr-btn-icon" onclick="MgrRewards.deleteEarnRow(\'' + _esc(r.event_key) + '\')">Delete</button>';
+    return '<tr' + rowClass + '>' +
+      '<td>' + _esc(r.label) + sysB + '</td>' +
+      '<td>' + r.points + '</td>' +
+      '<td>' + (r.requires_approval ? 'Required' : '—') + '</td>' +
+      '<td>' + (r.is_active ? 'Yes' : 'No') + '</td>' +
+      '<td class="mr-row-actions">' +
+        '<button class="mr-btn mr-btn-secondary mr-btn-icon" onclick="MgrRewards.editEarnRow(\'' + _esc(r.id) + '\')">Edit</button>' + delBtn +
+      '</td></tr>';
+  }
+  function editEarnRow(id) { S.editingEarnId = id; _render(); }
+  function cancelEarnEdit() { S.editingEarnId = null; _render(); }
+  async function saveEarnRow(event_key) {
+    if (S.inFlight) return;
+    var label = ((document.getElementById('mr-ee-label')  || {}).value || '').trim();
+    var pts   = parseInt((document.getElementById('mr-ee-points') || {}).value || '0');
+    var req   = !!(document.getElementById('mr-ee-req')   || {}).checked;
+    var act   = !!(document.getElementById('mr-ee-act')   || {}).checked;
+    if (!label) { _toast('Label required', 'error'); return; }
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.upsertEarnEvent({ event_key: event_key, label: label, points: pts, requires_approval: req, is_active: act });
+      S.editingEarnId = null;
+      _toast('Saved', 'success');
+      _render();
+    } catch (e) { _toast('Save failed: ' + (e.message || e), 'error'); }
+    finally { S.inFlight = false; }
+  }
+  async function deleteEarnRow(event_key) {
+    if (!confirm('Delete this earn event? Existing ledger rows are unaffected.')) return;
+    try {
+      await window.PentaRewards.deleteCustomEarnEvent(event_key);
+      _toast('Deleted', 'success');
+      _render();
+    } catch (e) { _toast('Delete failed: ' + (e.message || e), 'error'); }
+  }
+  function openAddEarn() {
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Add earn event</h3>' +
+      '<div class="mr-field"><label>Label</label><input id="mr-ae-label" type="text" placeholder="e.g. Outstanding effort" oninput="MgrRewards.previewEarnSlug(this.value)"></div>' +
+      '<div class="mr-field"><label>Event key</label><input id="mr-ae-key" type="text" placeholder="auto-generated" onchange="this.dataset.touched=\'1\'"></div>' +
+      '<div class="mr-field"><label>Points</label><input id="mr-ae-pts" type="number" min="0" value="50"></div>' +
+      '<div class="mr-field"><label class="mr-checkbox"><input id="mr-ae-req" type="checkbox"> Requires approval</label></div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-primary" id="mr-ae-save" onclick="MgrRewards.saveAddEarn()">Save</button>' +
+      '</div>'
+    );
+  }
+  function previewEarnSlug(label) {
+    var keyEl = document.getElementById('mr-ae-key');
+    if (!keyEl) return;
+    if (!keyEl.dataset.touched) keyEl.value = _slugify(label);
+  }
+  async function saveAddEarn() {
+    if (S.inFlight) return;
+    var label = ((document.getElementById('mr-ae-label') || {}).value || '').trim();
+    var key   = ((document.getElementById('mr-ae-key')   || {}).value || '').trim();
+    var pts   = parseInt((document.getElementById('mr-ae-pts') || {}).value || '0');
+    var req   = !!(document.getElementById('mr-ae-req') || {}).checked;
+    if (!label) { _toast('Label required', 'error'); return; }
+    if (!key) key = _slugify(label);
+    if (!key) { _toast('Event key required', 'error'); return; }
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.upsertEarnEvent({ event_key: key, label: label, points: pts, requires_approval: req, is_active: true });
+      _mrCloseModal();
+      _toast('Earn event added', 'success');
+      _render();
+    } catch (e) { _toast('Add failed: ' + (e.message || e), 'error'); }
+    finally { S.inFlight = false; }
+  }
+  function _renderSettingsCatalogBlock(rows) {
+    var trs = '';
+    if (rows.length === 0) {
+      trs = '<tr><td colspan="4" class="mr-empty" style="border:none">No catalog items yet.</td></tr>';
+    } else {
+      for (var i = 0; i < rows.length; i++) trs += _renderCatalogRow(rows[i]);
+    }
+    return '<div class="mr-settings-block">' +
+      '<div class="mr-settings-head"><h3>Redemption Catalog</h3>' +
+        '<button class="mr-btn mr-btn-primary" onclick="MgrRewards.openAddCatalog()">+ Add Reward</button></div>' +
+      '<table class="mr-settings-table"><thead><tr>' +
+        '<th>Label</th><th>Cost</th><th>Active</th><th>Actions</th>' +
+      '</tr></thead><tbody>' + trs + '</tbody></table></div>';
+  }
+  function _renderCatalogRow(r) {
+    var sysB = r.is_system ? '<span class="mr-system-badge">System</span>' : '';
+    if (S.editingCatalogId === r.id) {
+      return '<tr class="editing">' +
+        '<td><input id="mr-cc-label" type="text" value="' + _attr(r.label) + '"></td>' +
+        '<td><input id="mr-cc-cost" type="number" min="1" value="' + r.cost_points + '" style="width:90px"></td>' +
+        '<td><label class="mr-checkbox"><input id="mr-cc-act" type="checkbox"' + (r.is_active ? ' checked' : '') + '> Active</label></td>' +
+        '<td class="mr-row-actions">' +
+          '<button class="mr-btn mr-btn-primary mr-btn-icon" onclick="MgrRewards.saveCatalogRow(\'' + _esc(r.reward_key) + '\')">Save</button>' +
+          '<button class="mr-btn mr-btn-secondary mr-btn-icon" onclick="MgrRewards.cancelCatalogEdit()">Cancel</button>' +
+        '</td></tr>';
+    }
+    var rowClass = r.is_active ? '' : ' class="mr-inactive"';
+    var delBtn = r.is_system
+      ? '<button class="mr-btn mr-btn-secondary mr-btn-icon" disabled title="System reward — disable instead">Delete</button>'
+      : '<button class="mr-btn mr-btn-danger mr-btn-icon" onclick="MgrRewards.deleteCatalogRow(\'' + _esc(r.reward_key) + '\')">Delete</button>';
+    return '<tr' + rowClass + '>' +
+      '<td>' + _esc(r.label) + sysB + '</td>' +
+      '<td>' + r.cost_points.toLocaleString() + '</td>' +
+      '<td>' + (r.is_active ? 'Yes' : 'No') + '</td>' +
+      '<td class="mr-row-actions">' +
+        '<button class="mr-btn mr-btn-secondary mr-btn-icon" onclick="MgrRewards.editCatalogRow(\'' + _esc(r.id) + '\')">Edit</button>' + delBtn +
+      '</td></tr>';
+  }
+  function editCatalogRow(id) { S.editingCatalogId = id; _render(); }
+  function cancelCatalogEdit() { S.editingCatalogId = null; _render(); }
+  async function saveCatalogRow(reward_key) {
+    if (S.inFlight) return;
+    var label = ((document.getElementById('mr-cc-label') || {}).value || '').trim();
+    var cost  = parseInt((document.getElementById('mr-cc-cost')  || {}).value || '0');
+    var act   = !!(document.getElementById('mr-cc-act')   || {}).checked;
+    if (!label) { _toast('Label required', 'error'); return; }
+    if (!cost || cost < 1) { _toast('Cost must be ≥ 1', 'error'); return; }
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.upsertCatalogItem({ reward_key: reward_key, label: label, cost_points: cost, is_active: act });
+      S.editingCatalogId = null;
+      _toast('Saved', 'success');
+      _render();
+    } catch (e) { _toast('Save failed: ' + (e.message || e), 'error'); }
+    finally { S.inFlight = false; }
+  }
+  async function deleteCatalogRow(reward_key) {
+    if (!confirm('Delete this catalog item? Pending redemptions are unaffected.')) return;
+    try {
+      await window.PentaRewards.deleteCustomCatalogItem(reward_key);
+      _toast('Deleted', 'success');
+      _render();
+    } catch (e) { _toast('Delete failed: ' + (e.message || e), 'error'); }
+  }
+  function openAddCatalog() {
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Add reward</h3>' +
+      '<div class="mr-field"><label>Label</label><input id="mr-ac-label" type="text" placeholder="e.g. Coffee gift card" oninput="MgrRewards.previewCatalogSlug(this.value)"></div>' +
+      '<div class="mr-field"><label>Reward key</label><input id="mr-ac-key" type="text" placeholder="auto-generated" onchange="this.dataset.touched=\'1\'"></div>' +
+      '<div class="mr-field"><label>Cost (points)</label><input id="mr-ac-cost" type="number" min="1" value="500"></div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-primary" id="mr-ac-save" onclick="MgrRewards.saveAddCatalog()">Save</button>' +
+      '</div>'
+    );
+  }
+  function previewCatalogSlug(label) {
+    var keyEl = document.getElementById('mr-ac-key');
+    if (!keyEl) return;
+    if (!keyEl.dataset.touched) keyEl.value = _slugify(label);
+  }
+  async function saveAddCatalog() {
+    if (S.inFlight) return;
+    var label = ((document.getElementById('mr-ac-label') || {}).value || '').trim();
+    var key   = ((document.getElementById('mr-ac-key')   || {}).value || '').trim();
+    var cost  = parseInt((document.getElementById('mr-ac-cost')  || {}).value || '0');
+    if (!label) { _toast('Label required', 'error'); return; }
+    if (!key) key = _slugify(label);
+    if (!key) { _toast('Reward key required', 'error'); return; }
+    if (!cost || cost < 1) { _toast('Cost must be ≥ 1', 'error'); return; }
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.upsertCatalogItem({ reward_key: key, label: label, cost_points: cost, is_active: true });
+      _mrCloseModal();
+      _toast('Reward added', 'success');
+      _render();
+    } catch (e) { _toast('Add failed: ' + (e.message || e), 'error'); }
+    finally { S.inFlight = false; }
+  }
+
+  // ── TAB 5 — Ledger ──
+  function _renderLedger(body) {
+    var emp = _empById(S.drilledEmployeeId);
+    if (!emp) {
+      body.innerHTML = '<div class="mr-empty">Employee not found. <button class="mr-btn mr-btn-secondary" onclick="MgrRewards.switchTab(\'leaderboard\')">Back to Leaderboard</button></div>';
+      return;
+    }
+    var balance = window.PentaRewards.getBalance(emp.id);
+    var rows = window.PentaRewards.getLedger(emp.id, 200);
+    var filt = S.ledgerFilter;
+    var filtered = rows.filter(function(r) {
+      if (filt === 'all') return true;
+      if (filt === 'earn') return r.source === 'earn';
+      if (filt === 'redeem') return r.source === 'redeem';
+      if (filt === 'manager_grant') return r.source === 'manager_grant';
+      if (filt === 'reversal') return r.source === 'reversal' || r.source === 'adjustment';
+      return true;
+    });
+    var filters = [
+      { id: 'all', label: 'All' }, { id: 'earn', label: 'Earned' },
+      { id: 'redeem', label: 'Redeemed' }, { id: 'manager_grant', label: 'Manager Grants' },
+      { id: 'reversal', label: 'Reversals' },
+    ];
+    var chips = '';
+    for (var f = 0; f < filters.length; f++) {
+      var c = filters[f];
+      chips += '<div class="mr-chip' + (c.id === filt ? ' active' : '') + '" onclick="MgrRewards.setLedgerFilter(\'' + c.id + '\')">' + _esc(c.label) + '</div>';
+    }
+    var rowsHtml = '';
+    if (filtered.length === 0) rowsHtml = '<div class="mr-empty">No matching ledger entries.</div>';
+    else for (var i = 0; i < filtered.length; i++) rowsHtml += _renderLedgerRow(filtered[i], emp);
+
+    body.innerHTML =
+      '<div style="margin-bottom:12px"><button class="mr-btn mr-btn-secondary" onclick="MgrRewards.switchTab(\'leaderboard\')">← Back to Leaderboard</button></div>' +
+      '<div class="mr-ledger-header">' +
+        _empPhotoHtml(emp, 'mr-ledger-photo') +
+        '<div><div class="mr-ledger-name">' + _esc(_empName(emp)) + '</div></div>' +
+        '<div class="mr-ledger-balance">' + balance.toLocaleString() + ' pts</div>' +
+      '</div>' +
+      '<div class="mr-chips">' + chips + '</div>' + rowsHtml;
+  }
+  function setLedgerFilter(filter) { S.ledgerFilter = filter; _render(); }
+  function _renderLedgerRow(r, emp) {
+    var deltaClass = r.delta >= 0 ? 'mr-delta-pos' : 'mr-delta-neg';
+    var sign = r.delta >= 0 ? '+' : '';
+    var byUuid = r.granted_by;
+    var byLabel = '';
+    if (byUuid) {
+      if (emp && emp.auth_user_id && byUuid === emp.auth_user_id) byLabel = 'self';
+      else byLabel = _userName(byUuid);
+    }
+    var byHtml = byLabel ? ' · by ' + _esc(byLabel) : '';
+    var notesHtml = r.notes ? '<div class="mr-ledger-notes">"' + _esc(r.notes) + '"</div>' : '';
+    return '<div class="mr-ledger-row">' +
+      '<div class="mr-delta ' + deltaClass + '">' + sign + r.delta.toLocaleString() + '</div>' +
+      '<div class="mr-ledger-meta">' +
+        '<div class="mr-ledger-reason">' + _esc(r.reason || '—') + '</div>' +
+        '<div class="mr-ledger-by">' + _esc(_sourceLabel(r.source)) + byHtml + '</div>' +
+        notesHtml +
+      '</div>' +
+      '<div class="mr-ledger-time">' + _absOrRelativeTime(r.created_at) + '</div>' +
+      '<button class="mr-btn mr-btn-secondary mr-btn-icon" onclick="MgrRewards.openReverseLedger(\'' + _esc(r.id) + '\')">Reverse</button>' +
+    '</div>';
+  }
+  function _sourceLabel(s) {
+    if (s === 'earn')          return 'earned';
+    if (s === 'redeem')        return 'redeemed';
+    if (s === 'manager_grant') return 'granted';
+    if (s === 'reversal')      return 'reversal';
+    if (s === 'adjustment')    return 'adjustment';
+    return s || 'entry';
+  }
+  function openReverseLedger(ledger_id) {
+    var emp = _empById(S.drilledEmployeeId);
+    if (!emp) return;
+    var rows = window.PentaRewards.getLedger(emp.id, 200);
+    var orig = null;
+    for (var i = 0; i < rows.length; i++) { if (rows[i].id === ledger_id) { orig = rows[i]; break; } }
+    if (!orig) { _toast('Ledger row not found', 'error'); return; }
+    var sign = orig.delta >= 0 ? '+' : '';
+    _mrShowModal(
+      '<h3 class="mr-modal-title">Reverse this entry?</h3>' +
+      '<div class="mr-modal-body">' +
+        '<div>Original: <strong>' + sign + orig.delta.toLocaleString() + ' pts</strong> — ' + _esc(orig.reason || '—') + '</div>' +
+        '<div class="mr-modal-note">This will create a new ledger entry with opposite delta and source=\'reversal\'.</div>' +
+      '</div>' +
+      '<div class="mr-modal-actions">' +
+        '<button class="mr-btn mr-btn-secondary" onclick="MgrRewards.closeModal()">Cancel</button>' +
+        '<button class="mr-btn mr-btn-danger" id="mr-rev-confirm" onclick="MgrRewards.submitReverseLedger(\'' + _esc(ledger_id) + '\')">Reverse</button>' +
+      '</div>'
+    );
+  }
+  async function submitReverseLedger(ledger_id) {
+    if (S.inFlight) return;
+    var btn = document.getElementById('mr-rev-confirm');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    var emp = _empById(S.drilledEmployeeId);
+    if (!emp) { _toast('No employee', 'error'); S.inFlight = false; return; }
+    var rows = window.PentaRewards.getLedger(emp.id, 200);
+    var orig = null;
+    for (var i = 0; i < rows.length; i++) { if (rows[i].id === ledger_id) { orig = rows[i]; break; } }
+    if (!orig) { _toast('Original entry not found', 'error'); S.inFlight = false; return; }
+    try {
+      // Direct insert — Phase 3-only path, no facade method (reversal is a
+      // user-driven manager action, not a redemption-rejection cascade).
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) throw new Error('No Supabase client');
+      var uid = null;
+      try {
+        var ses = window.PentaAuth && window.PentaAuth.session;
+        uid = (ses && ses.user && ses.user.id) || null;
+        if (!uid) {
+          var u = await sb.auth.getUser();
+          uid = (u && u.data && u.data.user && u.data.user.id) || null;
+        }
+      } catch (e) {}
+      var res = await sb.from('reward_ledger').insert({
+        business_id: orig.business_id,
+        employee_id: orig.employee_id,
+        delta: -orig.delta,
+        reason: 'Reversal of: ' + (orig.reason || ''),
+        event_key: orig.event_key || null,
+        source: 'reversal',
+        reference_id: orig.id,
+        granted_by: uid,
+      }).select().maybeSingle();
+      if (res.error) throw res.error;
+      _mrCloseModal();
+      _toast('Entry reversed', 'success');
+      _render();
+    } catch (e) {
+      _toast('Reverse failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+
+  // ── Modal helpers ──
+  function _mrShowModal(html) {
+    var ov = document.getElementById('mr-modal-overlay');
+    var card = document.getElementById('mr-modal-card');
+    if (!ov || !card) return;
+    card.innerHTML = html;
+    ov.classList.add('active');
+    ov.setAttribute('aria-hidden', 'false');
+  }
+  function _mrCloseModal() {
+    var ov = document.getElementById('mr-modal-overlay');
+    if (!ov) return;
+    ov.classList.remove('active');
+    ov.setAttribute('aria-hidden', 'true');
+  }
+
+  // ── Helpers ──
+  function _esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function _attr(s) { return _esc(s); }
+  function _empById(id) {
+    if (!id || !window.PentaEmployees || !window.PentaEmployees.listSync) return null;
+    var rows = window.PentaEmployees.listSync();
+    for (var i = 0; i < rows.length; i++) if (rows[i].id === id) return rows[i];
+    return null;
+  }
+  function _empName(emp) {
+    if (!emp) return 'Unknown';
+    var fn = emp.first_name || '';
+    var ln = emp.last_name || '';
+    var nm = (fn + ' ' + ln).trim();
+    return nm || emp.name || 'Unnamed';
+  }
+  function _empPhotoHtml(emp, klass) {
+    if (!emp) return '<div class="' + klass + ' mr-lb-photo-fallback">?</div>';
+    var url = emp.photoUrl || emp.photo_url || '';
+    if (url) return '<img class="' + klass + '" src="' + _attr(url) + '" alt="">';
+    var ini = (emp.first_name || emp.name || '?').slice(0, 1).toUpperCase();
+    return '<div class="' + klass + ' mr-lb-photo-fallback">' + _esc(ini) + '</div>';
+  }
+  function _slugify(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+  function _toast(msg, kind) {
+    if (typeof showToast === 'function') showToast(msg, kind);
+    else console.log('[MgrRewards] ' + msg);
+  }
+  function _relativeTime(iso) {
+    if (!iso) return '';
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return '';
+    var diff = Math.floor((Date.now() - t) / 1000);
+    if (diff < 60)     return diff + 's ago';
+    if (diff < 3600)   return Math.floor(diff/60)   + 'm ago';
+    if (diff < 86400)  return Math.floor(diff/3600) + 'h ago';
+    if (diff < 604800) return Math.floor(diff/86400) + 'd ago';
+    return new Date(iso).toLocaleDateString();
+  }
+  function _absOrRelativeTime(iso) {
+    if (!iso) return '';
+    var t = new Date(iso).getTime();
+    var diff = Math.floor((Date.now() - t) / 1000);
+    if (diff < 86400) return _relativeTime(iso);
+    var d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+           d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function _userName(uuid) {
+    if (!uuid) return '';
+    if (!S.usersCache) { _ensureUsersCache(); return uuid.slice(0, 8); }
+    var u = S.usersCache[uuid];
+    if (!u) return uuid.slice(0, 8);
+    var fn = (u.first_name || '').trim();
+    if (fn) return fn;
+    var ln = (u.last_name || '').trim();
+    return ln || uuid.slice(0, 8);
+  }
+  async function _ensureUsersCache() {
+    if (S.usersCache || S.usersCacheLoading) return;
+    S.usersCacheLoading = true;
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) { S.usersCacheLoading = false; return; }
+      var res = await sb.from('users').select('id, first_name, last_name');
+      if (res.error) throw res.error;
+      var map = {};
+      var rows = res.data || [];
+      for (var i = 0; i < rows.length; i++) map[rows[i].id] = rows[i];
+      S.usersCache = map;
+      _scheduleRerender();
+    } catch (e) {
+      console.warn('[MgrRewards] users cache fetch failed', e);
+    } finally { S.usersCacheLoading = false; }
+  }
+
+  // ── Wire onChange (debounced) ──
+  if (window.PentaRewards && window.PentaRewards.onChange) {
+    window.PentaRewards.onChange(_scheduleRerender);
+  }
+  if (window.PentaEmployees && window.PentaEmployees.onChange) {
+    window.PentaEmployees.onChange(_scheduleRerender);
+  }
+
+  // ── Public surface ──
+  window.MgrRewards = {
+    open: openManagerRewards, close: closeManagerRewards,
+    switchTab: switchTab, drillToLedger: drillToLedger, closeModal: _mrCloseModal,
+    openApproveSubmission: openApproveSubmission, submitApproveSubmission: submitApproveSubmission,
+    openRejectSubmission: openRejectSubmission, submitRejectSubmission: submitRejectSubmission,
+    openFulfillRedemption: openFulfillRedemption, submitFulfillRedemption: submitFulfillRedemption,
+    openRejectRedemption: openRejectRedemption, submitRejectRedemption: submitRejectRedemption,
+    grantFieldChange: grantFieldChange, grantEventChanged: grantEventChanged,
+    openGrantConfirm: openGrantConfirm, submitGrant: submitGrant,
+    editEarnRow: editEarnRow, cancelEarnEdit: cancelEarnEdit,
+    saveEarnRow: saveEarnRow, deleteEarnRow: deleteEarnRow,
+    openAddEarn: openAddEarn, previewEarnSlug: previewEarnSlug, saveAddEarn: saveAddEarn,
+    editCatalogRow: editCatalogRow, cancelCatalogEdit: cancelCatalogEdit,
+    saveCatalogRow: saveCatalogRow, deleteCatalogRow: deleteCatalogRow,
+    openAddCatalog: openAddCatalog, previewCatalogSlug: previewCatalogSlug, saveAddCatalog: saveAddCatalog,
+    setLedgerFilter: setLedgerFilter,
+    openReverseLedger: openReverseLedger, submitReverseLedger: submitReverseLedger,
+    _state: S, _render: _render,
+  };
+  window.openManagerRewards = openManagerRewards;
+  window.closeManagerRewards = closeManagerRewards;
+  window._mrCloseModal = _mrCloseModal;
 })();
 
 
@@ -13443,7 +14722,8 @@ function contentSwitchTab(which) {
     document.getElementById('ctab-'+t).classList.toggle('active', t === which);
   });
   if (which === 'queue') contentRenderQueue();
-  if (which === 'rewards') contentRenderRewards();
+  // v10.4.0 Phase 3: Rewards tab dispatch removed — superseded by openManagerRewards()
+  // (PentaRewards-backed). contentRenderRewards function body kept for rollback.
 }
 
 function contentTriggerCapture() {
@@ -14085,14 +15365,10 @@ var HOME_APPS = [
   { id: 'rewards',    permKey: 'rewards_icon', label: 'Rewards',    grad: 'linear-gradient(135deg,#FF6482 0%,#FF2D55 100%)',
     iconHtml: LUCIDE['gift'],
     go: function(){
-      // Manager view of rewards = the Content Hub's Rewards tab (leaderboard,
-      // tiers, points). Reuses the existing employee-reward data model
-      // (content_points + rewards_ledger) so manager and staff see one
-      // source of truth.
-      if (typeof openContentView === 'function') {
-        openContentView();
-        setTimeout(function(){ if (typeof contentSwitchTab === 'function') contentSwitchTab('rewards'); }, 60);
-      }
+      // v10.4.0 Sprint 11.5 Phase 3: opens the dedicated PentaRewards-backed
+      // manager UI (5-tab: Leaderboard, Queue, Grant, Settings, Ledger).
+      // Replaces the legacy Content Hub Rewards tab (localStorage-backed).
+      if (typeof openManagerRewards === 'function') openManagerRewards();
     } },
   { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
@@ -35436,6 +36712,27 @@ function _p3dPage(dir) {
       <button onclick="saveNewProduct()" style="flex:1.3;background:linear-gradient(135deg,#8E7BFF,#5E5CE6);border:none;color:#fff;padding:12px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer">Save Product</button>
     </div>
   </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Manager Rewards (Sprint 11.5 Phase 3) — fullscreen overlay container.
+     5-tab UI rendered into #mr-tabs / #mr-body by renderManagerRewards()
+     and helpers (defined alongside PentaRewards prime IIFE).
+     Modal markup lives in #mr-modal-overlay; content swapped via JS.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="manager-rewards-view" data-permission-role="manager" aria-hidden="true">
+  <div class="mr-topbar">
+    <button class="mr-back-btn" onclick="closeManagerRewards()" aria-label="Back">‹</button>
+    <div class="mr-title-wrap">
+      <div class="mr-title">Rewards</div>
+      <div class="mr-subtitle" id="mr-subtitle">Leaderboard, queue & catalog</div>
+    </div>
+  </div>
+  <div class="mr-tabs" id="mr-tabs" role="tablist"></div>
+  <div class="mr-body" id="mr-body"></div>
+</div>
+<div class="mr-modal-overlay" id="mr-modal-overlay" onclick="if(event.target===this)_mrCloseModal()" aria-hidden="true">
+  <div class="mr-modal-card" id="mr-modal-card" role="dialog" aria-modal="true"></div>
 </div>
 
 <!-- Employee Supplies sub-page -->
