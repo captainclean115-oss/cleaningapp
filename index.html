@@ -30009,25 +30009,23 @@ function renderSchedule() {
 
   const list = document.getElementById('schedule-list');
   if (jobs.length === 0) {
-    // Day-aware empty state so it reads correctly when viewing past days too.
-    let debugMsg;
-    if (dayOffsetMs === 0) debugMsg = t('noJobs');
-    else if (dayOffsetMs === oneDayMs) debugMsg = 'No jobs scheduled for tomorrow';
-    else debugMsg = 'No jobs on ' + viewDate.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' });
-    try {
-      const allStored = JSON.parse(localStorage.getItem('cleanco_jobs') || '[]');
-      const todayJobs = allStored.filter(j => j.date === todayStr);
-      debugMsg += `<br><br><div style="background:var(--surface2);border-radius:8px;padding:10px;text-align:left;font-size:11px;color:var(--muted)">
-        <div style="font-weight:700;color:var(--text);margin-bottom:4px">Debug Info</div>
-        <div>Today: <b>${todayStr}</b></div>
-        <div>Your team: <b>${team || '(none)'}</b></div>
-        <div>Total jobs in system: <b>${allStored.length}</b></div>
-        <div>Jobs for today: <b>${todayJobs.length}</b></div>
-        ${todayJobs.length > 0 ? '<div style="margin-top:4px">Jobs today:<br>' + todayJobs.map(j => '• ' + j.clientName + ' · team: ' + (j.team||'(no team)') + ' · fromEdit: ' + (j.fromClientEdit||false)).join('<br>') + '</div>' : ''}
-        ${allStored.length > 0 && todayJobs.length === 0 ? '<div style="margin-top:4px">Recent dates in system:<br>' + [...new Set(allStored.map(j=>j.date))].slice(0,5).join(', ') + '</div>' : ''}
-      </div>`;
-    } catch(e) { debugMsg += '<br>(debug error: ' + e.message + ')'; }
-    list.innerHTML = `<div style="padding:20px;font-size:14px;color:var(--muted);text-align:center">${debugMsg}</div>`;
+    // Day-aware empty state. When today is empty, also surface a one-tap
+    // affordance to view tomorrow — the › chevron in the date bar is the
+    // only other entry point and isn't very discoverable on mobile.
+    let msg;
+    if (dayOffsetMs === 0)            msg = t('noJobs');
+    else if (dayOffsetMs === oneDayMs) msg = 'No jobs scheduled for tomorrow';
+    else                              msg = 'No jobs on ' + viewDate.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' });
+    var tomorrowBtn = '';
+    if (dayOffsetMs === 0) {
+      tomorrowBtn = '<button onclick="empSchedNext()" '
+        + 'style="margin-top:18px;background:linear-gradient(135deg,#6c8fff,#5478e6);color:#fff;border:none;border-radius:14px;padding:12px 22px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">'
+        + "View tomorrow's schedule →</button>";
+    }
+    list.innerHTML = '<div style="padding:32px 20px;text-align:center;color:var(--muted)">'
+      + '<div style="font-size:15px;margin-bottom:4px">' + msg + '</div>'
+      + tomorrowBtn
+      + '</div>';
     return;
   }
 
