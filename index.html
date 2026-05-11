@@ -14049,21 +14049,35 @@ async function sendStaffReplyAdmin() {
 
 async function translateChatMessage(text, fromLang, toLang) {
   if (fromLang === toLang) return text;
-  var apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
-  if (!apiKey) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text; // demo fallback marker
+  // v10.5.9: route through the translate-chat Edge Function. Server-side
+  // ANTHROPIC_API_KEY (Supabase secret) keeps the key out of every browser's
+  // localStorage. Falls back to a "[lang] text" marker on any failure so
+  // chat remains usable while the function or auth is misconfigured.
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+    var ses = await sb.auth.getSession();
+    var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    if (!tok) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+    var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/translate-chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001', max_tokens: 200,
-        messages: [{ role: 'user', content: 'Translate this short workplace chat message from '+(LANG_NAMES[fromLang]||fromLang)+' to '+(LANG_NAMES[toLang]||toLang)+'. Reply with ONLY the translation, no quotes.\n\n'+text }]
-      })
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + tok,
+      },
+      body: JSON.stringify({ text: text, fromLang: fromLang, toLang: toLang }),
     });
-    if (!resp.ok) return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+    if (!resp.ok) {
+      console.warn('[translateChat] HTTP ' + resp.status);
+      return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+    }
     var data = await resp.json();
-    return (data.content && data.content[0] && data.content[0].text || text).trim();
-  } catch(e) { return '[' + LANG_CODE_LABEL[toLang] + '] ' + text; }
+    var translated = (data && data.translated || '').trim();
+    return translated || text;
+  } catch (e) {
+    console.warn('[translateChat] failed', e);
+    return '[' + LANG_CODE_LABEL[toLang] + '] ' + text;
+  }
 }
 
 // ── EMPLOYEE-SIDE CHAT ──
