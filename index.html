@@ -29982,51 +29982,57 @@ async function _renderTeamToday(team, dateStr) {
   var host = document.getElementById('emp-team-today-host');
   if (!host) return;
   if (!team) { host.innerHTML = ''; host.style.display = 'none'; return; }
-  // Source 1: getTeamEmployees (mirrors manager Schedule → Teams). Uses
-  // getUnifiedRoster which merges EMPLOYEE_ROSTER (legacy hardcoded) +
-  // PentaEmployees facade. Returns roster-style rows: { id, name,
-  // defaultTeam, role, depot }.
+  // STRICT daily_assignments mode (Tom's directive v10.5.21): only employees
+  // explicitly assigned to this team on this date show up. No fallback to
+  // permanent team_text / defaultTeam — if dispatch hasn't created a
+  // daily_assignments row for the day, the roster is empty.
   var members = [];
+  var assignments = [];
   try {
-    if (typeof getTeamEmployees === 'function') {
-      members = (getTeamEmployees(team, dateStr) || []).slice();
-    }
-  } catch (e) {}
-  // Source 2: RPC get_business_teammates. Bypasses RLS so employee sessions
-  // can see all teammates (PentaEmployees.listSync is narrow to self under
-  // RLS). Merge — don't replace — so we don't lose EMPLOYEE_ROSTER rows
-  // (Katia, Keyshla, etc.) that aren't in the Supabase employees table yet.
-  try {
-    var rpcList = await _fetchSchedTeammates();
-    if (rpcList && rpcList.length) {
-      // Dedup key: lowercased full name. Matches getUnifiedRoster's dedup
-      // pattern so we don't double-count e.g. roster "Viviana" + facade
-      // "Viviana V". RPC rows win on data shape (real first/last names).
-      var seenByName = {};
-      members.forEach(function(m){
-        var n = ((m.name || ((m.first_name||'') + ' ' + (m.last_name||'')).trim()) || '').toLowerCase();
-        if (n) seenByName[n] = true;
-      });
-      rpcList.forEach(function(r){
-        if (!r || r.team_text !== team) return;
-        var full = ((r.first_name || '') + ' ' + (r.last_name || '')).trim();
-        var firstOnly = (r.first_name || '').toLowerCase();
-        if (seenByName[full.toLowerCase()] || seenByName[firstOnly]) return;
-        members.push({
-          id: r.id,
-          name: full,
-          first_name: r.first_name || '',
-          last_name: r.last_name || '',
-          is_team_leader: !!r.is_team_leader,
-          position: r.is_team_leader ? 'team_leader' : 'team_member',
-          defaultTeam: r.team_text || null,
-          photoUrl: r.photo_url || ''
-        });
+    if (window.PentaAssignments && window.PentaAssignments.forDate) {
+      assignments = (window.PentaAssignments.forDate(dateStr) || []).filter(function(a){
+        return a && a.team === team && a.team !== 'OFF';
       });
     }
+  } catch (e) { assignments = []; }
+
+  if (assignments.length === 0) {
+    // Empty state — no per-day assignments for this team. Don't fall back
+    // to defaultTeam; show a clear "not yet assigned" message instead.
+    host.style.display = '';
+    host.innerHTML = '<div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase">Your team · ' + team + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);font-style:italic">No team assignments yet for this day.</div>';
+    return;
+  }
+
+  // Map assignment.employee_id → display row. Source 1: get_business_teammates
+  // RPC for canonical employee info. Source 2: PentaEmployees.listSync
+  // (covers signed-in user when RPC hasn't returned yet).
+  var rpcList = await _fetchSchedTeammates();
+  var byId = {};
+  (rpcList || []).forEach(function(r){ if (r && r.id) byId[r.id] = r; });
+  try {
+    var facade = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+    facade.forEach(function(e){ if (e && e.id && !byId[e.id]) byId[e.id] = { id: e.id, first_name: e.first_name || '', last_name: e.last_name || '', is_team_leader: !!e.is_team_leader, photo_url: e.photo_url || '' }; });
   } catch (e) {}
-  // Defensive: drop any terminated/deleted that slipped through.
-  members = members.filter(function(m){ return m && !m.deleted_at && (m.status !== 'terminated'); });
+
+  members = assignments.map(function(a){
+    var r = byId[a.employee_id];
+    if (r) {
+      return {
+        id: r.id,
+        first_name: r.first_name || '',
+        last_name: r.last_name || '',
+        name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(),
+        is_team_leader: !!r.is_team_leader,
+        position: r.is_team_leader ? 'team_leader' : 'team_member'
+      };
+    }
+    return { id: a.employee_id, first_name: 'Teammate', last_name: String(a.employee_id || '').slice(0, 6), name: 'Teammate' };
+  });
+  // Dedupe by id (in case assignment table has duplicate rows for the same emp).
+  var seenIds = {};
+  members = members.filter(function(m){ if (!m.id || seenIds[m.id]) return false; seenIds[m.id] = true; return true; });
   if (members.length === 0) { host.innerHTML = ''; host.style.display = 'none'; return; }
   host.style.display = '';
   var meId = (currentEmployee && currentEmployee.id) || null;
