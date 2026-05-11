@@ -1199,23 +1199,33 @@ body {
 
 /* Employee Schedule — month-picker modal triggered by tapping the date.
    Pill styling + trailing chevron makes it obvious the date is tappable;
-   the bare-text version was discoverability-zero on mobile. */
+   the bare-text version was discoverability-zero on mobile. iOS Safari
+   needs -webkit-appearance:none to suppress its default <button> chrome
+   that otherwise eats background-color + border-radius. */
+button.emp-sched-datebar-label,
 .emp-sched-datebar-label {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 999px;
-  padding: 6px 14px;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.18) !important;
+  border-radius: 999px !important;
+  padding: 7px 16px !important;
   cursor: pointer;
-  color: rgba(255,255,255,0.92);
+  color: rgba(255,255,255,0.92) !important;
   font-family: 'DM Sans', sans-serif;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+  flex: 0 1 auto !important;
+  margin: 0 8px;
 }
 .emp-sched-datebar-label::after {
   content: ' ▾';
   font-size: 11px;
-  margin-left: 4px;
+  margin-left: 6px;
   opacity: 0.7;
 }
-.emp-sched-datebar-label:active { background: rgba(255,255,255,0.12); }
+.emp-sched-datebar-label:active { background: rgba(255,255,255,0.14) !important; }
 #emp-sched-picker-overlay {
   display: none; position: fixed; inset: 0; z-index: 580;
   background: rgba(10,10,32,0.75);
@@ -12209,29 +12219,54 @@ window.addEventListener('DOMContentLoaded', function() {
   // Helpers (function declarations are hoisted within this handler).
   function _bootResolveEmployeeFromAuth(parsed) {
     return (async function() {
-      if (!window.PentaEmployees) return null;
-      try { await window.PentaEmployees.ready(); } catch (e) {}
-      var rows = [];
-      try { rows = await window.PentaEmployees.list(); } catch (e) { return null; }
       var authId = parsed && parsed.user && parsed.user.id;
       if (!authId) return null;
-      var match = null;
-      for (var i = 0; i < rows.length; i++) {
-        if (rows[i].auth_user_id === authId) { match = rows[i]; break; }
+      // Direct single-row fetch. Previously awaited PentaEmployees.ready(),
+      // which awaits PentaTeams.load() + a paginated `from('employees')
+      // .select('*').range(0,999)` of the full business roster. On mobile
+      // that chain was the slow-login bottleneck — for the boot router we
+      // only need ONE row. PentaEmployees still auto-hydrates in parallel
+      // via pentaPrimeHydrate so the rest of the app's cache fills as before.
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) return null;
+      try {
+        var res = await sb.from('employees')
+          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id')
+          .eq('auth_user_id', authId)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (res.error || !res.data) return null;
+        var m = res.data;
+        // Team-name lookup: PentaTeams may not be loaded yet (it hydrates in
+        // parallel), so fall back to team_text. _fromRow normally does this;
+        // we replicate inline because we bypassed that path.
+        var teamName = m.team_text || '';
+        try {
+          if (m.team_id && window.PentaTeams && window.PentaTeams.getById) {
+            var t = window.PentaTeams.getById(m.team_id);
+            if (t && t.name) teamName = t.name;
+          }
+        } catch (e) {}
+        var langMap = { mx: 'es', br: 'pt', kr: 'ko', us: 'en', generic: 'en' };
+        return {
+          id: m.legacy_roster_id || m.id,
+          name: ((m.first_name || '') + ' ' + (m.last_name || '')).trim(),
+          first_name: m.first_name || '',
+          last_name: m.last_name || '',
+          team: teamName,
+          team_id: m.team_id || null,
+          lang: langMap[m.culture_tag] || 'en',
+          status: m.status || 'active',
+          role: [],
+          position: m.position || 'team_member',
+          photoUrl: m.photo_url || '',
+          photo_url: m.photo_url || '',
+          auth_user_id: m.auth_user_id || authId
+        };
+      } catch (e) {
+        console.error('[boot] direct employee fetch failed', e);
+        return null;
       }
-      if (!match) return null;
-      // Phase 6.4: dropped legacy roster enrichment. PentaEmployees.list() rows
-      // already carry name/team/lang via _fromRow; no localStorage lookup needed.
-      var langMap = { mx: 'es', br: 'pt', kr: 'ko', us: 'en', generic: 'en' };
-      return {
-        id: match.legacy_roster_id || match.id,
-        name: match.name
-              || ((match.first_name || '') + ' ' + (match.last_name || '')).trim(),
-        team: match.team || '',
-        lang: match.lang || langMap[match.culture_tag] || 'en',
-        status: 'active',
-        role: match.role || []
-      };
     })();
   }
 
