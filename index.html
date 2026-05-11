@@ -28828,6 +28828,11 @@ async function saveStaffEmployee() {
     // companion users-row UPSERT below (after the employees row is saved)
     // so the person can sign in with full manager privileges.
     position: ((document.getElementById('staff-role')||{}).value) || 'team_member',
+    // v10.5.13: keep the is_team_leader boolean in sync with position.
+    // set_job_actual_time RPC reads is_team_leader; the schedule UI reads
+    // position. Without this sync the two fields drift and TL buttons
+    // render but the server-side RPC rejects.
+    is_team_leader: (((document.getElementById('staff-role')||{}).value) === 'team_leader'),
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
@@ -30439,10 +30444,12 @@ function renderSchedule() {
     return FREQ_SHORT[clientObj.fc] || clientObj.fc;
   }
 
-  // Past-date guard: TL action buttons (incident, payment, issue) write to
-  // cleanco_pending and assume the job is today. Hide them on past + future
-  // views — employees can read the schedule but not edit a past clean.
-  const _isTodayView = (dayOffsetMs === 0);
+  // Past-date guard: TL action buttons (incident, payment, issue, on-my-way,
+  // start/stop) write live state. Hide on past views — employees can read
+  // the schedule but not edit a past clean. Tomorrow IS allowed so TLs can
+  // preview their team's actions; v10.5.13 widened from today-only after
+  // Tom flagged that empty-today schedules were hiding the buttons entirely.
+  const _isTodayView = (dayOffsetMs >= 0);
   list.innerHTML = jobs.map((j, i) => {
     const ex = extras[j.clientId] || {};
     const isDone = completedJobs[j.id];
