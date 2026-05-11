@@ -28827,6 +28827,11 @@ function openEditStaff(idx) {
   // v9.5: hydrate Role dropdown
   var _roleSel = document.getElementById('staff-role');
   if (_roleSel) _roleSel.value = emp.position || 'team_member';
+  // v10.5.39: hydrate Driver checkbox. emp.is_driver flows in from
+  // PentaEmployees._fromRow; legacy `role` array also contained 'D' for
+  // some seed data, so fall back to that.
+  var _drvCb = document.getElementById('staff-driver');
+  if (_drvCb) _drvCb.checked = !!(emp.is_driver || (Array.isArray(emp.role) && emp.role.indexOf('D') !== -1));
   document.getElementById('staff-pay').value = emp.payRate || '';
   document.getElementById('staff-lang').value = emp.lang || 'en';
   document.getElementById('staff-status').value = emp.status || 'active';
@@ -28989,6 +28994,10 @@ async function saveStaffEmployee() {
     // position. Without this sync the two fields drift and TL buttons
     // render but the server-side RPC rejects.
     is_team_leader: (((document.getElementById('staff-role')||{}).value) === 'team_leader'),
+    // v10.5.39: driver flag — separate dimension from position (you can be a
+    // TL who also drives, or a team member who drives). _toRow picks this up
+    // and writes employees.is_driver on dual-write.
+    is_driver: !!((document.getElementById('staff-driver')||{}).checked),
     payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
@@ -30086,6 +30095,130 @@ async function clockOut() {
   }
 }
 
+// ─────────────────────────────────────────
+// LUNCH BREAK — start / end (v10.5.39, Phase A.2)
+// Backed by Migration 035's lunch_breaks table. Pattern mirrors
+// clockIn/clockOut: open break = ended_at IS NULL. Geo-tagged on
+// best-effort. Doesn't end the shift — just records a span inside it.
+// ─────────────────────────────────────────
+var _currentLunch = null;       // open lunch_breaks row, or null
+var _lunchLoadedFor = null;
+var _lunchInFlight = false;
+
+async function loadCurrentLunch(force) {
+  if (_lunchInFlight && !force) return _currentLunch;
+  _lunchInFlight = true;
+  try {
+    var self = await _ttSelfEmpId();
+    if (!self) return null;
+    if (!force && _lunchLoadedFor === self.auth_id && _currentLunch !== undefined) {
+      return _currentLunch;
+    }
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var res = await sb.from('lunch_breaks')
+      .select('id, started_at, ended_at')
+      .eq('employee_id', self.id)
+      .is('ended_at', null)
+      .is('deleted_at', null)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (res.error) { console.warn('[lunch] loadCurrentLunch error', res.error); return null; }
+    _currentLunch = res.data || null;
+    _lunchLoadedFor = self.auth_id;
+    return _currentLunch;
+  } finally {
+    _lunchInFlight = false;
+  }
+}
+
+async function startLunch() {
+  var btn = document.getElementById('emp-lunch-btn');
+  if (btn) btn.disabled = true;
+  try {
+    var self = await _ttSelfEmpId();
+    if (!self) { _toastSimple('Please sign in', 'error'); return; }
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var row = { business_id: self.business_id, employee_id: self.id };
+    try {
+      var pos = await new Promise(function(resolve){
+        if (!navigator.geolocation) return resolve(null);
+        navigator.geolocation.getCurrentPosition(
+          function(p){ resolve(p); },
+          function(){ resolve(null); },
+          { timeout: 4000, maximumAge: 60000 }
+        );
+      });
+      if (pos && pos.coords) {
+        row.start_lat = pos.coords.latitude;
+        row.start_lng = pos.coords.longitude;
+      }
+    } catch (e) {}
+    var res = await sb.from('lunch_breaks').insert(row).select().maybeSingle();
+    if (res.error) throw res.error;
+    _currentLunch = res.data;
+    _toastSimple('Lunch started', 'success');
+    renderSchedule();
+  } catch (e) {
+    _toastSimple('Start lunch failed: ' + (e.message || e), 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function endLunch() {
+  if (!_currentLunch) { _toastSimple('Not currently on lunch', 'error'); return; }
+  var btn = document.getElementById('emp-lunch-btn');
+  if (btn) btn.disabled = true;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var patch = { ended_at: new Date().toISOString() };
+    try {
+      var pos = await new Promise(function(resolve){
+        if (!navigator.geolocation) return resolve(null);
+        navigator.geolocation.getCurrentPosition(
+          function(p){ resolve(p); },
+          function(){ resolve(null); },
+          { timeout: 4000, maximumAge: 60000 }
+        );
+      });
+      if (pos && pos.coords) {
+        patch.end_lat = pos.coords.latitude;
+        patch.end_lng = pos.coords.longitude;
+      }
+    } catch (e) {}
+    var res = await sb.from('lunch_breaks').update(patch).eq('id', _currentLunch.id).select().maybeSingle();
+    if (res.error) throw res.error;
+    _currentLunch = null;
+    _toastSimple('Lunch ended', 'success');
+    renderSchedule();
+  } catch (e) {
+    _toastSimple('End lunch failed: ' + (e.message || e), 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _renderLunchButton() {
+  var host = document.getElementById('emp-lunch-btn-host');
+  if (!host) return;
+  // Only meaningful while clocked in.
+  if (!_currentShift) { host.innerHTML = ''; host.style.display = 'none'; return; }
+  host.style.display = '';
+  var open = _currentLunch;
+  var html;
+  if (open) {
+    html = '<button id="emp-lunch-btn" onclick="endLunch()" '
+      + 'style="-webkit-appearance:none;appearance:none;width:100%;background:linear-gradient(135deg,#FBBF24,#D97706);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:12px;cursor:pointer">'
+      + '🍴 End Lunch · ' + _ttFmtElapsed(open.started_at)
+      + '</button>';
+  } else {
+    html = '<button id="emp-lunch-btn" onclick="startLunch()" '
+      + 'style="-webkit-appearance:none;appearance:none;width:100%;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#92400E;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:12px;cursor:pointer">'
+      + '🍴 Start Lunch'
+      + '</button>';
+  }
+  host.innerHTML = html;
+}
+
 function _ttFmtElapsed(fromIso) {
   if (!fromIso) return '';
   var ms = Date.now() - new Date(fromIso).getTime();
@@ -30145,7 +30278,7 @@ async function _renderTeamToday(team, dateStr) {
   (rpcList || []).forEach(function(r){ if (r && r.id) byId[r.id] = r; });
   try {
     var facade = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
-    facade.forEach(function(e){ if (e && e.id && !byId[e.id]) byId[e.id] = { id: e.id, first_name: e.first_name || '', last_name: e.last_name || '', is_team_leader: !!e.is_team_leader, photo_url: e.photo_url || '', team_text: e.team_text || e.team || '' }; });
+    facade.forEach(function(e){ if (e && e.id && !byId[e.id]) byId[e.id] = { id: e.id, first_name: e.first_name || '', last_name: e.last_name || '', is_team_leader: !!e.is_team_leader, is_driver: !!e.is_driver, photo_url: e.photo_url || '', team_text: e.team_text || e.team || '' }; });
   } catch (e) {}
 
   // Pull today's overrides direct from the DB (bypasses the cache so a row
@@ -30176,6 +30309,7 @@ async function _renderTeamToday(team, dateStr) {
       last_name: r.last_name || '',
       name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(),
       is_team_leader: !!r.is_team_leader,
+      is_driver: !!r.is_driver,
       position: r.is_team_leader ? 'team_leader' : 'team_member'
     });
   }
@@ -30219,6 +30353,7 @@ async function _renderTeamToday(team, dateStr) {
           last_name: sr.last_name || '',
           name: ((sr.first_name || '') + ' ' + (sr.last_name || '')).trim(),
           is_team_leader: !!sr.is_team_leader,
+          is_driver: !!sr.is_driver,
           position: sr.is_team_leader ? 'team_leader' : 'team_member'
         });
       } else if (currentEmployee) {
@@ -30228,6 +30363,7 @@ async function _renderTeamToday(team, dateStr) {
           last_name: currentEmployee.last_name || (currentEmployee.name || '').split(' ').slice(1).join(' ') || '',
           name: currentEmployee.name || '',
           is_team_leader: currentEmployee.position === 'team_leader',
+          is_driver: !!currentEmployee.is_driver,
           position: currentEmployee.position || 'team_member'
         });
       }
@@ -30276,12 +30412,13 @@ async function _renderTeamToday(team, dateStr) {
     var label = (m.first_name || (m.name || '').split(' ')[0] || '?');
     var isMe = (m.id === meId);
     var isTL = !!(m.is_team_leader || m.position === 'team_leader');
+    var isDrv = !!m.is_driver;
     var bg = isMe ? 'rgba(108,143,255,0.15)' : 'rgba(15,20,25,0.06)';
     var border = isMe ? 'rgba(108,143,255,0.4)' : 'rgba(15,20,25,0.16)';
     var fg = isMe ? '#6c8fff' : '#1f2937';
     var span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;background:' + bg + ';border:1px solid ' + border + ';color:' + fg + ';font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px';
-    span.textContent = (isTL ? '★ ' : '') + label + (isMe ? ' (you)' : '');
+    span.textContent = (isTL ? '★ ' : '') + (isDrv ? '🚗 ' : '') + label + (isMe ? ' (you)' : '');
     row.appendChild(span);
     _rendered++;
   });
@@ -30672,13 +30809,25 @@ function renderSchedule() {
   // paint shows the cached state, then refreshes when the open-shift query
   // resolves. Hidden on past/future days (no clocking yesterday).
   var clockHost = document.getElementById('emp-clock-btn-host');
+  var lunchHost = document.getElementById('emp-lunch-btn-host');
   if (clockHost) {
     if (dayOffsetMs === 0) {
       clockHost.style.display = '';
       _renderClockButton();  // paint with whatever's cached
-      loadCurrentShift().then(function(){ _renderClockButton(); }).catch(function(){});
+      loadCurrentShift().then(function(){
+        _renderClockButton();
+        _renderLunchButton();
+      }).catch(function(){});
     } else {
       clockHost.style.display = 'none';
+    }
+  }
+  if (lunchHost) {
+    if (dayOffsetMs === 0) {
+      _renderLunchButton();
+      loadCurrentLunch().then(function(){ _renderLunchButton(); }).catch(function(){});
+    } else {
+      lunchHost.style.display = 'none';
     }
   }
 
@@ -37024,6 +37173,10 @@ function _p3dPage(dir) {
           </select>
         </div>
       </div>
+      <div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:9px">
+        <input type="checkbox" id="staff-driver" style="width:18px;height:18px;accent-color:var(--accent);cursor:pointer">
+        <label for="staff-driver" style="font-size:14px;cursor:pointer;flex:1">🚗 Driver — shows car icon next to name in team views</label>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
@@ -37786,6 +37939,10 @@ function _p3dPage(dir) {
     <!-- Clock In / Clock Out host. Painted by _renderClockButton() from
          renderSchedule when viewing today; hidden otherwise. -->
     <div id="emp-clock-btn-host" style="margin-bottom:8px"></div>
+    <!-- Start Lunch / End Lunch host. v10.5.39 — Phase A.2. Painted by
+         _renderLunchButton() only when an open shift exists (otherwise
+         hidden, since lunch is a mid-shift event). -->
+    <div id="emp-lunch-btn-host" style="margin-bottom:8px"></div>
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap">
       <div class="section-title" id="today-label" style="margin:0">TODAY'S JOBS</div>
       <div id="today-summary" style="font-size:14px;font-weight:600;color:var(--muted);letter-spacing:.02em"></div>
