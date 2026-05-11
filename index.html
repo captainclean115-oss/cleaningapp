@@ -1285,13 +1285,22 @@ button.emp-sched-datebar-label,
 }
 
 #portal-screen.in-subpage #portal-home { display: none; }
-/* When NOT in a sub-page, every portal sub-tab stays hidden. */
+/* When NOT in a sub-page, every portal sub-tab stays hidden.
+   v10.5.18: this rule was previously broken — its selector list flowed
+   into the #tab-rewards styling rule below (no `{ display:none }` block
+   between the selectors and #tab-rewards), so schedule/hours/chat/forms/
+   rate/handbook were never hidden on the home view. Tom could scroll
+   past the icon grid and see the schedule rendered below. Adding the
+   explicit display:none block fixes it. */
 #portal-screen:not(.in-subpage) #tab-schedule,
 #portal-screen:not(.in-subpage) #tab-hours,
 #portal-screen:not(.in-subpage) #tab-chat,
 #portal-screen:not(.in-subpage) #tab-forms,
 #portal-screen:not(.in-subpage) #tab-rate,
 #portal-screen:not(.in-subpage) #tab-handbook,
+#portal-screen:not(.in-subpage) #tab-rewards {
+  display: none !important;
+}
 /* v7-map.3: dark background for rewards tab. Reward CSS hardcodes white
    text (.reward-card-name, .reward-earn-label, etc.); the portal's transparent
    bg currently renders light on body, so white-on-light was invisible.
@@ -1303,9 +1312,6 @@ button.emp-sched-datebar-label,
   background: var(--surface);
   color: var(--text);
   min-height: 100vh; /* fill viewport even with sparse content */
-}
-#portal-screen:not(.in-subpage) #tab-rewards {
-  display: none !important;
 }
 
 /* Phase 6.3a Fix 14: shared 🏠 home button for employee portal sub-pages.
