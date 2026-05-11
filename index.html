@@ -20364,39 +20364,22 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay) {
 // EMPLOYEE ROSTER
 // ─────────────────────────────────────────
 
-const EMPLOYEE_ROSTER = [
-  // B1
-  { id: 'e1',  name: 'Viviana',     defaultTeam: 'B1', role: ['TL'],     depot: 'abington' },
-  { id: 'e2',  name: 'Keyshla',     defaultTeam: 'B1', role: ['D'],      depot: 'abington' },
-  { id: 'e3',  name: 'Katia',       defaultTeam: 'B1', role: [],         depot: 'abington' },
-  // B3
-  { id: 'e4',  name: 'Etelvina',    defaultTeam: 'B3', role: ['TL','D'], depot: 'abington' },
-  { id: 'e5',  name: 'Eunice',      defaultTeam: 'B3', role: [],         depot: 'abington' },
-  { id: 'e6',  name: 'Maria Vieira', defaultTeam: 'B3', role: [],         depot: 'abington' },
-  // B5
-  { id: 'e7',  name: 'Ines',        defaultTeam: 'B5', role: ['TL','D'], depot: 'abington' },
-  { id: 'e8',  name: 'Maria Ventura',defaultTeam: 'B5', role: [],         depot: 'abington' },
-  { id: 'e9',  name: 'Fernanda',    defaultTeam: 'B5', role: [],         depot: 'abington' },
-  // S1
-  { id: 'e10', name: 'Nadia',       defaultTeam: 'S1', role: ['TL','D'], depot: 'abington' },
-  { id: 'e11', name: 'Franchesca',  defaultTeam: 'S1', role: [],         depot: 'abington' },
-  { id: 'e12', name: 'Natalia',     defaultTeam: 'S1', role: [],         depot: 'abington' },
-  // S3
-  { id: 'e13', name: 'Joana',       defaultTeam: 'S3', role: ['TL'],     depot: 'abington' },
-  { id: 'e14', name: 'Analia',      defaultTeam: 'S3', role: [],         depot: 'abington' },
-  { id: 'e15', name: 'Lucia',       defaultTeam: 'S3', role: ['D'],      depot: 'abington' },
-  { id: 'e16', name: 'Elvia',       defaultTeam: null, role: [],         depot: 'abington', floater: true },
-  // M1
-  { id: 'e17', name: 'Yennifer',    defaultTeam: 'M1', role: ['D'],      depot: 'marlborough' },
-  { id: 'e18', name: 'Kati',        defaultTeam: 'M1', role: [],         depot: 'marlborough' },
-  // M2
-  { id: 'e19', name: 'Candida',     defaultTeam: 'M2', role: [],         depot: 'marlborough' },
-  { id: 'e20', name: 'Laura',       defaultTeam: 'M2', role: ['D'],      depot: 'marlborough' },
-  // M3
-  { id: 'e21', name: 'Blanca',      defaultTeam: 'M3', role: ['TL','D'], depot: 'marlborough' },
-  { id: 'e22', name: 'Idania',      defaultTeam: 'M3', role: ['D'],      depot: 'marlborough' },
-  { id: 'e23', name: 'Ana',         defaultTeam: 'M3', role: ['D'],      depot: 'marlborough' },
-];
+// v10.5.22 — retired. The 22-entry hardcoded demo roster (Viviana 'e1',
+// Keyshla 'e2', Katia 'e3', Etelvina 'e4', …) was pre-Sprint-4 seed data
+// that leaked into manager + employee views via getUnifiedRoster, creating
+// phantom names that don't match Tom's real Manna Maids employees. Real
+// roster lives in PentaEmployees (Supabase employees table) — every
+// consumer of EMPLOYEE_ROSTER falls through to PentaEmployees /
+// daily_assignments / the get_business_teammates RPC when this is empty.
+//
+// Kept as an empty `const` so the 45 `typeof EMPLOYEE_ROSTER !== 'undefined'`
+// guards across the codebase still parse — they just see length 0 and
+// move on to real data sources.
+//
+// Original content saved in git history (pre-v10.5.22). To re-introduce
+// demo data for a local dev seed, populate this array — its consumers
+// haven't changed, only the data source preference.
+const EMPLOYEE_ROSTER = [];
 
 // Phase 6.5b: getUnifiedRoster() — EMPLOYEE_ROSTER (hardcoded + pre-6.3b
 // portal merge) UNION facade rows (post-6.3b additions), deduped by name +
