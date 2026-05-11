@@ -30129,6 +30129,22 @@ async function _renderTeamToday(team, dateStr) {
     else _push({ id: o.employee_id, first_name: 'Teammate', last_name: String(o.employee_id || '').slice(0, 6) });
   });
 
+  // v10.5.32 TEMP DIAGNOSTIC: surface counts so we can see why the card is
+  // showing only self. Remove once Tom confirms team chips are appearing.
+  try {
+    console.log('[teamToday] team=', team, 'dateStr=', dateStr,
+                'rpcList=', (rpcList || []).length,
+                'overrides=', overrides.length,
+                'rpcOnTeam=', (rpcList || []).filter(function(r){return r && r.team_text===team;}).length,
+                'overridesOnTeam=', overrides.filter(function(o){return o && o.team===team;}).length,
+                'membersBeforeSelf=', members.length);
+    var _dbgBits = ['team='+team, 'rpc='+(rpcList||[]).length, 'ov='+overrides.length,
+                    'rpcT='+(rpcList||[]).filter(function(r){return r&&r.team_text===team;}).length,
+                    'ovT='+overrides.filter(function(o){return o&&o.team===team;}).length,
+                    'pre='+members.length];
+    window._teamTodayDbg = _dbgBits.join(' · ');
+  } catch (e) {}
+
   // Always include the signed-in employee — guarantees the card never
   // renders empty when the user is viewing their own day, even if neither
   // source resolved them.
@@ -30206,7 +30222,8 @@ async function _renderTeamToday(team, dateStr) {
       + '</span>';
   }).join('');
   host.innerHTML = '<div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase">Your team · ' + team + '</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>';
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>'
+    + (window._teamTodayDbg ? '<div style="margin-top:6px;font-size:10px;color:#f59e0b;font-family:ui-monospace,monospace">[dbg] ' + window._teamTodayDbg + '</div>' : '');
 }
 
 function _renderClockButton() {
