@@ -30129,22 +30129,6 @@ async function _renderTeamToday(team, dateStr) {
     else _push({ id: o.employee_id, first_name: 'Teammate', last_name: String(o.employee_id || '').slice(0, 6) });
   });
 
-  // v10.5.32 TEMP DIAGNOSTIC: surface counts so we can see why the card is
-  // showing only self. Remove once Tom confirms team chips are appearing.
-  try {
-    console.log('[teamToday] team=', team, 'dateStr=', dateStr,
-                'rpcList=', (rpcList || []).length,
-                'overrides=', overrides.length,
-                'rpcOnTeam=', (rpcList || []).filter(function(r){return r && r.team_text===team;}).length,
-                'overridesOnTeam=', overrides.filter(function(o){return o && o.team===team;}).length,
-                'membersBeforeSelf=', members.length);
-    var _dbgBits = ['team='+team, 'rpc='+(rpcList||[]).length, 'ov='+overrides.length,
-                    'rpcT='+(rpcList||[]).filter(function(r){return r&&r.team_text===team;}).length,
-                    'ovT='+overrides.filter(function(o){return o&&o.team===team;}).length,
-                    'pre='+members.length];
-    _dbgBits.push('names=[' + members.map(function(m){return (m.first_name||'?')+':'+String(m.id||'').slice(0,4);}).join(',') + ']');
-    window._teamTodayDbg = _dbgBits.join(' · ');
-  } catch (e) {}
 
   // Always include the signed-in employee — guarantees the card never
   // renders empty when the user is viewing their own day, even if neither
@@ -30225,21 +30209,15 @@ async function _renderTeamToday(team, dateStr) {
     var label = (m.first_name || (m.name || '').split(' ')[0] || '?');
     var isMe = (m.id === meId);
     var isTL = !!(m.is_team_leader || m.position === 'team_leader');
-    var bg = isMe ? 'rgba(108,143,255,0.15)' : 'rgba(255,255,255,0.08)';
-    var border = isMe ? 'rgba(108,143,255,0.4)' : 'rgba(255,255,255,0.16)';
-    var fg = isMe ? '#6c8fff' : 'rgba(255,255,255,0.92)';
+    var bg = isMe ? 'rgba(108,143,255,0.15)' : 'rgba(15,20,25,0.06)';
+    var border = isMe ? 'rgba(108,143,255,0.4)' : 'rgba(15,20,25,0.16)';
+    var fg = isMe ? '#6c8fff' : '#1f2937';
     var span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;background:' + bg + ';border:1px solid ' + border + ';color:' + fg + ';font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px';
     span.textContent = (isTL ? '★ ' : '') + label + (isMe ? ' (you)' : '');
     row.appendChild(span);
     _rendered++;
   });
-  if (window._teamTodayDbg) {
-    var dbg = document.createElement('div');
-    dbg.style.cssText = 'margin-top:6px;font-size:10px;color:#f59e0b;font-family:ui-monospace,monospace';
-    dbg.textContent = '[dbg] ' + window._teamTodayDbg + ' · rendered=' + _rendered;
-    host.appendChild(dbg);
-  }
 }
 
 function _renderClockButton() {
