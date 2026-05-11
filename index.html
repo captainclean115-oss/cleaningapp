@@ -30016,6 +30016,31 @@ function _toastSimple(msg, kind) {
 }
 
 // ─────────────────────────────────────────
+// GPS PICKER — bottom-sheet that lets the user pick Apple Maps or Waze.
+// Receives encodedAddr (already URI-encoded) so the inline onclick template
+// in renderSchedule doesn't need to deal with embedded quotes/commas.
+// ─────────────────────────────────────────
+function openGpsPicker(encodedAddr) {
+  var addr = (function(){ try { return decodeURIComponent(encodedAddr || ''); } catch (e) { return encodedAddr || ''; } })();
+  var q = encodeURIComponent(addr);
+  var existing = document.getElementById('gps-picker-overlay');
+  if (existing) existing.remove();
+  var ov = document.createElement('div');
+  ov.id = 'gps-picker-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.55);display:flex;align-items:flex-end;justify-content:center;font-family:\'DM Sans\',sans-serif';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:#fff;border-radius:22px 22px 0 0;width:100%;max-width:480px;padding:18px 18px calc(env(safe-area-inset-bottom, 0px) + 18px);box-shadow:0 -8px 32px rgba(0,0,0,0.2)';
+  sheet.innerHTML = ''
+    + '<div style="text-align:center;color:#666;font-size:12px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:12px">Open Directions</div>'
+    + '<a href="https://maps.apple.com/?q=' + q + '" onclick="setTimeout(function(){var o=document.getElementById(\'gps-picker-overlay\');if(o)o.remove();},50)" style="display:block;background:#000;color:#fff;text-align:center;border-radius:14px;padding:15px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:8px">🗺 Apple Maps</a>'
+    + '<a href="https://waze.com/ul?q=' + q + '&navigate=yes" onclick="setTimeout(function(){var o=document.getElementById(\'gps-picker-overlay\');if(o)o.remove();},50)" style="display:block;background:#05c8f7;color:#000;text-align:center;border-radius:14px;padding:15px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:10px">🚙 Waze</a>'
+    + '<button onclick="document.getElementById(\'gps-picker-overlay\').remove()" style="width:100%;background:#F0F0F0;color:#666;border:none;border-radius:14px;padding:13px;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>';
+  ov.appendChild(sheet);
+  document.body.appendChild(ov);
+}
+
+// ─────────────────────────────────────────
 // ON MY WAY — TL/manager-only SMS to client via RingCentral
 // Posts to the send-sms Edge Function, which uses server-stored RC refresh
 // token to call platform.ringcentral.com/restapi/v1.0/.../sms. Keeps the RC
@@ -30541,50 +30566,48 @@ function renderSchedule() {
         ${t('tapToExpand')} ▾
       </button>
 
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        <div style="display:flex;gap:8px">
-          <a href="${mapsUrl}" style="flex:1;background:#000;color:#fff;border:none;border-radius:10px;padding:11px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none">
-            ${t('appleMaps')}
-          </a>
-          <a href="https://waze.com/ul?q=${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:''))}&navigate=yes" style="flex:1;background:#05c8f7;color:#000;border:none;border-radius:10px;padding:11px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none">
-            ${t('waze')}
-          </a>
-
-        </div>
-        ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? `
-        <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="width:100%;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
-          ⚠ Report Issue
-        </button>` : ''}
-        ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? (function(){
-          // Job timing state machine:
-          //   neither timestamp → show "▶ Start"
-          //   start set, end null → show "⏹ End" with elapsed
-          //   both set → show "✓ <duration>" badge, no action button
-          var jid = String(j.id || '').replace(/'/g, "\\'");
-          if (!j.actual_start_at) {
-            return "<button onclick=\"startJob('" + jid + "')\" style=\"width:100%;background:linear-gradient(135deg,#34D399,#0D9488);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer;margin-top:6px\">▶ Start Job</button>";
-          }
-          if (!j.actual_end_at) {
-            var _el = (function(iso){ var ms = Date.now() - new Date(iso).getTime(); if (ms<0) ms=0; var mn=Math.floor(ms/60000); var hh=Math.floor(mn/60), mm=mn%60; return hh>0 ? (hh+'h '+(mm<10?'0':'')+mm+'m') : (mm+'m'); })(j.actual_start_at);
-            return "<button onclick=\"endJob('" + jid + "')\" style=\"width:100%;background:linear-gradient(135deg,#F87171,#DC2626);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer;margin-top:6px\">⏹ End Job · " + _el + "</button>";
-          }
-          var _dur = (function(a,b){ var ms = new Date(b).getTime() - new Date(a).getTime(); if (ms<0) ms=0; var mn=Math.floor(ms/60000); var hh=Math.floor(mn/60), mm=mn%60; return hh>0 ? (hh+'h '+(mm<10?'0':'')+mm+'m') : (mm+'m'); })(j.actual_start_at, j.actual_end_at);
-          return "<div style=\"width:100%;background:rgba(52,211,153,0.10);border:1px solid rgba(52,211,153,0.30);color:#34D399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px;border-radius:10px;margin-top:6px;text-align:center\">✓ Completed in " + _dur + "</div>";
-        })() : ''}
-      </div>
+      <!-- v10.5.14 — restructured action buttons.
+           Layout (TL): Start Job (top, full-width) → 2x2 grid (GPS | Report
+           Issue / Report Incident | Receive Payment, equal split, slightly
+           taller) → On My Way (bottom, full-width).
+           Layout (non-TL): just the GPS button (full-width) so team members
+           can navigate.
+           GPS taps open a bottom-sheet chooser for Apple Maps vs Waze. -->
+      ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? (function(){
+        var jid = String(j.id || '').replace(/'/g, "\\'");
+        if (!j.actual_start_at) {
+          return "<button onclick=\"startJob('" + jid + "')\" style=\"width:100%;background:linear-gradient(135deg,#34D399,#0D9488);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:10px;cursor:pointer;margin-top:8px\">▶ Start Job</button>";
+        }
+        if (!j.actual_end_at) {
+          var _el = (function(iso){ var ms = Date.now() - new Date(iso).getTime(); if (ms<0) ms=0; var mn=Math.floor(ms/60000); var hh=Math.floor(mn/60), mm=mn%60; return hh>0 ? (hh+'h '+(mm<10?'0':'')+mm+'m') : (mm+'m'); })(j.actual_start_at);
+          return "<button onclick=\"endJob('" + jid + "')\" style=\"width:100%;background:linear-gradient(135deg,#F87171,#DC2626);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:10px;cursor:pointer;margin-top:8px\">⏹ End Job · " + _el + "</button>";
+        }
+        var _dur = (function(a,b){ var ms = new Date(b).getTime() - new Date(a).getTime(); if (ms<0) ms=0; var mn=Math.floor(ms/60000); var hh=Math.floor(mn/60), mm=mn%60; return hh>0 ? (hh+'h '+(mm<10?'0':'')+mm+'m') : (mm+'m'); })(j.actual_start_at, j.actual_end_at);
+        return "<div style=\"width:100%;background:rgba(52,211,153,0.10);border:1px solid rgba(52,211,153,0.30);color:#34D399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:11px;border-radius:10px;margin-top:8px;text-align:center\">✓ Completed in " + _dur + "</div>";
+      })() : ''}
       ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? `
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="flex:1;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 8px;border-radius:10px;cursor:pointer">
-          ${t('reportIncident')}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer">
+          🚗 GPS
         </button>
-        <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="flex:1;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 8px;border-radius:10px;cursor:pointer">
-          ${t('receivePayment')}
+        <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+          ⚠ Report Issue
+        </button>
+        <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+          🚨 Report Incident
+        </button>
+        <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+          💵 Receive Payment
         </button>
       </div>
       ${j.phone ? `
       <button onclick="sendOnMyWay('${j.id}','${String(j.phone).replace(/'/g,'\\\'')}','${(clientObj && clientObj.fn || (j.clientName||'').split(',').slice(-1)[0]||'').trim().replace(/'/g,'\\\'')}')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#6c8fff,#5478e6);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
         📲 On My Way
-      </button>` : ''}` : ''}
+      </button>` : ''}` : `
+      <!-- Non-TL: just GPS, full-width. -->
+      <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="width:100%;margin-top:8px;background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer">
+        🚗 GPS
+      </button>`}
     </div>`;
   }).join('');
 
