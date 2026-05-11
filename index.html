@@ -1172,7 +1172,7 @@ body {
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 16px;
   padding: 8px 12px;
-  margin-bottom: 10px;
+  margin-bottom: 6px; /* v10.5.20: tightened from 10px to close the gap above team-today */
 }
 .emp-sched-datebar-label {
   flex: 1; min-width: 0;
@@ -37468,26 +37468,29 @@ function _p3dPage(dir) {
 
   <!-- SCHEDULE TAB -->
   <div id="tab-schedule" class="section">
+    <!-- v10.5.20: team-today moved to top of the tab (right under the
+         portal header that holds the logout button), per Tom's note that
+         the YOUR TEAM card should sit just below logout. Order is now
+         Team → Date bar → Today-chip → Clock → Section header → Jobs.
+         Margins tightened (5-6px) to close the big gap that was showing
+         between date-bar and the rest. -->
+    <div id="emp-team-today-host" style="margin-bottom:6px"></div>
     <!-- Date bar: employee can step back through past days and one day
          forward (tomorrow). Anything beyond tomorrow is blocked. -->
-    <div class="emp-sched-datebar">
+    <div class="emp-sched-datebar" style="margin-bottom:6px">
       <button type="button" class="emp-sched-nav" onclick="empSchedPrev()" aria-label="Previous day">‹</button>
       <!-- Tap the date to open the month picker. -->
       <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()" style="-webkit-appearance:none !important;appearance:none !important;background:rgba(255,255,255,0.08) !important;border:1px solid rgba(255,255,255,0.22) !important;border-radius:999px !important;padding:7px 18px !important;color:rgba(255,255,255,0.95) !important;font-family:'DM Sans',sans-serif !important;font-size:13px !important;font-weight:600 !important;cursor:pointer !important;margin:0 8px !important;flex:0 1 auto !important;line-height:1.2 !important">Tap for date ▾</button>
       <button type="button" class="emp-sched-nav" id="emp-sched-next-btn" onclick="empSchedNext()" aria-label="Next day">›</button>
     </div>
-    <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:10px;display:none">
+    <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:6px;display:none">
       <button type="button" onclick="empSchedGoToday()"
         style="background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:'DM Sans',sans-serif;font-size:11px;font-weight:700;padding:4px 12px;border-radius:14px;cursor:pointer;letter-spacing:0.04em">JUMP TO TODAY</button>
     </div>
-    <!-- Team-today roster — painted by _renderTeamToday() from
-         renderSchedule. Lists teammates assigned to the same team on the
-         viewed day. Empty/hidden when no team or no assignments. -->
-    <div id="emp-team-today-host" style="margin-bottom:10px"></div>
     <!-- Clock In / Clock Out host. Painted by _renderClockButton() from
          renderSchedule when viewing today; hidden otherwise. -->
-    <div id="emp-clock-btn-host" style="margin-bottom:12px"></div>
-    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+    <div id="emp-clock-btn-host" style="margin-bottom:8px"></div>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap">
       <div class="section-title" id="today-label" style="margin:0">TODAY'S JOBS</div>
       <div id="today-summary" style="font-size:14px;font-weight:600;color:var(--muted);letter-spacing:.02em"></div>
     </div>
