@@ -19991,12 +19991,33 @@ function resetTeamColors() {
   closeTeamColorEditor();
 }
 
-function openTeamManager() {
+async function openTeamManager() {
   const overlay = document.getElementById('team-manager-overlay');
   overlay.style.display = 'flex';
   const picker = document.getElementById('team-mgr-date');
   picker.value = new Date().toISOString().split('T')[0];
-  renderTeamManager();
+  // v10.5.24: wait for PentaEmployees to hydrate before painting the roster.
+  // EMPLOYEE_ROSTER is empty (v10.5.22), so there's no demo fallback to
+  // fill in while the Supabase fetch is in flight — opening the view on
+  // a cold cache would paint "no employees to assign" until manually
+  // re-rendered. Subscribe to onChange too in case hydrate completes
+  // after a tick.
+  renderTeamManager();  // optimistic first paint (may be empty)
+  if (window.PentaEmployees && window.PentaEmployees.ready) {
+    try { await window.PentaEmployees.ready(); } catch (e) {}
+    renderTeamManager();  // repaint after hydrate
+  }
+  // One-shot subscribe so a late hydrate / realtime add re-renders too.
+  // Guard via a flag so we don't pile up duplicate listeners across open/close.
+  if (!window._tmgrOnChangeWired && window.PentaEmployees && window.PentaEmployees.onChange) {
+    window._tmgrOnChangeWired = true;
+    window.PentaEmployees.onChange(function() {
+      var ov = document.getElementById('team-manager-overlay');
+      if (ov && ov.style.display !== 'none') {
+        try { renderTeamManager(); } catch (e) {}
+      }
+    });
+  }
 }
 
 function closeTeamManager() {
