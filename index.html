@@ -12747,11 +12747,15 @@ function _saveJobsToStorage(data) {
 // v10.5.36 warning rate-limit: this function fires on every PentaJobs
 // mutation, so a permanently-full quota would spam the console once per
 // realtime event. Surface the warning once per minute per tier.
-var _saveJobsLastWarnAt = {};
+// v10.5.37: saveJobsInit() at line ~12716 runs BEFORE this var assignment,
+// so the original `var _saveJobsLastWarnAt = {}` hoisted as undefined and
+// `_saveJobsLastWarnAt[tier]` threw — halting the entire top-level script
+// and breaking boot. Attach to window so the function can lazy-init.
 function _saveJobsWarn(tier) {
+  if (!window._saveJobsLastWarnAt) window._saveJobsLastWarnAt = {};
   var now = Date.now();
-  if ((now - (_saveJobsLastWarnAt[tier] || 0)) < 60000) return;
-  _saveJobsLastWarnAt[tier] = now;
+  if ((now - (window._saveJobsLastWarnAt[tier] || 0)) < 60000) return;
+  window._saveJobsLastWarnAt[tier] = now;
   var msgs = {
     d60: '[saveJobs] quota hit — persisted last 60 days only',
     d30: '[saveJobs] quota hit — persisted last 30 days only',
