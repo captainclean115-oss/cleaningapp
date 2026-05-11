@@ -29954,9 +29954,24 @@ function _renderTeamToday(team, dateStr) {
       members = getTeamEmployees(team, dateStr) || [];
     }
   } catch (e) { members = []; }
-  // Filter to active. getTeamEmployees already returns roster matched to
-  // assignments; defensive belt-and-suspenders here in case the unified
-  // roster includes terminated rows.
+  // Fallback: if no daily_assignments rows for this date, fall back to
+  // employees whose PERMANENT team_text matches. Otherwise the roster shows
+  // nothing on days the dispatcher hasn't pre-assigned, which is most days
+  // in the current data model. v10.5.16 — Tom flagged the empty roster after
+  // confirming today/tomorrow had zero daily_assignments rows.
+  if (members.length === 0 && window.PentaEmployees && window.PentaEmployees.listSync) {
+    try {
+      var all = window.PentaEmployees.listSync() || [];
+      members = all.filter(function(e){
+        if (!e || e.deleted_at || e.terminated_at) return false;
+        if (e.status === 'terminated' || e.status === 'archived') return false;
+        var et = (e.team_text || e.team || '').toString();
+        return et && et === team;
+      });
+    } catch (e) { /* leave members empty */ }
+  }
+  // Defensive: drop any terminated/deleted that slipped through the
+  // getTeamEmployees path.
   members = members.filter(function(m){ return m && !m.deleted_at && (m.status !== 'terminated'); });
   if (members.length === 0) { host.innerHTML = ''; host.style.display = 'none'; return; }
   host.style.display = '';
