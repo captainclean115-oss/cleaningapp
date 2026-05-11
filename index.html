@@ -8747,7 +8747,11 @@ window.PentaRewards = (function() {
   // ── TAB 1 — Leaderboard ──
   function _renderLeaderboard(body) {
     var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
-    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
+    // Current employees only — terminated/archived rows shouldn't surface on
+    // the rewards leaderboard even if they have historical ledger activity.
+    emps = emps.filter(function(e){
+      return !e.deleted_at && !e.terminated_at && (e.is_active !== false) && e.status !== 'archived' && e.status !== 'terminated';
+    });
     var balances = (window.PentaRewards && window.PentaRewards.getAllBalances()) || new Map();
     var rows = emps.map(function(e) { return { emp: e, balance: balances.get(e.id) || 0 }; });
     rows.sort(function(a, b) {
@@ -8977,7 +8981,9 @@ window.PentaRewards = (function() {
   // ── TAB 3 — Grant ──
   function _renderGrant(body) {
     var emps = ((window.PentaEmployees && window.PentaEmployees.listSync()) || [])
-      .filter(function(e){ return !e.deleted_at && (e.is_active !== false); }).slice();
+      .filter(function(e){
+        return !e.deleted_at && !e.terminated_at && (e.is_active !== false) && e.status !== 'archived' && e.status !== 'terminated';
+      }).slice();
     emps.sort(function(a, b){ return _empName(a).localeCompare(_empName(b)); });
     var events = window.PentaRewards.listEarnEvents();
 
@@ -10079,46 +10085,40 @@ window.PentaRewards = (function() {
     // aren't visible via PentaEmployees RLS.
     var teammates = await _fetchTeammates();
 
-    // Single board build — reused for rank pill, top-3 preview, full list.
-    // Source union: PentaEmployees (active rows) ∪ ledger employee_ids ∪ self.
-    // The ledger union is the load-bearing piece — RLS or sparse hydration
-    // can leave PentaEmployees with only the current user, so without it
-    // teammates with reward activity (e.g. Nadia at 100 pts) drop off the
-    // leaderboard entirely. EMPLOYEE_ROSTER is a last-resort fallback used
-    // only when PentaEmployees is completely empty (its 'e_*' ids don't
-    // match ledger UUIDs, so it's name-only filler).
+    // Board members = canonical "current employees" set. Teammate RPC is the
+    // source of truth (Migration 030 filters deleted_at + terminated_at).
+    // PentaEmployees is the fallback when RPC isn't applied (manager session
+    // sees full set); EMPLOYEE_ROSTER is a last-resort display-only fallback.
+    // CRITICAL: balances map is used for balance lookup ONLY, never for set
+    // membership — including ledger-key ids surfaces terminated employees
+    // who still have historical ledger activity.
     var balances = (window.PentaRewards && window.PentaRewards.getAllBalances) ? window.PentaRewards.getAllBalances() : new Map();
     var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
-    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
-    var nameById = {};
-    // Teammate RPC results first (canonical for ledger-only teammates).
-    if (teammates && teammates.forEach) {
-      teammates.forEach(function(tm, id){ nameById[id] = _empName(tm); });
-    }
-    // PentaEmployees overrides (richer rows for self / manager sessions).
-    for (var ne = 0; ne < emps.length; ne++) nameById[emps[ne].id] = _empName(emps[ne]);
-    var idSet = {};
-    for (var ie2 = 0; ie2 < emps.length; ie2++) idSet[emps[ie2].id] = true;
-    if (teammates && teammates.forEach) {
-      teammates.forEach(function(_tm, id){ idSet[id] = true; });
-    }
-    balances.forEach(function(_v, k){ idSet[k] = true; });
-    if (meId) idSet[meId] = true;
-    if (emps.length === 0 && (!teammates || teammates.size === 0) && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
-      for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
-        var rr = EMPLOYEE_ROSTER[ir];
-        if (rr && rr.id) {
-          idSet[rr.id] = true;
-          if (!nameById[rr.id]) nameById[rr.id] = rr.name || 'Teammate';
+    emps = emps.filter(function(e){
+      return !e.deleted_at && !e.terminated_at && (e.is_active !== false) && e.status !== 'archived' && e.status !== 'terminated';
+    });
+    var members = new Map();  // id -> emp-like row
+    if (teammates && teammates.size > 0) {
+      teammates.forEach(function(tm, id){ members.set(id, tm); });
+    } else {
+      for (var ie3 = 0; ie3 < emps.length; ie3++) {
+        var em = emps[ie3];
+        if (em && em.id) members.set(em.id, em);
+      }
+      if (members.size === 0 && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
+        for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
+          var rr = EMPLOYEE_ROSTER[ir];
+          if (rr && rr.id) members.set(rr.id, { id: rr.id, name: rr.name || 'Teammate' });
         }
       }
     }
+    // Always include self — even managers with no employees row should appear
+    // if they're the signed-in user looking at their own balance.
+    if (meId && !members.has(meId) && S.selfEmp) members.set(meId, S.selfEmp);
     var board = [];
-    for (var idK in idSet) {
-      if (!Object.prototype.hasOwnProperty.call(idSet, idK)) continue;
-      var nm = nameById[idK] || ('Teammate ' + String(idK).slice(0, 6));
-      board.push({ id: idK, name: nm, pts: balances.get(idK) || 0 });
-    }
+    members.forEach(function(emp, id) {
+      board.push({ id: id, name: _empName(emp), pts: balances.get(id) || 0 });
+    });
     board.sort(function(a, b) {
       if (b.pts !== a.pts) return b.pts - a.pts;
       return a.name.localeCompare(b.name);
@@ -10257,49 +10257,36 @@ window.PentaRewards = (function() {
     var meId = _meId();
     if (!meId) { _toast('Please sign in to send gifts.', 'error'); return; }
     if (!window.PentaRewards) return;
-    // Merged-source recipient list (mirrors render()'s leaderboard build).
-    // Teammate RPC supplies real names for ledger-only teammates; PentaEmployees
-    // overrides for self / manager sessions; ledger keys union in anyone with
-    // reward activity; EMPLOYEE_ROSTER only fires when both sources are empty.
+    // Recipient list = canonical "current employees" set (Migration 030 RPC),
+    // minus self. Mirrors render()'s board build — balances are looked up but
+    // never seed set membership, so terminated teammates with historical
+    // ledger activity never surface as gift targets.
     var teammates = await _fetchTeammates();
     var balances = window.PentaRewards.getAllBalances ? window.PentaRewards.getAllBalances() : new Map();
     var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
-    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
-    var nameById = {};
-    var empById = {};
-    if (teammates && teammates.forEach) {
-      teammates.forEach(function(tm, id) {
-        nameById[id] = _empName(tm);
-        empById[id]  = tm;
-      });
-    }
-    for (var ne = 0; ne < emps.length; ne++) {
-      nameById[emps[ne].id] = _empName(emps[ne]);
-      empById[emps[ne].id]  = emps[ne];
-    }
-    var idSet = {};
-    for (var ie2 = 0; ie2 < emps.length; ie2++) idSet[emps[ie2].id] = true;
-    if (teammates && teammates.forEach) {
-      teammates.forEach(function(_tm, id){ idSet[id] = true; });
-    }
-    balances.forEach(function(_v, k){ idSet[k] = true; });
-    if (emps.length === 0 && (!teammates || teammates.size === 0) && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
-      for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
-        var rr = EMPLOYEE_ROSTER[ir];
-        if (rr && rr.id) {
-          idSet[rr.id] = true;
-          if (!nameById[rr.id]) nameById[rr.id] = rr.name || 'Teammate';
+    emps = emps.filter(function(e){
+      return !e.deleted_at && !e.terminated_at && (e.is_active !== false) && e.status !== 'archived' && e.status !== 'terminated';
+    });
+    var members = new Map();
+    if (teammates && teammates.size > 0) {
+      teammates.forEach(function(tm, id){ members.set(id, tm); });
+    } else {
+      for (var ie3 = 0; ie3 < emps.length; ie3++) {
+        var em = emps[ie3];
+        if (em && em.id) members.set(em.id, em);
+      }
+      if (members.size === 0 && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
+        for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
+          var rr = EMPLOYEE_ROSTER[ir];
+          if (rr && rr.id) members.set(rr.id, { id: rr.id, name: rr.name || 'Teammate' });
         }
       }
     }
+    members.delete(meId);  // can't gift to self
     var rows = [];
-    for (var idK in idSet) {
-      if (!Object.prototype.hasOwnProperty.call(idSet, idK)) continue;
-      if (idK === meId) continue;
-      var nm = nameById[idK] || ('Teammate ' + String(idK).slice(0, 6));
-      var emp = empById[idK] || { id: idK, first_name: nm.split(' ')[0] || nm, last_name: nm.split(' ').slice(1).join(' ') };
-      rows.push({ emp: emp, pts: balances.get(idK) || 0 });
-    }
+    members.forEach(function(emp, id) {
+      rows.push({ emp: emp, pts: balances.get(id) || 0 });
+    });
     rows.sort(function(a, b) { return _empName(a.emp).localeCompare(_empName(b.emp)); });
 
     var existing = document.getElementById('er-gift-picker-overlay');
