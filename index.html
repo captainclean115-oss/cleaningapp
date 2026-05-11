@@ -29940,6 +29940,53 @@ function _ttFmtElapsed(fromIso) {
   return m + 'm';
 }
 
+function _renderTeamToday(team, dateStr) {
+  // Paint #emp-team-today-host with the roster assigned to `team` on
+  // `dateStr`. Hidden if no team (e.g. employee with no team_text), or
+  // if no teammates resolve. Mirrors the dispatch view's getTeamEmployees
+  // helper so what employees see matches what the manager sees.
+  var host = document.getElementById('emp-team-today-host');
+  if (!host) return;
+  if (!team) { host.innerHTML = ''; host.style.display = 'none'; return; }
+  var members = [];
+  try {
+    if (typeof getTeamEmployees === 'function') {
+      members = getTeamEmployees(team, dateStr) || [];
+    }
+  } catch (e) { members = []; }
+  // Filter to active. getTeamEmployees already returns roster matched to
+  // assignments; defensive belt-and-suspenders here in case the unified
+  // roster includes terminated rows.
+  members = members.filter(function(m){ return m && !m.deleted_at && (m.status !== 'terminated'); });
+  if (members.length === 0) { host.innerHTML = ''; host.style.display = 'none'; return; }
+  host.style.display = '';
+  var meId = (currentEmployee && currentEmployee.id) || null;
+  // Put "you" first for emphasis.
+  members.sort(function(a, b){
+    var aSelf = (a.id === meId) ? 0 : 1;
+    var bSelf = (b.id === meId) ? 0 : 1;
+    if (aSelf !== bSelf) return aSelf - bSelf;
+    var aN = ((a.first_name || a.name || '') + '').toLowerCase();
+    var bN = ((b.first_name || b.name || '') + '').toLowerCase();
+    return aN.localeCompare(bN);
+  });
+  var chips = members.map(function(m) {
+    var label = (m.first_name || (m.name || '').split(' ')[0] || '?');
+    var isMe = (m.id === meId);
+    var isTL = !!(m.is_team_leader || m.position === 'team_leader');
+    var lead = isTL ? '★ ' : '';
+    var suffix = isMe ? ' (you)' : '';
+    var bg = isMe ? 'rgba(108,143,255,0.15)' : 'rgba(255,255,255,0.08)';
+    var border = isMe ? 'rgba(108,143,255,0.4)' : 'rgba(255,255,255,0.16)';
+    var fg = isMe ? '#6c8fff' : 'rgba(255,255,255,0.92)';
+    return '<span style="display:inline-flex;align-items:center;background:' + bg + ';border:1px solid ' + border + ';color:' + fg + ';font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px">'
+      + lead + label + suffix
+      + '</span>';
+  }).join('');
+  host.innerHTML = '<div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase">Your team · ' + team + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>';
+}
+
 function _renderClockButton() {
   // Inject (or update) the clock button into #emp-clock-btn-host.
   var host = document.getElementById('emp-clock-btn-host');
@@ -30289,6 +30336,14 @@ function renderSchedule() {
   var jumpChip = document.getElementById('emp-sched-today-chip');
   if (jumpChip) jumpChip.style.display = (dayOffsetMs !== 0) ? 'block' : 'none';
 
+  // Team-today roster: shown for today + tomorrow (same window as the
+  // schedule-edit actions). Hidden on past dates.
+  var teamHost = document.getElementById('emp-team-today-host');
+  if (teamHost) {
+    if (dayOffsetMs >= 0) _renderTeamToday(team, todayStr);
+    else { teamHost.innerHTML = ''; teamHost.style.display = 'none'; }
+  }
+
   // Clock button: only on today's view. Fire-and-forget the load so first
   // paint shows the cached state, then refreshes when the open-shift query
   // resolves. Hidden on past/future days (no clocking yesterday).
@@ -30341,6 +30396,17 @@ function renderSchedule() {
         if (_c && (_c.status === 'paused' || _c.status === 'inactive')) return false;
       }
       return true;
+    });
+    // v10.5.15: sort by time ascending. PentaJobs.listSync order isn't
+    // guaranteed time-sorted (insert order / DB index quirks). j.time is
+    // "HH:MM" 24h string so lexicographic compare == chronological. Flexible
+    // / null-time jobs sink to the bottom.
+    jobs.sort(function(a, b) {
+      var aFlex = !!a.flexible || !a.time;
+      var bFlex = !!b.flexible || !b.time;
+      if (aFlex !== bFlex) return aFlex ? 1 : -1;
+      if (aFlex && bFlex) return 0;
+      return String(a.time).localeCompare(String(b.time));
     });
   } catch(e) {}
 
@@ -30587,11 +30653,11 @@ function renderSchedule() {
       })() : ''}
       ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer">
-          🚗 GPS
-        </button>
         <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           ⚠ Report Issue
+        </button>
+        <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer">
+          🚗 GPS
         </button>
         <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           🚨 Report Incident
@@ -37345,6 +37411,10 @@ function _p3dPage(dir) {
       <button type="button" onclick="empSchedGoToday()"
         style="background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:'DM Sans',sans-serif;font-size:11px;font-weight:700;padding:4px 12px;border-radius:14px;cursor:pointer;letter-spacing:0.04em">JUMP TO TODAY</button>
     </div>
+    <!-- Team-today roster — painted by _renderTeamToday() from
+         renderSchedule. Lists teammates assigned to the same team on the
+         viewed day. Empty/hidden when no team or no assignments. -->
+    <div id="emp-team-today-host" style="margin-bottom:10px"></div>
     <!-- Clock In / Clock Out host. Painted by _renderClockButton() from
          renderSchedule when viewing today; hidden otherwise. -->
     <div id="emp-clock-btn-host" style="margin-bottom:12px"></div>
