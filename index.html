@@ -27326,12 +27326,22 @@ function appGoApply() {
   if (_pinScreen) _pinScreen.style.display = 'none';
   var pl = document.getElementById('penta-login-screen');
   if (pl) pl.style.display = 'none';
+  // v10.5.8: #application-screen lives inside #staff-panel, which the
+  // pre-auth gate (html.pre-auth #staff-panel) hides with display:none
+  // !important and higher specificity than the .active rule. Add .active
+  // for normal flow AND force inline display:block with !important so the
+  // panel + form render even while pre-auth is still set. Inline-with-
+  // important beats any selector-based rule.
   const panel = document.getElementById('staff-panel');
-  if (panel) panel.classList.add('active');
+  if (panel) {
+    panel.classList.add('active');
+    panel.style.setProperty('display', 'block', 'important');
+  }
   document.getElementById('login-screen').style.display = 'none';
   if (document.getElementById('portal-screen')) document.getElementById('portal-screen').style.display = 'none';
   if (document.getElementById('admin-screen')) document.getElementById('admin-screen').style.display = 'none';
-  document.getElementById('application-screen').style.display = 'block';
+  var appScreen = document.getElementById('application-screen');
+  appScreen.style.setProperty('display', 'block', 'important');
   const inner = document.getElementById('staff-panel-inner');
   if (inner) { inner.style.justifyContent = 'flex-start'; inner.style.alignItems = 'stretch'; inner.style.padding = '0'; }
   const activeLang = document.querySelector('.app-lang-btn.active');
@@ -32390,7 +32400,17 @@ function hideApplication() {
     closeManagerAppForm();
     return;
   }
-  document.getElementById('application-screen').style.display = 'none';
+  // v10.5.8: clear the inline display:block !important added by appGoApply,
+  // then hide. Symmetric — same trick we used to defeat the pre-auth gate
+  // on open needs unwinding on close so staff-panel returns to gated state.
+  var appScreen = document.getElementById('application-screen');
+  appScreen.style.removeProperty('display');
+  appScreen.style.display = 'none';
+  var sp = document.getElementById('staff-panel');
+  if (sp) {
+    sp.style.removeProperty('display');
+    sp.classList.remove('active');
+  }
   var isEmp = false;
   try { isEmp = new URLSearchParams(window.location.search).get('emp') === '1'; } catch(e){}
   if (isEmp) {
