@@ -20803,7 +20803,27 @@ function assignEmployee(employeeId, team, dateStr) {
   // readers (getEmployeeTeam at L17414, etc.) already map 'OFF' → null
   // at read time. Auto-covers callers in Claire moveteam, schedule
   // team-dropdown, Phase 3d 'swap' strategy, and legacy Claire moveteam.
-  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, employeeId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
+  //
+  // v10.5.23: surface dual-write failures via toast. The original silent
+  // console.warn left assignments stranded in localStorage with no UI
+  // signal — Tom hit this exact case (assigned Viviana + Melissa, only
+  // saw them on the dispatch view, employee sessions saw nothing because
+  // the Supabase writes never landed). A toast is loud enough that a
+  // dispatcher knows the assignment didn't persist.
+  try {
+    if (window.PentaAssignments) {
+      window.PentaAssignments.assign(dateStr, team, employeeId).catch(function(e){
+        console.warn('[Phase 3f] assign failed:', e);
+        try {
+          if (typeof showToast === 'function') {
+            showToast('Assignment did not save: ' + (e && e.message ? e.message : 'unknown error'), 'error');
+          }
+        } catch (_te) {}
+      });
+    }
+  } catch(e){
+    console.warn('[Phase 3f] assign threw sync:', e);
+  }
 }
 
 
