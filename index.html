@@ -30370,13 +30370,15 @@ function empSchedPickerGoToday() {
   empSchedClosePicker();
 }
 function empSchedPickerPick(iso) {
-  _empSchedDate = new Date(iso + 'T00:00:00');
-  // If the picker was opened from the home screen (not the schedule tab),
-  // navigate into the schedule view so the user lands on the data they
-  // just selected. Idempotent if already on schedule.
+  // v10.5.30: navigate FIRST, then set the date. showPortalTab('schedule')
+  // resets _empSchedDate to null (its "fresh opens start on today"
+  // behavior) — if we set the date before showPortalTab, it gets wiped.
+  // Order matters: open the tab (which clears), THEN set the picked
+  // date, THEN render so the painted view reflects the choice.
   try {
     if (typeof showPortalTab === 'function') showPortalTab('schedule');
   } catch (e) {}
+  _empSchedDate = new Date(iso + 'T00:00:00');
   renderSchedule();
   empSchedClosePicker();
 }
