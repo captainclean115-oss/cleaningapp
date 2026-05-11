@@ -30142,6 +30142,7 @@ async function _renderTeamToday(team, dateStr) {
                     'rpcT='+(rpcList||[]).filter(function(r){return r&&r.team_text===team;}).length,
                     'ovT='+overrides.filter(function(o){return o&&o.team===team;}).length,
                     'pre='+members.length];
+    _dbgBits.push('names=[' + members.map(function(m){return (m.first_name||'?')+':'+String(m.id||'').slice(0,4);}).join(',') + ']');
     window._teamTodayDbg = _dbgBits.join(' · ');
   } catch (e) {}
 
