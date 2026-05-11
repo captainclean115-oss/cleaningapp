@@ -29938,7 +29938,32 @@ function renderSchedule() {
   var datebarLbl = document.getElementById('emp-sched-datebar-label');
   if (datebarLbl) {
     datebarLbl.textContent = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '')
-      + viewDate.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+      + viewDate.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' })
+      + ' ▾';
+    // Belt-and-suspenders: force pill styling via setProperty('important')
+    // every render. CSS + inline-style attribute already cover this, but
+    // iOS Safari has a history of caching <style> blocks past hard-refresh;
+    // this JS path runs regardless of which stylesheet version is active.
+    try {
+      var pillStyles = {
+        'background': 'rgba(255,255,255,0.08)',
+        'border': '1px solid rgba(255,255,255,0.22)',
+        'border-radius': '999px',
+        'padding': '7px 18px',
+        'color': 'rgba(255,255,255,0.95)',
+        'font-size': '13px',
+        'font-weight': '600',
+        'cursor': 'pointer',
+        'margin': '0 8px',
+        '-webkit-appearance': 'none',
+        'appearance': 'none',
+        'flex': '0 1 auto',
+        'line-height': '1.2'
+      };
+      Object.keys(pillStyles).forEach(function(k){
+        datebarLbl.style.setProperty(k, pillStyles[k], 'important');
+      });
+    } catch (e) {}
   }
   var nextBtn = document.getElementById('emp-sched-next-btn');
   if (nextBtn) {
@@ -36955,7 +36980,7 @@ function _p3dPage(dir) {
     <div class="emp-sched-datebar">
       <button type="button" class="emp-sched-nav" onclick="empSchedPrev()" aria-label="Previous day">‹</button>
       <!-- Tap the date to open the month picker. -->
-      <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()" style="-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);border-radius:999px;padding:7px 16px;color:rgba(255,255,255,0.92);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;margin:0 8px;flex:0 1 auto">Today</button>
+      <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()" style="-webkit-appearance:none !important;appearance:none !important;background:rgba(255,255,255,0.08) !important;border:1px solid rgba(255,255,255,0.22) !important;border-radius:999px !important;padding:7px 18px !important;color:rgba(255,255,255,0.95) !important;font-family:'DM Sans',sans-serif !important;font-size:13px !important;font-weight:600 !important;cursor:pointer !important;margin:0 8px !important;flex:0 1 auto !important;line-height:1.2 !important">Tap for date ▾</button>
       <button type="button" class="emp-sched-nav" id="emp-sched-next-btn" onclick="empSchedNext()" aria-label="Next day">›</button>
     </div>
     <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:10px;display:none">
