@@ -29111,6 +29111,11 @@ async function saveStaffEmployee() {
         // builder, so manager edits to Role never persisted to DB (only
         // new-hire INSERTs included it via Object.assign(emp)). Add here.
         if (emp.position !== undefined) patch.position = emp.position || 'team_member';
+        // v10.5.40: dual-write was missing is_team_leader + is_driver in the
+        // patch builder, so checkbox toggles never reached the DB column.
+        // Mirrors the v9.5.1 fix for `position`.
+        if (emp.is_team_leader !== undefined) patch.is_team_leader = !!emp.is_team_leader;
+        if (emp.is_driver !== undefined)      patch.is_driver      = !!emp.is_driver;
         if (emp.shirtSize !== undefined) patch.shirt_size = emp.shirtSize || null;
         if (emp.pantsSize !== undefined) patch.pants_size = emp.pantsSize || null;
         if (emp.workAuth !== undefined) patch.work_auth = emp.workAuth || null;
