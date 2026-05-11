@@ -30055,21 +30055,24 @@ async function _fetchSchedTeammates() {
 async function _renderTeamToday(team, dateStr) {
   // Paint #emp-team-today-host with everyone on `team` on `dateStr`. Mirrors
   // the manager Schedule → Teams view (renderTeamManager) so employees see
-  // exactly what their manager sees. Source priority:
-  //   1. daily_assignments override for this (date, employee) — via
-  //      getEmployeeTeam, only useful for managers / when localStorage cache
-  //      has the row.
-  //   2. RPC get_business_teammates() — full active roster of the business,
-  //      bypassing employees_select RLS so even an employee session can see
-  //      teammates (Migration 033). Filtered by team_text === team.
+  // exactly what their manager sees.
+  //
+  // v10.5.31: query daily_assignments directly via Supabase instead of going
+  // through PentaAssignments.forDate. Realtime push from the manager session
+  // wasn't always reaching the employee session, leaving the cache stale and
+  // the card showing only "self". A direct, dateStr-scoped query is fresh
+  // every render and cheap (one row per assigned employee for one date).
+  //
+  // Membership rule (matches manager Team Assignments):
+  //   - Start with everyone whose team_text == team (permanent base).
+  //   - For each daily override on dateStr:
+  //       * override.team == team    → add (covers cross-team move-ins)
+  //       * override.team == 'OFF'   → remove from base (off that day)
+  //       * override.team != team    → remove from base (working elsewhere)
   var host = document.getElementById('emp-team-today-host');
   if (!host) return;
   if (!team) { host.innerHTML = ''; host.style.display = 'none'; return; }
-  // Hybrid (v10.5.28): daily_assignments first; if zero, fall back to
-  // permanent team_text. Tom's UX expectation is "show me my team" — strict
-  // daily-only mode left the card empty on every day dispatch hadn't
-  // pre-assigned, which felt broken. Both sources are auth-safe (RPC uses
-  // SECURITY DEFINER, daily_assignments has SELECT for any same-business).
+
   var rpcList = await _fetchSchedTeammates();
   var byId = {};
   (rpcList || []).forEach(function(r){ if (r && r.id) byId[r.id] = r; });
@@ -30078,48 +30081,53 @@ async function _renderTeamToday(team, dateStr) {
     facade.forEach(function(e){ if (e && e.id && !byId[e.id]) byId[e.id] = { id: e.id, first_name: e.first_name || '', last_name: e.last_name || '', is_team_leader: !!e.is_team_leader, photo_url: e.photo_url || '', team_text: e.team_text || e.team || '' }; });
   } catch (e) {}
 
-  // Source 1: PentaAssignments.forDate — per-day overrides.
-  var assignments = [];
+  // Pull today's overrides direct from the DB (bypasses the cache so a row
+  // dispatch added in the manager session shows up here on next render).
+  var overrides = [];
   try {
-    if (window.PentaAssignments && window.PentaAssignments.forDate) {
-      assignments = (window.PentaAssignments.forDate(dateStr) || []).filter(function(a){
-        return a && a.team === team && a.team !== 'OFF';
-      });
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      var ovRes = await sb.from('daily_assignments')
+        .select('employee_id, team, date')
+        .eq('date', dateStr)
+        .is('deleted_at', null);
+      if (!ovRes.error && ovRes.data) overrides = ovRes.data;
     }
-  } catch (e) { assignments = []; }
+  } catch (e) { overrides = []; }
+  var overrideByEmp = {};
+  overrides.forEach(function(o){ if (o && o.employee_id) overrideByEmp[o.employee_id] = o.team; });
 
+  // Build the member set.
   var members = [];
-  if (assignments.length > 0) {
-    members = assignments.map(function(a){
-      var r = byId[a.employee_id];
-      if (r) {
-        return {
-          id: r.id,
-          first_name: r.first_name || '',
-          last_name: r.last_name || '',
-          name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(),
-          is_team_leader: !!r.is_team_leader,
-          position: r.is_team_leader ? 'team_leader' : 'team_member'
-        };
-      }
-      return { id: a.employee_id, first_name: 'Teammate', last_name: String(a.employee_id || '').slice(0, 6), name: 'Teammate' };
-    });
-  } else {
-    // Source 2 (fallback): RPC teammates filtered by team_text. Picks up
-    // everyone permanently on this team, even when dispatch hasn't written
-    // a daily_assignments row.
-    (rpcList || []).forEach(function(r){
-      if (!r || r.team_text !== team) return;
-      members.push({
-        id: r.id,
-        first_name: r.first_name || '',
-        last_name: r.last_name || '',
-        name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(),
-        is_team_leader: !!r.is_team_leader,
-        position: r.is_team_leader ? 'team_leader' : 'team_member'
-      });
+  var seen = {};
+  function _push(r) {
+    if (!r || !r.id || seen[r.id]) return;
+    seen[r.id] = true;
+    members.push({
+      id: r.id,
+      first_name: r.first_name || '',
+      last_name: r.last_name || '',
+      name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(),
+      is_team_leader: !!r.is_team_leader,
+      position: r.is_team_leader ? 'team_leader' : 'team_member'
     });
   }
+
+  // (a) Permanent team_text members, minus anyone with a non-matching override.
+  (rpcList || []).forEach(function(r){
+    if (!r || r.team_text !== team) return;
+    var ov = overrideByEmp[r.id];
+    if (ov && ov !== team) return; // moved elsewhere or OFF today
+    _push(r);
+  });
+
+  // (b) Cross-team move-ins (override.team == team, team_text != team).
+  overrides.forEach(function(o){
+    if (!o || o.team !== team) return;
+    var r = byId[o.employee_id];
+    if (r) _push(r);
+    else _push({ id: o.employee_id, first_name: 'Teammate', last_name: String(o.employee_id || '').slice(0, 6) });
+  });
 
   // Always include the signed-in employee — guarantees the card never
   // renders empty when the user is viewing their own day, even if neither
