@@ -30065,11 +30065,12 @@ async function _renderTeamToday(team, dateStr) {
   var host = document.getElementById('emp-team-today-host');
   if (!host) return;
   if (!team) { host.innerHTML = ''; host.style.display = 'none'; return; }
-  // STRICT daily_assignments mode (Tom's directive v10.5.21): only employees
-  // explicitly assigned to this team on this date show up. No fallback to
-  // permanent team_text / defaultTeam — if dispatch hasn't created a
-  // daily_assignments row for the day, the roster is empty.
-  var members = [];
+  // Daily-assignments + signed-in self (v10.5.27). Team members are read
+  // strictly from PentaAssignments.forDate(dateStr) — no defaultTeam
+  // fallback — but the signed-in employee is ALWAYS included with a
+  // "(you)" tag even when no daily row exists. Empty-state with just
+  // the YOUR TEAM header and nothing below was confusing — Viviana
+  // viewing her own day expects to at least see herself.
   var assignments = [];
   try {
     if (window.PentaAssignments && window.PentaAssignments.forDate) {
@@ -30079,18 +30080,8 @@ async function _renderTeamToday(team, dateStr) {
     }
   } catch (e) { assignments = []; }
 
-  if (assignments.length === 0) {
-    // Empty state — no per-day assignments for this team. Don't fall back
-    // to defaultTeam; show a clear "not yet assigned" message instead.
-    host.style.display = '';
-    host.innerHTML = '<div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase">Your team · ' + team + '</div>'
-      + '<div style="font-size:12px;color:var(--muted);font-style:italic">No team assignments yet for this day.</div>';
-    return;
-  }
-
-  // Map assignment.employee_id → display row. Source 1: get_business_teammates
-  // RPC for canonical employee info. Source 2: PentaEmployees.listSync
-  // (covers signed-in user when RPC hasn't returned yet).
+  // Build id → display row lookup. RPC first (canonical), then PentaEmployees
+  // (covers self + any rows the RPC missed).
   var rpcList = await _fetchSchedTeammates();
   var byId = {};
   (rpcList || []).forEach(function(r){ if (r && r.id) byId[r.id] = r; });
@@ -30099,7 +30090,7 @@ async function _renderTeamToday(team, dateStr) {
     facade.forEach(function(e){ if (e && e.id && !byId[e.id]) byId[e.id] = { id: e.id, first_name: e.first_name || '', last_name: e.last_name || '', is_team_leader: !!e.is_team_leader, photo_url: e.photo_url || '' }; });
   } catch (e) {}
 
-  members = assignments.map(function(a){
+  var members = assignments.map(function(a){
     var r = byId[a.employee_id];
     if (r) {
       return {
@@ -30113,12 +30104,62 @@ async function _renderTeamToday(team, dateStr) {
     }
     return { id: a.employee_id, first_name: 'Teammate', last_name: String(a.employee_id || '').slice(0, 6), name: 'Teammate' };
   });
-  // Dedupe by id (in case assignment table has duplicate rows for the same emp).
+
+  // Always include the signed-in employee (so the card never renders empty
+  // when the user is viewing their own day). Resolved via the same byId
+  // lookup; falls back to currentEmployee if not in the RPC result.
+  try {
+    var selfUuid = null;
+    if (currentEmployee && currentEmployee.id) {
+      // currentEmployee.id might be legacy_roster_id (e_*) — look up via
+      // PentaEmployees if so.
+      var maybeRpcSelf = byId[currentEmployee.id];
+      if (maybeRpcSelf) selfUuid = currentEmployee.id;
+      else if (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId) {
+        var fr = window.PentaEmployees.getByLegacyRosterId(currentEmployee.id);
+        if (fr && fr.id) selfUuid = fr.id;
+      }
+    }
+    if (selfUuid && !members.find(function(m){ return m.id === selfUuid; })) {
+      var sr = byId[selfUuid];
+      if (sr) {
+        members.unshift({
+          id: sr.id,
+          first_name: sr.first_name || '',
+          last_name: sr.last_name || '',
+          name: ((sr.first_name || '') + ' ' + (sr.last_name || '')).trim(),
+          is_team_leader: !!sr.is_team_leader,
+          position: sr.is_team_leader ? 'team_leader' : 'team_member'
+        });
+      } else if (currentEmployee) {
+        members.unshift({
+          id: selfUuid,
+          first_name: currentEmployee.first_name || (currentEmployee.name || '').split(' ')[0] || '',
+          last_name: currentEmployee.last_name || (currentEmployee.name || '').split(' ').slice(1).join(' ') || '',
+          name: currentEmployee.name || '',
+          is_team_leader: currentEmployee.position === 'team_leader',
+          position: currentEmployee.position || 'team_member'
+        });
+      }
+    }
+  } catch (e) {}
+
+  // Dedupe by id (in case assignment table has duplicate rows).
   var seenIds = {};
   members = members.filter(function(m){ if (!m.id || seenIds[m.id]) return false; seenIds[m.id] = true; return true; });
   if (members.length === 0) { host.innerHTML = ''; host.style.display = 'none'; return; }
   host.style.display = '';
+  // Resolve "me" to the UUID form so the (you) tag matches the RPC-shaped
+  // ids in `members`. currentEmployee.id is legacy_roster_id from the
+  // boot resolver; PentaEmployees.getByLegacyRosterId maps it back to the
+  // employees.id UUID.
   var meId = (currentEmployee && currentEmployee.id) || null;
+  if (meId && /^e_/.test(String(meId)) && window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId) {
+    try {
+      var meFR = window.PentaEmployees.getByLegacyRosterId(meId);
+      if (meFR && meFR.id) meId = meFR.id;
+    } catch (e) {}
+  }
   // Put "you" first for emphasis.
   members.sort(function(a, b){
     var aSelf = (a.id === meId) ? 0 : 1;
