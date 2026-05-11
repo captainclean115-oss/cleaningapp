@@ -20033,6 +20033,23 @@ function renderTeamManager() {
   const teams = _pentaTeamNames();
   let html = '';
 
+  // v10.5.25: clear empty-state banner so Tom doesn't see a blank panel
+  // when the cache hasn't hydrated. Logs the actual counts to console so
+  // we can tell the difference between "loading" and "genuinely empty".
+  var _ur = getUnifiedRoster();
+  var _facadeLen = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync().length : 0;
+  var _facadeReady = (window.PentaEmployees && window.PentaEmployees.isReady) ? window.PentaEmployees.isReady() : false;
+  console.log('[TeamMgr] unified=' + _ur.length + ' facade=' + _facadeLen + ' ready=' + _facadeReady);
+  if (_ur.length === 0) {
+    html += '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.30);border-radius:10px;padding:14px 16px;margin-bottom:14px;color:var(--text);font-size:13px">'
+      + '<div style="font-weight:700;margin-bottom:4px">No employees loaded</div>'
+      + '<div style="color:var(--muted)">PentaEmployees facade has <b>' + _facadeLen + '</b> rows (ready=' + (_facadeReady ? 'yes' : 'no') + '). '
+      + (_facadeReady && _facadeLen === 0
+          ? 'Hydrate finished but returned zero rows — check RLS or the employees table directly.'
+          : 'Cache may still be loading. Reopen the dialog in a moment, or hard refresh.')
+      + '</div></div>';
+  }
+
   const termData = getRosterTermData();
   const isActiveEmp = (emp) => (termData[emp.id]?.status || 'active') !== 'terminated';
 
