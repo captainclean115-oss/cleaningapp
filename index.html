@@ -30515,6 +30515,16 @@ function renderSchedule() {
     datebarLbl.textContent = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '')
       + viewDate.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' })
       + ' ▾';
+  }
+  // v10.5.29: also sync the portal-header date pill (#portal-date in
+  // .portal-team next to the team badge). Without this it stayed pinned
+  // to "today" — Tom tapped the next-day arrow and thought the date
+  // wasn't changing because the visible pill at the top of the screen
+  // never moved. The pill stays clickable (opens the same month picker).
+  var portalDate = document.getElementById('portal-date');
+  if (portalDate) {
+    var pdPrefix = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '');
+    portalDate.textContent = pdPrefix + viewDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
     // Belt-and-suspenders: force pill styling via setProperty('important')
     // every render. CSS + inline-style attribute already cover this, but
     // iOS Safari has a history of caching <style> blocks past hard-refresh;
@@ -30536,8 +30546,20 @@ function renderSchedule() {
         'line-height': '1.2'
       };
       Object.keys(pillStyles).forEach(function(k){
-        datebarLbl.style.setProperty(k, pillStyles[k], 'important');
+        if (datebarLbl) datebarLbl.style.setProperty(k, pillStyles[k], 'important');
       });
+      // Mirror essential portal-pill styling to #portal-date too — keeps
+      // its rounded background + accent border in sync with the schedule
+      // date bar's pill. Slightly different palette (accent-tinted vs
+      // white) so it stays distinguishable.
+      try {
+        portalDate.style.setProperty('background', 'rgba(108,143,255,0.10)', 'important');
+        portalDate.style.setProperty('border', '1px solid rgba(108,143,255,0.30)', 'important');
+        portalDate.style.setProperty('border-radius', '999px', 'important');
+        portalDate.style.setProperty('padding', '5px 14px', 'important');
+        portalDate.style.setProperty('-webkit-appearance', 'none', 'important');
+        portalDate.style.setProperty('appearance', 'none', 'important');
+      } catch (_e) {}
     } catch (e) {}
   }
   var nextBtn = document.getElementById('emp-sched-next-btn');
