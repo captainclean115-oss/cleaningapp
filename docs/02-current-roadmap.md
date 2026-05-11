@@ -63,7 +63,17 @@ This document tracks what's being built now, what's next, and what's deferred. U
 - Failures get fixed and re-tested in same session
 - Tom verifies behavior, not mechanics
 
+## Recently Shipped
+
+### Sprint 11.5 — Rewards system v1 (manual loop)
+
+Done as of 2026-05-10. PentaRewards facade + Supabase-backed rewards schema (Migration 027), peer-to-peer gifting (Migration 029), teammate display RPC (Migration 030). Three UI surfaces: Manager Rewards (Leaderboard/Queue/Grant/Settings/Ledger) for approval+grant workflow, EmpRewards employee UI (balance+rank, submit photo, send gift, redeem, leaderboard, recent activity), and the legacy localStorage demo retired to thin delegates. Auto-rewards (rules engine: clock-in attendance, 5-star reviews, referrals, etc.) deferred to Sprint 11.6 Phase 2.
+
 ## Mid-Term (3-6 months)
+
+### Sprint 11.6 — Auto-rewards (rules engine)
+
+The Phase 2 follow-up to Sprint 11.5. Earn events fire automatically from operational signals: clock-in for perfect-attendance bonuses, 5-star client reviews, referral conversions, birthdays/anniversaries, profitable-job bonuses. DB triggers or Edge Functions watch operational tables and write ledger rows when conditions hit. Manager Rewards Settings grows a "Rules" tab to define triggers (event → award amount). Not started; scoped after the three top-priority items above.
 
 ### AI Quote with Margin Selection (Standard Tier)
 
@@ -149,6 +159,7 @@ Don't do it now. Wait for 12-18 months and 30+ Maids franchisees on Penta with o
 - May 5, 2026: Maids CEO/COO meeting, strong validation, no immediate deal, board invitation pending response
 - May 6, 2026: 5-6 Maids franchisees expressing organic interest in Penta
 - May 7, 2026: Mirror-with-report compliance framework locked, Maids Sync Report prioritized
+- May 10, 2026: Sprint 11.5 manual rewards loop shipped to main (v10.5.0). Auto-rewards rules engine deferred to Sprint 11.6 Phase 2.
 - Pricing tier structure locked: $149/$349/$599-799/$1,499 (with voice usage overage)
 - Voice receptionist locked as Full Stack tier driver
 - Financial intelligence layer foundational (not premium add-on)

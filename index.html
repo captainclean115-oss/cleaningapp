@@ -4905,7 +4905,14 @@ window.PentaClients = (function() {
   }
   function _transformRow(r) {
     return {
-      id: r.external_id,
+      // `id` stays the legacy numeric (external_id) for backward compat with
+      // every existing consumer (_cache.findIndex(c=>c.id===…), DOM handlers,
+      // localStorage keys, etc). `uuid` exposes the real Supabase clients.id
+      // so consumers writing FK references (reward_submissions.client_id,
+      // jobs.client_id, …) can resolve the canonical UUID without an extra
+      // query. Sprint 11.5+ Phase 4 — added for EmpRewards photo submit.
+      id:   r.external_id,
+      uuid: r.id,
       fn: _stripTrailing(r.first_name),
       ln: _stripTrailing(r.last_name),
       addr: r.address,
@@ -8233,7 +8240,10 @@ window.PentaRewards = (function() {
   }
   function listPendingSubmissions() {
     var rows = _submissions.filter(function(s){ return s.status === 'pending' && !s.deleted_at; });
-    rows.sort(function(a, b){ return (a.created_at || '').localeCompare(b.created_at || ''); });
+    // Newest first — managers expect "what just came in" at the top of the
+    // queue, not at the bottom. Flipped from ascending after a stale orphan
+    // row at the top hid recent submissions during smoke.
+    rows.sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
     return rows;
   }
   function listMySubmissions(employee_id) {
@@ -8375,7 +8385,8 @@ window.PentaRewards = (function() {
   }
   function listPendingRedemptions() {
     var rows = _redemptions.filter(function(r){ return r.status === 'pending' && !r.deleted_at; });
-    rows.sort(function(a, b){ return (a.created_at || '').localeCompare(b.created_at || ''); });
+    // Newest first — see listPendingSubmissions note.
+    rows.sort(function(a, b){ return (b.created_at || '').localeCompare(a.created_at || ''); });
     return rows;
   }
   function listMyRedemptions(employee_id) {
@@ -8448,6 +8459,107 @@ window.PentaRewards = (function() {
     return res.data;
   }
 
+  // ============== GIFTING ==============
+  // Caps live in code, not DB — Migration 029 keeps them tunable without a
+  // schema change. Both checks run off _ledger cache (already in memory).
+  var GIFT_DAILY_CAP = 200;       // total points one sender can gift today
+  var GIFT_PAIR_DAILY_CAP = 100;  // points one sender can gift to ONE recipient today
+
+  function _todayStartMs() {
+    // Local-calendar boundary — caps reset at the user's midnight, not UTC.
+    var now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+  }
+
+  function getGiftStatsToday(sender_id, recipient_id) {
+    var startMs = _todayStartMs();
+    var sentToday = 0;
+    var sentToRecipient = 0;
+    for (var i = 0; i < _ledger.length; i++) {
+      var r = _ledger[i];
+      if (r.source !== 'gift_out') continue;
+      if (r.employee_id !== sender_id) continue;
+      if (!r.created_at) continue;
+      if (new Date(r.created_at).getTime() < startMs) continue;
+      var amt = Math.abs(r.delta || 0);
+      sentToday += amt;
+      if (recipient_id && r.gift_recipient_id === recipient_id) sentToRecipient += amt;
+    }
+    return {
+      sentToday: sentToday,
+      sentToRecipient: sentToRecipient,
+      dailyCap: GIFT_DAILY_CAP,
+      recipientPairCap: GIFT_PAIR_DAILY_CAP,
+      dailyRemaining: Math.max(0, GIFT_DAILY_CAP - sentToday),
+      recipientRemaining: recipient_id ? Math.max(0, GIFT_PAIR_DAILY_CAP - sentToRecipient) : null,
+    };
+  }
+
+  async function giftPoints(input) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaRewards.giftPoints: no Supabase client');
+    if (!input || !input.sender_id) throw new Error('PentaRewards.giftPoints: sender_id required');
+    if (!input.recipient_id)        throw new Error('PentaRewards.giftPoints: recipient_id required');
+    if (input.sender_id === input.recipient_id) throw new Error("You can't gift points to yourself.");
+    var pts = parseInt(input.points);
+    if (!pts || isNaN(pts) || pts < 1) throw new Error('PentaRewards.giftPoints: points must be a positive integer');
+    var note = (input.note != null ? String(input.note) : '').trim().slice(0, 200);
+
+    // Per-gift caps (so a single huge gift can't bypass the daily totals).
+    if (pts > GIFT_DAILY_CAP)      throw new Error('Gift exceeds the daily cap of ' + GIFT_DAILY_CAP + ' pts.');
+    if (pts > GIFT_PAIR_DAILY_CAP) throw new Error('Gift exceeds the per-recipient cap of ' + GIFT_PAIR_DAILY_CAP + ' pts.');
+
+    // Running-total caps (cache-driven).
+    var stats = getGiftStatsToday(input.sender_id, input.recipient_id);
+    if (stats.sentToday + pts > GIFT_DAILY_CAP) {
+      throw new Error('Daily gift cap reached (' + GIFT_DAILY_CAP + ' pts). Sent today: ' + stats.sentToday + '.');
+    }
+    if (stats.sentToRecipient + pts > GIFT_PAIR_DAILY_CAP) {
+      throw new Error('Daily cap to this recipient reached (' + GIFT_PAIR_DAILY_CAP + ' pts). Sent today: ' + stats.sentToRecipient + '.');
+    }
+
+    if (getBalance(input.sender_id) < pts) throw new Error('Insufficient points');
+
+    var bid = await _businessId();
+    if (!bid) throw new Error('PentaRewards.giftPoints: business_id could not be derived');
+    var uid = await _currentUserId();
+
+    // Step 1: sender (gift_out) row — debit, gift_recipient_id points at recipient.
+    var senderReason = 'Gift sent' + (note ? ': ' + note : '');
+    var senderRes = await sb.from('reward_ledger').insert({
+      business_id: bid,
+      employee_id: input.sender_id,
+      delta: -pts,
+      reason: senderReason,
+      event_key: null,
+      source: 'gift_out',
+      reference_id: null,
+      gift_recipient_id: input.recipient_id,
+      granted_by: uid,
+    }).select().maybeSingle();
+    if (senderRes.error) throw senderRes.error;
+    if (senderRes.data) _ledger.push(senderRes.data);
+
+    // Step 2: recipient (gift_in) row — credit, reference_id back-points at sender row.
+    var recipientReason = 'Gift received' + (note ? ': ' + note : '');
+    var recipientRes = await sb.from('reward_ledger').insert({
+      business_id: bid,
+      employee_id: input.recipient_id,
+      delta: pts,
+      reason: recipientReason,
+      event_key: null,
+      source: 'gift_in',
+      reference_id: senderRes.data ? senderRes.data.id : null,
+      gift_recipient_id: null,
+      granted_by: uid,
+    }).select().maybeSingle();
+    if (recipientRes.error) throw recipientRes.error;
+    if (recipientRes.data) _ledger.push(recipientRes.data);
+
+    _notify();
+    return { sender: senderRes.data, recipient: recipientRes.data };
+  }
+
   return {
     // CONFIG: earn events
     listEarnEvents: listEarnEvents, listAllEarnEvents: listAllEarnEvents,
@@ -8474,6 +8586,9 @@ window.PentaRewards = (function() {
     listMyRedemptions: listMyRedemptions,
     fulfillRedemption: fulfillRedemption,
     rejectRedemption: rejectRedemption,
+    // GIFTING
+    giftPoints: giftPoints,
+    getGiftStatsToday: getGiftStatsToday,
     // LIFECYCLE
     onChange: onChange, isReady: isReady, ready: ready,
     _hydrate: _hydrate, _setupRealtime: _setupRealtime,
@@ -8546,6 +8661,17 @@ window.PentaRewards = (function() {
     { id: 'ledger',      label: 'Ledger', hidden: true },
   ];
 
+  // Force a server re-fetch. Fire-and-forget — _hydrate() guards against
+  // concurrent runs, and the existing onChange listener auto-repaints when
+  // fresh data lands. Used on view-open and on Queue-tab activation so
+  // submissions/redemptions another session inserts surface here without
+  // waiting for a realtime push (or a manual reload) to deliver.
+  function _refreshFromServer() {
+    if (window.PentaRewards && window.PentaRewards._hydrate) {
+      try { window.PentaRewards._hydrate(); } catch (e) {}
+    }
+  }
+
   // ── Open / Close ──
   function openManagerRewards() {
     var v = document.getElementById('manager-rewards-view');
@@ -8553,6 +8679,7 @@ window.PentaRewards = (function() {
     v.classList.add('active');
     v.setAttribute('aria-hidden', 'false');
     document.body.classList.add('overlay-open');
+    _refreshFromServer();
     _render();
   }
   function closeManagerRewards() {
@@ -8602,6 +8729,10 @@ window.PentaRewards = (function() {
   function switchTab(which) {
     if (which !== 'ledger') S.drilledEmployeeId = null;
     S.activeTab = which;
+    // Queue is the high-traffic surface for cross-session work — refresh on
+    // each visit so an employee submission just made elsewhere lands here
+    // without a manual reload.
+    if (which === 'queue') _refreshFromServer();
     _render();
   }
 
@@ -9515,6 +9646,956 @@ window.PentaRewards = (function() {
   window.openManagerRewards = openManagerRewards;
   window.closeManagerRewards = closeManagerRewards;
   window._mrCloseModal = _mrCloseModal;
+})();
+
+
+// =====================================================================
+// Employee Rewards UI — Sprint 11.5+ Phase 4 + Gifting.
+// Renders #employee-rewards-body. PentaRewards-backed (replaces the
+// localStorage demo). Re-renders on PentaRewards.onChange and
+// PentaEmployees.onChange (debounced 200ms). Modal DOM
+// (#reward-gift-overlay) is shared with the retired legacy module —
+// the legacy empRewardsGiftClose / empRewardsGiftConfirm globals are
+// kept as thin delegates so the existing markup keeps working.
+// =====================================================================
+(function() {
+  var S = {
+    debounceTimer: null,
+    inFlight: false,
+    expandSubmissions: false,
+    expandLeaderboard: false,
+    expandActivity: false,
+    photoUrlCache: {},  // sub_id -> signed URL, populated lazily
+    submitPhoto: { blob: null, objectUrl: null },  // pending photo for submit modal
+    selfEmp: null,      // resolved employees-row for the signed-in user (cached)
+    authListenerWired: false,
+    teammateCache: null,    // Map(uuid -> {id, first_name, last_name, photo_url, is_team_leader})
+    teammateCacheAt: 0,     // ms timestamp of last successful _fetchTeammates
+  };
+  var TEAMMATE_CACHE_TTL_MS = 60 * 1000;  // 60s — short, names rarely change
+
+  // Visual palette for catalog cards — PentaRewards.reward_catalog rows
+  // don't carry icon/grad metadata, so derive a stable gradient from a
+  // hash of reward_key and use the first letter of the label as the icon.
+  var GRAD_PALETTE = [
+    'linear-gradient(135deg,#B08968,#6B4226)',
+    'linear-gradient(135deg,#34D399,#0D9488)',
+    'linear-gradient(135deg,#22D3EE,#0891B2)',
+    'linear-gradient(135deg,#A78BFA,#7C3AED)',
+    'linear-gradient(135deg,#F472B6,#DB2777)',
+    'linear-gradient(135deg,#FBBF24,#D97706)',
+    'linear-gradient(135deg,#FF6482,#FF2D55)',
+    'linear-gradient(135deg,#FFD60A,#FF9500)',
+  ];
+  function _gradFor(key) {
+    var k = String(key || '');
+    var h = 0;
+    for (var i = 0; i < k.length; i++) h = ((h << 5) - h + k.charCodeAt(i)) | 0;
+    return GRAD_PALETTE[Math.abs(h) % GRAD_PALETTE.length];
+  }
+  function _iconFor(label) {
+    return ((label || '?').trim().charAt(0) || '?').toUpperCase();
+  }
+
+  function _esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function _attr(s) { return _esc(s); }
+  // Synchronous cache accessor — returns the resolved employees.id only if
+  // it's UUID-shaped. The 'e_*' demo-roster shape from EMPLOYEE_ROSTER is
+  // explicitly rejected here too: any code path reading _meId() must see
+  // either a real UUID or null, never the legacy demo id. Action methods
+  // MUST `await _resolveSelf()` before relying on this.
+  function _meId() {
+    if (S.selfEmp && S.selfEmp.id && _isUuidShape(S.selfEmp.id)) return S.selfEmp.id;
+    if (typeof currentEmployee !== 'undefined' && currentEmployee && _isUuidShape(currentEmployee.id)) return currentEmployee.id;
+    return null;
+  }
+  function _empName(emp) {
+    if (!emp) return 'Unknown';
+    var fn = emp.first_name || '';
+    var ln = emp.last_name || '';
+    var nm = (fn + ' ' + ln).trim();
+    return nm || emp.name || 'Unnamed';
+  }
+  function _empById(id) {
+    if (!id) return null;
+    var rows = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].id === id) return rows[i];
+    return null;
+  }
+  // Tolerant resolver: PentaEmployees → EMPLOYEE_ROSTER name-only fallback →
+  // synthetic stub. Used wherever a teammate id is required for display/work
+  // and the caller can't tolerate a null (e.g. gift recipient lookup). The
+  // gift picker now sources from a merged set that includes ledger-only
+  // employees; without this fallback giftOpen() silently bails.
+  function _resolveTeammate(id) {
+    if (!id) return null;
+    // Teammate-cache hit first (populated by _fetchTeammates → migration 030
+    // RPC). Then PentaEmployees (manager sessions / self), then legacy
+    // EMPLOYEE_ROSTER, then synthetic stub.
+    if (S.teammateCache && S.teammateCache.get) {
+      var cached = S.teammateCache.get(id);
+      if (cached) return cached;
+    }
+    var hit = _empById(id);
+    if (hit) return hit;
+    if (typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
+      for (var i = 0; i < EMPLOYEE_ROSTER.length; i++) {
+        if (EMPLOYEE_ROSTER[i] && EMPLOYEE_ROSTER[i].id === id) {
+          var n = EMPLOYEE_ROSTER[i].name || 'Teammate';
+          var sp = n.split(' ');
+          return { id: id, first_name: sp[0], last_name: sp.slice(1).join(' ') };
+        }
+      }
+    }
+    return { id: id, first_name: 'Teammate', last_name: String(id).slice(0, 6) };
+  }
+  function _tier(p) {
+    if (p >= 500) return { name: 'Legend',    color: '#FCD34D' };
+    if (p >= 250) return { name: 'Star',      color: '#A78BFA' };
+    if (p >= 100) return { name: 'Champion',  color: '#F472B6' };
+    if (p >= 50)  return { name: 'Active',    color: '#F87171' };
+    if (p >= 20)  return { name: 'Rising',    color: '#34D399' };
+    return        { name: 'Newcomer', color: 'rgba(255,255,255,0.6)' };
+  }
+  function _toast(msg, kind) {
+    if (typeof showToast === 'function') showToast(msg, kind);
+    else console.log('[EmpRewards] ' + msg);
+  }
+
+  // ── Self-resolver ─────────────────────────────────────────────────────
+  // Storage uploads land at <bid>/<employee_id>/<uuid>.<ext> and the bucket
+  // RLS policy checks employee_id matches the row whose auth_user_id =
+  // auth.uid(). The legacy `window.currentEmployee` global is unreliable —
+  // pre-Sprint-4 demo seeding leaves it pointed at an EMPLOYEE_ROSTER entry
+  // with an 'e_*' id, NOT the real Supabase UUID. Sending an 'e_*' folder
+  // segment fails RLS hard.
+  //
+  // Order matters:
+  //   1. Cache hit on S.selfEmp (only honored if the cached id is UUID-shape
+  //      — guards against a poisoned cache from a prior render).
+  //   2. supabase.auth.getUser() → match auth_user_id against PentaEmployees.
+  //      Canonical source; always preferred.
+  //   3. window.currentEmployee — only if its id is UUID-shape (covers the
+  //      manager-as-employee preview flow that does write a real row here).
+  //
+  // Cache is invalidated on SIGNED_IN / SIGNED_OUT / USER_UPDATED via
+  // onAuthStateChange (wired lazily on first successful resolve).
+  function _isUuidShape(id) {
+    return typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  }
+
+  async function _resolveSelf() {
+    // Tier 0 — gated cache hit.
+    if (S.selfEmp && S.selfEmp.id && _isUuidShape(S.selfEmp.id)) return S.selfEmp;
+    if (S.selfEmp && S.selfEmp.id && !_isUuidShape(S.selfEmp.id)) S.selfEmp = null;
+
+    // Tier 1 — canonical: auth.uid() → PentaEmployees row by auth_user_id.
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      try {
+        var ures = await sb.auth.getUser();
+        var user = ures && ures.data && ures.data.user;
+        if (user && user.id) {
+          if (window.PentaEmployees && window.PentaEmployees.ready) {
+            try { await window.PentaEmployees.ready(); } catch (e) {}
+          }
+          var list = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+          var found = null;
+          for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].auth_user_id === user.id) { found = list[i]; break; }
+          }
+          if (found && found.id) {
+            S.selfEmp = found;
+            _wireAuthListener();
+            return found;
+          }
+        }
+      } catch (e) {
+        console.warn('[EmpRewards] _resolveSelf tier 1 failed', e);
+      }
+    }
+
+    // Tier 2 — legacy currentEmployee, ONLY if its id is a real UUID (never
+    // accept 'e_*' demo-roster ids — those break storage RLS).
+    if (typeof currentEmployee !== 'undefined' && currentEmployee && _isUuidShape(currentEmployee.id)) {
+      S.selfEmp = currentEmployee;
+      _wireAuthListener();
+      return S.selfEmp;
+    }
+
+    return null;
+  }
+
+  // Fetch teammate display data via Migration 030's SECURITY DEFINER RPC.
+  // The employees_select RLS policy limits non-manager reads to self only,
+  // so PentaEmployees.listSync() returns 0–1 rows in employee sessions; the
+  // RPC returns the same-business set with only display-safe columns
+  // (id + first_name + last_name + photo_url + is_team_leader). Cached 60s
+  // so leaderboard re-renders / picker opens don't refire the query.
+  // Returns a Map<uuid, row>. Empty Map on failure or before RPC exists.
+  async function _fetchTeammates() {
+    if (S.teammateCache && (Date.now() - S.teammateCacheAt) < TEAMMATE_CACHE_TTL_MS) {
+      return S.teammateCache;
+    }
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return S.teammateCache || new Map();
+    try {
+      var res = await sb.rpc('get_business_teammates');
+      if (res.error) throw res.error;
+      var map = new Map();
+      var rows = res.data || [];
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (r && r.id) map.set(r.id, r);
+      }
+      S.teammateCache = map;
+      S.teammateCacheAt = Date.now();
+      return map;
+    } catch (e) {
+      console.warn('[EmpRewards] _fetchTeammates failed (migration 030 applied?)', e);
+      return S.teammateCache || new Map();
+    }
+  }
+
+  function _wireAuthListener() {
+    if (S.authListenerWired) return;
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb || !sb.auth || !sb.auth.onAuthStateChange) return;
+    try {
+      sb.auth.onAuthStateChange(function(evt) {
+        if (evt === 'SIGNED_OUT' || evt === 'SIGNED_IN' || evt === 'USER_UPDATED') {
+          S.selfEmp = null;
+          S.teammateCache = null;
+          S.teammateCacheAt = 0;
+          _scheduleRerender();
+        }
+      });
+      S.authListenerWired = true;
+    } catch (e) { /* non-fatal */ }
+  }
+
+  function _relativeTime(iso) {
+    if (!iso) return '';
+    var t = new Date(iso).getTime();
+    if (isNaN(t)) return '';
+    var diff = Math.floor((Date.now() - t) / 1000);
+    if (diff < 60)     return 'just now';
+    if (diff < 3600)   return Math.floor(diff/60)   + 'm ago';
+    if (diff < 86400)  return Math.floor(diff/3600) + 'h ago';
+    if (diff < 604800) return Math.floor(diff/86400) + 'd ago';
+    return new Date(iso).toLocaleDateString();
+  }
+  function _empPhotoHtml(emp, size) {
+    size = size || 32;
+    var dim = 'width:' + size + 'px;height:' + size + 'px';
+    if (!emp) return '<div style="' + dim + ';border-radius:50%;background:rgba(255,255,255,0.10);display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);flex:none">?</div>';
+    var url = emp.photoUrl || emp.photo_url || '';
+    if (url) return '<img src="' + _attr(url) + '" alt="" style="' + dim + ';border-radius:50%;object-fit:cover;flex:none">';
+    var ini = (emp.first_name || emp.name || '?').slice(0,1).toUpperCase();
+    return '<div style="' + dim + ';border-radius:50%;background:rgba(255,255,255,0.10);display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex:none">' + _esc(ini) + '</div>';
+  }
+
+  // ── Section 1: Pending status banner — only renders if employee has any
+  //    pending photo submissions or redemption requests waiting on a manager.
+  function _renderPendingBanner(meId) {
+    if (!window.PentaRewards) return '';
+    var subs = (window.PentaRewards.listMySubmissions ? window.PentaRewards.listMySubmissions(meId) : [])
+      .filter(function(s){ return s.status === 'pending'; });
+    var reds = (window.PentaRewards.listMyRedemptions ? window.PentaRewards.listMyRedemptions(meId) : [])
+      .filter(function(r){ return r.status === 'pending'; });
+    if (subs.length === 0 && reds.length === 0) return '';
+    var parts = [];
+    if (subs.length) parts.push(subs.length + ' photo ' + (subs.length === 1 ? 'submission' : 'submissions'));
+    if (reds.length) parts.push(reds.length + ' redemption ' + (reds.length === 1 ? 'request' : 'requests'));
+    return '<div style="margin:12px 14px 0;padding:11px 14px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.40);border-radius:12px;color:#FCD34D;font-size:13px;font-weight:600">'
+      + '⏳ Awaiting manager review: ' + parts.join(' · ')
+      + '</div>';
+  }
+
+  // ── Section 2: Balance header (with rank pill).
+  function _renderBalanceCard(myPts, t, rank, total) {
+    var rankIcon = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '';
+    var rankPill = rank
+      ? '<div style="display:inline-block;margin:8px 6px 0 0;padding:4px 12px;border-radius:999px;background:rgba(255,255,255,0.10);color:var(--muted);font-weight:700;font-size:12px;letter-spacing:0.02em">'
+        + (rankIcon ? rankIcon + ' ' : '') + '#' + rank + ' of ' + total + '</div>'
+      : '';
+    var tierPill = '<div style="display:inline-block;margin-top:8px;padding:4px 14px;border-radius:999px;background:' + t.color + '22;color:' + t.color + ';font-weight:700;font-size:12px;letter-spacing:0.02em">' + t.name + '</div>';
+    return '<div style="text-align:center;padding:24px 20px 8px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Your Points</div>'
+      + '<div style="font-size:64px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.02em">' + myPts + '</div>'
+      + '<div style="margin-top:6px">' + rankPill + tierPill + '</div>'
+      + '</div>';
+  }
+
+  // ── Section 3: Action buttons row (Submit Photo + Send Gift).
+  function _renderActionButtons() {
+    return '<div style="display:flex;gap:10px;padding:12px 14px 0;flex-wrap:wrap">'
+      + '<button onclick="EmpRewards.submitPhotoOpen()" style="flex:1 1 140px;background:linear-gradient(135deg,#34D399,#0D9488);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:14px;cursor:pointer">📸 Submit Photo</button>'
+      + '<button onclick="EmpRewards.giftPickerOpen()" style="flex:1 1 140px;background:linear-gradient(135deg,#FF6482,#FF2D55);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:14px;cursor:pointer">🎁 Send Gift</button>'
+      + '</div>';
+  }
+
+  // ── Section 4: My submissions (N) — collapsed link, expands to inline list.
+  //    Always renders (even with 0) per spec — gives the employee a stable
+  //    affordance that confirms "yes, you can submit photos here".
+  function _renderSubmissionsLink(meId) {
+    var subs = (window.PentaRewards && window.PentaRewards.listMySubmissions)
+      ? window.PentaRewards.listMySubmissions(meId) : [];
+    var chevron = S.expandSubmissions ? '▾' : '▸';
+    var list = '';
+    if (S.expandSubmissions) {
+      list = subs.length === 0
+        ? '<div style="margin-top:6px;font-size:13px;color:var(--muted);padding:10px 12px">No submissions yet — tap 📸 Submit Photo above.</div>'
+        : '<div style="margin-top:6px;background:rgba(255,255,255,0.04);border-radius:12px;overflow:hidden">'
+            + subs.slice(0, 20).map(_renderSubmissionItem).join('')
+          + '</div>';
+    }
+    return '<div style="margin:10px 14px 0">'
+      + '<button onclick="EmpRewards.toggleSubmissions()" style="background:transparent;border:none;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;padding:0">'
+      + chevron + ' My submissions (' + subs.length + ')</button>'
+      + list
+      + '</div>';
+  }
+  function _renderSubmissionItem(s) {
+    var statusKey = s.status || 'pending';
+    var palette = statusKey === 'approved' ? { fg: '#34D399', bg: 'rgba(52,211,153,0.15)' }
+                : statusKey === 'rejected' ? { fg: '#F87171', bg: 'rgba(248,113,113,0.15)' }
+                : { fg: '#FCD34D', bg: 'rgba(251,191,36,0.15)' };
+    var thumbId = 'er-sub-thumb-' + s.id;
+    var cached = S.photoUrlCache[s.id];
+    var src = cached ? ' src="' + _attr(cached) + '"' : '';
+    var caption = s.caption
+      ? '<div style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(s.caption) + '</div>'
+      : '<div style="font-size:13px;color:var(--muted);font-style:italic">No caption</div>';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06)">'
+      + '<img id="' + thumbId + '"' + src + ' alt="" style="width:40px;height:40px;border-radius:8px;background:rgba(255,255,255,0.06);object-fit:cover;flex:none">'
+      + '<div style="flex:1;min-width:0">' + caption
+      +   '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + _relativeTime(s.created_at) + '</div>'
+      + '</div>'
+      + '<div style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:' + palette.bg + ';color:' + palette.fg + ';flex:none">' + _esc(statusKey) + '</div>'
+      + '</div>';
+  }
+
+  // ── Section 5: Top-3 leaderboard preview (medals + photos + names + balances).
+  function _renderLbPreview(board, meId) {
+    var top3 = board.slice(0, 3);
+    if (top3.length === 0) return '';
+    var medals = ['🥇', '🥈', '🥉'];
+    return '<div class="reward-section-label" style="margin-top:18px">Leaderboard</div>'
+      + '<div style="padding:0 14px">'
+      + top3.map(function(row, i) {
+          var isMe = (row.id === meId);
+          // Prefer the teammate-RPC cache for photos (ledger-only teammates
+          // have no _empById match but DO have a photo_url via the RPC).
+          var emp = (S.teammateCache && S.teammateCache.get && S.teammateCache.get(row.id)) || _empById(row.id);
+          return '<div class="reward-row' + (isMe ? ' reward-row-me' : '') + '" style="align-items:center">'
+            +   '<div style="font-size:22px;width:36px;text-align:center;flex:none">' + medals[i] + '</div>'
+            +   _empPhotoHtml(emp, 32)
+            +   '<div class="reward-row-name" style="margin-left:10px">' + _esc(row.name) + (isMe ? ' <span style="color:var(--muted);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
+            +   '<div class="reward-row-pts">' + row.pts + '</div>'
+            + '</div>';
+        }).join('')
+      + '</div>';
+  }
+
+  // ── Section 6: View full leaderboard — collapsed link, expands to ranked list.
+  //    Always renders per spec, even when board ≤ 3.
+  function _renderFullLbLink(board, meId, myPts) {
+    var chevron = S.expandLeaderboard ? '▾' : '▸';
+    var list = '';
+    if (S.expandLeaderboard) {
+      list = '<div style="padding:0 14px;margin-top:6px">'
+        + board.map(function(row, i) {
+            var isMe = (row.id === meId);
+            var medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : ('#' + (i + 1));
+            var medalColor = i === 0 ? '#F59E0B' : i === 1 ? '#9CA3AF' : i === 2 ? '#B45309' : 'var(--muted)';
+            var giftBtn = (isMe || myPts <= 0) ? ''
+              : '<button class="reward-gift-btn" onclick="EmpRewards.giftOpen(\'' + _attr(row.id) + '\')">Gift</button>';
+            return '<div class="reward-row' + (isMe ? ' reward-row-me' : '') + '">'
+              +   '<div class="reward-row-rank" style="color:' + medalColor + '">' + medal + '</div>'
+              +   '<div class="reward-row-name">' + _esc(row.name) + (isMe ? ' <span style="color:var(--muted);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
+              +   '<div class="reward-row-pts">' + row.pts + '</div>'
+              +   giftBtn
+              + '</div>';
+          }).join('')
+        + '</div>';
+    }
+    return '<div style="margin:8px 14px 0">'
+      + '<button onclick="EmpRewards.toggleLeaderboard()" style="background:transparent;border:none;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;padding:0">'
+      + chevron + ' View full leaderboard (' + board.length + ')</button>'
+      + '</div>'
+      + list;
+  }
+
+  // ── Section 8: My recent activity — collapsed by default, expands to last 20 ledger rows.
+  function _renderActivity(meId) {
+    var chevron = S.expandActivity ? '▾' : '▸';
+    var list = '';
+    if (S.expandActivity) {
+      var rows = (window.PentaRewards && window.PentaRewards.getLedger) ? window.PentaRewards.getLedger(meId, 20) : [];
+      list = '<div style="padding:0 14px 8px;margin-top:6px">'
+        + (rows.length === 0
+            ? '<div style="font-size:13px;color:var(--muted);text-align:center;padding:14px">No activity yet.</div>'
+            : rows.map(_renderActivityRow).join(''))
+        + '</div>';
+    }
+    return '<div style="margin:8px 14px 18px">'
+      + '<button onclick="EmpRewards.toggleActivity()" style="background:transparent;border:none;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;padding:0">'
+      + chevron + ' My recent activity</button>'
+      + '</div>'
+      + list;
+  }
+  function _renderActivityRow(r) {
+    var sign = (r.delta || 0) >= 0 ? '+' : '';
+    var color = (r.delta || 0) >= 0 ? '#34D399' : '#F87171';
+    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06)">'
+      + '<div style="font-weight:800;color:' + color + ';width:64px;text-align:right;font-size:14px;flex:none">' + sign + (r.delta || 0) + '</div>'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(r.reason || '—') + '</div>'
+      +   '<div style="font-size:11px;color:var(--muted)">' + _relativeTime(r.created_at) + '</div>'
+      + '</div>'
+      + '</div>';
+  }
+
+  async function render() {
+    var el = document.getElementById('employee-rewards-body');
+    if (!el) return;
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) {
+      // Auth resolver couldn't find an employees row for the signed-in user
+      // (signed out, or employee record not provisioned). Render a friendly
+      // placeholder rather than a broken UI bound to undefined ids.
+      el.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--muted);font-size:14px">Please sign in to see your rewards.</div>';
+      return;
+    }
+    var myPts = (window.PentaRewards && window.PentaRewards.getBalance) ? (window.PentaRewards.getBalance(meId) || 0) : 0;
+    var t = _tier(myPts);
+    // Pull teammate display data once per render (cached 60s). Lets the
+    // leaderboard render real names for ledger-only teammates whose rows
+    // aren't visible via PentaEmployees RLS.
+    var teammates = await _fetchTeammates();
+
+    // Single board build — reused for rank pill, top-3 preview, full list.
+    // Source union: PentaEmployees (active rows) ∪ ledger employee_ids ∪ self.
+    // The ledger union is the load-bearing piece — RLS or sparse hydration
+    // can leave PentaEmployees with only the current user, so without it
+    // teammates with reward activity (e.g. Nadia at 100 pts) drop off the
+    // leaderboard entirely. EMPLOYEE_ROSTER is a last-resort fallback used
+    // only when PentaEmployees is completely empty (its 'e_*' ids don't
+    // match ledger UUIDs, so it's name-only filler).
+    var balances = (window.PentaRewards && window.PentaRewards.getAllBalances) ? window.PentaRewards.getAllBalances() : new Map();
+    var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
+    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
+    var nameById = {};
+    // Teammate RPC results first (canonical for ledger-only teammates).
+    if (teammates && teammates.forEach) {
+      teammates.forEach(function(tm, id){ nameById[id] = _empName(tm); });
+    }
+    // PentaEmployees overrides (richer rows for self / manager sessions).
+    for (var ne = 0; ne < emps.length; ne++) nameById[emps[ne].id] = _empName(emps[ne]);
+    var idSet = {};
+    for (var ie2 = 0; ie2 < emps.length; ie2++) idSet[emps[ie2].id] = true;
+    if (teammates && teammates.forEach) {
+      teammates.forEach(function(_tm, id){ idSet[id] = true; });
+    }
+    balances.forEach(function(_v, k){ idSet[k] = true; });
+    if (meId) idSet[meId] = true;
+    if (emps.length === 0 && (!teammates || teammates.size === 0) && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
+      for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
+        var rr = EMPLOYEE_ROSTER[ir];
+        if (rr && rr.id) {
+          idSet[rr.id] = true;
+          if (!nameById[rr.id]) nameById[rr.id] = rr.name || 'Teammate';
+        }
+      }
+    }
+    var board = [];
+    for (var idK in idSet) {
+      if (!Object.prototype.hasOwnProperty.call(idSet, idK)) continue;
+      var nm = nameById[idK] || ('Teammate ' + String(idK).slice(0, 6));
+      board.push({ id: idK, name: nm, pts: balances.get(idK) || 0 });
+    }
+    board.sort(function(a, b) {
+      if (b.pts !== a.pts) return b.pts - a.pts;
+      return a.name.localeCompare(b.name);
+    });
+    var rank = null;
+    for (var i = 0; i < board.length; i++) if (board[i].id === meId) { rank = i + 1; break; }
+    var total = board.length;
+
+    // Redeem grid (catalog).
+    var items = (window.PentaRewards && window.PentaRewards.listCatalog) ? window.PentaRewards.listCatalog() : [];
+    var redeemGrid = '<div class="reward-section-label" style="margin-top:18px">Redeem your points</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:0 14px">'
+      + items.map(function(r) {
+          var can = myPts >= r.cost_points;
+          var grad = _gradFor(r.reward_key);
+          var icon = _iconFor(r.label);
+          return '<button class="reward-card' + (can ? '' : ' locked') + '" onclick="EmpRewards.redeem(\'' + _attr(r.reward_key) + '\')"' + (can ? '' : ' disabled') + '>'
+            +   '<div class="reward-card-icon" style="background:' + grad + '">' + _esc(icon) + '</div>'
+            +   '<div class="reward-card-body">'
+            +     '<div class="reward-card-name">' + _esc(r.label) + '</div>'
+            +     '<div class="reward-card-cost">' + r.cost_points + ' pts</div>'
+            +   '</div>'
+            + '</button>';
+        }).join('')
+      + '</div>';
+
+    // Compose in spec order: pending → balance → actions → my-subs → top-3 →
+    // full-lb link → redeem → recent activity. (Ways-to-Earn dropped — v1
+    // spec doesn't list it; redeem grid already shows what's available.)
+    el.innerHTML =
+        _renderPendingBanner(meId)
+      + _renderBalanceCard(myPts, t, rank, total)
+      + _renderActionButtons()
+      + _renderSubmissionsLink(meId)
+      + _renderLbPreview(board, meId)
+      + _renderFullLbLink(board, meId, myPts)
+      + redeemGrid
+      + _renderActivity(meId);
+
+    // After paint: hydrate any expanded-submissions thumbs we don't have URLs for yet.
+    if (S.expandSubmissions && window.PentaRewards && window.PentaRewards.listMySubmissions) {
+      var subs = window.PentaRewards.listMySubmissions(meId).slice(0, 20);
+      for (var k = 0; k < subs.length; k++) _hydrateSubThumb(subs[k].id);
+    }
+  }
+
+  // ── Redeem ──
+  async function redeem(reward_key) {
+    if (S.inFlight) return;
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to redeem.', 'error'); return; }
+    if (!window.PentaRewards) return;
+    var item = (window.PentaRewards.listCatalog() || []).find(function(x){ return x.reward_key === reward_key; });
+    if (!item) return;
+    var bal = window.PentaRewards.getBalance(meId) || 0;
+    if (bal < item.cost_points) { _toast('Not enough points', 'error'); return; }
+    if (!confirm('Redeem "' + item.label + '" for ' + item.cost_points + ' points?\nManager will review and fulfill.')) return;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.requestRedemption(meId, reward_key);
+      _toast('Requested: ' + item.label, 'success');
+    } catch (e) {
+      _toast('Redeem failed: ' + (e.message || e), 'error');
+    } finally { S.inFlight = false; }
+  }
+
+  // ── Gifting (modal flow) ──
+  async function giftOpen(toId) {
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to send gifts.', 'error'); return; }
+    if (!window.PentaRewards) return;
+    if (toId === meId) { _toast("You can't gift to yourself.", 'error'); return; }
+    var toEmp = _resolveTeammate(toId);
+    if (!toEmp) return;
+    var myPts = window.PentaRewards.getBalance(meId) || 0;
+    var stats = window.PentaRewards.getGiftStatsToday(meId, toId);
+    var maxAllowed = Math.max(0, Math.min(myPts, stats.dailyRemaining, stats.recipientRemaining || 0));
+
+    var overlay = document.getElementById('reward-gift-overlay');
+    if (!overlay) return;
+    document.getElementById('reward-gift-to-name').textContent = _empName(toEmp);
+    var firstName = (toEmp.first_name || _empName(toEmp).split(' ')[0]);
+    document.getElementById('reward-gift-balance').textContent =
+      myPts + ' pts available · ' + stats.dailyRemaining + ' left today, ' + stats.recipientRemaining + ' to ' + firstName;
+    var input = document.getElementById('reward-gift-amount');
+    input.value = '';
+    input.max = maxAllowed;
+    input.placeholder = '10';
+    document.getElementById('reward-gift-note').value = '';
+    overlay.setAttribute('data-to-id', toId);
+    overlay.style.display = 'flex';
+    setTimeout(function(){ input.focus(); }, 60);
+  }
+
+  function giftClose() {
+    var overlay = document.getElementById('reward-gift-overlay');
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.removeAttribute('data-to-id');
+    }
+  }
+
+  async function giftConfirm() {
+    if (S.inFlight) return;
+    var overlay = document.getElementById('reward-gift-overlay');
+    if (!overlay) return;
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to send gifts.', 'error'); return; }
+    var toId = overlay.getAttribute('data-to-id');
+    if (!toId) return;
+    var amt = parseInt(document.getElementById('reward-gift-amount').value, 10);
+    var note = (document.getElementById('reward-gift-note').value || '').trim();
+    if (!amt || amt < 1) { _toast('Enter a gift amount.', 'error'); return; }
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.giftPoints({
+        sender_id: meId,
+        recipient_id: toId,
+        points: amt,
+        note: note || null,
+      });
+      var toEmp = _resolveTeammate(toId);
+      _toast('Sent +' + amt + ' to ' + _empName(toEmp), 'success');
+      giftClose();
+    } catch (e) {
+      _toast('Gift failed: ' + (e.message || e), 'error');
+    } finally { S.inFlight = false; }
+  }
+
+  // ── Send Gift entry point: recipient picker → existing giftOpen modal ──
+  async function giftPickerOpen() {
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to send gifts.', 'error'); return; }
+    if (!window.PentaRewards) return;
+    // Merged-source recipient list (mirrors render()'s leaderboard build).
+    // Teammate RPC supplies real names for ledger-only teammates; PentaEmployees
+    // overrides for self / manager sessions; ledger keys union in anyone with
+    // reward activity; EMPLOYEE_ROSTER only fires when both sources are empty.
+    var teammates = await _fetchTeammates();
+    var balances = window.PentaRewards.getAllBalances ? window.PentaRewards.getAllBalances() : new Map();
+    var emps = (window.PentaEmployees && window.PentaEmployees.listSync()) || [];
+    emps = emps.filter(function(e){ return !e.deleted_at && (e.is_active !== false); });
+    var nameById = {};
+    var empById = {};
+    if (teammates && teammates.forEach) {
+      teammates.forEach(function(tm, id) {
+        nameById[id] = _empName(tm);
+        empById[id]  = tm;
+      });
+    }
+    for (var ne = 0; ne < emps.length; ne++) {
+      nameById[emps[ne].id] = _empName(emps[ne]);
+      empById[emps[ne].id]  = emps[ne];
+    }
+    var idSet = {};
+    for (var ie2 = 0; ie2 < emps.length; ie2++) idSet[emps[ie2].id] = true;
+    if (teammates && teammates.forEach) {
+      teammates.forEach(function(_tm, id){ idSet[id] = true; });
+    }
+    balances.forEach(function(_v, k){ idSet[k] = true; });
+    if (emps.length === 0 && (!teammates || teammates.size === 0) && typeof EMPLOYEE_ROSTER !== 'undefined' && EMPLOYEE_ROSTER) {
+      for (var ir = 0; ir < EMPLOYEE_ROSTER.length; ir++) {
+        var rr = EMPLOYEE_ROSTER[ir];
+        if (rr && rr.id) {
+          idSet[rr.id] = true;
+          if (!nameById[rr.id]) nameById[rr.id] = rr.name || 'Teammate';
+        }
+      }
+    }
+    var rows = [];
+    for (var idK in idSet) {
+      if (!Object.prototype.hasOwnProperty.call(idSet, idK)) continue;
+      if (idK === meId) continue;
+      var nm = nameById[idK] || ('Teammate ' + String(idK).slice(0, 6));
+      var emp = empById[idK] || { id: idK, first_name: nm.split(' ')[0] || nm, last_name: nm.split(' ').slice(1).join(' ') };
+      rows.push({ emp: emp, pts: balances.get(idK) || 0 });
+    }
+    rows.sort(function(a, b) { return _empName(a.emp).localeCompare(_empName(b.emp)); });
+
+    var existing = document.getElementById('er-gift-picker-overlay');
+    if (existing) existing.remove();
+
+    var ov = document.createElement('div');
+    ov.id = 'er-gift-picker-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:570;background:rgba(10,10,32,0.75);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+
+    var listHtml = rows.map(function(r) {
+      return '<div onclick="EmpRewards._giftPickerPick(\'' + _attr(r.emp.id) + '\')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);cursor:pointer">'
+        + _empPhotoHtml(r.emp, 32)
+        + '<div style="flex:1;min-width:0;color:#fff;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(_empName(r.emp)) + '</div>'
+        + '<div style="color:rgba(255,255,255,0.55);font-size:12px">' + r.pts + ' pts</div>'
+        + '</div>';
+    }).join('');
+    var body = rows.length === 0
+      ? '<div style="text-align:center;color:rgba(255,255,255,0.55);padding:20px;font-size:14px">No teammates to gift to.</div>'
+      : '<div style="max-height:50vh;overflow-y:auto;margin:0 -8px">' + listHtml + '</div>';
+
+    ov.innerHTML = '<div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:20px;padding:18px;max-width:380px;width:100%;color:#fff;font-family:\'DM Sans\',sans-serif">'
+      + '<div style="font-size:12px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;text-align:center;margin-bottom:6px">Send Gift</div>'
+      + '<div style="font-size:18px;font-weight:800;text-align:center;margin-bottom:14px">Choose a teammate</div>'
+      + body
+      + '<button onclick="document.getElementById(\'er-gift-picker-overlay\').remove()" style="margin-top:14px;width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">Cancel</button>'
+      + '</div>';
+    document.body.appendChild(ov);
+  }
+  function _giftPickerPick(toId) {
+    var ov = document.getElementById('er-gift-picker-overlay');
+    if (ov) ov.remove();
+    giftOpen(toId);
+  }
+
+  // ── Submit Photo entry point: hidden file input → 5MB guard → inline modal ──
+  // Per Phase 4 Path B: NO `capture` attribute — photos can come from camera
+  // OR gallery, employee's choice. Accept list is locked to formats Supabase
+  // Storage will preview cleanly.
+  var SUBMIT_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+  async function submitPhotoOpen() {
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to submit photos.', 'error'); return; }
+    if (!window.PentaRewards) return;
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,image/png,image/webp,image/heic';
+    input.style.display = 'none';
+    input.addEventListener('change', async function() {
+      var file = input.files && input.files[0];
+      try { document.body.removeChild(input); } catch (e) {}
+      if (!file) return;
+      if (file.size > SUBMIT_PHOTO_MAX_BYTES) {
+        _toast('Photo too large (max 5MB)', 'error');
+        return;
+      }
+      // await: lets _recentClients() resolve before the modal paints.
+      await _showSubmitPhotoModal(file);
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+
+  // Recent clients for the picker — cross-ref this employee's recent
+  // assignments with PentaJobs (matching by date+team) → unique client_ids.
+  // Falls back to PentaClients.list() when nothing recent is resolvable
+  // (new hire, sparse hydrate, demo mode).
+  // PentaClients caches expose `c.id` (legacy numeric external_id) AND
+  // `c.uuid` (real Supabase clients.id) — the dropdown wants `c.uuid` so
+  // reward_submissions.client_id (uuid column) accepts it. Pull the full
+  // list once (await — list() is async), build a UUID lookup, then run
+  // both paths off it. Sorted alphabetically and capped at 50 for the
+  // 339-client install.
+  var SUBMIT_PHOTO_CLIENT_CAP = 50;
+  async function _recentClients(meId) {
+    // Pull full client list once.
+    var all = [];
+    if (window.PentaClients && window.PentaClients.list) {
+      try {
+        var raw = await window.PentaClients.list();
+        if (Array.isArray(raw)) all = raw;
+      } catch (e) { console.warn('[EmpRewards] PentaClients.list() failed', e); }
+    }
+    // UUID → row index, used by Path A. PentaClients.getClient() searches
+    // by `c.id` (legacy), so it can't resolve a UUID coming from
+    // PentaJobs.client_id — we map it ourselves here.
+    var byUuid = {};
+    for (var ia = 0; ia < all.length; ia++) {
+      var entry = all[ia];
+      if (entry && entry.uuid && _isUuidShape(entry.uuid)) byUuid[entry.uuid] = entry;
+    }
+
+    var out = [];
+    var seen = {};
+    // Path A: cross-ref this employee's recent assignments → jobs on those
+    // (date, team) pairs → unique client uuids.
+    try {
+      if (window.PentaAssignments && window.PentaAssignments.forEmployee
+          && window.PentaJobs && window.PentaJobs.listSync) {
+        var today = new Date();
+        var thirty = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 30);
+        var fmt = function(d) {
+          var y = d.getFullYear();
+          var m = String(d.getMonth() + 1); if (m.length < 2) m = '0' + m;
+          var dd = String(d.getDate());     if (dd.length < 2) dd = '0' + dd;
+          return y + '-' + m + '-' + dd;
+        };
+        var asn = window.PentaAssignments.forEmployee(meId, fmt(thirty), fmt(today)) || [];
+        var asnKeys = {};
+        for (var iax = 0; iax < asn.length; iax++) asnKeys[asn[iax].date + '_' + asn[iax].team] = true;
+        var jobs = window.PentaJobs.listSync() || [];
+        for (var ij = 0; ij < jobs.length; ij++) {
+          var j = jobs[ij];
+          if (!j || !j.clientId) continue;
+          if (!asnKeys[j.date + '_' + j.team]) continue;
+          if (seen[j.clientId]) continue;
+          seen[j.clientId] = true;
+          var c = byUuid[j.clientId];
+          if (c) out.push(c);
+        }
+      }
+    } catch (e) { /* non-fatal — fall through to Path B */ }
+
+    // Path B: fall back to the full list if Path A produced nothing.
+    if (out.length === 0) {
+      for (var ic = 0; ic < all.length; ic++) {
+        var cc = all[ic];
+        if (!cc || !cc.uuid || !_isUuidShape(cc.uuid)) continue;
+        if (seen[cc.uuid]) continue;
+        seen[cc.uuid] = true;
+        out.push(cc);
+      }
+    }
+
+    // Alphabetical by last_name, then first_name (case-insensitive).
+    out.sort(function(a, b) {
+      var aLn = String(a.ln || a.last_name || '').toLowerCase();
+      var bLn = String(b.ln || b.last_name || '').toLowerCase();
+      if (aLn !== bLn) return aLn.localeCompare(bLn);
+      var aFn = String(a.fn || a.first_name || '').toLowerCase();
+      var bFn = String(b.fn || b.first_name || '').toLowerCase();
+      return aFn.localeCompare(bFn);
+    });
+    return out.slice(0, SUBMIT_PHOTO_CLIENT_CAP);
+  }
+  function _clientLabel(c) {
+    if (!c) return 'Client';
+    var ln = (c.ln || c.last_name || '').trim();
+    var fn = (c.fn || c.first_name || '').trim();
+    if (ln && fn) return ln + ', ' + fn;
+    return ln || fn || c.name || 'Client';
+  }
+
+  async function _showSubmitPhotoModal(blob) {
+    // Free any prior preview URL before swapping.
+    if (S.submitPhoto && S.submitPhoto.objectUrl) {
+      try { URL.revokeObjectURL(S.submitPhoto.objectUrl); } catch (e) {}
+    }
+    var objectUrl = URL.createObjectURL(blob);
+    S.submitPhoto = { blob: blob, objectUrl: objectUrl };
+
+    var existing = document.getElementById('er-submit-photo-overlay');
+    if (existing) existing.remove();
+
+    // await: PentaClients.list() is async; without await, `clients` is the
+    // Promise itself and .map() yields nothing. Option value uses c.uuid —
+    // the real Supabase clients.id — so reward_submissions.client_id (uuid
+    // column) accepts the picked value verbatim.
+    var clients = await _recentClients(_meId());
+    var clientOpts = '<option value="">— No specific client —</option>'
+      + clients.map(function(c) {
+          return '<option value="' + _attr(c.uuid) + '">' + _esc(_clientLabel(c)) + '</option>';
+        }).join('');
+
+    var ov = document.createElement('div');
+    ov.id = 'er-submit-photo-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:570;background:rgba(10,10,32,0.75);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.addEventListener('click', function(e){ if (e.target === ov) submitPhotoClose(); });
+
+    ov.innerHTML = '<div style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:20px;padding:18px;max-width:380px;width:100%;color:#fff;font-family:\'DM Sans\',sans-serif;max-height:90vh;overflow-y:auto">'
+      + '<div style="font-size:12px;color:rgba(255,255,255,0.55);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;text-align:center;margin-bottom:10px">Submit Photo</div>'
+      + '<img src="' + _attr(objectUrl) + '" alt="" style="display:block;width:100%;max-height:240px;object-fit:contain;border-radius:14px;margin-bottom:14px;background:rgba(0,0,0,0.30)">'
+      + '<label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">CAPTION (OPTIONAL)</label>'
+      + '<textarea id="er-sp-caption" rows="2" placeholder="What\'s this photo of?" '
+      +   'style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 14px;color:#fff;font-size:14px;font-family:inherit;outline:none;margin-bottom:14px;resize:vertical;box-sizing:border-box"></textarea>'
+      + '<label style="display:block;font-size:11px;font-weight:700;color:rgba(255,255,255,0.55);margin-bottom:6px;letter-spacing:0.04em">CLIENT (OPTIONAL)</label>'
+      + '<select id="er-sp-client" '
+      +   'style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:10px 14px;color:#fff;font-size:14px;font-family:inherit;outline:none;margin-bottom:18px;box-sizing:border-box">'
+      +   clientOpts + '</select>'
+      + '<div style="display:flex;gap:10px">'
+      +   '<button onclick="EmpRewards.submitPhotoClose()" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">Cancel</button>'
+      +   '<button id="er-sp-submit" onclick="EmpRewards.submitPhotoConfirm()" style="flex:1.3;background:linear-gradient(135deg,#34D399,#0D9488);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:12px;cursor:pointer">Submit Photo</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(ov);
+    setTimeout(function(){ var ta = document.getElementById('er-sp-caption'); if (ta) ta.focus(); }, 60);
+  }
+
+  function submitPhotoClose() {
+    var ov = document.getElementById('er-submit-photo-overlay');
+    if (ov) ov.remove();
+    if (S.submitPhoto && S.submitPhoto.objectUrl) {
+      try { URL.revokeObjectURL(S.submitPhoto.objectUrl); } catch (e) {}
+    }
+    S.submitPhoto = { blob: null, objectUrl: null };
+  }
+
+  async function submitPhotoConfirm() {
+    if (S.inFlight) return;
+    if (!S.submitPhoto || !S.submitPhoto.blob) { _toast('No photo selected', 'error'); return; }
+    await _resolveSelf();
+    var meId = _meId();
+    if (!meId) { _toast('Please sign in to submit photos.', 'error'); return; }
+    if (!window.PentaRewards) return;
+    var ta  = document.getElementById('er-sp-caption');
+    var sel = document.getElementById('er-sp-client');
+    var caption  = ((ta  && ta.value)  || '').trim();
+    // Defensive scrub mirroring the employee-side gate: PentaClients caches
+    // surface the legacy `external_id` as `c.id` for some installs, and
+    // reward_submissions.client_id is a uuid column. Only a UUID-shape value
+    // gets through; anything else becomes null (treated as "no client").
+    var rawClientId = ((sel && sel.value) || '').trim();
+    var clientId = _isUuidShape(rawClientId) ? rawClientId : null;
+    var btn = document.getElementById('er-sp-submit');
+    if (btn) btn.disabled = true;
+    S.inFlight = true;
+    try {
+      await window.PentaRewards.submitPhoto({
+        employee_id: meId,
+        photo_blob: S.submitPhoto.blob,
+        caption: caption || null,
+        client_id: clientId,
+      });
+      submitPhotoClose();
+      _toast('Photo submitted — manager will review', 'success');
+    } catch (e) {
+      _toast('Submit failed: ' + (e.message || e), 'error');
+      if (btn) btn.disabled = false;
+    } finally { S.inFlight = false; }
+  }
+
+  // ── Submission thumbnail hydration (lazy signed-URL fetch). ──
+  async function _hydrateSubThumb(sub_id) {
+    if (!sub_id || !window.PentaRewards || !window.PentaRewards.getSubmissionPhotoUrl) return;
+    if (S.photoUrlCache[sub_id]) {
+      var imgC = document.getElementById('er-sub-thumb-' + sub_id);
+      if (imgC && !imgC.src) imgC.src = S.photoUrlCache[sub_id];
+      return;
+    }
+    try {
+      var url = await window.PentaRewards.getSubmissionPhotoUrl(sub_id);
+      if (!url) return;
+      S.photoUrlCache[sub_id] = url;
+      var img = document.getElementById('er-sub-thumb-' + sub_id);
+      if (img) img.src = url;
+    } catch (e) { /* non-fatal */ }
+  }
+
+  // ── Section toggle handlers ──
+  function toggleSubmissions() { S.expandSubmissions = !S.expandSubmissions; render(); }
+  function toggleLeaderboard() { S.expandLeaderboard = !S.expandLeaderboard; render(); }
+  function toggleActivity()    { S.expandActivity    = !S.expandActivity;    render(); }
+
+  // ── Re-render plumbing ──
+  function _scheduleRerender() {
+    if (S.debounceTimer) clearTimeout(S.debounceTimer);
+    S.debounceTimer = setTimeout(function() {
+      var el = document.getElementById('employee-rewards-body');
+      if (el && el.offsetParent !== null) render();
+    }, 200);
+  }
+  if (window.PentaRewards && window.PentaRewards.onChange) {
+    window.PentaRewards.onChange(_scheduleRerender);
+  }
+  if (window.PentaEmployees && window.PentaEmployees.onChange) {
+    window.PentaEmployees.onChange(_scheduleRerender);
+  }
+
+  // Public surface.
+  window.EmpRewards = {
+    render: render,
+    redeem: redeem,
+    giftOpen: giftOpen,
+    giftClose: giftClose,
+    giftConfirm: giftConfirm,
+    giftPickerOpen: giftPickerOpen,
+    _giftPickerPick: _giftPickerPick,
+    submitPhotoOpen: submitPhotoOpen,
+    submitPhotoClose: submitPhotoClose,
+    submitPhotoConfirm: submitPhotoConfirm,
+    toggleSubmissions: toggleSubmissions,
+    toggleLeaderboard: toggleLeaderboard,
+    toggleActivity: toggleActivity,
+    _state: S,
+  };
 })();
 
 
@@ -28724,18 +29805,16 @@ function _empSchedRenderPicker() {
   grid.innerHTML = out;
 }
 
-// Seed demo points so the Rewards leaderboard looks populated on first open.
-// Only seeds employees that don't yet have an entry — never overrides real
-// earnings or manual adjustments.
+// Sprint 11.5+ Phase 4 — RETIRED. Demo seeder for the legacy localStorage
+// rewards system. PentaRewards is now the source of truth (no seeding —
+// real ledger rows or none).
+/*
 function _seedDemoRewardPoints() {
   try {
     var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
     if (!roster.length) return;
     var map = JSON.parse(localStorage.getItem('content_points') || '{}');
     var seeds = [285, 220, 175, 150, 130, 110, 95, 80, 65, 55, 45, 40, 30, 25, 20, 15, 10, 5, 5, 0];
-    // If everyone currently sits at 0 (fresh install, wiped storage, or a
-    // prior seeder that wrote zeroes), reseed with demo values. Preserves
-    // real earnings — once anyone has > 0 points, this branch no-ops.
     var anyPositive = roster.some(function(emp){ return (map[emp.id] || 0) > 0; });
     var changed = false;
     if (!anyPositive) {
@@ -28744,8 +29823,6 @@ function _seedDemoRewardPoints() {
       });
       changed = true;
     } else {
-      // Normal top-up: fill in any brand-new employees that don't have
-      // an entry yet without touching existing balances.
       roster.forEach(function(emp, i) {
         if (typeof map[emp.id] === 'undefined' || map[emp.id] === null) {
           map[emp.id] = seeds[i % seeds.length];
@@ -28756,11 +29833,9 @@ function _seedDemoRewardPoints() {
     if (changed) localStorage.setItem('content_points', JSON.stringify(map));
   } catch(e){}
 }
-// Seed immediately if EMPLOYEE_ROSTER is already defined (script runs late);
-// also on DOMContentLoaded as a belt-and-suspenders fallback; also every
-// time any rewards view renders, in case the roster loaded async.
 if (typeof EMPLOYEE_ROSTER !== 'undefined') { try { _seedDemoRewardPoints(); } catch(e){} }
 document.addEventListener('DOMContentLoaded', _seedDemoRewardPoints);
+*/
 
 function empSchedPrev() {
   var d = _empSchedDate || new Date();
@@ -30891,13 +31966,36 @@ function renderEmployeeHome() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Employee Rewards — demo feature.
-// Shows points + tier, a redeem catalog, ways to earn, a team leaderboard,
-// and peer-to-peer gifting. Storage is all localStorage for the demo:
-//   content_points       : { empId -> points balance }
-//   rewards_ledger       : [{id, ts, type, from, to, amount, note}]
-//                          type = 'earned' | 'gift' | 'redemption'
+// Employee Rewards — Sprint 11.5+ Phase 4 + Gifting.
+// PentaRewards-backed UI lives in the EmpRewards IIFE (defined alongside
+// MgrRewards). The legacy localStorage demo (REWARD_CATALOG / WAYS_TO_EARN
+// / _rewardsGetPoints / etc.) is retired and commented out below; the
+// global function names are kept as thin delegates so callers like
+// `contentSwitchTab('rewards')` and the #reward-gift-overlay modal's
+// onclick attributes continue to work without modification.
 // ═══════════════════════════════════════════════════════════════════════
+
+// Delegate wrappers — keep legacy global names alive, route to EmpRewards.
+function renderEmployeeRewards() {
+  if (window.EmpRewards && window.EmpRewards.render) return window.EmpRewards.render();
+}
+function empRewardsRedeem(rewardKey) {
+  if (window.EmpRewards && window.EmpRewards.redeem) return window.EmpRewards.redeem(rewardKey);
+}
+function empRewardsGiftOpen(toId) {
+  if (window.EmpRewards && window.EmpRewards.giftOpen) return window.EmpRewards.giftOpen(toId);
+}
+function empRewardsGiftClose() {
+  if (window.EmpRewards && window.EmpRewards.giftClose) return window.EmpRewards.giftClose();
+}
+function empRewardsGiftConfirm() {
+  if (window.EmpRewards && window.EmpRewards.giftConfirm) return window.EmpRewards.giftConfirm();
+}
+
+/* ── RETIRED Sprint 11.5+ Phase 4 — legacy localStorage rewards demo.
+   Storage was content_points + rewards_ledger; PentaRewards now owns
+   both balances and gifting. Kept commented for rollback reference.
+
 var REWARD_CATALOG = [
   { id: 'coffee',  name: 'Coffee on Tom',             cost: 30,  icon: 'C', grad: 'linear-gradient(135deg,#B08968,#6B4226)' },
   { id: 'gas10',   name: '$10 Gas Card',              cost: 100, icon: 'G', grad: 'linear-gradient(135deg,#34D399,#0D9488)' },
@@ -30909,13 +32007,13 @@ var REWARD_CATALOG = [
   { id: 'dinner',  name: 'Dinner for Two on the Co',  cost: 350, icon: 'D', grad: 'linear-gradient(135deg,#FFD60A,#FF9500)' }
 ];
 var WAYS_TO_EARN = [
-  { pts: 10,  label: 'Approved Content post',            hint: 'Share a photo/video from the field → manager approves.' },
+  { pts: 10,  label: 'Approved Content post',            hint: 'Share a photo/video from the field, manager approves.' },
   { pts: 15,  label: '5-star client review',             hint: 'A client mentions you by name in a review.' },
-  { pts: 25,  label: 'Perfect attendance (1 week)',      hint: 'Clock in on time every shift Mon–Fri.' },
+  { pts: 25,  label: 'Perfect attendance (1 week)',      hint: 'Clock in on time every shift Mon-Fri.' },
   { pts: 25,  label: 'Gifted by a teammate',             hint: 'Anyone on the team can send you points.' },
   { pts: 50,  label: 'Completed safety training',        hint: 'Finish the monthly training module.' },
   { pts: 50,  label: 'Birthday bonus',                   hint: 'Automatic on your birthday, from the whole crew.' },
-  { pts: 100, label: 'Referred a new client who signed', hint: 'Big wins — big points.' }
+  { pts: 100, label: 'Referred a new client who signed', hint: 'Big wins, big points.' }
 ];
 
 function _rewardsTier(p) {
@@ -30945,162 +32043,13 @@ function _rewardsAppendLedger(entry) {
   try { localStorage.setItem('rewards_ledger', JSON.stringify(ledger)); } catch(e){}
 }
 
-function renderEmployeeRewards() {
-  var el = document.getElementById('employee-rewards-body');
-  if (!el) return;
-  // Belt-and-suspenders: make sure the demo-points seeder has run before
-  // we compute any balances or leaderboard — guarantees populated data
-  // the first time Tom opens Rewards on a fresh device.
-  try { _seedDemoRewardPoints(); } catch(e){}
-  var meId = currentEmployee ? currentEmployee.id : null;
-  var points = _rewardsGetPoints();
-  var myPts = (meId && points[meId]) ? points[meId] : 0;
-  var t = _rewardsTier(myPts);
-
-  // ── Hero: points + tier ──
-  var hero = '<div style="text-align:center;padding:28px 20px 16px">'
-    + '<div style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:6px">Your Points</div>'
-    + '<div style="font-size:64px;font-weight:800;color:var(--text);line-height:1;letter-spacing:-0.02em;margin-bottom:10px">' + myPts + '</div>'
-    + '<div style="display:inline-block;padding:6px 18px;border-radius:999px;background:' + t.color + '22;color:' + t.color + ';font-weight:700;font-size:13px;letter-spacing:0.02em">' + t.name + ' Tier</div>'
-    + '</div>';
-
-  // ── Redeem catalog ──
-  var catalog = '<div class="reward-section-label" style="margin-top:18px">Redeem</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:0 14px">'
-    + REWARD_CATALOG.map(function(r) {
-        var can = myPts >= r.cost;
-        return '<button class="reward-card' + (can ? '' : ' locked') + '" onclick="empRewardsRedeem(\'' + r.id + '\')"' + (can ? '' : ' disabled') + '>'
-          +   '<div class="reward-card-icon" style="background:' + r.grad + '">' + r.icon + '</div>'
-          +   '<div class="reward-card-body">'
-          +     '<div class="reward-card-name">' + r.name + '</div>'
-          +     '<div class="reward-card-cost">' + r.cost + ' pts</div>'
-          +   '</div>'
-          + '</button>';
-      }).join('')
-    + '</div>';
-
-  // ── Ways to earn ──
-  var earn = '<div class="reward-section-label" style="margin-top:26px">Ways to earn</div>'
-    + '<div style="padding:0 14px">'
-    + WAYS_TO_EARN.map(function(w) {
-        return '<div class="reward-earn-row">'
-          +   '<div class="reward-earn-pts">+' + w.pts + '</div>'
-          +   '<div class="reward-earn-body">'
-          +     '<div class="reward-earn-label">' + w.label + '</div>'
-          +     '<div class="reward-earn-hint">' + w.hint + '</div>'
-          +   '</div>'
-          + '</div>';
-      }).join('')
-    + '</div>';
-
-  // ── Leaderboard ──
-  var roster = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER : [];
-  var board = roster.map(function(e) { return { id: e.id, name: e.name, pts: points[e.id] || 0 }; });
-  board.sort(function(a,b){ return b.pts - a.pts; });
-  var leaderboard = '<div class="reward-section-label" style="margin-top:26px">Team Leaderboard</div>'
-    + '<div style="padding:0 14px 24px">'
-    + board.slice(0, 24).map(function(row, i) {
-        var isMe = (row.id === meId);
-        var medal = i === 0 ? '1' : i === 1 ? '2' : i === 2 ? '3' : String(i+1);
-        var medalColor = i === 0 ? '#F59E0B' : i === 1 ? '#9CA3AF' : i === 2 ? '#B45309' : 'var(--muted)'; /* v9.3.2: gold/silver/bronze tweaked for visibility on white; 4+ uses muted */
-        var giftBtn = (isMe || myPts <= 0) ? ''
-          : '<button class="reward-gift-btn" onclick="empRewardsGiftOpen(\'' + row.id + '\')">Gift</button>';
-        return '<div class="reward-row' + (isMe ? ' reward-row-me' : '') + '">'
-          +   '<div class="reward-row-rank" style="color:' + medalColor + '">' + medal + '</div>'
-          +   '<div class="reward-row-name">' + row.name + (isMe ? ' <span style="color:var(--muted);font-weight:500;font-size:11px">(you)</span>' : '') + '</div>'
-          +   '<div class="reward-row-pts">' + row.pts + '</div>'
-          +   giftBtn
-          + '</div>';
-      }).join('')
-    + '</div>';
-
-  el.innerHTML = hero + catalog + earn + leaderboard;
-}
-
-// ── Redeem handler — demo only: files a request, fires a toast. ──
-function empRewardsRedeem(rewardId) {
-  var r = REWARD_CATALOG.find(function(x){ return x.id === rewardId; });
-  if (!r) return;
-  var meId = currentEmployee ? currentEmployee.id : null;
-  if (!meId) return;
-  var points = _rewardsGetPoints();
-  var myPts = points[meId] || 0;
-  if (myPts < r.cost) return;
-  if (!confirm('Redeem "' + r.name + '" for ' + r.cost + ' points?\nManager will review and fulfill.')) return;
-  // Demo: deduct immediately and log. Manager-side approval UI is a future
-  // build; for now a confirmation toast + ledger entry is enough.
-  points[meId] = myPts - r.cost;
-  _rewardsSavePoints(points);
-  _rewardsAppendLedger({ type: 'redemption', from: meId, to: null, amount: r.cost, note: r.name });
-  _rewardToast('Requested: ' + r.name, 'Manager will review.');
-  renderEmployeeRewards();
-}
-
-// ── Gifting ──
-function empRewardsGiftOpen(toId) {
-  var me = currentEmployee;
-  if (!me) return;
-  var toEmp = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER.find(function(e){ return e.id === toId; }) : null;
-  if (!toEmp) return;
-  var points = _rewardsGetPoints();
-  var myPts = points[me.id] || 0;
-  var overlay = document.getElementById('reward-gift-overlay');
-  if (!overlay) return;
-  document.getElementById('reward-gift-to-name').textContent = toEmp.name;
-  document.getElementById('reward-gift-balance').textContent = myPts + ' pts available';
-  var input = document.getElementById('reward-gift-amount');
-  input.value = '';
-  input.max = myPts;
-  input.placeholder = '10';
-  document.getElementById('reward-gift-note').value = '';
-  overlay.setAttribute('data-to-id', toId);
-  overlay.style.display = 'flex';
-  setTimeout(function(){ input.focus(); }, 60);
-}
-function empRewardsGiftClose() {
-  var overlay = document.getElementById('reward-gift-overlay');
-  if (overlay) overlay.style.display = 'none';
-}
-function empRewardsGiftConfirm() {
-  var overlay = document.getElementById('reward-gift-overlay');
-  if (!overlay) return;
-  var me = currentEmployee;
-  if (!me) return;
-  var toId = overlay.getAttribute('data-to-id');
-  var toEmp = (typeof EMPLOYEE_ROSTER !== 'undefined') ? EMPLOYEE_ROSTER.find(function(e){ return e.id === toId; }) : null;
-  if (!toEmp) return;
-  var amt = parseInt(document.getElementById('reward-gift-amount').value, 10);
-  var note = (document.getElementById('reward-gift-note').value || '').trim();
-  if (!amt || amt < 1) { alert('Enter a gift amount.'); return; }
-  var points = _rewardsGetPoints();
-  var myPts = points[me.id] || 0;
-  if (amt > myPts) { alert('You only have ' + myPts + ' points.'); return; }
-  if (toId === me.id) { alert("You can't gift points to yourself."); return; }
-  points[me.id] = myPts - amt;
-  points[toId] = (points[toId] || 0) + amt;
-  _rewardsSavePoints(points);
-  _rewardsAppendLedger({ type: 'gift', from: me.id, to: toId, amount: amt, note: note });
-  if (typeof logPendingUpdate === 'function') {
-    logPendingUpdate('Rewards gift', me.name + ' → ' + toEmp.name + ': +' + amt + ' pts' + (note ? ' · "' + note + '"' : ''), 'Staff');
-  }
-  empRewardsGiftClose();
-  _rewardToast('Sent +' + amt + ' to ' + toEmp.name, note ? '"' + note + '"' : 'They just got your points.');
-  renderEmployeeRewards();
-}
-
-// ── Toast helper (reuses the existing .content-toast styles) ──
-function _rewardToast(title, sub) {
-  var wrap = document.createElement('div');
-  wrap.className = 'content-toast-wrap';
-  wrap.style.transition = 'opacity 0.3s';
-  wrap.innerHTML = '<div class="content-toast">'
-    + '<div style="font-size:36px;margin-bottom:6px">✨</div>'
-    + '<div style="font-size:17px;font-weight:700">' + title + '</div>'
-    + (sub ? '<div style="font-size:12px;color:var(--muted);margin-top:4px">' + sub + '</div>' : '')
-    + '</div>';
-  document.body.appendChild(wrap);
-  setTimeout(function(){ wrap.style.opacity = '0'; setTimeout(function(){ wrap.remove(); }, 300); }, 1400);
-}
+function renderEmployeeRewards() { ...legacy localStorage render body removed... }
+function empRewardsRedeem(rewardId) { ...legacy redeem body removed... }
+function empRewardsGiftOpen(toId)  { ...legacy gift open body removed... }
+function empRewardsGiftClose()     { ...legacy gift close body removed... }
+function empRewardsGiftConfirm()   { ...legacy gift confirm body removed... }
+function _rewardToast(title, sub)  { ...legacy toast body removed... }
+*/
 
 
 // ─────────────────────────────────────────

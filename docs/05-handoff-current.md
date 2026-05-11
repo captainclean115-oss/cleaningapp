@@ -4,6 +4,18 @@ This document captures the most recent strategic state. Update this as significa
 
 ## Recent Major Events
 
+### May 10, 2026: Sprint 11.5 Rewards Loop Shipped (v10.5.0)
+
+End-to-end manual rewards system landed on `main`. Employees can submit photos for approval, gift points peer-to-peer (with caps), redeem from a configurable catalog. Managers approve/reject submissions, fulfill/reject redemptions, grant points manually, and configure earn-events + catalog items. Real-time across all surfaces.
+
+**Technical highlights:**
+- PentaRewards facade (Supabase-backed; Migrations 027 + 029).
+- Migration 030 — `get_business_teammates()` RPC (SECURITY DEFINER) bypasses RLS for safe display columns only, so employee-side leaderboard / gift picker render real names.
+- PentaClients now exposes `uuid` (real Supabase id) alongside legacy `id` (external_id) for FK references.
+- Self-resolver pattern in EmpRewards: 3-tier resolution (cache → auth.uid()+PentaEmployees → legacy currentEmployee, UUID-gated) fixes the `e_*` demo-shape leakage that was breaking storage RLS.
+
+**What's next on rewards:** auto-rewards rules engine (Sprint 11.6 Phase 2) — defer until after Maids Sync Report Phase 1, Financial Intelligence Phase 1, and testing infrastructure ship.
+
 ### May 5, 2026: Maids Corporate Meeting
 
 Maids CEO and COO visited Tom's office. 4-5 hour meeting. Strong validation outcome but no immediate deal.
