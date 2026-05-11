@@ -29940,11 +29940,39 @@ function _ttFmtElapsed(fromIso) {
   return m + 'm';
 }
 
-function _renderTeamToday(team, dateStr) {
-  // Paint #emp-team-today-host with the roster assigned to `team` on
-  // `dateStr`. Hidden if no team (e.g. employee with no team_text), or
-  // if no teammates resolve. Mirrors the dispatch view's getTeamEmployees
-  // helper so what employees see matches what the manager sees.
+// Cached teammate roster for the employee schedule view. RPC bypasses RLS
+// to return everyone in the business (employee sessions only see self via
+// listSync). 60s TTL — names rarely change mid-session.
+var _empSchedTeammates = null;
+var _empSchedTeammatesAt = 0;
+async function _fetchSchedTeammates() {
+  if (_empSchedTeammates && (Date.now() - _empSchedTeammatesAt) < 60000) {
+    return _empSchedTeammates;
+  }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) return _empSchedTeammates || [];
+  try {
+    var res = await sb.rpc('get_business_teammates');
+    if (res.error) throw res.error;
+    _empSchedTeammates = res.data || [];
+    _empSchedTeammatesAt = Date.now();
+    return _empSchedTeammates;
+  } catch (e) {
+    console.warn('[schedule] fetch teammates failed', e);
+    return _empSchedTeammates || [];
+  }
+}
+
+async function _renderTeamToday(team, dateStr) {
+  // Paint #emp-team-today-host with everyone on `team` on `dateStr`. Mirrors
+  // the manager Schedule → Teams view (renderTeamManager) so employees see
+  // exactly what their manager sees. Source priority:
+  //   1. daily_assignments override for this (date, employee) — via
+  //      getEmployeeTeam, only useful for managers / when localStorage cache
+  //      has the row.
+  //   2. RPC get_business_teammates() — full active roster of the business,
+  //      bypassing employees_select RLS so even an employee session can see
+  //      teammates (Migration 033). Filtered by team_text === team.
   var host = document.getElementById('emp-team-today-host');
   if (!host) return;
   if (!team) { host.innerHTML = ''; host.style.display = 'none'; return; }
@@ -29954,24 +29982,18 @@ function _renderTeamToday(team, dateStr) {
       members = getTeamEmployees(team, dateStr) || [];
     }
   } catch (e) { members = []; }
-  // Fallback: if no daily_assignments rows for this date, fall back to
-  // employees whose PERMANENT team_text matches. Otherwise the roster shows
-  // nothing on days the dispatcher hasn't pre-assigned, which is most days
-  // in the current data model. v10.5.16 — Tom flagged the empty roster after
-  // confirming today/tomorrow had zero daily_assignments rows.
-  if (members.length === 0 && window.PentaEmployees && window.PentaEmployees.listSync) {
-    try {
-      var all = window.PentaEmployees.listSync() || [];
-      members = all.filter(function(e){
-        if (!e || e.deleted_at || e.terminated_at) return false;
-        if (e.status === 'terminated' || e.status === 'archived') return false;
-        var et = (e.team_text || e.team || '').toString();
-        return et && et === team;
+  // For employee sessions PentaEmployees.listSync is RLS-narrow to self —
+  // getTeamEmployees returns only the signed-in user (or fewer). RPC fills
+  // in the rest of the team using server-side privileges.
+  if (members.length <= 1) {
+    var rpcList = await _fetchSchedTeammates();
+    if (rpcList && rpcList.length) {
+      members = rpcList.filter(function(m){
+        return m && (m.team_text === team);
       });
-    } catch (e) { /* leave members empty */ }
+    }
   }
-  // Defensive: drop any terminated/deleted that slipped through the
-  // getTeamEmployees path.
+  // Defensive: drop any terminated/deleted that slipped through.
   members = members.filter(function(m){ return m && !m.deleted_at && (m.status !== 'terminated'); });
   if (members.length === 0) { host.innerHTML = ''; host.style.display = 'none'; return; }
   host.style.display = '';
@@ -30668,16 +30690,16 @@ function renderSchedule() {
       })() : ''}
       ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+        <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           ⚠ Report Issue
         </button>
         <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer">
           🚗 GPS
         </button>
-        <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#f87171;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+        <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           🚨 Report Incident
         </button>
-        <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+        <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           💵 Receive Payment
         </button>
       </div>
