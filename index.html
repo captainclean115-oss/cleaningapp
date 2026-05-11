@@ -26816,7 +26816,7 @@ function appUnlockEmployee(emp) {
     badge.style.border = '1px solid ' + color + '44';
   }
   const dateEl = document.getElementById('portal-date');
-  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
   const h = new Date().getHours();
   const greet = h < 12 ? { en:'Good morning', es:'Buenos días', pt:'Bom dia', cv:'Bon matin' }
     : h < 17 ? { en:'Good afternoon', es:'Buenas tardes', pt:'Boa tarde', cv:'Bon tardis' }
@@ -29733,7 +29733,7 @@ function loginSuccess() {
 
   // Set date
   const now = new Date();
-  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
 
   updatePortalText();
   renderSchedule();
@@ -29802,6 +29802,12 @@ function empSchedPickerGoToday() {
 }
 function empSchedPickerPick(iso) {
   _empSchedDate = new Date(iso + 'T00:00:00');
+  // If the picker was opened from the home screen (not the schedule tab),
+  // navigate into the schedule view so the user lands on the data they
+  // just selected. Idempotent if already on schedule.
+  try {
+    if (typeof showPortalTab === 'function') showPortalTab('schedule');
+  } catch (e) {}
   renderSchedule();
   empSchedClosePicker();
 }
@@ -36851,7 +36857,7 @@ function _p3dPage(dir) {
         <div class="portal-greeting" id="portal-greeting">Good morning!</div>
         <div class="portal-team">
           <span class="team-badge" id="team-badge"></span>
-          <span id="portal-date"></span>
+          <button type="button" id="portal-date" onclick="empSchedOpenPicker()" style="-webkit-appearance:none !important;appearance:none !important;background:rgba(108,143,255,0.10) !important;border:1px solid rgba(108,143,255,0.30) !important;border-radius:999px !important;padding:5px 14px !important;color:var(--text) !important;font-family:inherit !important;font-size:13px !important;font-weight:600 !important;cursor:pointer !important;line-height:1.2 !important">Tap for date ▾</button>
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
