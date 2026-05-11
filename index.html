@@ -13488,23 +13488,138 @@ function deleteJob(id) {
   renderCal();
 }
 
+// v10.5.41: cancel flow now captures source (Client / Business) + a
+// preselected reason + optional notes. Stored in cancel_reason as
+// structured text "Source · Reason — Notes" so existing readers
+// (job card status badge, Updates feed) render it as-is.
+var CANCEL_REASONS = {
+  client: [
+    'Sickness / illness',
+    'Family emergency',
+    'Out of town',
+    'Pet / household issue',
+    'Rescheduling',
+    'No access (key/lockout)',
+    'Other'
+  ],
+  business: [
+    'Equipment issue',
+    'Team short-staffed',
+    'Vehicle breakdown',
+    'Weather',
+    'Schedule conflict',
+    'Other'
+  ]
+};
 function cancelJob(id) {
   const job = jobs.find(j => j.id === id);
   if (!job) return;
   if (job.cancelled) {
+    // Uncancel path stays one-tap — nothing to capture.
     job.cancelled = false;
+    job.cancelReason = null;
     logPendingUpdate('Uncancelled job: ' + job.clientName, 'Restored on schedule', null, job.clientId || null);
-  } else {
-    if (!confirm('Cancel this job?')) return;
-    job.cancelled = true;
-    const [yr2,mo2,dy2] = job.date.split('-');
-    const dateDisp = new Date(+yr2,+mo2-1,+dy2).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    logPendingUpdate('Cancelled job: ' + job.clientName, dateDisp, null, job.clientId || null);
+    saveJobs();
+    if (window.PentaJobs) window.PentaJobs.update(id, { cancelled: false, cancelReason: null }).catch(function(e){ console.warn('[PentaJobs] uncancelJob sync failed', e); });
+    closeJobModal();
+    renderCal();
+    return;
   }
+  // Cancelling: open the source+reason sheet. Actual write happens in
+  // _commitCancelJob once the user picks.
+  openCancelJobSheet(id);
+}
+
+function openCancelJobSheet(jobId) {
+  // Two-step modal: source picker → reason picker + notes.
+  var old = document.getElementById('cancel-job-overlay');
+  if (old) old.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'cancel-job-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:800;background:rgba(0,0,0,0.7);display:flex;align-items:flex-end;justify-content:center';
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);padding:20px';
+  sheet.innerHTML = ''
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">'
+    +   '<div style="font-size:17px;font-weight:700">Cancel job — who initiated?</div>'
+    +   '<button type="button" onclick="document.getElementById(\'cancel-job-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>'
+    + '</div>'
+    + '<div id="cxl-step1" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<button type="button" onclick="_cxlPickSource(\'' + jobId + '\',\'client\')" style="background:rgba(108,143,255,0.15);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:24px;border-radius:14px;cursor:pointer">👤 Client</button>'
+    +   '<button type="button" onclick="_cxlPickSource(\'' + jobId + '\',\'business\')" style="background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:24px;border-radius:14px;cursor:pointer">🏢 Business</button>'
+    + '</div>'
+    + '<div id="cxl-step2" style="display:none"></div>';
+  overlay.appendChild(sheet);
+  document.body.appendChild(overlay);
+}
+
+function _cxlPickSource(jobId, source) {
+  var step1 = document.getElementById('cxl-step1');
+  var step2 = document.getElementById('cxl-step2');
+  if (!step2) return;
+  step1.style.display = 'none';
+  var reasons = CANCEL_REASONS[source] || [];
+  var sourceLabel = source === 'client' ? '👤 Client' : '🏢 Business';
+  var chips = reasons.map(function(r, i) {
+    return '<button type="button" data-reason="' + r.replace(/"/g, '&quot;') + '" onclick="_cxlPickReason(this)" '
+      + 'style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;cursor:pointer">'
+      + r + '</button>';
+  }).join('');
+  step2.style.display = 'block';
+  step2.innerHTML = ''
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Source · ' + sourceLabel + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px" id="cxl-chip-row">' + chips + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes (optional)</div>'
+    + '<textarea id="cxl-notes" rows="3" placeholder="More detail..." style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:11px;border-radius:9px;resize:vertical;margin-bottom:14px"></textarea>'
+    + '<div style="display:flex;gap:8px">'
+    +   '<button type="button" onclick="document.getElementById(\'cancel-job-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:12px;border-radius:10px;cursor:pointer">Back out</button>'
+    +   '<button type="button" id="cxl-submit" disabled onclick="_cxlCommit(\'' + jobId + '\',\'' + source + '\')" style="flex:2;background:rgba(220,38,38,0.7);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer;opacity:0.5">Cancel job</button>'
+    + '</div>';
+}
+
+function _cxlPickReason(btn) {
+  var row = document.getElementById('cxl-chip-row');
+  if (row) {
+    row.querySelectorAll('button').forEach(function(b){
+      b.style.background = 'rgba(255,255,255,0.06)';
+      b.style.borderColor = 'rgba(255,255,255,0.18)';
+      b.dataset.selected = '';
+    });
+  }
+  btn.style.background = 'rgba(220,38,38,0.18)';
+  btn.style.borderColor = 'rgba(220,38,38,0.5)';
+  btn.dataset.selected = '1';
+  var submit = document.getElementById('cxl-submit');
+  if (submit) {
+    submit.disabled = false;
+    submit.style.opacity = '1';
+    submit.style.background = '#DC2626';
+  }
+}
+
+function _cxlCommit(jobId, source) {
+  var row = document.getElementById('cxl-chip-row');
+  var sel = row ? row.querySelector('button[data-selected="1"]') : null;
+  if (!sel) return;
+  var reason = sel.dataset.reason || 'Other';
+  var notes = (document.getElementById('cxl-notes') || {}).value || '';
+  notes = String(notes).trim();
+  var sourceLabel = source === 'client' ? 'Client' : 'Business';
+  var full = sourceLabel + ' · ' + reason + (notes ? ' — ' + notes : '');
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) return;
+  job.cancelled = true;
+  job.cancelReason = full;
+  var parts = job.date.split('-');
+  var dateDisp = new Date(+parts[0], +parts[1]-1, +parts[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  logPendingUpdate('Cancelled: ' + job.clientName, dateDisp + ' · ' + full, null, job.clientId || null);
   saveJobs();
-  // Sprint 10 Phase 3a: dual-write Supabase update. _transformRowForWrite
-  // toggle-off fix means cancelled:false correctly resets status='scheduled'.
-  if (window.PentaJobs) window.PentaJobs.update(id, { cancelled: job.cancelled }).catch(function(e){ console.warn('[PentaJobs] cancelJob sync failed', e); });
+  if (window.PentaJobs) {
+    window.PentaJobs.update(jobId, { cancelled: true, cancelReason: full })
+      .catch(function(e){ console.warn('[PentaJobs] cancelJob sync failed', e); });
+  }
+  var overlay = document.getElementById('cancel-job-overlay');
+  if (overlay) overlay.remove();
   closeJobModal();
   renderCal();
 }
