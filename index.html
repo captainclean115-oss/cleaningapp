@@ -12716,8 +12716,50 @@ let jobs = [..._merged, ..._userCreated];
 saveJobsInit();
 let editingJob = null;
 
-function saveJobsInit() { localStorage.setItem('cleanco_jobs', JSON.stringify(jobs)); }
-function saveJobs() { localStorage.setItem('cleanco_jobs', JSON.stringify(jobs)); }
+// v10.5.26 — localStorage mirror prunes to a recent date window so the
+// full job history (potentially thousands of rows) doesn't blow iOS
+// Safari's ~5MB quota. PentaJobs in-memory cache keeps the full set
+// for any consumer that needs historical jobs; localStorage is just a
+// cold-load cache. Window: 60 days back + everything future.
+//
+// Progressive shrink on QuotaExceededError: 60d → 30d → today-only.
+// If even today-only fails, give up (just don't persist; in-memory
+// cache keeps working).
+function _saveJobsPrunedRange(daysBack) {
+  var cutoff = new Date(); cutoff.setHours(0,0,0,0);
+  cutoff.setDate(cutoff.getDate() - daysBack);
+  var cutoffIso = cutoff.getFullYear() + '-'
+    + String(cutoff.getMonth()+1).padStart(2,'0') + '-'
+    + String(cutoff.getDate()).padStart(2,'0');
+  return jobs.filter(function(j){ return !j.date || j.date >= cutoffIso; });
+}
+function _saveJobsToStorage(data) {
+  try {
+    localStorage.setItem('cleanco_jobs', JSON.stringify(data));
+    return true;
+  } catch (e) {
+    if (e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014)) return false;
+    throw e;
+  }
+}
+function saveJobs() {
+  // Try full set first (small installs work fine), then progressively shrink.
+  if (_saveJobsToStorage(jobs)) return;
+  if (_saveJobsToStorage(_saveJobsPrunedRange(60))) {
+    console.warn('[saveJobs] quota hit — persisted last 60 days only');
+    return;
+  }
+  if (_saveJobsToStorage(_saveJobsPrunedRange(30))) {
+    console.warn('[saveJobs] quota hit — persisted last 30 days only');
+    return;
+  }
+  if (_saveJobsToStorage(_saveJobsPrunedRange(0))) {
+    console.warn('[saveJobs] quota hit — persisted today + future only');
+    return;
+  }
+  console.warn('[saveJobs] quota hit — could not persist any jobs to localStorage; in-memory cache still authoritative');
+}
+function saveJobsInit() { saveJobs(); }
 
 function dateKey(d) {
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
