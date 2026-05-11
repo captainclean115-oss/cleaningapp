@@ -10672,6 +10672,20 @@ function _mirrorPentaJobsToInMemory() {
   // succeeds), and also propagates Phase 3 dual-write _notifies.
   if (window.PentaJobs.onChange) {
     window.PentaJobs.onChange(_mirrorPentaJobsToInMemory);
+    // v10.5.5: also re-render the employee schedule view when PentaJobs
+    // changes. Without this, an employee landing on the schedule tab BEFORE
+    // hydrate completes sees the empty-state and stays there even after
+    // jobs arrive — the mirror updates localStorage but renderSchedule
+    // doesn't re-run on its own.
+    window.PentaJobs.onChange(function() {
+      try {
+        if (typeof renderSchedule === 'function'
+            && document.body.classList.contains('in-portal')) {
+          var schedTab = document.getElementById('tab-schedule');
+          if (schedTab && schedTab.offsetParent !== null) renderSchedule();
+        }
+      } catch (e) {}
+    });
   }
   window.PentaJobs.ready().then(function() {
     _mirrorPentaJobsToInMemory();
@@ -29936,33 +29950,45 @@ function renderSchedule() {
   var jumpChip = document.getElementById('emp-sched-today-chip');
   if (jumpChip) jumpChip.style.display = (dayOffsetMs !== 0) ? 'block' : 'none';
 
-  // Try to get jobs from localStorage (set by main app)
+  // Source jobs: prefer PentaJobs.listSync() (fresh Supabase cache) over
+  // localStorage 'cleanco_jobs' (only updated by _mirrorPentaJobsToInMemory
+  // AFTER hydrate completes). On a fresh employee sign-in the mirror hasn't
+  // fired yet, so localStorage holds yesterday's snapshot — that's why the
+  // empty-state was firing even when today had real jobs. PentaJobs hydrates
+  // in parallel via pentaPrimeJobs; once ready, this listSync() path picks
+  // them up immediately. localStorage stays the fallback for cold-cache.
   let jobs = [];
+  let _allJobs = [];
   try {
-    const stored = localStorage.getItem('cleanco_jobs');
-    if (stored) {
-      const allJobs = JSON.parse(stored);
-      jobs = allJobs.filter(function(j){
-        if (j.date !== todayStr) return false;
-        var teamMatch = (j.team === team ||
-          (j.team||'').trim().toUpperCase() === (team||'').trim().toUpperCase() ||
-          (j.fromClientEdit && !j.team) ||
-          // Sprint 6.10: tolerant match — if employee has team_id and the job's
-          // team string resolves (by name) to the same team, count as match.
-          (function(){
-            if (!j.team || !currentEmployee || !currentEmployee.team_id || !window.PentaTeams) return false;
-            var jt = window.PentaTeams.getByName(j.team);
-            return !!(jt && jt.id === currentEmployee.team_id);
-          })());
-        if (!teamMatch) return false;
-        // Migration 008: hide paused/inactive clients from employee schedule
-        if (j.clientId && typeof PentaClients !== 'undefined' && PentaClients.getClient) {
-          var _c = PentaClients.getClient(j.clientId);
-          if (_c && (_c.status === 'paused' || _c.status === 'inactive')) return false;
-        }
-        return true;
-      });
+    if (window.PentaJobs && window.PentaJobs.isReady && window.PentaJobs.isReady()
+        && window.PentaJobs.listSync && typeof _enrichJobFromCache === 'function') {
+      _allJobs = window.PentaJobs.listSync().map(_enrichJobFromCache);
+    } else {
+      const stored = localStorage.getItem('cleanco_jobs');
+      if (stored) _allJobs = JSON.parse(stored);
     }
+  } catch (e) { _allJobs = []; }
+  try {
+    jobs = _allJobs.filter(function(j){
+      if (j.date !== todayStr) return false;
+      var teamMatch = (j.team === team ||
+        (j.team||'').trim().toUpperCase() === (team||'').trim().toUpperCase() ||
+        (j.fromClientEdit && !j.team) ||
+        // Sprint 6.10: tolerant match — if employee has team_id and the job's
+        // team string resolves (by name) to the same team, count as match.
+        (function(){
+          if (!j.team || !currentEmployee || !currentEmployee.team_id || !window.PentaTeams) return false;
+          var jt = window.PentaTeams.getByName(j.team);
+          return !!(jt && jt.id === currentEmployee.team_id);
+        })());
+      if (!teamMatch) return false;
+      // Migration 008: hide paused/inactive clients from employee schedule
+      if (j.clientId && typeof PentaClients !== 'undefined' && PentaClients.getClient) {
+        var _c = PentaClients.getClient(j.clientId);
+        if (_c && (_c.status === 'paused' || _c.status === 'inactive')) return false;
+      }
+      return true;
+    });
   } catch(e) {}
 
   // Compute summary line: house count + estimated arrival back at depot
@@ -36929,7 +36955,7 @@ function _p3dPage(dir) {
     <div class="emp-sched-datebar">
       <button type="button" class="emp-sched-nav" onclick="empSchedPrev()" aria-label="Previous day">‹</button>
       <!-- Tap the date to open the month picker. -->
-      <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()">Today</button>
+      <button type="button" class="emp-sched-datebar-label" id="emp-sched-datebar-label" onclick="empSchedOpenPicker()" style="-webkit-appearance:none;appearance:none;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);border-radius:999px;padding:7px 16px;color:rgba(255,255,255,0.92);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;margin:0 8px;flex:0 1 auto">Today</button>
       <button type="button" class="emp-sched-nav" id="emp-sched-next-btn" onclick="empSchedNext()" aria-label="Next day">›</button>
     </div>
     <div id="emp-sched-today-chip" style="text-align:center;margin-bottom:10px;display:none">
