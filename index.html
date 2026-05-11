@@ -12738,26 +12738,44 @@ function _saveJobsToStorage(data) {
     localStorage.setItem('cleanco_jobs', JSON.stringify(data));
     return true;
   } catch (e) {
-    if (e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014)) return false;
-    throw e;
+    // iOS Safari sometimes throws DOMException shapes the name/code check
+    // misses; any setItem throw is effectively a persist failure, so treat
+    // it as quota-exceeded and let the caller try progressive shrink.
+    return false;
   }
+}
+// v10.5.36 warning rate-limit: this function fires on every PentaJobs
+// mutation, so a permanently-full quota would spam the console once per
+// realtime event. Surface the warning once per minute per tier.
+var _saveJobsLastWarnAt = {};
+function _saveJobsWarn(tier) {
+  var now = Date.now();
+  if ((now - (_saveJobsLastWarnAt[tier] || 0)) < 60000) return;
+  _saveJobsLastWarnAt[tier] = now;
+  var msgs = {
+    d60: '[saveJobs] quota hit — persisted last 60 days only',
+    d30: '[saveJobs] quota hit — persisted last 30 days only',
+    today: '[saveJobs] quota hit — persisted today + future only',
+    none: '[saveJobs] quota hit — could not persist any jobs to localStorage; in-memory cache still authoritative'
+  };
+  console.warn(msgs[tier] || ('[saveJobs] quota hit — ' + tier));
 }
 function saveJobs() {
   // Try full set first (small installs work fine), then progressively shrink.
   if (_saveJobsToStorage(jobs)) return;
-  if (_saveJobsToStorage(_saveJobsPrunedRange(60))) {
-    console.warn('[saveJobs] quota hit — persisted last 60 days only');
-    return;
-  }
-  if (_saveJobsToStorage(_saveJobsPrunedRange(30))) {
-    console.warn('[saveJobs] quota hit — persisted last 30 days only');
-    return;
-  }
-  if (_saveJobsToStorage(_saveJobsPrunedRange(0))) {
-    console.warn('[saveJobs] quota hit — persisted today + future only');
-    return;
-  }
-  console.warn('[saveJobs] quota hit — could not persist any jobs to localStorage; in-memory cache still authoritative');
+  if (_saveJobsToStorage(_saveJobsPrunedRange(60))) { _saveJobsWarn('d60'); return; }
+  if (_saveJobsToStorage(_saveJobsPrunedRange(30))) { _saveJobsWarn('d30'); return; }
+  if (_saveJobsToStorage(_saveJobsPrunedRange(0)))  { _saveJobsWarn('today'); return; }
+  // Last-ditch: free space by evicting ff_geocache (often the biggest
+  // unrelated key — bounded only by client count, can run hundreds of KB).
+  // If that frees enough, retry today-only one more time.
+  try {
+    if (localStorage.getItem('ff_geocache')) {
+      localStorage.removeItem('ff_geocache');
+      if (_saveJobsToStorage(_saveJobsPrunedRange(0))) { _saveJobsWarn('today'); return; }
+    }
+  } catch (e) {}
+  _saveJobsWarn('none');
 }
 function saveJobsInit() { saveJobs(); }
 
@@ -33907,6 +33925,14 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
 
 // ── SCHEDULE MAP ──
 var _geocodeCache = {};
+// v10.5.36 negative cache + request queue. Nominatim returns 429 (with no
+// CORS headers) when bombed; without these guards calcTeamDriveTimes
+// retries every dead address on every render and floods the console.
+var _geocodeNegCache = {};            // key → ts of last failure
+var _geocodeInFlight = {};            // key → Promise<coords|null>
+var _geocodeNextSlot = 0;              // ms timestamp of next allowed request
+var _GEOCODE_NEG_TTL_MS = 10 * 60 * 1000;
+var _GEOCODE_MIN_INTERVAL_MS = 1100;  // Nominatim ToS = 1 req/sec
 
 function getClientAddrForJob(j) {
   var c = PentaClients.getClient(j.clientId);
@@ -33937,20 +33963,53 @@ function geocodeAddress(addr, callback) {
   if (!addr) { callback(null); return; }
   var key = addr.toLowerCase().trim();
   if (_geocodeCache[key]) { callback(_geocodeCache[key]); return; }
-  var stored = JSON.parse(localStorage.getItem('ff_geocache') || '{}');
+  var stored;
+  try { stored = JSON.parse(localStorage.getItem('ff_geocache') || '{}'); }
+  catch (e) { stored = {}; }
   if (stored[key]) { _geocodeCache[key] = stored[key]; callback(stored[key]); return; }
+  // Negative cache: fail fast on addresses we recently failed to geocode.
+  var negAt = _geocodeNegCache[key];
+  if (negAt && (Date.now() - negAt) < _GEOCODE_NEG_TTL_MS) { callback(null); return; }
+  // Dedupe in-flight: if another caller already asked for this key, attach.
+  if (_geocodeInFlight[key]) {
+    _geocodeInFlight[key].then(callback);
+    return;
+  }
+  // Throttle: serialize requests at ≥1.1s spacing to respect Nominatim ToS.
+  var now = Date.now();
+  var waitMs = Math.max(0, _geocodeNextSlot - now);
+  _geocodeNextSlot = Math.max(now, _geocodeNextSlot) + _GEOCODE_MIN_INTERVAL_MS;
   var url = 'https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(addr) + '&limit=1&countrycodes=us';
-  fetch(url, {headers:{'User-Agent':'Penta/1.0'}})
-    .then(function(r){ return r.json(); })
-    .then(function(data) {
-      if (data && data[0]) {
-        var coords = {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon)};
-        _geocodeCache[key] = coords;
-        stored[key] = coords;
-        localStorage.setItem('ff_geocache', JSON.stringify(stored));
-        callback(coords);
-      } else { callback(null); }
-    }).catch(function(){ callback(null); });
+  var p = new Promise(function(resolve) {
+    setTimeout(function() {
+      fetch(url, {headers:{'User-Agent':'Penta/1.0'}})
+        .then(function(r){
+          if (!r.ok) { _geocodeNegCache[key] = Date.now(); return null; }
+          return r.json();
+        })
+        .then(function(data) {
+          if (data && data[0]) {
+            var coords = {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon)};
+            _geocodeCache[key] = coords;
+            stored[key] = coords;
+            try { localStorage.setItem('ff_geocache', JSON.stringify(stored)); } catch (e) {}
+            resolve(coords);
+          } else {
+            _geocodeNegCache[key] = Date.now();
+            resolve(null);
+          }
+        })
+        .catch(function(){
+          _geocodeNegCache[key] = Date.now();
+          resolve(null);
+        });
+    }, waitMs);
+  }).then(function(result) {
+    delete _geocodeInFlight[key];
+    return result;
+  });
+  _geocodeInFlight[key] = p;
+  p.then(callback);
 }
 
 function closeScheduleMap() {
