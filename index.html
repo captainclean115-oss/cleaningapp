@@ -30010,6 +30010,46 @@ function _toastSimple(msg, kind) {
   else console.log('[time] ' + msg);
 }
 
+// ─────────────────────────────────────────
+// ON MY WAY — TL/manager-only SMS to client via RingCentral
+// Posts to the send-sms Edge Function, which uses server-stored RC refresh
+// token to call platform.ringcentral.com/restapi/v1.0/.../sms. Keeps the RC
+// credentials out of every TL's browser.
+// ─────────────────────────────────────────
+async function sendOnMyWay(jobId, phone, firstName) {
+  if (!phone) { _toastSimple('No phone on file for this client', 'error'); return; }
+  var name = (firstName || 'there').trim() || 'there';
+  var msg = "Hi " + name + ", your Manna Maids team is on the way! See you soon.";
+  if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) { _toastSimple('No connection', 'error'); return; }
+    var ses = await sb.auth.getSession();
+    var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    if (!tok) { _toastSimple('Please sign in', 'error'); return; }
+    var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      body: JSON.stringify({ to_phone: phone, message: msg }),
+    });
+    var data = null;
+    try { data = await resp.json(); } catch (e) {}
+    if (!resp.ok) {
+      _toastSimple('Send failed: ' + (data && (data.error || data.detail) || resp.status), 'error');
+      console.warn('[onMyWay] send-sms response', data);
+      return;
+    }
+    _toastSimple('Text sent to ' + name, 'success');
+    try {
+      if (typeof logPendingUpdate === 'function') {
+        logPendingUpdate('On-my-way SMS', name + ' (' + phone + ')', 'Staff');
+      }
+    } catch (e) {}
+  } catch (e) {
+    _toastSimple('Send failed: ' + (e.message || e), 'error');
+  }
+}
+
 // Month picker for employee Schedule. Tap the date label to open.
 var _empSchedPickerMonth = null;
 function empSchedOpenPicker() {
@@ -30533,7 +30573,11 @@ function renderSchedule() {
         <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="flex:1;background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#34d399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:10px 8px;border-radius:10px;cursor:pointer">
           ${t('receivePayment')}
         </button>
-      </div>` : ''}
+      </div>
+      ${j.phone ? `
+      <button onclick="sendOnMyWay('${j.id}','${String(j.phone).replace(/'/g,'\\\'')}','${(clientObj && clientObj.fn || (j.clientName||'').split(',').slice(-1)[0]||'').trim().replace(/'/g,'\\\'')}')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#6c8fff,#5478e6);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
+        📲 On My Way
+      </button>` : ''}` : ''}
     </div>`;
   }).join('');
 
