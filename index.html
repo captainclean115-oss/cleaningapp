@@ -10002,6 +10002,147 @@ window.PentaSync = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaJobIssues — v11.0.9 — Phase A.
+//
+// Manager-only Job Issue system. Replaces the legacy localStorage
+// staff-chat path that was a STUB ("Demo: simulate sending SMS to
+// client") for the notifyClient branch. Now every issue chip writes
+// a real row to public.job_issues; the audit_log trigger captures
+// inserts + resolves automatically.
+//
+// ding_target column anchors the future Service Quality Score (client
+// side) and Team Health Score (staff side). Set at insert time per:
+//   locked_out / no_one_home + within_window=true  → 'client'
+//   locked_out / no_one_home + within_window=false → 'none'
+//   cant_find_house                                → 'none'
+//   forgot_key, running_late                       → 'staff'
+//
+// within_window = report time within ±1hr of scheduled_start_at.
+// Both snapshotted at insert; never recomputed.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaJobIssues = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _computeDingTarget(issueType, withinWindow) {
+    if (issueType === 'locked_out' || issueType === 'no_one_home') {
+      return withinWindow ? 'client' : 'none';
+    }
+    if (issueType === 'cant_find_house') return 'none';
+    return 'staff'; // forgot_key, running_late
+  }
+  function _toUuidOrNull(v) {
+    if (!v) return null;
+    var s = String(v);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null;
+  }
+  function _resolveJobUuid(jobId) {
+    // Schedule jobs use legacy_id as their primary id; PentaJobs caches the
+    // real uuid. Try to look it up; fall back to the input if it's already
+    // a uuid.
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var r = window.PentaJobs.getById(jobId);
+        if (r && r.id) return r.id;
+      }
+    } catch (e) {}
+    return _toUuidOrNull(jobId);
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+  async function report(input) {
+    var sb = _sb(); if (!sb) throw new Error('PentaJobIssues.report: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaJobIssues.report: no tenant');
+    if (!input || !input.issueType) throw new Error('PentaJobIssues.report: issueType required');
+    var jobUuid = _resolveJobUuid(input.jobId);
+    if (!jobUuid) throw new Error('PentaJobIssues.report: could not resolve job_id to a uuid');
+    var clientUuid = _toUuidOrNull(input.clientId);
+    var schedIso = input.scheduledStartAt || null;
+    var schedMs = schedIso ? new Date(schedIso).getTime() : null;
+    var withinWindow = null;
+    if (schedMs && !isNaN(schedMs)) {
+      withinWindow = Math.abs(Date.now() - schedMs) <= 60 * 60 * 1000;
+    }
+    var dingTarget = _computeDingTarget(input.issueType, !!withinWindow);
+    var reportedBy = await _resolveCallerUserId();
+    var row = {
+      business_id: bid,
+      job_id: jobUuid,
+      client_id: clientUuid,
+      reported_by: reportedBy,
+      issue_type: input.issueType,
+      notes: (input.notes || null),
+      scheduled_start_at: schedIso,
+      within_window: withinWindow,
+      ding_target: dingTarget
+    };
+    var res = await sb.from('job_issues').insert(row).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function listForJob(jobId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var jobUuid = _resolveJobUuid(jobId);
+    if (!jobUuid) return [];
+    var res = await sb.from('job_issues').select('*')
+      .eq('business_id', bid).eq('job_id', jobUuid)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaJobIssues] listForJob error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listUnresolved() {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('job_issues').select('*')
+      .eq('business_id', bid).is('resolved_at', null)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaJobIssues] listUnresolved error', res.error); return []; }
+    return res.data || [];
+  }
+  async function countUnresolved() {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var res = await sb.from('job_issues').select('id', { count: 'exact', head: true })
+      .eq('business_id', bid).is('resolved_at', null);
+    if (res.error) { console.warn('[PentaJobIssues] countUnresolved error', res.error); return 0; }
+    return res.count || 0;
+  }
+  async function resolve(issueId, resolutionNote) {
+    var sb = _sb(); if (!sb) throw new Error('PentaJobIssues.resolve: no Supabase client');
+    if (!issueId) throw new Error('PentaJobIssues.resolve: issueId required');
+    var resolvedBy = await _resolveCallerUserId();
+    var patch = {
+      resolved_at: new Date().toISOString(),
+      resolved_by: resolvedBy,
+      resolution_note: (resolutionNote && String(resolutionNote).trim()) || null
+    };
+    var res = await sb.from('job_issues').update(patch).eq('id', issueId).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  return {
+    report: report,
+    listForJob: listForJob,
+    listUnresolved: listUnresolved,
+    countUnresolved: countUnresolved,
+    resolve: resolve,
+    _computeDingTarget: _computeDingTarget
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // MgrSync — UI for #sync-report-view. Single-screen Phase 1.
 // Date selector (today/yesterday/picker) + 5 collapsible sections +
 // notes + mark-synced action. Refreshes on open.
@@ -15150,7 +15291,7 @@ var JOB_ISSUE_OPTIONS = [
     clientSms: 'Hi! Your cleaning team is at your door but no one is home. Please call us back so we can plan next steps.'
   },
   {
-    id: 'cant_find',
+    id: 'cant_find_house',
     icon: '🗺',
     titles: { en: 'Can\'t find the house', es: 'No encuentro la casa', pt: 'Não encontro a casa', cv: 'N ka ta atxa kasa' },
     notifyAdmin: true,
@@ -15210,47 +15351,56 @@ function showIssueToast(text) {
   setTimeout(function(){ toast.style.display = 'none'; }, 3500);
 }
 
-function reportJobIssue(optionId) {
+async function reportJobIssue(optionId) {
+  // v11.0.9 (Phase A): rewritten to write to public.job_issues via the
+  // PentaJobIssues facade. Replaces the localStorage staff-chat path
+  // (notifyAdmin) and the demo notifyClient toast. No client SMS, no
+  // manager SMS. The audit_log trigger writes a 'created'/'job_issue'
+  // event automatically. Resolution happens manager-side via the
+  // Resolve button on the manager job card.
   var opt = JOB_ISSUE_OPTIONS.find(function(o){ return o.id === optionId; });
   if (!opt || !currentEmployee) return;
   var lang = (currentEmployee.lang) || currentLang || 'en';
-  var clientName = _currentIssueClient || 'client';
-  var adminMsgLang = (opt.adminMsg[lang] || opt.adminMsg.en).replace('{client}', clientName);
-  var adminMsgEn = opt.adminMsg.en.replace('{client}', clientName);
-
-  if (opt.notifyAdmin) {
-    // Post to staff chat as urgent
-    var thread = getEmpChatThread();
-    if (!thread) return;
-    var msg = {
-      id: 'iss'+Date.now(),
-      from: 'staff',
-      lang: lang,
-      text: adminMsgLang,
-      tx: { en: adminMsgEn },
-      ts: Date.now(),
-      read: false,
-      issue: opt.id,
-      urgent: !!opt.urgent
-    };
-    thread.msgs.push(msg);
-    if (opt.urgent) thread.urgent = true;
-    var allChats = loadStaffChats();
-    allChats[currentEmployee.id] = thread;
-    saveStaffChats(allChats);
-    renderEmpChat();
-  }
-
-  if (opt.notifyClient) {
-    // Demo: simulate sending SMS to client. In production this routes through RingCentral/Twilio.
-    var sentLabels = { en: '✓ Sent to client', es: '✓ Enviado al cliente', pt: '✓ Enviado ao cliente', cv: '✓ Mandadu pa kliente' };
-    showIssueToast(sentLabels[lang] || sentLabels.en);
-  } else {
-    var notifLabels = { en: '✓ Manager notified', es: '✓ Gerente notificado', pt: '✓ Gerente notificado', cv: '✓ Gerenti notifikadu' };
-    showIssueToast(notifLabels[lang] || notifLabels.en);
-  }
-
+  var jobId = _currentIssueJobId;
+  var clientId = _currentIssueClientId;
+  // Look up the scheduled start_at from PentaJobs for within_window
+  // computation. j.date is YYYY-MM-DD, j.time is HH:MM 24h. Parsed as
+  // local time (Maids ops are local).
+  var schedIso = null;
+  try {
+    if (jobId && window.PentaJobs && window.PentaJobs.getById) {
+      var jr = window.PentaJobs.getById(jobId);
+      if (jr && jr.date && jr.time) {
+        var d = new Date(jr.date + 'T' + jr.time + ':00');
+        if (!isNaN(d.getTime())) schedIso = d.toISOString();
+      }
+    }
+  } catch (e) {}
+  // Optimistic UI: close the sheet immediately, toast on success.
   closeJobIssueSheet();
+  try {
+    await window.PentaJobIssues.report({
+      jobId: jobId,
+      clientId: clientId,
+      issueType: opt.id,
+      notes: null,
+      scheduledStartAt: schedIso
+    });
+    var okLabels = { en: '✓ Manager notified', es: '✓ Gerente notificado', pt: '✓ Gerente notificado', cv: '✓ Gerenti notifikadu' };
+    showIssueToast(okLabels[lang] || okLabels.en);
+    // Refresh the employee schedule so the new issue chip appears on
+    // the job card (read path is async, no realtime channel yet).
+    try { if (typeof renderSchedule === 'function') renderSchedule(); } catch (e) {}
+  } catch (e) {
+    console.error('[reportJobIssue] failed', e);
+    var failLabels = {
+      en: 'Could not report: ' + (e && e.message || e),
+      es: 'No se pudo reportar: ' + (e && e.message || e),
+      pt: 'Não foi possível reportar: ' + (e && e.message || e),
+      cv: 'Ka konsigi reporta: ' + (e && e.message || e)
+    };
+    alert(failLabels[lang] || failLabels.en);
+  }
 }
 
 async function askEmpAI() {
@@ -17418,10 +17568,29 @@ var LUCIDE = {
   'credit-card': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
 };
 
+// v11.0.9 (Phase A): cached unresolved job_issues count for the Schedule
+// home tile's red-dot badge. Refreshed by _refreshSchedTileBadge on home
+// render and after _mgrResolveIssue. badge() returns this cached value
+// synchronously so the tile renderer doesn't await.
+var _pentaSchedBadgeCount = 0;
+function _refreshSchedTileBadge() {
+  if (!window.PentaJobIssues || !window.PentaJobIssues.countUnresolved) return;
+  window.PentaJobIssues.countUnresolved().then(function(n){
+    if (n === _pentaSchedBadgeCount) return;
+    _pentaSchedBadgeCount = n;
+    try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
+  }).catch(function(){});
+}
+
 var HOME_APPS = [
   // Dock-default views (also addressable from the home grid if Tom drags them there)
   { id: 'cal',      permKey: 'cal_icon', label: 'Schedule', grad: 'linear-gradient(135deg,#FF3B30,#FF6482)',
-    iconHtml: LUCIDE['calendar'], go: function(){ showTab('cal'); } },
+    iconHtml: LUCIDE['calendar'],
+    // v11.0.9 (Phase A): red-dot badge when unresolved job_issues > 0.
+    // Reads the cached count; _refreshSchedTileBadge updates the cache
+    // on home render and after Resolve.
+    badge: function(){ return _pentaSchedBadgeCount || 0; },
+    go: function(){ showTab('cal'); } },
   { id: 'gps',      permKey: 'gps_icon', label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
   { id: 'messages', permKey: 'inbox_icon', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
@@ -17674,6 +17843,12 @@ function renderHomeScreen() {
 
   // Setup nudge for new tenants (see _renderHomeSetupBanner above).
   try { _renderHomeSetupBanner(); } catch (e) {}
+  // v11.0.9 (Phase A): refresh the Schedule tile's unresolved-issues
+  // count so the red-dot badge stays current on every home render.
+  // Fire-and-forget — first paint uses the cached value (which may be
+  // stale but is at most 1 render behind); the async refresh will
+  // re-render the home if the count changed.
+  try { _refreshSchedTileBadge(); } catch (e) {}
 
   var pagesEl = document.getElementById('home-pages-wrap');
   var dotsEl = document.getElementById('home-page-dots');
@@ -32385,6 +32560,10 @@ function renderSchedule() {
           <div class="job-num">${t('job')} ${i+1} ${t('of')} ${jobs.length}${j.time ? ' · ' + (()=>{ const [h,m]=j.time.split(':'); const hr=parseInt(h); return (hr%12||12)+':'+m+' '+(hr>=12?'PM':'AM'); })() : ''}</div>
           <div class="job-name">${j.clientName || '—'}</div>
           <div class="job-addr">${j.addr || '—'}</div>
+          <!-- v11.0.9: PentaJobIssues unresolved-issue chips. Async-painted
+               by _empPaintJobIssues(jobId) after render. Hidden until
+               populated. -->
+          <div class="emp-job-issues" id="ejob-issues-${j.id}" style="display:none;margin-top:6px"></div>
           ${perCleanNote ? `<div style="margin-top:5px;font-size:12px;color:#fbbf24;font-weight:600;line-height:1.4;white-space:pre-wrap;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);border-radius:6px;padding:5px 8px">⚠ <span id="pcn-top-${j.id}">${perCleanNote}</span></div>` : ''}
           ${permanentNotes ? `<div style="margin-top:4px;font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap" id="pn-top-${j.id}">${permanentNotes}</div>` : ''}
         </div>
@@ -32498,6 +32677,13 @@ function renderSchedule() {
     </div>`;
   }).join('');
 
+  // v11.0.9 (Phase A): paint unresolved issue chips on each job card
+  // async after the DOM is set. Read-only on the employee side — no
+  // Resolve button. Resolved issues are not shown.
+  setTimeout(function(){
+    jobs.forEach(function(j){ try { _empPaintJobIssues(j.id); } catch(e){} });
+  }, 0);
+
   // Translate notes async AFTER DOM is set
   if (currentLang !== 'en') {
     const _renderLang = currentLang;
@@ -32519,6 +32705,54 @@ function renderSchedule() {
       });
     }, 200);
   }
+}
+
+// v11.0.9 (Phase A) — issue type → display label/icon lookup. Shared
+// between employee + manager job-card painters.
+var JOB_ISSUE_DISPLAY = {
+  locked_out:      { icon: '🔒', label: 'Locked out' },
+  no_one_home:     { icon: '🏠', label: 'No one home' },
+  cant_find_house: { icon: '🗺', label: "Can't find house" },
+  forgot_key:      { icon: '🗝', label: 'Forgot key' },
+  running_late:    { icon: '⏰', label: 'Running late' }
+};
+function _jobIssueDisplay(type) { return JOB_ISSUE_DISPLAY[type] || { icon: '⚠', label: type || 'Issue' }; }
+function _fmtIssueTime(iso) {
+  if (!iso) return '';
+  try {
+    var d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+function _escIssue(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+
+// Async paint of unresolved-issue chips on an employee job card.
+// Targets #ejob-issues-${jobId} placeholder inserted by renderSchedule.
+// Read-only on the employee side. Hides the placeholder when there's
+// nothing to show.
+async function _empPaintJobIssues(jobId) {
+  var host = document.getElementById('ejob-issues-' + jobId);
+  if (!host) return;
+  if (!window.PentaJobIssues || !window.PentaJobIssues.listForJob) return;
+  var rows = [];
+  try { rows = await window.PentaJobIssues.listForJob(jobId); } catch (e) { return; }
+  var unresolved = (rows || []).filter(function(r){ return !r.resolved_at; });
+  if (unresolved.length === 0) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  host.style.display = '';
+  host.innerHTML = unresolved.map(function(r){
+    var d = _jobIssueDisplay(r.issue_type);
+    return '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(251,191,36,0.10);'
+      + 'border:1px solid rgba(251,191,36,0.35);border-radius:8px;'
+      + 'padding:5px 9px;margin:2px 4px 2px 0;font-size:12px;font-weight:600;color:#92400E">'
+      + '<span style="font-size:13px;line-height:1">' + d.icon + '</span>'
+      + '<span>Reported: ' + _escIssue(d.label) + '</span>'
+      + '<span style="color:rgba(146,64,14,0.7);font-weight:500"> · ' + _escIssue(_fmtIssueTime(r.reported_at)) + '</span>'
+      + '</div>';
+  }).join('');
 }
 
 let _jiJobId = null, _jpJobId = null, _jpMethod = null;
@@ -36203,13 +36437,23 @@ function _renderJobCardContent(j, opts) {
     endTimeStr = ' – ' + (endHr % 12 || 12) + ':' + (endMn < 10 ? '0' : '') + endMn + ' ' + (endHr >= 12 ? 'PM' : 'AM');
   }
 
-  return '<div style="background:' + tc + ';padding:16px 20px 14px;border-radius:20px 20px 0 0">'
+  return '<div style="background:' + tc + ';padding:16px 20px 14px;border-radius:20px 20px 0 0;position:relative">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
     + '<div><div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.75);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">' + team + ' · ' + timeStr + endTimeStr + '</div>'
     + '<div style="font-size:20px;font-weight:700;color:#fff">' + (j.clientName || '—') + '</div></div>'
     + (showCloseButton ? '<button onclick="closeCalJobCard()" style="background:rgba(0,0,0,.25);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">✕</button>' : '')
-    + '</div></div>'
+    + '</div>'
+    // v11.0.9 (Phase A): red dot indicator for unresolved issues.
+    // Painted by _mgrPaintJobIssues. Absolutely positioned in the
+    // colored header band's top-right; the parent now has
+    // position:relative so this anchors to the card.
+    + '<span class="mgr-issue-dot" id="cjc-issue-dot-' + safeId + '" style="display:none;position:absolute;top:8px;right:' + (showCloseButton ? '52px' : '12px') + ';width:10px;height:10px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 2px ' + tc + ',0 0 8px rgba(220,38,38,0.6)"></span>'
+    + '</div>'
     + '<div style="padding:16px 20px">'
+    // v11.0.9 (Phase A): Issues section placeholder. Painted by
+    // _mgrPaintJobIssues with unresolved + resolved lists; hidden
+    // until there's something to show.
+    + '<div class="mgr-issues-section" id="cjc-issues-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
@@ -36236,11 +36480,89 @@ function _renderJobCardContent(j, opts) {
     + '</div>';
 }
 
+// v11.0.9 (Phase A) — async paint of issues onto a manager job card.
+// Targets two placeholders inserted by _renderJobCardContent:
+//   #cjc-issue-dot-${safeId}  — red dot on header band when unresolved > 0
+//   #cjc-issues-${safeId}     — Issues section in card body
+// Unresolved issues each get a Resolve button; resolved issues are
+// rendered below in a dimmed/collapsed style.
+async function _mgrPaintJobIssues(rootEl, j) {
+  var safeId = String(j.id || '').replace(/['"]/g, '');
+  var dot = rootEl.querySelector('#cjc-issue-dot-' + safeId);
+  var section = rootEl.querySelector('#cjc-issues-' + safeId);
+  if (!section && !dot) return;
+  if (!window.PentaJobIssues || !window.PentaJobIssues.listForJob) return;
+  var rows = [];
+  try { rows = await window.PentaJobIssues.listForJob(j.id); } catch (e) { return; }
+  var unresolved = (rows || []).filter(function(r){ return !r.resolved_at; });
+  var resolved   = (rows || []).filter(function(r){ return !!r.resolved_at; });
+  if (dot) dot.style.display = unresolved.length > 0 ? 'block' : 'none';
+  if (!section) return;
+  if (unresolved.length === 0 && resolved.length === 0) {
+    section.style.display = 'none'; section.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+  var html = '';
+  if (unresolved.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--amber);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">⚠ Reported Issues</div>';
+    html += unresolved.map(function(r){
+      var d = _jobIssueDisplay(r.issue_type);
+      return '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:flex-start;gap:10px">'
+        + '<div style="font-size:18px;line-height:1.2">' + d.icon + '</div>'
+        + '<div style="flex:1;min-width:0">'
+        +   '<div style="font-size:13px;font-weight:700;color:var(--text)">' + _escIssue(d.label) + '</div>'
+        +   '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + _escIssue(_fmtIssueTime(r.reported_at)) + (r.notes ? ' · ' + _escIssue(r.notes) : '') + '</div>'
+        + '</div>'
+        + '<button onclick="_mgrResolveIssue(\'' + _escIssue(r.id) + '\',\'' + _escIssue(j.id) + '\')" '
+        +   'style="background:var(--accent);border:none;color:#fff;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif;flex-shrink:0">Resolve</button>'
+        + '</div>';
+    }).join('');
+  }
+  if (resolved.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">Resolved</div>';
+    html += resolved.map(function(r){
+      var d = _jobIssueDisplay(r.issue_type);
+      var resTime = _fmtIssueTime(r.resolved_at);
+      return '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-bottom:4px;opacity:0.7;display:flex;align-items:center;gap:8px;font-size:12px">'
+        + '<span style="font-size:14px">' + d.icon + '</span>'
+        + '<span style="flex:1;min-width:0;color:var(--muted)">' + _escIssue(d.label) + ' · resolved ' + _escIssue(resTime) + (r.resolution_note ? ' · ' + _escIssue(r.resolution_note) : '') + '</span>'
+        + '</div>';
+    }).join('');
+  }
+  section.innerHTML = html;
+}
+
+// v11.0.9 (Phase A) — Resolve a single job_issue from the manager card.
+// Prompts for an optional note, calls PentaJobIssues.resolve, then
+// re-paints the affected card + refreshes the home tile red-dot count.
+async function _mgrResolveIssue(issueId, jobId) {
+  if (!issueId) return;
+  var note = prompt('Resolution note (optional):', '');
+  if (note === null) return; // cancelled
+  try {
+    await window.PentaJobIssues.resolve(issueId, note);
+    // Re-paint any card on screen for this job. Multiple selectors
+    // because the same card can appear inline + modal at once.
+    document.querySelectorAll('[data-jid="' + jobId + '"]').forEach(function(el){
+      try { _mgrPaintJobIssues(el, { id: jobId }); } catch (e) {}
+    });
+    var modalCard = document.querySelector('#cal-job-card');
+    if (modalCard) { try { _mgrPaintJobIssues(modalCard, { id: jobId }); } catch (e) {} }
+    // Refresh the home tile badge.
+    try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+  } catch (e) {
+    alert('Could not resolve: ' + ((e && e.message) || e));
+  }
+}
+
 function _attachJobCardActions(rootEl, j) {
   // Sprint 7: build action buttons via DOM into the per-job action row.
   // Idempotent — clears prior buttons before re-attaching. Safe to call for
   // both modal (one card on screen) and inline (many cards stacked).
   var safeId = String(j.id || '').replace(/['"]/g, '');
+  // v11.0.9 (Phase A): paint issues + red dot async on every attach.
+  try { _mgrPaintJobIssues(rootEl, j); } catch (e) {}
   var actionRow = rootEl.querySelector('#cjc-action-row-' + safeId);
   if (!actionRow) return;
   actionRow.innerHTML = '';
