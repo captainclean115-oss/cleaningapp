@@ -65,6 +65,21 @@ This document tracks what's being built now, what's next, and what's deferred. U
 
 ## Recently Shipped
 
+### v11.0.0 — Multi-tenant hardening (2026-05-11)
+
+Foundational push to make Penta production-safe for a second paying tenant. Four items in sequence, each tested before the next:
+
+- **Item 1 — Replace hardcoded `BUSINESS_ID` with auth-resolved tenant.** New `window.PentaTenant` module declared at the very top of the script. Boot router fetches `business_id` in the same round-trip as role + perms, calls `PentaTenant._set` before routing fires. PentaClients reads `_bizId()` (throws if unresolved — fail-loud). Hydrate gates through `PentaTenant.ready()`. `renderApplicantsList` and the static home-greeting both unbound from Manna Maids.
+- **Item 2 — INSERT WITH CHECK audit (Migration 036).** 96 tenant-scoped tables inspected; 95 already gated via `auth_belongs_to_business(business_id)`; 9 additionally role-gated. One real gap: `job_applications_public_insert` had `WITH CHECK true` on `anon`. Tightened to require `business_id` references a real non-deleted business.
+- **Item 3 — Application form tenant resolution (Migration 037).** Added `businesses.slug` + UNIQUE index + backfill for the 4 existing tenants. New `get_business_by_slug(slug)` returning `(id, name)` and `submit_job_application(slug, payload)` SECURITY DEFINER RPCs. Browser no longer sends `business_id` for public applicants — the RPC resolves slug → tenant server-side. Form auto-opens when `?biz=<slug>` is in the URL. Manager-side share-link surface with Copy button at the top of the Applicants tab. `REVOKE INSERT ON job_applications FROM anon` to close the direct path.
+- **Item 4 — RLS audit on 9 non-business_id tables (Migration 038).** 6 already FK-joined to business_id-bearing parents; 3 catalog (vendors / products / vendor_products) intentionally global; 1 (`aggregation_snapshots`) had role=PUBLIC tightened to `authenticated`. No accidentally unscoped tables remained.
+
+Verified end-to-end against the Manna Maids Test and Test Business Two tenants — slug resolution returns correct ids, submit RPC writes applications to the right tenant, hardened policy rejects unknown business_ids. Manna Maids stayed on stable code during the work via the `feat/multi-tenant-hardening` branch.
+
+**Surfaced but not fixed (separate post-PR sweep):** "Manna Maids" / "MannaMaids" string literals remain in 18 places — handbook H1s, social caption hashtags, Claire system prompt, SMS templates, weekly hours report header, mailto subject, On-My-Way SMS, reward catalog hoodie name. Tom's RingCentral primary (`15085598062`) hardcoded in 2 places. "in Massachusetts (8 teams, ~330 clients)" baked into the Claire system prompt. "— Tom" sign-off on 2 outgoing SMS templates. Resolution path: replace with reads from `businesses.name` + `business_phone_numbers` + per-tenant onboarding fields.
+
+**Explicitly deferred:** Claire's Anthropic API calls still run direct-from-browser with the key in localStorage. This is a budget security risk (key leak = quota drain), not a tenant isolation risk (RLS still scopes Claire's inputs). Migrating Claire behind an Edge Function is scheduled as a separate focused block.
+
 ### Sprint 11.5 — Rewards system v1 (manual loop)
 
 Done as of 2026-05-10. PentaRewards facade + Supabase-backed rewards schema (Migration 027), peer-to-peer gifting (Migration 029), teammate display RPC (Migration 030). Three UI surfaces: Manager Rewards (Leaderboard/Queue/Grant/Settings/Ledger) for approval+grant workflow, EmpRewards employee UI (balance+rank, submit photo, send gift, redeem, leaderboard, recent activity), and the legacy localStorage demo retired to thin delegates. Auto-rewards (rules engine: clock-in attendance, 5-star reviews, referrals, etc.) deferred to Sprint 11.6 Phase 2.
@@ -160,6 +175,7 @@ Don't do it now. Wait for 12-18 months and 30+ Maids franchisees on Penta with o
 - May 6, 2026: 5-6 Maids franchisees expressing organic interest in Penta
 - May 7, 2026: Mirror-with-report compliance framework locked, Maids Sync Report prioritized
 - May 10, 2026: Sprint 11.5 manual rewards loop shipped to main (v10.5.0). Auto-rewards rules engine deferred to Sprint 11.6 Phase 2.
+- May 11, 2026: v11.0.0 multi-tenant hardening (4-item push) shipped on `feat/multi-tenant-hardening`. Penta is production-safe for a second paying tenant. Claire Edge Function migration explicitly deferred — acceptable because Claire's current architecture is a budget security risk, not a tenant isolation risk.
 - Pricing tier structure locked: $149/$349/$599-799/$1,499 (with voice usage overage)
 - Voice receptionist locked as Full Stack tier driver
 - Financial intelligence layer foundational (not premium add-on)
