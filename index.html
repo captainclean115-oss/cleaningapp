@@ -1987,6 +1987,24 @@ body.home-dragging, body.home-dragging * {
   box-shadow: 0 0 0 2px #000;
   z-index: 2;
 }
+/* v11.0.11: iOS-style red badge for dock buttons. Positioned at the
+   top-right of the 60×60 dock icon. Lives OUTSIDE .nav-icon (which
+   has overflow:hidden) so it can protrude past the rounded corners.
+   Parent .nav-btn has position:relative (set inline by _renderDockBtn). */
+.dock-badge {
+  position: absolute;
+  /* Dock buttons are 60px wide with a 60×60 icon. Position the badge
+     overlapping the icon's top-right corner, iOS-style. */
+  top: -2px; right: 0;
+  background: #ff3b30; color: #fff;
+  border-radius: 10px;
+  font: 700 11px 'DM Sans', sans-serif;
+  padding: 1px 6px; min-width: 18px; height: 18px; line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg), 0 1px 4px rgba(0,0,0,0.3);
+  z-index: 3;
+  pointer-events: none;
+}
 /* v11.0.10: iOS-style notification badge on collapsed timeline job
    blocks (#cal-view day-mode squares). Mirrors .home-app-badge with
    slightly different positioning since the parent is .sqjob-block,
@@ -17931,6 +17949,12 @@ function renderDock() {
   var rightIds = dock.slice(splitAt);
   left.innerHTML = leftIds.map(_renderDockBtn).join('');
   right.innerHTML = rightIds.map(_renderDockBtn).join('');
+  // v11.0.11: kick off a badge refresh whenever the dock paints. The
+  // dock is persistent across all tabs, so this is the only reliable
+  // trigger when the user never visits home. _refreshSchedTileBadge
+  // has its own guard against infinite re-render — it only triggers a
+  // re-render when the count actually changes.
+  try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
   // After render, re-assert active class for the current tab
   var tab = sessionStorage.getItem('cc_tab');
   if (tab) {
@@ -17955,8 +17979,23 @@ function _renderDockBtn(appId) {
     inner = app.iconHtml || (app.icon || '');
     bg = app.grad;
   }
-  return '<button class="nav-btn" id="nav-' + appId + '" data-dock-id="' + appId + '" data-slot-type="dock" onclick="dockTap(\'' + appId + '\')">'
+  // v11.0.11: emit iOS-style badge when the app declares a badge()
+  // function and it returns > 0. The grid renderer (_homeRenderSlot)
+  // already did this for tiles on the home pages; the dock had no
+  // badge support at all, which is why Tom couldn't see the Schedule
+  // tile's unresolved-issues badge after v11.0.10 — his Schedule
+  // icon lives in the dock, not on a grid page.
+  var badgeCount = (typeof app.badge === 'function') ? (app.badge() || 0) : 0;
+  var badgeHtml = badgeCount > 0
+    ? '<span class="dock-badge">' + (badgeCount > 99 ? '99+' : badgeCount) + '</span>'
+    : '';
+  // .nav-icon has overflow:hidden so the rounded gradient tile clips
+  // cleanly — keep the badge OUTSIDE that span so it can protrude
+  // past the icon's rounded corners. .nav-btn is the parent and has
+  // no overflow restriction.
+  return '<button class="nav-btn" id="nav-' + appId + '" data-dock-id="' + appId + '" data-slot-type="dock" onclick="dockTap(\'' + appId + '\')" style="position:relative">'
     + '<span class="nav-icon" style="background:' + bg + '">' + inner + '</span>'
+    + badgeHtml
     + '<span>' + app.label + '</span>'
     + '</button>';
 }
