@@ -36770,10 +36770,26 @@ function flagProductLow(id) {
 // DOM outside .week-strip cells. Runs only when renderCal fires.
 // ═══════════════════════════════════════════════════════════════════════
 const WEATHER_API_KEY = '80446455c847e3572db15d7cc16a40da';
-const WEATHER_LOCATION = { lat: 42.0959, lon: -70.9495 };
+// v11.0.5 (Issue B-4): WEATHER_LOCATION used to be hardcoded to Manna's
+// Abington office coords. Now resolved per-tenant from the primary
+// office in PentaOffices. The forecast skips entirely when no office
+// is configured (graceful degrade).
 const WEATHER_UNITS = 'imperial';
 const WEATHER_CACHE_KEY = 'weather_cache_v1';
 const WEATHER_CACHE_TTL = 3 * 60 * 60 * 1000;
+
+function _resolveWeatherCoords() {
+  try {
+    if (window.PentaOffices && window.PentaOffices.listSync) {
+      var rows = window.PentaOffices.listSync();
+      var primary = rows && rows[0];
+      if (primary && primary.lat != null && primary.lng != null) {
+        return { lat: primary.lat, lon: primary.lng };
+      }
+    }
+  } catch (e) {}
+  return null;
+}
 
 async function fetchWeatherForecast() {
   try {
@@ -36785,9 +36801,17 @@ async function fetchWeatherForecast() {
 
   if (!WEATHER_API_KEY || WEATHER_API_KEY === 'PASTE_KEY_HERE') return null;
 
+  var coords = _resolveWeatherCoords();
+  if (!coords) {
+    // No office configured for this tenant — skip the fetch rather
+    // than defaulting to a wrong-region forecast.
+    console.warn('[weather] no primary office configured — skipping forecast');
+    return null;
+  }
+
   try {
-    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + WEATHER_LOCATION.lat
-            + '&lon=' + WEATHER_LOCATION.lon + '&units=' + WEATHER_UNITS
+    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + coords.lat
+            + '&lon=' + coords.lon + '&units=' + WEATHER_UNITS
             + '&appid=' + WEATHER_API_KEY;
     var res = await fetch(url);
     if (!res.ok) return null;
