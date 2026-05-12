@@ -13769,6 +13769,22 @@ function _cxlCommit(jobId, source) {
     window.PentaJobs.update(jobId, { cancelled: true, cancelReason: full })
       .catch(function(e){ console.warn('[PentaJobs] cancelJob sync failed', e); });
   }
+  // v11.0.6 (audit log supplement): the jobs trigger captures
+  // action_type='cancelled' for the cancelled-flag transition, but
+  // the trigger can only see column diffs — it doesn't know the
+  // *reason* or *source*. Write a supplemental audit row capturing
+  // the structured cancel context so Sync Report + analytics can
+  // group/explain cancellations without parsing the cancel_reason
+  // text. Best-effort: a failed audit insert doesn't unwind the
+  // user-visible cancel.
+  _auditSupplement('cancelled', 'job', jobId, {
+    source: source,            // 'client' | 'business'
+    reason: reason,
+    notes: notes || null,
+    client_name: job.clientName || null,
+    client_id: job.clientId || null,
+    date: job.date || null
+  });
   var overlay = document.getElementById('cancel-job-overlay');
   if (overlay) overlay.remove();
   closeJobModal();
@@ -13834,18 +13850,83 @@ function logPendingUpdate(action, details, actor, clientId, photo) {
   logActivity(action, details, who, clientId);
 }
 
+// v11.0.6 — app-level audit_log supplement.
+// The DB triggers attached in Migration 043 capture the can't-miss
+// floor (created/updated/deleted/started/ended/cancelled/restored
+// derived from column diffs). They CAN'T see the *why* — cancel
+// reason, payment source, applicant slug, manual-override note, etc.
+// This helper writes an additional audit_log row carrying that
+// context. It's a best-effort write — RLS will allow it for any
+// authenticated user in the tenant; failures are logged-and-ignored
+// so an audit hiccup never blocks the user's action.
+//
+// Calling convention:
+//   _auditSupplement('cancelled', 'job', jobId, { source, reason, ... })
+// Action_type must be in the controlled vocabulary from Migration 042.
+// Entity_type must be in the controlled list. New_values is jsonb-shaped.
+async function _auditSupplement(action_type, entity_type, entity_id, new_values) {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return;
+    // user_id resolution — let the INSERT WITH CHECK pick the right
+    // users.id for us by passing NULL. If we passed a UID directly we'd
+    // have to do the auth_user_id → users.id lookup client-side; the
+    // RLS policy already handles that via subquery for the != NULL case,
+    // but NULL is simpler and tags the row as system-flavored. For
+    // app-level supplements we DO want the actor attributed, so query
+    // users.id explicitly. Best-effort: if the lookup fails, write NULL.
+    var u_id = null;
+    try {
+      var ures = await sb.auth.getUser();
+      if (ures && ures.data && ures.data.user) {
+        var ur = await sb.from('users').select('id').eq('auth_user_id', ures.data.user.id).maybeSingle();
+        if (ur && ur.data) u_id = ur.data.id;
+      }
+    } catch (e) {}
+    var ins = await sb.from('audit_log').insert({
+      business_id: bid,
+      user_id: u_id,
+      action_type: action_type,
+      entity_type: entity_type,
+      entity_id: entity_id || null,
+      new_values: new_values || null
+    });
+    if (ins && ins.error) console.warn('[audit] supplement failed', action_type, entity_type, ins.error.message || ins.error);
+  } catch (e) {
+    console.warn('[audit] supplement exception', e);
+  }
+}
+
 // ── PERMANENT ACTIVITY LOG ──
+// v11.0.6: rewritten to write into audit_log (action_type='manual_note',
+// entity_type='client' if a clientId was provided, otherwise 'system').
+// Existing 3 callers keep the same signature so no callsite changes.
+// localStorage `cleanco_activity_log` is kept as an offline write-cache
+// for one release so any UI that still reads from localStorage during
+// the transition doesn't break. Read paths are migrated to audit_log
+// SELECT in Part 4 (renderActivityLog rewrite).
 function logActivity(action, details, actor, clientId) {
   var now = new Date();
   var timestamp = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'});
-  var who = actor || getCurrentActor();
-  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime(), clientId: clientId || null });
-  // Keep last 500 entries
-  if (log.length > 500) log = log.slice(0, 500);
-  localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
-  renderActivityLog();
+  var who = actor || (typeof getCurrentActor === 'function' ? getCurrentActor() : '');
+  // (1) Write to audit_log (canonical going forward).
+  _auditSupplement('manual_note',
+    clientId ? 'client' : 'system',
+    clientId || null,
+    { action: action, details: details || '', actor_label: who }
+  );
+  // (2) Keep the localStorage shadow write for one release for any
+  // unmigrated read paths. Will be deleted in v11.0.7.
+  try {
+    var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
+    log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime(), clientId: clientId || null });
+    if (log.length > 500) log = log.slice(0, 500);
+    localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
+  } catch (e) {}
+  try { renderActivityLog(); } catch (e) {}
 }
 
 function renderActivityLog() {
