@@ -368,6 +368,27 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 #cal-view.active { display: block; }
+
+/* v11.0.7: globally cap every Leaflet map's stacking context.
+   Leaflet's own CSS gives .leaflet-marker-pane z-index 600,
+   .leaflet-tooltip-pane 650, .leaflet-popup-pane 700, and
+   .leaflet-control 1000. Without a stacking context on .leaflet-container
+   itself, those descendants stack in the root document context and float
+   over modals — Tom saw the inline schedule map's zoom controls, popup
+   pin, and route polyline bleeding through the Add Job overlay
+   (.modal-overlay at z-index 300).
+
+   Leaflet's CSS already sets .leaflet-container { position: relative },
+   so adding z-index:0 makes every map's container a stacking context.
+   All leaflet descendants stack *within* it, and any modal-overlay
+   above z-index 0 covers them cleanly.
+
+   Scope: applies to all Leaflet instances — inline schedule map
+   (#cal-view), GPS map (#gps-view), client-card mini maps, and the
+   fullscreen schedule overlay (#schedule-map-overlay's #ff-map). The
+   fullscreen overlay is at z-index 9998 so its child map still
+   participates normally inside that overlay's own stacking context. */
+.leaflet-container { z-index: 0; }
 #clients-view { display: block; }
 #clients-view.hidden { display: none; }
 
@@ -35871,6 +35892,14 @@ function renderInlineScheduleMap() {
     return;
   }
 
+  // v11.0.7: skip when the container isn't actually rendered. renderCal
+  // can fire from PentaJobs mirror callbacks while #cal-view is
+  // display:none (boot, tab inactive). If L.map() runs against a 0×0
+  // hidden container, Leaflet caches that size and the map stays stuck
+  // at one tile in the top-left even after the view becomes visible.
+  // The next renderCal that runs with the view visible will init.
+  if (!container.offsetParent || container.offsetWidth === 0) return;
+
   var dayJobs = _scheduleMapDayJobs();
   var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
   var activeFilter = window.calTeamFilter || null;
@@ -35898,6 +35927,8 @@ function renderInlineScheduleMap() {
       _applyInlineFilterOpacity(activeFilter);
       _lastInlineFilter = activeFilter;
     }
+    // v11.0.7: honor any container size change since last render.
+    try { _inlineScheduleMap.invalidateSize(); } catch (e) {}
     return;
   }
 
@@ -35914,6 +35945,12 @@ function renderInlineScheduleMap() {
   _lastInlineFilter = activeFilter;
 
   _plotInlineMapData(_inlineScheduleMap, dayJobs, dateStr, activeFilter, dateChanged);
+
+  // v11.0.7: after a Path A init + Path C plot, force Leaflet to
+  // re-measure. Covers the case where the container size changed
+  // since the map was created (most commonly: first render after the
+  // view becomes visible).
+  try { _inlineScheduleMap.invalidateSize(); } catch (e) {}
 }
 
 function _plotInlineMapData(map, dayJobs, dateStr, activeFilter, doFitBounds) {
