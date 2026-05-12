@@ -2936,6 +2936,127 @@ html.pre-auth #filter-row { display: none !important; }
 .mr-modal-card textarea::placeholder {
   color: #98a2b3;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Maids Sync Report (v11.0.6) — manager-facing daily diff surface.
+   Single-screen fullscreen overlay. Shares the .mr-topbar look but
+   uses .sync- prefix for inside-view styles.
+   ═══════════════════════════════════════════════════════════════════════ */
+#sync-report-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: var(--bg-gradient);
+  flex-direction: column; overflow: hidden;
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+}
+#sync-report-view.active { display: flex; }
+#sync-report-view .mr-title { font-size: 17px; font-weight: 700; }
+#sync-report-view .mr-subtitle { font-size: 12px; color: var(--muted); }
+.sync-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(var(--safe-bottom) + 24px);
+}
+.sync-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+.sync-controls {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.sync-chip {
+  background: var(--surface2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 18px;
+  padding: 6px 14px; font: 600 13px 'DM Sans'; cursor: pointer;
+}
+.sync-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sync-date-picker {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; font: 500 13px 'DM Sans';
+  margin-left: auto;
+}
+.sync-recent-strip {
+  display: flex; gap: 6px; overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sync-recent-strip::-webkit-scrollbar { display: none; }
+.sync-recent-dot {
+  display: inline-flex; flex-direction: column; align-items: center;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 6px 8px;
+  font: 600 11px 'DM Sans'; color: var(--muted); cursor: pointer;
+  flex-shrink: 0; min-width: 48px;
+}
+.sync-recent-dot::before {
+  content: ''; display: block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dot, #999); margin-bottom: 4px;
+}
+.sync-recent-dot.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sync-recent-dot.active::before { background: #fff; }
+.sync-summary {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 12px;
+  margin-bottom: 12px;
+}
+.sync-summary-date { font: 700 18px 'DM Sans'; letter-spacing: -0.01em; }
+.sync-summary-total { font: 500 13px 'DM Sans'; color: var(--muted); margin-top: 2px; }
+.sync-summary-badge {
+  font: 700 12px 'DM Sans'; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 6px 10px; border-radius: 18px;
+}
+.sync-synced-banner {
+  font: 600 12px 'DM Sans'; color: #10b981;
+  background: rgba(16,185,129,.08); padding: 8px 12px;
+  border-radius: 8px; margin-bottom: 12px;
+}
+.sync-section {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; margin-bottom: 10px; overflow: hidden;
+}
+.sync-section-header {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; background: none; border: none;
+  padding: 12px 14px; cursor: pointer; color: var(--text);
+  font: 600 14px 'DM Sans'; text-align: left;
+}
+.sync-section-caret { color: var(--muted); width: 14px; }
+.sync-section-title { flex: 1; min-width: 0; }
+.sync-section-count {
+  background: var(--surface); color: var(--muted);
+  border-radius: 12px; padding: 2px 10px;
+  font: 700 12px 'DM Sans'; font-variant-numeric: tabular-nums;
+}
+.sync-section-count.has-items { background: var(--accent); color: #fff; }
+.sync-section-body { padding: 0 14px 12px; }
+.sync-section-empty { padding: 0 14px 12px; font-size: 12px; color: var(--muted); font-style: italic; }
+.sync-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.sync-row:last-child { border-bottom: none; }
+.sync-row-main { flex: 1 1 auto; min-width: 0; }
+.sync-row-meta { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.sync-row-time { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.sync-footer { margin-top: 18px; }
+.sync-notes-label { display: block; font: 600 12px 'DM Sans'; color: var(--muted); margin-bottom: 6px; }
+.sync-notes {
+  width: 100%; box-sizing: border-box;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font: 500 14px 'DM Sans'; resize: vertical;
+}
+.sync-notes:focus { outline: none; border-color: var(--accent); }
+.sync-mark-btn {
+  margin-top: 10px; width: 100%;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 10px;
+  padding: 14px; font: 700 15px 'DM Sans'; cursor: pointer;
+}
+.sync-mark-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
 .inv-topbar {
   flex: 0 0 auto;
   padding: calc(var(--safe-top) + 12px) 16px 10px;
@@ -9781,6 +9902,327 @@ window.PentaRewards = (function() {
   window.openManagerRewards = openManagerRewards;
   window.closeManagerRewards = closeManagerRewards;
   window._mrCloseModal = _mrCloseModal;
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// PentaSync + MgrSync — Maids Sync Report Phase 1 (v11.0.6).
+//
+// Phase 1 surfaces a daily "what changed today" report so a Maids
+// franchisee can quickly transcribe events into the upstream Maids
+// system. Source of truth is the audit_log table (filled by triggers
+// in mig 043 + app-level supplements). sync_reports table tracks
+// per-day status (viewed_at, marked_synced_at, marked_synced_by).
+//
+// Manager-only surface. Owner/admin/manager roles see the report.
+// All other roles get a "manager-only" empty state.
+//
+// PentaSync — thin facade around two RPCs:
+//   - get_daily_sync_data(business_id, date)  → diff payload (jsonb)
+//   - mark_sync_report_synced(business_id, date, notes) → state row
+// Plus a SELECT for sync_reports (recent rows) to drive the status
+// strip / nudge.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaSync = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _isoDate(d) {
+    // YYYY-MM-DD in local time (Maids ops are local-time, not UTC).
+    if (!(d instanceof Date)) d = new Date(d || Date.now());
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+  async function fetchReport(dateStr) {
+    var sb = _sb(); if (!sb) throw new Error('PentaSync.fetchReport: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaSync.fetchReport: no tenant');
+    dateStr = dateStr || _isoDate(new Date());
+    var res = await sb.rpc('get_daily_sync_data', { p_business_id: bid, p_date: dateStr });
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function markSynced(dateStr, notes) {
+    var sb = _sb(); if (!sb) throw new Error('PentaSync.markSynced: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaSync.markSynced: no tenant');
+    dateStr = dateStr || _isoDate(new Date());
+    var res = await sb.rpc('mark_sync_report_synced', { p_business_id: bid, p_date: dateStr, p_notes: notes || null });
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function getStatusRows(daysBack) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - (daysBack || 14));
+    var res = await sb.from('sync_reports').select('*')
+      .eq('business_id', bid).gte('report_date', _isoDate(cutoff))
+      .order('report_date', { ascending: false });
+    if (res.error) { console.warn('[PentaSync] getStatusRows error', res.error); return []; }
+    return res.data || [];
+  }
+  return { fetchReport: fetchReport, markSynced: markSynced, getStatusRows: getStatusRows, _isoDate: _isoDate };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// MgrSync — UI for #sync-report-view. Single-screen Phase 1.
+// Date selector (today/yesterday/picker) + 5 collapsible sections +
+// notes + mark-synced action. Refreshes on open.
+// ═══════════════════════════════════════════════════════════════════════
+(function() {
+  var S = {
+    date: null,              // YYYY-MM-DD currently displayed
+    report: null,            // last fetched diff
+    statusRow: null,         // sync_reports row for that date, if any
+    recent: [],              // last 14 days of sync_reports
+    loading: false,
+    expanded: { new_clients: true, schedule_changes: true, time_entries: false, client_deletions: false, applications: true },
+    error: null,
+  };
+
+  function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
+  function _isoToday() { return window.PentaSync._isoDate(new Date()); }
+  function _isoYesterday() { var d = new Date(); d.setDate(d.getDate() - 1); return window.PentaSync._isoDate(d); }
+  function _fmtTime(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return String(iso); }
+  }
+
+  async function openSyncReport() {
+    var v = document.getElementById('sync-report-view');
+    if (!v) return;
+    v.classList.add('active'); v.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('overlay-open');
+    if (!S.date) S.date = _isoToday();
+    await _refresh();
+  }
+  function closeSyncReport() {
+    var v = document.getElementById('sync-report-view');
+    if (!v) return;
+    v.classList.remove('active'); v.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('overlay-open');
+  }
+
+  async function _refresh() {
+    S.loading = true; S.error = null; _render();
+    try {
+      var [report, recent] = await Promise.all([
+        window.PentaSync.fetchReport(S.date),
+        window.PentaSync.getStatusRows(14)
+      ]);
+      S.report = report || null;
+      S.recent = recent || [];
+      S.statusRow = S.recent.find(function(r){ return r.report_date === S.date; }) || null;
+    } catch (e) {
+      console.error('[MgrSync] refresh error', e);
+      S.error = (e && e.message) || String(e);
+    } finally {
+      S.loading = false; _render();
+    }
+  }
+
+  function setDate(dateStr) { S.date = dateStr; _refresh(); }
+
+  async function markSynced() {
+    var noteEl = document.getElementById('sync-notes');
+    var notes = (noteEl && noteEl.value || '').trim();
+    var btn = document.getElementById('sync-mark-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Marking…'; }
+    try {
+      await window.PentaSync.markSynced(S.date, notes || null);
+      if (typeof toast === 'function') toast('Marked synced for ' + S.date);
+      await _refresh();
+    } catch (e) {
+      console.error('[MgrSync] markSynced error', e);
+      alert('Could not mark synced: ' + ((e && e.message) || e));
+      if (btn) { btn.disabled = false; btn.textContent = 'Mark as Synced to Maids'; }
+    }
+  }
+
+  function toggleSection(key) {
+    S.expanded[key] = !S.expanded[key];
+    _render();
+  }
+
+  function _statusBadge(row) {
+    if (!row) return { label: 'Pending', color: '#f59e0b', bg: 'rgba(245,158,11,.14)' };
+    if (row.marked_synced_at) return { label: 'Synced', color: '#10b981', bg: 'rgba(16,185,129,.14)' };
+    return { label: 'In progress', color: '#3b82f6', bg: 'rgba(59,130,246,.14)' };
+  }
+
+  function _renderDateChips() {
+    var today = _isoToday(), yesterday = _isoYesterday();
+    var chips = [
+      { v: today,     label: 'Today' },
+      { v: yesterday, label: 'Yesterday' },
+    ];
+    var html = chips.map(function(c){
+      var active = (c.v === S.date);
+      return '<button class="sync-chip' + (active ? ' active' : '') + '" onclick="MgrSync.setDate(\'' + c.v + '\')">' + _esc(c.label) + '</button>';
+    }).join('');
+    html += '<input type="date" class="sync-date-picker" value="' + _esc(S.date) + '" onchange="MgrSync.setDate(this.value)" />';
+    return html;
+  }
+
+  function _renderRecentStrip() {
+    if (!S.recent || S.recent.length === 0) return '';
+    var html = '<div class="sync-recent-strip">';
+    for (var i = 0; i < Math.min(14, S.recent.length); i++) {
+      var r = S.recent[i];
+      var s = _statusBadge(r);
+      var active = (r.report_date === S.date) ? ' active' : '';
+      html += '<button class="sync-recent-dot' + active + '" style="--dot:' + s.color + '" '
+            + 'title="' + _esc(r.report_date + ' — ' + s.label) + '" '
+            + 'onclick="MgrSync.setDate(\'' + r.report_date + '\')">'
+            + '<span class="sync-recent-dot-day">' + _esc(r.report_date.slice(5)) + '</span>'
+            + '</button>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function _renderSection(key, title, count, rows, renderRow) {
+    var open = !!S.expanded[key];
+    var caret = open ? '▾' : '▸';
+    var safeCount = count || 0;
+    var html = '<div class="sync-section">'
+      + '<button class="sync-section-header" onclick="MgrSync.toggleSection(\'' + key + '\')">'
+      + '<span class="sync-section-caret">' + caret + '</span>'
+      + '<span class="sync-section-title">' + _esc(title) + '</span>'
+      + '<span class="sync-section-count' + (safeCount ? ' has-items' : '') + '">' + safeCount + '</span>'
+      + '</button>';
+    if (open) {
+      if (!rows || rows.length === 0) {
+        html += '<div class="sync-section-empty">No items.</div>';
+      } else {
+        html += '<div class="sync-section-body">' + rows.map(renderRow).join('') + '</div>';
+      }
+    }
+    return html + '</div>';
+  }
+
+  function _renderClientRow(r) {
+    var name = ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || '(unnamed)';
+    var city = r.city ? ' · ' + r.city : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main">' + _esc(name) + '<span class="sync-row-meta">' + _esc(city) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderScheduleRow(r) {
+    var verb;
+    switch (r.action_type) {
+      case 'cancelled': verb = 'Cancelled'; break;
+      case 'created':   verb = 'New job';   break;
+      case 'started':   verb = 'Started';   break;
+      case 'ended':     verb = 'Ended';     break;
+      case 'restored':  verb = 'Restored';  break;
+      case 'deleted':   verb = 'Removed';   break;
+      case 'updated':   verb = 'Updated';   break;
+      default:          verb = r.action_type || 'Change';
+    }
+    var bits = [];
+    if (r.client_name) bits.push(r.client_name);
+    if (r.team)        bits.push('Team ' + r.team);
+    if (r.job_date)    bits.push(r.job_date);
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main"><strong>' + _esc(verb) + '</strong><span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderTimeEntryRow(r) {
+    var verb = (r.action_type === 'created') ? 'Clock entry'
+             : (r.action_type === 'updated') ? 'Updated entry'
+             : (r.action_type === 'deleted') ? 'Removed entry'
+             : r.action_type || 'Entry';
+    var bits = [];
+    if (r.clock_in_at)  bits.push('in ' + _fmtTime(r.clock_in_at).split(',').pop().trim());
+    if (r.clock_out_at) bits.push('out ' + _fmtTime(r.clock_out_at).split(',').pop().trim());
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main"><strong>' + _esc(verb) + '</strong><span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderApplicationRow(r) {
+    var name = (r.applicant_name || '(unnamed applicant)');
+    var bits = [];
+    if (r.preferred_language) bits.push(r.preferred_language.toUpperCase());
+    if (r.hear_about_us)      bits.push('via ' + r.hear_about_us);
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main">' + _esc(name) + '<span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+
+  function _render() {
+    var v = document.getElementById('sync-report-view');
+    if (!v || !v.classList.contains('active')) return;
+    var body = document.getElementById('sync-body');
+    if (!body) return;
+
+    if (typeof isManagerRole === 'function' && !isManagerRole()) {
+      body.innerHTML = '<div class="sync-empty">Manager-only view.</div>';
+      return;
+    }
+
+    if (S.loading && !S.report) {
+      body.innerHTML = '<div class="sync-empty">Loading…</div>';
+      return;
+    }
+    if (S.error) {
+      body.innerHTML = '<div class="sync-empty">Could not load: ' + _esc(S.error) + '</div>';
+      return;
+    }
+
+    var r = S.report || {};
+    var statusInfo = _statusBadge(S.statusRow);
+    var total = r.total_items || 0;
+    var synced = S.statusRow && S.statusRow.marked_synced_at;
+
+    var head = '<div class="sync-controls">' + _renderDateChips() + '</div>'
+      + _renderRecentStrip()
+      + '<div class="sync-summary">'
+        + '<div class="sync-summary-left">'
+          + '<div class="sync-summary-date">' + _esc(S.date) + '</div>'
+          + '<div class="sync-summary-total">' + total + ' item' + (total === 1 ? '' : 's') + ' to sync</div>'
+        + '</div>'
+        + '<div class="sync-summary-badge" style="background:' + statusInfo.bg + ';color:' + statusInfo.color + '">' + statusInfo.label + '</div>'
+      + '</div>';
+
+    if (synced) {
+      head += '<div class="sync-synced-banner">Marked synced ' + _esc(_fmtTime(S.statusRow.marked_synced_at)) + '</div>';
+    }
+
+    var sections = ''
+      + _renderSection('new_clients',      '📋 New Clients',        r.new_clients_count,      r.new_clients,      _renderClientRow)
+      + _renderSection('schedule_changes', '🗓 Schedule Changes',   r.schedule_changes_count, r.schedule_changes, _renderScheduleRow)
+      + _renderSection('time_entries',     '⏱ Time Entries',        r.time_entries_count,     r.time_entries,     _renderTimeEntryRow)
+      + _renderSection('client_deletions', '❌ Client Deletions',   r.client_deletions_count, r.client_deletions, _renderClientRow)
+      + _renderSection('applications',     '📨 New Applications',   r.applications_count,     r.applications,     _renderApplicationRow);
+
+    var footer = '<div class="sync-footer">'
+      + '<label for="sync-notes" class="sync-notes-label">Notes (optional — recorded with the sync event)</label>'
+      + '<textarea id="sync-notes" class="sync-notes" rows="2" placeholder="e.g. Maids entry #4811">' + _esc((S.statusRow && S.statusRow.notes) || '') + '</textarea>'
+      + '<button id="sync-mark-btn" class="sync-mark-btn" onclick="MgrSync.markSynced()">'
+      +   (synced ? 'Re-mark as Synced (overwrite)' : 'Mark as Synced to Maids')
+      + '</button>'
+      + '</div>';
+
+    body.innerHTML = head + sections + footer;
+  }
+
+  window.MgrSync = {
+    open: openSyncReport, close: closeSyncReport,
+    setDate: setDate, markSynced: markSynced, toggleSection: toggleSection,
+    _state: S, _render: _render, _refresh: _refresh,
+  };
+  window.openSyncReport = openSyncReport;
+  window.closeSyncReport = closeSyncReport;
 })();
 
 
@@ -17001,6 +17443,9 @@ var HOME_APPS = [
       // Replaces the legacy Content Hub Rewards tab (localStorage-backed).
       if (typeof openManagerRewards === 'function') openManagerRewards();
     } },
+  { id: 'sync',       permKey: 'sync_icon', label: 'Maids Sync', grad: 'linear-gradient(135deg,#06b6d4 0%,#0284c7 100%)',
+    iconHtml: LUCIDE['clipboard-list'],
+    go: function(){ if (typeof openSyncReport === 'function') openSyncReport(); } },
   { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
@@ -40010,6 +40455,22 @@ function _p3dPage(dir) {
 </div>
 <div class="mr-modal-overlay" id="mr-modal-overlay" onclick="if(event.target===this)_mrCloseModal()" aria-hidden="true">
   <div class="mr-modal-card" id="mr-modal-card" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Maids Sync Report (v11.0.6) — fullscreen overlay. Single-screen
+     Phase 1: date selector + 5 collapsible sections + mark-synced.
+     Rendered into #sync-body by MgrSync._render().
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="sync-report-view" data-permission-role="manager" aria-hidden="true">
+  <div class="mr-topbar">
+    <button class="mr-back-btn" onclick="closeSyncReport()" aria-label="Back">‹</button>
+    <div class="mr-title-wrap">
+      <div class="mr-title">Maids Sync Report</div>
+      <div class="mr-subtitle">Daily diff for upstream sync</div>
+    </div>
+  </div>
+  <div class="sync-body" id="sync-body"></div>
 </div>
 
 <!-- Employee Supplies sub-page -->

@@ -4,24 +4,27 @@ This document tracks what's being built now, what's next, and what's deferred. U
 
 ## Active Priorities (next 60-90 days)
 
-### Priority 1: Maids Sync Report (Phase 1)
+### Priority 1: Maids Sync Report (Phase 1) — SHIPPED 2026-05-12 (v11.0.6)
 
 **Why:** Required before first paying Maids franchisee onboards. Makes the mirror-with-report compliance framework actually work in practice.
 
-**Build duration:** 1-2 weeks
+**Phase 1 shipped:**
+- Daily diff surface (`#sync-report-view`, opened via the "Maids Sync" home tile)
+- Source: `audit_log` (filled by triggers attached to 8 tenant-scoped tables in mig 043 + app-level supplements)
+- Sections: new clients, schedule changes, time entries, client deletions, new applications — each with count badge + drill-down rows
+- Date selector (today / yesterday / picker) + recent-14-days strip for back-fill
+- "Mark as Synced to Maids" action persists to `sync_reports` (per-tenant, per-date state) AND writes a corresponding `'approved'/'system'` audit_log row for compliance
+- RLS gated to owner/admin/manager; RPC `get_daily_sync_data` and `mark_sync_report_synced` enforce same role check
 
-**What it does:**
-- Daily report generated end-of-business-day
-- Shows: new clients added today, schedule changes today, time entries today, client deletions
-- Visual checklist format optimized for fast Maids data entry
-- Audit log: when report generated, when franchisee marked synced, time elapsed
-- Visible "Maids Sync Status" indicator on dashboard (green/yellow/red)
-- Daily nudge if previous day's sync hasn't been completed
+**Open items (Phase 1 polish, not blocking onboarding):**
+- Home-tile status pill (green/yellow/red dot based on yesterday's sync state)
+- Daily nudge banner if previous day's sync is not marked synced
+- Dedupe schedule-change rows when soft-delete + hard-delete fire on same entity
 
-**Important:**
+**Important (preserved for Phase 2):**
 - Franchisee is the actor entering data (legal cleanness)
 - No automated access to Maids' system
-- Build architecture so future browser extension can replace manual step without changing data flow
+- Future browser extension consumes the same `get_daily_sync_data` JSON and posts `mark_sync_report_synced` — no UI changes needed when the manual step is replaced
 
 ### Priority 2: Financial Intelligence Layer (Beginner Tier Foundation)
 
