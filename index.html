@@ -36989,12 +36989,20 @@ async function _mgrPaintJobIncidents(rootEl, j) {
         + 'border-radius:8px;padding:4px 10px;font:600 11px DM Sans,sans-serif;cursor:pointer;margin-top:6px">'
         + '📷 View photo</button>';
     }
+    // v11.0.13: simple status label per option. Earlier code did
+    // `_incidentDisplay({}).label.replace('Incident', '')` which threw
+    // TypeError (passing {} as the type returned a fallback object whose
+    // .label was the {} parameter, not a string). The whole
+    // _mgrPaintJobIncidents path threw silently and the section never
+    // populated — explaining why the seed + Viviana's submissions never
+    // appeared on Tom's manager card.
+    var statusLabels = { open: 'Open', in_review: 'In Review', resolved: 'Resolved', closed: 'Closed' };
     var statusDropdown = '<select onchange="_mgrChangeIncidentStatus(\'' + _escIssue(r.id) + '\',\'' + _escIssue(j.id) + '\',this.value)" '
       + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--text);'
       + 'border-radius:8px;padding:5px 10px;font:600 12px DM Sans,sans-serif;cursor:pointer">'
       + statusOptions.map(function(s){
           return '<option value="' + s + '"' + (s === r.status ? ' selected' : '') + '>'
-            + _incidentDisplay({}).label.replace('Incident', '') + s.charAt(0).toUpperCase() + s.slice(1).replace('_',' ') + '</option>';
+            + (statusLabels[s] || s) + '</option>';
         }).join('')
       + '</select>';
     return '<div style="background:' + (dim ? 'var(--surface2)' : 'rgba(248,113,113,0.08)') + ';'
