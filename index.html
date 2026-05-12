@@ -13929,49 +13929,136 @@ function logActivity(action, details, actor, clientId) {
   try { renderActivityLog(); } catch (e) {}
 }
 
-function renderActivityLog() {
+// v11.0.6 — renderActivityLog now reads from audit_log.
+// Fetches up to 250 most-recent events for the current tenant. RLS
+// gates by role; managers see all, dispatchers see the
+// scheduling-related subset, employees see only their own.
+//
+// Recognized action_types from the controlled vocabulary
+// (Migration 042) get human-readable labels here. Anything not
+// listed falls through to a generic "{action_type} {entity_type}".
+var _auditActionLabels = {
+  created:         { en: 'Created' },
+  updated:         { en: 'Updated' },
+  deleted:         { en: 'Deleted' },
+  restored:        { en: 'Restored' },
+  moved:           { en: 'Moved' },
+  cancelled:       { en: 'Cancelled' },
+  started:         { en: 'Started' },
+  ended:           { en: 'Ended' },
+  submitted:       { en: 'Submitted' },
+  approved:        { en: 'Approved' },
+  rejected:        { en: 'Rejected' },
+  manual_note:     { en: 'Note' },
+  manual_override: { en: 'Manual override' },
+  received:        { en: 'Received' },
+  refunded:        { en: 'Refunded' }
+};
+
+function _auditDescribe(row) {
+  // row: { action_type, entity_type, entity_id, new_values, ... }
+  var nv = row.new_values || {};
+  // For 'cancelled' supplements: prefer the operator-supplied context.
+  if (row.action_type === 'cancelled' && row.entity_type === 'job' && nv.client_name) {
+    var parts = ['Cancelled job: ' + nv.client_name];
+    if (nv.source) parts.push((nv.source === 'client' ? 'Client' : 'Business') + ' · ' + (nv.reason || ''));
+    if (nv.notes) parts.push(nv.notes);
+    return { action: parts[0], details: parts.slice(1).join(' — ') };
+  }
+  // 'submitted' application: applicant name + slug.
+  if (row.action_type === 'submitted' && row.entity_type === 'application') {
+    return {
+      action: 'Application: ' + (nv.applicant_name || 'unknown'),
+      details: nv.hear_about_us ? ('Heard via ' + nv.hear_about_us) : (nv.slug ? ('Slug: ' + nv.slug) : '')
+    };
+  }
+  // 'manual_note' (logActivity callers): preserve the legacy shape.
+  if (row.action_type === 'manual_note') {
+    return { action: nv.action || 'Note', details: nv.details || '' };
+  }
+  // Generic fallback: "{verb} {entity_type}" with optional first_name hint.
+  var verb = (_auditActionLabels[row.action_type] && _auditActionLabels[row.action_type].en) || row.action_type;
+  var entityHint = '';
+  if (nv.first_name || nv.last_name) entityHint = ': ' + ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim();
+  else if (nv.client_name) entityHint = ': ' + nv.client_name;
+  return { action: verb + ' ' + row.entity_type + entityHint, details: '' };
+}
+
+async function renderActivityLog() {
   var btn = document.getElementById('actor-name-btn');
   if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
   var el = document.getElementById('activity-log-list');
   if (!el) return;
-  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  if (log.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Loading…</div>';
     return;
   }
-
-  // Group by date
-  var grouped = {};
-  log.forEach(function(entry) {
-    var d = new Date(entry.ts);
-    var dateKey2 = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    if (!grouped[dateKey2]) grouped[dateKey2] = [];
-    grouped[dateKey2].push(entry);
-  });
-
-  var html = '';
-  var dates = Object.keys(grouped);
-  dates.forEach(function(dateLabel, di) {
-    if (di > 7) return; // show last 7 days max
-    html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
-    grouped[dateLabel].forEach(function(entry) {
-      var timeOnly = new Date(entry.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      var actorLabel = entry.actor || 'Manager';
-      var actorColor = actorLabel === 'AI Chat' ? 'var(--accent2)' : 'var(--teal)';
-      html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
-        + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
-        + '<div style="flex:1;min-width:0">'
-        + '<div style="font-weight:500;color:var(--text)">' + (entry.action||'') + '</div>'
-        + (entry.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + entry.details + '</div>' : '')
-        + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+actorLabel+'</div>'
-        + '</div></div>';
+  try {
+    var res = await sb.from('audit_log')
+      .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+      .eq('business_id', bid)
+      .order('created_at', { ascending: false })
+      .limit(250);
+    if (res.error) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable: ' + (res.error.message || 'error') + '</div>';
+      return;
+    }
+    var rows = res.data || [];
+    if (rows.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
+      return;
+    }
+    // Resolve user_id → display name once per render. We pull all
+    // distinct user_ids in one query and build a lookup map.
+    var distinctUids = Array.from(new Set(rows.map(function(r){ return r.user_id; }).filter(Boolean)));
+    var actorByUid = {};
+    if (distinctUids.length > 0) {
+      try {
+        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', distinctUids);
+        (ures.data || []).forEach(function(u){
+          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+        });
+      } catch (e) {}
+    }
+    var grouped = {};
+    rows.forEach(function(row){
+      var d = new Date(row.created_at);
+      var dateLabel = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      (grouped[dateLabel] = grouped[dateLabel] || []).push(row);
     });
-  });
-  el.innerHTML = html;
+    var html = '';
+    var dates = Object.keys(grouped);
+    dates.forEach(function(dateLabel, di) {
+      if (di > 7) return;
+      html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
+      grouped[dateLabel].forEach(function(row) {
+        var timeOnly = new Date(row.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+        var actorLabel = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
+        var actorColor = actorLabel === 'System' ? 'var(--muted)' : 'var(--teal)';
+        var desc = _auditDescribe(row);
+        html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
+          + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-weight:500;color:var(--text)">' + _adminEsc(desc.action) + '</div>'
+          + (desc.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + _adminEsc(desc.details) + '</div>' : '')
+          + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+_adminEsc(actorLabel)+'</div>'
+          + '</div></div>';
+      });
+    });
+    el.innerHTML = html;
+  } catch (e) {
+    console.warn('[activity log] render failed', e);
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable</div>';
+  }
 }
 
+// v11.0.6: clearActivityLog now only purges the localStorage shadow
+// cache (kept for one-release transition cushion per Part 3). audit_log
+// is immutable by design — clearing it isn't supported from the UI.
 function clearActivityLog() {
-  if (!confirm('Clear the entire activity log?')) return;
+  if (!confirm('Clear the local activity cache? (Server-side audit_log is preserved.)')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
 }
@@ -24529,11 +24616,11 @@ function applyClientEdits() {
   });
 }
 
-// Client Activity Log viewer. Read-only sheet that filters the two activity
-// stores (cleanco_activity_log + cleanco_pending) by clientId and renders
-// them newest-first. De-duped on ts+action because logPendingUpdate writes
-// to both stores.
-function openClientActivityLog(clientId) {
+// v11.0.6 — Client Activity Log viewer.
+// Reads from audit_log scoped to entity_id = clientId, plus
+// audit_log rows where a job/payment/application's new_values
+// reference this client. RLS handles the tenant scope.
+async function openClientActivityLog(clientId) {
   var c = PentaClients.getClient(clientId);
   if (!c) {
     if (typeof showToast === 'function') showToast('Client not found', 'error');
@@ -24541,28 +24628,51 @@ function openClientActivityLog(clientId) {
     return;
   }
 
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
   var log = [];
-  try {
-    var perm = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-    var pend = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-    var seen = {};
-    perm.forEach(function(e){
-      if (e && e.clientId === clientId) {
-        var k = (e.ts || 0) + '|' + (e.action || '');
-        if (!seen[k]) { seen[k] = true; log.push(e); }
-      }
-    });
-    pend.forEach(function(e){
-      if (e && e.clientId === clientId) {
-        var k = (e.ts || 0) + '|' + (e.action || '');
-        if (!seen[k]) { seen[k] = true; log.push(e); }
-      }
-    });
-  } catch (err) {
-    console.error('[ClientActivityLog] read failed', err);
+  if (sb && bid) {
+    try {
+      // Direct events on this client row (entity_type='client', entity_id=clientId).
+      var directRes = await sb.from('audit_log')
+        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .eq('business_id', bid)
+        .eq('entity_type', 'client')
+        .eq('entity_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      var direct = (directRes && directRes.data) || [];
+      // Related events: jobs/payments/applications/manual_notes where
+      // new_values.client_id matches. Server-side JSONB filter.
+      var relRes = await sb.from('audit_log')
+        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .eq('business_id', bid)
+        .filter('new_values->>client_id', 'eq', clientId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      var related = (relRes && relRes.data) || [];
+      // Merge + dedupe by id.
+      var seen = {};
+      direct.concat(related).forEach(function(r){ if (r && r.id && !seen[r.id]) { seen[r.id] = 1; log.push(r); }});
+      log.sort(function(a, b){ return new Date(b.created_at) - new Date(a.created_at); });
+    } catch (err) {
+      console.warn('[ClientActivityLog] read failed', err);
+    }
   }
 
-  log.sort(function(a, b){ return (b.ts || 0) - (a.ts || 0); });
+  // Resolve actor names in one batch.
+  var actorByUid = {};
+  if (sb && bid) {
+    var uids = Array.from(new Set(log.map(function(r){ return r.user_id; }).filter(Boolean)));
+    if (uids.length > 0) {
+      try {
+        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', uids);
+        (ures.data || []).forEach(function(u){
+          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+        });
+      } catch (e) {}
+    }
+  }
 
   var old = document.getElementById('client-activity-overlay');
   if (old) old.remove();
@@ -24590,23 +24700,19 @@ function openClientActivityLog(clientId) {
     bodyHtml = '<div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:14px">No activity recorded for this client yet.</div>';
   } else {
     bodyHtml = '<div style="padding:8px 20px 20px">';
-    log.forEach(function(entry) {
-      var timeStr = entry.time || '';
-      if (!timeStr && entry.ts) {
-        timeStr = new Date(entry.ts).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
-      }
-      var actionStr  = (entry.action  || '').replace(/</g, '&lt;');
-      var detailsStr = (entry.details || '').replace(/</g, '&lt;');
-      var actorStr   = (entry.actor   || '').replace(/</g, '&lt;');
+    log.forEach(function(row) {
+      var timeStr = new Date(row.created_at).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+      var desc = (typeof _auditDescribe === 'function') ? _auditDescribe(row) : { action: row.action_type + ' ' + row.entity_type, details: '' };
+      var actorStr = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
 
       bodyHtml += ''
         + '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
         +   '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;gap:12px">'
-        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + actionStr + '</div>'
+        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + desc.action.replace(/</g,'&lt;') + '</div>'
         +     '<div style="font-size:11px;color:var(--muted);white-space:nowrap">' + timeStr + '</div>'
         +   '</div>'
-        +   (detailsStr ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + detailsStr + '</div>' : '')
-        +   (actorStr   ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr + '</div>' : '')
+        +   (desc.details ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + desc.details.replace(/</g,'&lt;') + '</div>' : '')
+        +   '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr.replace(/</g,'&lt;') + '</div>'
         + '</div>';
     });
     bodyHtml += '</div>';
