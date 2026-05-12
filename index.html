@@ -4385,6 +4385,10 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <div id="home-view">
   <div class="home-greeting" id="home-greeting"></div>
   <div class="home-date" id="home-date"></div>
+  <!-- v11.0.4 (Issue A): one-shot setup nudge for owners/admins when
+       their tenant has zero offices. Painted by _renderHomeSetupBanner
+       from renderHomeScreen. Hidden by default; populated only when needed. -->
+  <div id="home-setup-banner" style="display:none"></div>
   <div class="home-pages-wrap" id="home-pages-wrap"></div>
   <div class="home-page-dots" id="home-page-dots"></div>
 </div>
@@ -4894,6 +4898,7 @@ window.PentaTenant = (function() {
   var _waiters = [];
   function current()        { return window.__pentaBusinessId || null; }
   function name()           { return window.__pentaBusinessName || ''; }
+  function legalName()      { return window.__pentaBusinessLegalName || ''; }
   function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
   function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
   // v11.0.1 (Item A): callers need a slug-safe form of the business name
@@ -4909,6 +4914,7 @@ window.PentaTenant = (function() {
     pending.forEach(function(fn){ try { fn(id); } catch (e) {} });
   }
   function _setName(n)         { if (n) window.__pentaBusinessName = String(n); }
+  function _setLegalName(n)    { if (n) window.__pentaBusinessLegalName = String(n); }
   function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
   function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
   function ready() {
@@ -4920,12 +4926,14 @@ window.PentaTenant = (function() {
   return {
     current: current,
     name: name,
+    legalName: legalName,
     operatorFirst: operatorFirst,
     operatorPhone: operatorPhone,
     nameSlugCompact: nameSlugCompact,
     ready: ready,
     _set: _set,
     _setName: _setName,
+    _setLegalName: _setLegalName,
     _setOperatorFirst: _setOperatorFirst,
     _setOperatorPhone: _setOperatorPhone
   };
@@ -12534,11 +12542,18 @@ window.addEventListener('DOMContentLoaded', function() {
       // and outbound SMS can resolve "the business name" dynamically.
       // Side-fetch, non-blocking — boot routing has already fired by here.
       if (dbBusinessId && sbBoot) {
-        sbBoot.from('businesses').select('name').eq('id', dbBusinessId).maybeSingle()
+        // v11.0.5 (Issue B-6): also pull legal_name for handbook /
+        // applicant-consent surfaces that need to identify the actual
+        // legal entity, not just the display name.
+        sbBoot.from('businesses').select('name, legal_name').eq('id', dbBusinessId).maybeSingle()
           .then(function(bres){
             var nm = bres && bres.data && bres.data.name;
+            var ln = bres && bres.data && bres.data.legal_name;
             if (nm && window.PentaTenant && window.PentaTenant._setName) {
               window.PentaTenant._setName(nm);
+            }
+            if (ln && window.PentaTenant && window.PentaTenant._setLegalName) {
+              window.PentaTenant._setLegalName(ln);
             }
           }).catch(function(){});
       }
@@ -14068,45 +14083,14 @@ function saveStaffChats(chats) {
 }
 
 function seedStaffChatsIfEmpty() {
-  var chats = loadStaffChats();
-  if (Object.keys(chats).length > 0) return;
-  var now = Date.now();
-  var H = 3600000;
-  chats = {
-    'e6': { // Maria Vieira (PT)
-      empLang: 'pt',
-      msgs: [
-        { id: 'm1', from: 'staff', lang: 'pt', text: 'Bom dia! Posso sair mais cedo amanhã? Tenho consulta médica às 3 da tarde.', tx: { en: 'Good morning! Can I leave early tomorrow? I have a doctor appointment at 3pm.' }, ts: now - 4*H, read: false },
-      ],
-      lastReadAdmin: 0
-    },
-    'e17': { // Yennifer (ES)
-      empLang: 'es',
-      msgs: [
-        { id: 'm2', from: 'staff', lang: 'es', text: 'Hola, no tenemos más Windex en la van. ¿Puedes traer mañana?', tx: { en: 'Hi, we are out of Windex in the van. Can you bring some tomorrow?' }, ts: now - 26*H, read: true },
-        { id: 'm3', from: 'admin', lang: 'en', text: "Yes I'll restock tonight. Anything else low?", tx: { es: 'Sí, voy a reponer esta noche. ¿Algo más bajo?' }, ts: now - 25*H, read: true },
-        { id: 'm4', from: 'staff', lang: 'es', text: 'También necesitamos toallas de microfibra y bolsas de basura grandes.', tx: { en: 'We also need microfiber towels and large trash bags.' }, ts: now - 24*H, read: false },
-      ],
-      lastReadAdmin: now - 25*H - 1
-    },
-    'e1': { // Viviana (ES) — TL
-      empLang: 'es',
-      msgs: [
-        { id: 'm5', from: 'staff', lang: 'es', text: 'Estoy enferma hoy, no puedo trabajar. Lo siento mucho.', tx: { en: "I'm sick today, can't come in. I'm so sorry." }, ts: now - 2*H, read: false },
-      ],
-      lastReadAdmin: 0
-    },
-    'e7': { // Ines (PT) — TL
-      empLang: 'pt',
-      msgs: [
-        { id: 'm6', from: 'staff', lang: 'pt', text: 'A casa dos Sullivan estava trancada. Podes ligar ao cliente?', tx: { en: 'The Sullivan house was locked. Can you call the client?' }, ts: now - 48*H, read: true },
-        { id: 'm7', from: 'admin', lang: 'en', text: 'Calling now — try the side door, code 4422.', tx: { pt: 'A ligar agora — tenta a porta lateral, código 4422.' }, ts: now - 48*H + 5*60000, read: true },
-        { id: 'm8', from: 'staff', lang: 'pt', text: 'Funcionou, obrigada! Estamos a começar.', tx: { en: 'It worked, thanks! We are starting now.' }, ts: now - 48*H + 12*60000, read: true },
-      ],
-      lastReadAdmin: now - 48*H + 12*60000 + 1
-    }
-  };
-  saveStaffChats(chats);
+  // v11.0.4 (Issue C): hardcoded Manna chat seed retired. Used to plant
+  // four fake threads containing real employee names, a client name, a
+  // gate code, and personal/medical context into every browser's
+  // localStorage. Shipped via JS bundle to every visitor including non-
+  // Manna tenants. The chat system is currently localStorage-only —
+  // wiring it to a real DB-backed `messages` table with RLS is its own
+  // future piece of work; for now an empty no-op is correct.
+  return;
 }
 
 function refreshAdminLangLabel() {
@@ -16997,11 +16981,51 @@ function _homeDateText() {
   return new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+// v11.0.4 (Issue A): one-shot setup nudge for owners/admins. Shows a
+// banner when the tenant has zero offices configured, since route
+// optimization and "back to depot" estimates break without at least
+// one. Dismissable per session via sessionStorage flag.
+async function _renderHomeSetupBanner() {
+  var host = document.getElementById('home-setup-banner');
+  if (!host) return;
+  // Role gate — only owner/admin/manager see the setup prompt.
+  var role = (typeof _pentaCachedRole !== 'undefined') ? _pentaCachedRole : null;
+  if (!role || ['owner','admin','manager'].indexOf(role) === -1) {
+    host.style.display = 'none'; return;
+  }
+  // Dismissed in this session? hide.
+  if (sessionStorage.getItem('penta_dismiss_setup_offices') === '1') {
+    host.style.display = 'none'; return;
+  }
+  // Need PentaTenant + PentaOffices to be resolvable.
+  if (!window.PentaOffices) { host.style.display = 'none'; return; }
+  try { await window.PentaOffices.ready(); } catch (e) {}
+  var rows = window.PentaOffices.listSync();
+  if (rows.length > 0) { host.style.display = 'none'; return; }
+  // Render the banner.
+  host.style.display = 'block';
+  host.innerHTML = ''
+    + '<div style="margin:0 16px 14px;padding:14px 16px;background:rgba(108,143,255,0.12);border:1px solid rgba(108,143,255,0.45);border-radius:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+    +   '<div style="font-size:22px">🏢</div>'
+    +   '<div style="flex:1;min-width:200px">'
+    +     '<div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:2px">Finish setup — add at least one office</div>'
+    +     '<div style="font-size:12px;color:var(--muted)">Route optimization, drive-time estimates, and the "back to depot" calculation all need office locations to work.</div>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:6px">'
+    +     '<button type="button" onclick="sessionStorage.setItem(\'penta_dismiss_setup_offices\',\'1\');document.getElementById(\'home-setup-banner\').style.display=\'none\'" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer">Later</button>'
+    +     '<button type="button" onclick="openOfficesSettings()" style="background:#5E5CE6;border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:7px 14px;border-radius:8px;cursor:pointer">Set up office</button>'
+    +   '</div>'
+    + '</div>';
+}
+
 function renderHomeScreen() {
   var greet = document.getElementById('home-greeting');
   var date = document.getElementById('home-date');
   if (greet) greet.textContent = _homeGreetingText();
   if (date) date.textContent = _homeDateText();
+
+  // Setup nudge for new tenants (see _renderHomeSetupBanner above).
+  try { _renderHomeSetupBanner(); } catch (e) {}
 
   var pagesEl = document.getElementById('home-pages-wrap');
   var dotsEl = document.getElementById('home-page-dots');
@@ -21583,7 +21607,13 @@ function distBetween(a, b) {
 }
 
 async function optimizeTeamRoute(team, teamJobs, date) {
-  const depot = ['M1','M2','M3'].includes(team) ? DEPOT_MARLBOROUGH : DEPOT_ABINGTON;
+  // v11.0.4 (Issue A): depot resolved from per-tenant business_offices via PentaOffices.
+  await window.PentaOffices.ready();
+  const depot = window.PentaOffices.getDepotForTeam(team);
+  if (!depot || depot.lat == null || depot.lng == null) {
+    console.warn('[optimizeTeamRoute] no office configured for team', team);
+    return null;
+  }
   const depotCoord = { lat: depot.lat, lng: depot.lng };
 
   // Nearest neighbor algorithm starting from depot
@@ -21717,10 +21747,14 @@ function renderRouteTeam(team) {
     </div>`;
   });
 
-  // Google Maps directions button with all stops in order
+  // Google Maps directions button with all stops in order.
+  // v11.0.4 (Issue A): depot address from PentaOffices, not hardcoded.
   const waypoints = data.stops.map(s => encodeURIComponent(s.job.addr + ', MA')).join('/');
-  const depot = ['M1','M2','M3'].includes(team) ? '910+Boston+Post+Rd+E+Marlborough+MA' : '800+Brockton+Ave+Abington+MA';
-  const mapsUrl = `https://www.google.com/maps/dir/${depot}/${waypoints}/${depot}`;
+  const _depotRow = window.PentaOffices.getDepotForTeam(team);
+  const depot = _depotRow && _depotRow.addr ? encodeURIComponent(_depotRow.addr) : '';
+  const mapsUrl = depot
+    ? `https://www.google.com/maps/dir/${depot}/${waypoints}/${depot}`
+    : `https://www.google.com/maps/dir/${waypoints}`;
 
   html += `<a href="${mapsUrl}" target="_blank" class="route-maps-btn">
     📍 Open Full Route in Google Maps
@@ -22072,27 +22106,105 @@ function distKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-function getDepotForTeam(team) {
-  return DEPOT_MARLBOROUGH.teams.includes(team) ? DEPOT_MARLBOROUGH : DEPOT_ABINGTON;
-}
+// v11.0.4 (Issue A) — PentaOffices: per-tenant depot/office locations.
+//
+// Used to be hardcoded DEPOT_MARLBOROUGH / DEPOT_ABINGTON consts
+// containing Manna Maids' two physical depots with GPS coords and team
+// mappings. Now loads from the business_offices table scoped by the
+// current tenant.
+//
+// Auto-hydrates on first sync read. Cached for the session; reload via
+// PentaOffices.refresh().
+window.PentaOffices = (function() {
+  var _cache = [];
+  var _hydrating = null;
+  var _ready = false;
+
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    var sb = _sb(); if (!sb) return false;
+    _hydrating = (async function() {
+      try {
+        var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+        if (!bid && window.PentaTenant && window.PentaTenant.ready) {
+          try { bid = await window.PentaTenant.ready(); } catch (e) {}
+        }
+        if (!bid) { _hydrating = null; return false; }
+        var res = await sb.from('business_offices')
+          .select('id, name, addr, lat, lng, teams, radius_km, active')
+          .eq('business_id', bid)
+          .eq('active', true)
+          .is('deleted_at', null);
+        if (res.error) { console.warn('[PentaOffices] hydrate error', res.error); _hydrating = null; return false; }
+        _cache = (res.data || []).map(function(r){
+          return {
+            id: r.id, name: r.name, addr: r.addr,
+            lat: r.lat != null ? parseFloat(r.lat) : null,
+            lng: r.lng != null ? parseFloat(r.lng) : null,
+            teams: r.teams || [],
+            radius_km: r.radius_km != null ? parseFloat(r.radius_km) : 1.0,
+            active: !!r.active
+          };
+        });
+        _ready = true;
+        return true;
+      } finally { _hydrating = null; }
+    })();
+    return _hydrating;
+  }
+
+  function listSync() {
+    // Kick off hydrate if not yet ready — sync consumers see [] on first
+    // call but the next render after hydrate completes picks up the data.
+    if (!_ready) _hydrate();
+    return _cache.slice();
+  }
+  function ready() { return _hydrate(); }
+  async function refresh() { _ready = false; _cache = []; return _hydrate(); }
+
+  // Find the depot for a given team code. Returns the first matching
+  // office where teams[] includes the team, or null if unmapped.
+  function getDepotForTeam(team) {
+    var rows = listSync();
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].teams && rows[i].teams.indexOf(team) !== -1) return rows[i];
+    }
+    return null;
+  }
+
+  function isDepotAddress(address, team) {
+    if (!address) return false;
+    var d = getDepotForTeam(team);
+    if (!d || !d.addr) return false;
+    return String(address).toLowerCase().includes(String(d.addr).toLowerCase());
+  }
+
+  function isDepotPoint(point, team) {
+    if (!point) return false;
+    var d = getDepotForTeam(team);
+    if (!d || d.lat == null || d.lng == null) return false;
+    var radius = d.radius_km || 1.0;
+    return distKm(point.y, point.x, d.lat, d.lng) <= radius;
+  }
+
+  return { listSync: listSync, ready: ready, refresh: refresh,
+           getDepotForTeam: getDepotForTeam,
+           isDepotAddress: isDepotAddress, isDepotPoint: isDepotPoint };
+})();
+
+// v11.0.4: the old top-level helpers are kept as thin delegates so the
+// dozen callers across the file keep working without per-call changes.
+function getDepotForTeam(team) { return window.PentaOffices.getDepotForTeam(team); }
 
 function isNearDepot(lat, lng, team) {
   // kept for compatibility but not used
   return false;
 }
 
-function isDepotAddress(address, team) {
-  const depot = getDepotForTeam(team);
-  // Check address string first
-  if (address && address.toLowerCase().includes(depot.addr.toLowerCase())) return true;
-  return false;
-}
-
-function isDepotPoint(point, team) {
-  if (!point) return false;
-  const depot = getDepotForTeam(team);
-  return distKm(point.y, point.x, depot.lat, depot.lng) <= DEPOT_RADIUS_KM;
-}
+function isDepotAddress(address, team) { return window.PentaOffices.isDepotAddress(address, team); }
+function isDepotPoint(point, team)    { return window.PentaOffices.isDepotPoint(point, team); }
 
 async function loadWeekHours() {
   const days = getWeekDates(hoursWeekOffset);
@@ -22911,10 +23023,22 @@ function renderHoursTable(days, dayNames) {
 
   html += '</tbody></table>';
 
-  // Add depot breakdown note
-  html += `<div style="margin-top:8px;font-size:11px;color:var(--muted);padding:0 2px">
-    📍 B1/B3/B5/S1/S3 hours from 800 Brockton Ave · M1/M2/M3 from 910 Boston Post Rd
-  </div>`;
+  // v11.0.4 (Issue A): build depot breakdown line dynamically from
+  // PentaOffices instead of hardcoded Manna addresses.
+  var _depotNote = (function(){
+    try {
+      var rows = window.PentaOffices ? window.PentaOffices.listSync() : [];
+      if (!rows.length) return '';
+      return '📍 ' + rows.map(function(r){
+        var teamsStr = (r.teams || []).join('/');
+        var label = teamsStr ? teamsStr + ' hours from ' + (r.addr || r.name) : (r.name + ' (no teams assigned)');
+        return label;
+      }).join(' · ');
+    } catch (e) { return ''; }
+  })();
+  if (_depotNote) {
+    html += `<div style="margin-top:8px;font-size:11px;color:var(--muted);padding:0 2px">${_depotNote}</div>`;
+  }
 
   // Hours report export (replaces the ratings button — ratings now lives as its own home-screen icon)
   html += `<button onclick="showHoursReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(108,143,255,0.14);border:1px solid rgba(108,143,255,0.38);border-radius:10px;color:#cbd6ff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">📊 Hours Report</button>`;
@@ -23420,9 +23544,13 @@ const GEOTAB_DB = 'the_maids_of_the_south_shore';
 const GEOTAB_USER = 'tommanna28@gmail.com';
 const GEOTAB_PASS = 'Maids2022!';
 
-// Depot addresses — matched by address string from MyGeotab
-const DEPOT_MARLBOROUGH = { addr: '910 Boston Post Rd', lat: 42.350958,  lng: -71.4948242, teams: ['M1','M2','M3'] };
-const DEPOT_ABINGTON    = { addr: '800 Brockton Ave',   lat: 42.0932067, lng: -70.9687121, teams: ['B1','B3','B5','S1','S3'] };
+// v11.0.4 (Issue A): hardcoded Manna Maids depots retired. Office data
+// now lives per-tenant in business_offices. Access via PentaOffices
+// (defined ~line 22075). The DEPOT_* names are kept declared as `null`
+// so `typeof DEPOT_MARLBOROUGH !== 'undefined'` checks in legacy code
+// continue to short-circuit cleanly.
+const DEPOT_MARLBOROUGH = null;
+const DEPOT_ABINGTON    = null;
 const DEPOT_RADIUS_KM   = 1.0;
 
 let gpsSession = null;
@@ -25465,10 +25593,21 @@ function emailQuote() {
     windows && windowCount > 0 ? '• Windows cleaned (' + windowCount + ')' : null,
   ].filter(Boolean).join('\n');
 
-  const subject = 'Your Cleaning Quote from The Maids' + (addr ? ' — ' + addr : '');
+  // v11.0.4 (Issue A): pull business name + primary office address from
+  // the tenant's data, not hardcoded Manna fields. Phone signature is
+  // omitted when no integration is configured; address is omitted when
+  // no office has been added — both degrade gracefully.
+  var _bizName = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || 'us';
+  var _primaryOffice = (function(){
+    try { var rows = window.PentaOffices ? window.PentaOffices.listSync() : []; return rows[0] || null; } catch(e) { return null; }
+  })();
+  var _sigLines = [_bizName];
+  if (_primaryOffice && _primaryOffice.addr) _sigLines.push(_primaryOffice.addr);
+
+  const subject = 'Your Cleaning Quote from ' + _bizName + (addr ? ' — ' + addr : '');
   const body =
     'Hi ' + (fn.trim() || 'there') + ',\n\n' +
-    'Thank you for your interest in The Maids! Here is your personalized cleaning quote:\n\n' +
+    'Thank you for your interest in ' + _bizName + '! Here is your personalized cleaning quote:\n\n' +
     (addr ? 'Address: ' + addr + '\n' : '') +
     (sqftDisp ? 'Square footage: ' + sqftDisp + ' sq ft\n' : '') +
     '\nESTIMATED PRICE: ' + price + (isOneTime ? ' (range — exact confirmed at walkthrough)' : ' ' + freq) + '\n' +
@@ -25478,10 +25617,7 @@ function emailQuote() {
     (isOneTime ? 'Note: Final price confirmed after first visit — no surprises!\n\n' : '') +
     'To schedule or ask questions, reply to this email or call/text us anytime.\n\n' +
     'We look forward to serving you!\n\n' +
-    'The Maids\n' +
-    'Penta, Inc.\n' +
-    '800 Brockton Ave, Abington, MA 02351\n' +
-    'Phone: (508) 559-8062';
+    _sigLines.join('\n');
 
   openQuoteCompose(phone.trim(), subject, body, email.trim(), true);
 }
@@ -25799,7 +25935,12 @@ function openBalanceFollowup() {
   // Set default message
   const tmpl = document.getElementById('bal-msg-template');
   if (tmpl && !tmpl.value) {
-    tmpl.value = 'Hi {name}! Just a friendly reminder that you have an unpaid balance of {balance} from your clean on {last}. Whenever you get a chance works perfectly! Thank you so much — we really appreciate you! 😊\n\n— The Maids';
+    // v11.0.5 (Issue B-5): sign-off resolves to operator first name +
+    // business name from PentaTenant. Fallback degrades gracefully.
+    var _bizSig = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+    var _opSig = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _sign = _opSig && _bizSig ? ('— ' + _opSig + ', ' + _bizSig) : (_bizSig ? ('— ' + _bizSig) : '— Thanks!');
+    tmpl.value = 'Hi {name}! Just a friendly reminder that you have an unpaid balance of {balance} from your clean on {last}. Whenever you get a chance works perfectly! Thank you so much — we really appreciate you! 😊\n\n' + _sign;
   }
 
   // Render client list
@@ -26290,7 +26431,9 @@ function _buildQuoteSmsText(args) {
     walls  ? '✔ Walls wiped down (+1hr)' : null,
     windows && windowCount > 0 ? '✔ Windows cleaned (' + windowCount + ')' : null,
   ].filter(Boolean).join(nl);
-  return 'Hi ' + (firstName || 'there') + '! 👋 Here is your personalized cleaning quote from The Maids:' + nl + nl +
+  // v11.0.5 (Issue B-5): business name resolved from PentaTenant.
+  var _qBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || 'us';
+  return 'Hi ' + (firstName || 'there') + '! 👋 Here is your personalized cleaning quote from ' + _qBiz + ':' + nl + nl +
     (address ? '📍 ' + address + nl : '') +
     (sqftDisplay ? '📐 ' + sqftDisplay + ' sq ft' + nl : '') +
     nl +
@@ -28223,8 +28366,15 @@ function printHandbook(sigName, sigDate, empName) {
   // the literal token text.
   var _printBname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
   var _printBupper = _printBname ? (_printBname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
+  var _printBaddr = (function(){
+    try { var rows = window.PentaOffices ? window.PentaOffices.listSync() : []; return rows[0] && rows[0].addr || ''; } catch(e) { return ''; }
+  })();
+  var _printBlegal = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName())
+                   || (_printBname ? (_printBname + ', Inc.') : 'the company');
   const printContent = content
     .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _printBupper)
+    .replace(/\{\{BUSINESS_ADDR\}\}/g, _printBaddr)
+    .replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _printBlegal)
     .replace(/class="handbook-h1"/g, 'style="font-size:22px;font-weight:bold;text-align:center;margin-bottom:4px"')
     .replace(/class="handbook-h2"/g, 'style="font-size:17px;font-weight:bold;margin-top:24px;border-bottom:1px solid #ccc;padding-bottom:4px"')
     .replace(/class="handbook-h3"/g, 'style="font-size:15px;font-weight:bold;margin-top:14px"')
@@ -28243,7 +28393,7 @@ function printHandbook(sigName, sigDate, empName) {
     '<p style="font-size:14px"><b>Employee:</b> ' + empName + '</p>' +
     '<p style="font-size:14px"><b>Signed as:</b> ' + sigName + '</p>' +
     '<p style="font-size:14px"><b>Date:</b> ' + sigDate + '</p>' +
-    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the Penta, Inc. Employee Handbook.</p>' +
+    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the ' + ((window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName()) || 'company') + ' Employee Handbook.</p>' +
     '</div>' +
     '<div style="margin-top:24px;background:#f0f0f0;border-radius:10px;padding:14px;font-size:13px;color:#444;text-align:center">' +
     '📱 To print or save as PDF: tap the <b>Share</b> button in Safari → <b>Print</b> or <b>Save to Files</b>' +
@@ -30073,11 +30223,11 @@ const APP_T = {
     emergency: 'Emergency Contact',
     emName: 'Name *', emPhone: 'Phone *', emRel: 'Relationship',
     emRelPlaceholder: 'e.g. Spouse, Parent, Sibling',
-    consent: 'By signing below, I certify that all information provided is accurate. I authorize Penta, Inc. to verify all information.',
+    consent: 'By signing below, I certify that all information provided is accurate. I authorize {{BUSINESS_LEGAL_NAME}} to verify all information.',
     sigLabel: 'Full name (acts as your signature) *',
     submit: 'Submit Application',
     successTitle: 'Application Submitted!',
-    successMsg: 'Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.',
+    successMsg: 'Thank you for applying to {{BUSINESS_LEGAL_NAME}} We will review your application and contact you within a few days.',
     backBtn: 'Back to Login',
     docsSection: 'Identity Documents',
     licFront: "Driver\'s License (front)",
@@ -30107,11 +30257,11 @@ const APP_T = {
     emergency: 'Contacto de emergencia',
     emName: 'Nombre *', emPhone: 'Teléfono *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ej. Esposo/a, Padre/Madre, Hermano/a',
-    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a Penta, Inc. a verificarla.',
+    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a {{BUSINESS_LEGAL_NAME}} a verificarla.',
     sigLabel: 'Nombre completo (sirve como tu firma) *',
     submit: 'Enviar solicitud',
     successTitle: '¡Solicitud enviada!',
-    successMsg: 'Gracias por aplicar a Penta, Inc. Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
+    successMsg: 'Gracias por aplicar a {{BUSINESS_LEGAL_NAME}} Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
     backBtn: 'Volver al inicio',
     docsSection: 'Documentos de Identidad',
     licFront: 'Licencia de conducir (frente)',
@@ -30141,11 +30291,11 @@ const APP_T = {
     emergency: 'Contato de emergência',
     emName: 'Nome *', emPhone: 'Telefone *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ex. Cônjuge, Pai/Mãe, Irmão/ã',
-    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a Penta, Inc. a verificá-las.',
+    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a {{BUSINESS_LEGAL_NAME}} a verificá-las.',
     sigLabel: 'Nome completo (serve como sua assinatura) *',
     submit: 'Enviar candidatura',
     successTitle: 'Candidatura Enviada!',
-    successMsg: 'Obrigado por se candidatar à Penta, Inc. Analisaremos sua candidatura e entraremos em contato em alguns dias.',
+    successMsg: 'Obrigado por se candidatar à {{BUSINESS_LEGAL_NAME}} Analisaremos sua candidatura e entraremos em contato em alguns dias.',
     backBtn: 'Voltar ao início',
     docsSection: 'Documentos de Identidade',
     licFront: 'CNH (frente)',
@@ -30175,11 +30325,11 @@ const APP_T = {
     emergency: 'Kontatu di emerjensia',
     emName: 'Nomi *', emPhone: 'Telefoni *', emRel: 'Parentesku',
     emRelPlaceholder: 'Ex. Maridun/Mudjer, Pai/Mai, Irmaun/Irma',
-    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu Penta, Inc. pa verifica-l.',
+    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu {{BUSINESS_LEGAL_NAME}} pa verifica-l.',
     sigLabel: 'Nomi kumpletu (ta sirvi komu bo firma) *',
     submit: 'Manda pedidu',
     successTitle: 'Pedidu Mandadu!',
-    successMsg: 'Obrigadu pa kandidata na Penta, Inc. Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
+    successMsg: 'Obrigadu pa kandidata na {{BUSINESS_LEGAL_NAME}} Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
     backBtn: 'Volta pa login',
     docsSection: 'Dokumentus di Identidadi',
     licFront: 'Karteira di kondusaun (frenti)',
@@ -30245,8 +30395,17 @@ function setAppLang(lang) {
 
 function renderAppTranslations() {
   const at = APP_T[appLang] || APP_T.en;
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-  const setph = (id, val) => { const el = document.getElementById(id); if (el) el.placeholder = val; };
+  // v11.0.5 (Issue B-6): substitute {{BUSINESS_LEGAL_NAME}} at render
+  // time so the applicant sees the *tenant's* legal name in consent +
+  // success strings, not "Penta, Inc." (the platform). Source: tenant
+  // legalName for manager mode, or _appTargetBusinessName + ", Inc."
+  // for the public slug-resolved form.
+  const _legalFromTenant = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName()) || '';
+  const _legalFromAppTarget = window._appTargetBusinessName ? (window._appTargetBusinessName + ', Inc.') : '';
+  const _legal = _legalFromTenant || _legalFromAppTarget || 'the company';
+  const sub = (s) => (typeof s === 'string') ? s.replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _legal) : s;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = sub(val); };
+  const setph = (id, val) => { const el = document.getElementById(id); if (el) el.placeholder = sub(val); };
 
   set('app-subtitle', at.subtitle);
   set('app-section-personal', at.personal);
@@ -31434,10 +31593,10 @@ function renderSchedule() {
       return s + d;
     }, 0);
 
+    // v11.0.4 (Issue A): resolve via per-tenant business_offices.
     var depot = null;
     try {
-      if (typeof DEPOT_MARLBOROUGH !== 'undefined' && DEPOT_MARLBOROUGH.teams.indexOf(team) !== -1) depot = DEPOT_MARLBOROUGH;
-      else if (typeof DEPOT_ABINGTON !== 'undefined') depot = DEPOT_ABINGTON;
+      depot = window.PentaOffices && window.PentaOffices.getDepotForTeam && window.PentaOffices.getDepotForTeam(team);
     } catch(e) {}
 
     function finish(driveSum, backMins) {
@@ -32930,15 +33089,15 @@ const HANDBOOK_EN = `
 <div class="handbook-section">
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Employee Handbook</div>
-<div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Effective April 10, 2026</div>
-<div class="handbook-p">Welcome to Penta, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
+<div class="handbook-p">{{BUSINESS_ADDR}} · Effective April 10, 2026</div>
+<div class="handbook-p">Welcome to {{BUSINESS_LEGAL_NAME}} We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
 </div>
 <div class="handbook-divider"></div>
 
 <div class="handbook-section">
 <div class="handbook-h2">SECTION 1 — EMPLOYMENT</div>
 <div class="handbook-h3">1.1 At-Will Employment</div>
-<div class="handbook-p">Employment at Penta, Inc. is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
+<div class="handbook-p">Employment at {{BUSINESS_LEGAL_NAME}} is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
 <div class="handbook-h3">1.2 Equal Opportunity</div>
 <div class="handbook-p">We do not discriminate based on race, color, religion, sex, national origin, age, disability, sexual orientation, gender identity, or any other characteristic protected by Massachusetts or federal law.</div>
 <div class="handbook-h3">1.3 Anti-Harassment</div>
@@ -33035,14 +33194,14 @@ const HANDBOOK_ES = `
 <div class="handbook-section">
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual del Empleado</div>
-<div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efectivo 10 de abril de 2026</div>
-<div class="handbook-p">Bienvenido a Penta, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
+<div class="handbook-p">{{BUSINESS_ADDR}} · Efectivo 10 de abril de 2026</div>
+<div class="handbook-p">Bienvenido a {{BUSINESS_LEGAL_NAME}} Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SECCIÓN 1 — EMPLEO</div>
 <div class="handbook-h3">1.1 Empleo a voluntad</div>
-<div class="handbook-p">El empleo en Penta, Inc. es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
+<div class="handbook-p">El empleo en {{BUSINESS_LEGAL_NAME}} es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdad de oportunidades</div>
 <div class="handbook-p">No discriminamos por raza, color, religión, sexo, origen nacional, edad, discapacidad, orientación sexual, identidad de género ni ninguna otra característica protegida por la ley.</div>
 <div class="handbook-h3">1.3 Política contra el acoso</div>
@@ -33110,14 +33269,14 @@ const HANDBOOK_PT = `
 <div class="handbook-section">
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual do Funcionário</div>
-<div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Vigente a partir de 10 de abril de 2026</div>
-<div class="handbook-p">Bem-vindo à Penta, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
+<div class="handbook-p">{{BUSINESS_ADDR}} · Vigente a partir de 10 de abril de 2026</div>
+<div class="handbook-p">Bem-vindo à {{BUSINESS_LEGAL_NAME}} Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SEÇÃO 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a qualquer tempo</div>
-<div class="handbook-p">O emprego na Penta, Inc. é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
+<div class="handbook-p">O emprego na {{BUSINESS_LEGAL_NAME}} é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdade de oportunidades</div>
 <div class="handbook-p">Não discriminamos por raça, cor, religião, sexo, origem nacional, idade, deficiência, orientação sexual, identidade de gênero ou qualquer outra característica protegida por lei.</div>
 <div class="handbook-h3">1.3 Política anti-assédio</div>
@@ -33185,14 +33344,14 @@ const HANDBOOK_CV = `
 <div class="handbook-section">
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual di Trabalhador</div>
-<div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efetivo 10 di Abril di 2026</div>
-<div class="handbook-p">Binvindu na Penta, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
+<div class="handbook-p">{{BUSINESS_ADDR}} · Efetivo 10 di Abril di 2026</div>
+<div class="handbook-p">Binvindu na {{BUSINESS_LEGAL_NAME}} Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SESAUN 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a vontadi</div>
-<div class="handbook-p">Emprego na Penta, Inc. e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
+<div class="handbook-p">Emprego na {{BUSINESS_LEGAL_NAME}} e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdadi di oportunidadi</div>
 <div class="handbook-p">Nu ka ta diskrimina pa rasa, kor, religiaun, sexu, origem nasional, idadi, defisiensia, orientasaun sexual, identidadi di jeneru, ou kalkuer otra karakteristika protejidu pa lei.</div>
 <div class="handbook-h3">1.3 Politika kontra asediu</div>
@@ -33262,8 +33421,21 @@ function renderHandbook() {
   // using the tenant's name. Used in the handbook's title H1.
   var _bname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
   var _bupper = _bname ? (_bname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
+  // v11.0.4 (Issue A): address footer comes from the tenant's primary
+  // office, not a hardcoded Manna address.
+  var _baddr = (function(){
+    try { var rows = window.PentaOffices ? window.PentaOffices.listSync() : []; return rows[0] && rows[0].addr || ''; } catch(e) { return ''; }
+  })();
+  // v11.0.5 (Issue B-6): legal name for handbook welcome + at-will
+  // paragraphs. Pulls from businesses.legal_name (already backfilled
+  // for all four existing tenants).
+  var _blegal = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName())
+              || (_bname ? (_bname + ', Inc.') : 'the company');
   var _raw = handbookMap[currentLang] || HANDBOOK_EN;
-  var _rendered = _raw.replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper);
+  var _rendered = _raw
+    .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper)
+    .replace(/\{\{BUSINESS_ADDR\}\}/g, _baddr)
+    .replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _blegal);
   document.getElementById('handbook-content').innerHTML = _rendered;
   document.getElementById('esign-title').textContent = t('signTitle');
   document.getElementById('esign-name-label').textContent = t('signNameLabel');
@@ -34264,7 +34436,7 @@ function renderStaffSubview() {
 }
 
 // CLIENT KEYS
-var CLIENT_KEYS = {'ahern': {"key": "51", "fn": "Beth", "code": ""}, 'schneider': {"key": "98", "fn": "Janice", "code": ""}, 'ackroyd': {"key": "1", "fn": "Pat", "code": ""}, 'downey': {"key": "10", "fn": "Joanne", "code": ""}, 'cucinotta': {"key": "10", "fn": "David", "code": ""}, 'reardon': {"key": "101", "fn": "Christine", "code": ""}, 'cullivan': {"key": "107", "fn": "Paul", "code": ""}, 'ehlers': {"key": "11", "fn": "Kathleen", "code": ""}, 'elden': {"key": "111", "fn": "Alexis", "code": ""}, 'arnold': {"key": "115", "fn": "Helen", "code": ""}, 'harvey': {"key": "123", "fn": "Catherine", "code": ""}, 'gile': {"key": "13", "fn": "KimiLee", "code": ""}, 'rudd': {"key": "136", "fn": "Nate", "code": ""}, 'hamill': {"key": "14", "fn": "Annie", "code": ""}, 'mckim': {"key": "140", "fn": "Teresa", "code": ""}, 'murphy': {"key": "143", "fn": "Liz", "code": ""}, 'hamory': {"key": "15", "fn": "Bruce", "code": ""}, 'kelly': {"key": "16", "fn": "Beth", "code": ""}, 'macdonald': {"key": "165", "fn": "Mary", "code": ""}, 'hayes': {"key": "167", "fn": "ONLY 9AM Daniel", "code": ""}, 'kulsick': {"key": "17", "fn": "Maria", "code": ""}, 'mahle': {"key": "19", "fn": "Jane", "code": ""}, 'aldrich': {"key": "2", "fn": "Kristen", "code": ""}, 'young': {"key": "20", "fn": "Tracy", "code": ""}, 'mcdonald': {"key": "20", "fn": "Larissa", "code": ""}, 'riley': {"key": "2002 ENTER", "fn": "Susan", "code": ""}, 'driscoll': {"key": "2002 or 2442 ENTER", "fn": "Paul", "code": ""}, 'till': {"key": "35", "fn": "Inc.", "code": ""}, 'pantazis': {"key": "23", "fn": "Nina John", "code": ""}, 'parrish': {"key": "24", "fn": "Amy", "code": ""}, 'peirce': {"key": "25", "fn": "Melissa", "code": ""}, 'rainville': {"key": "26", "fn": "Jennifer", "code": ""}, 'mcgonigal': {"key": "26", "fn": "Cheryl", "code": ""}, 'rizzo': {"key": "27", "fn": "Rosario", "code": ""}, 'sarason': {"key": "29", "fn": "Julie", "code": ""}, 'sayles': {"key": "30", "fn": "Helen", "code": ""}, 'rowe': {"key": "31", "fn": "Kathy", "code": ""}, 'sherman': {"key": "55", "fn": "Barbara", "code": ""}, 'vogler': {"key": "35", "fn": "Donald", "code": ""}, 'pletman': {"key": "36", "fn": "Ed", "code": ""}, 'dicastro': {"key": "37", "fn": "Ed", "code": ""}, 'celona': {"key": "38", "fn": "James", "code": ""}, 'benson': {"key": "69", "fn": "Wendy", "code": ""}, 'rie. not before 2pm': {"key": "4", "fn": "Cathy", "code": ""}, 'darling': {"key": "42", "fn": "Mike", "code": ""}, 'draheim': {"key": "45", "fn": "Jan", "code": ""}, 'sullivan': {"key": "47", "fn": "Jennifer", "code": ""}, 'roeder': {"key": "47*", "fn": "Paul", "code": ""}, 'brown': {"key": "5", "fn": "Jeff", "code": ""}, 'cushing': {"key": "50", "fn": "Allison", "code": ""}, 'roy-steinberg': {"key": "52", "fn": "Julie", "code": ""}, 'coffey': {"key": "67", "fn": "Kathy", "code": ""}, 'pitcher': {"key": "60", "fn": "Shirley", "code": ""}, 'ford': {"key": "61", "fn": "Tammy", "code": ""}, 'white': {"key": "617 # is Jim", "fn": "Jean", "code": ""}, 'resendes': {"key": "66", "fn": "Mary", "code": ""}, 'cox': {"key": "7", "fn": "Alyson", "code": ""}, 'svelnis': {"key": "76", "fn": "Anne", "code": ""}, 'cross': {"key": "80", "fn": "Andy", "code": ""}, 'weisenberg': {"key": "86", "fn": "Caryn", "code": ""}, 'collins': {"key": "87", "fn": "Beth", "code": ""}, 'berk': {"key": "89", "fn": "Christine", "code": ""}, 'dignam': {"key": "9", "fn": "Catherine", "code": ""}, 'crane': {"key": "CODE 4249 TURN DEAD LOCK.", "fn": "Ellen", "code": ""}, 'summers': {"key": "Door code: 4444", "fn": "Brady", "code": ""}, 'bevans': {"key": "Garage code 0607", "fn": "Patricia", "code": ""}, 'dangelo': {"key": "GARAGE CODE-1963", "fn": "Linda", "code": ""}, 'shufrin': {"key": "he will be therevv", "fn": "Ronald", "code": ""}, 'danaher': {"key": "KEY  UNDER MAT.", "fn": "Brian", "code": ""}, 'mcgregor': {"key": "will be there ,", "fn": "Doug", "code": ""}, 'mendis': {"key": "KEY UNDER MAT,PUT BACK", "fn": "Paul and Nancy", "code": ""}, 'dzengeleski': {"key": "SHE WILL BE THERE", "fn": "Julie", "code": ""}, 'morrissey': {"key": "SIDE DOOR OPEN!", "fn": "Diane", "code": ""}, 'doherty': {"key": "WILL BE HOMEe", "fn": "Phyllis", "code": ""}, 'cohen': {"key": "will be there", "fn": "Pat", "code": ""}, 'meagher': {"key": "WILL BE THERE        .", "fn": "Janet", "code": ""}, 'gillan': {"key": "will be there ,,", "fn": "Lina", "code": ""}, 'clark': {"key": "will be there e", "fn": "Eric", "code": ""}, 'quintal': {"key": "will be there!", "fn": "Carl", "code": ""}, 'wisehart': {"key": "will be there,", "fn": "Kevin", "code": ""}, 'forte': {"key": "will be there,..", "fn": "Deborah", "code": ""}, 'masotta': {"key": "WILL BE THERE.", "fn": "Joe", "code": ""}, 'coughlin': {"key": "WILL BE THERE.,", "fn": "Fran", "code": ""}, 'dondapati': {"key": "will be there/", "fn": "Satya S", "code": ""}, 'uerling': {"key": "WILL BE THEREe", "fn": "Laura", "code": ""}, 'dittler': {"key": "will be theree,", "fn": "Kimberly", "code": ""}, 'tyska': {"key": "WILL BE THEREe.", "fn": "Rita", "code": ""}, 'hawes': {"key": "WILL THERE-CALL", "fn": "Brian", "code": ""}, '': {"key": "WILL THERE-CALL", "fn": "Brian", "code": ""}};
+var CLIENT_KEYS = {};  // v11.0.5 (Issue B-1): hardcoded Manna client access codes retired — see client_keys table + PentaClientKeys facade.
 // ── JOB SQUARE DRAG & DROP ──
 var _dragJob = null;
 var _dragEl = null;
@@ -34803,10 +34975,21 @@ function _renderScheduleMapCore(containerId, opts) {
   var activeFilter = window.calTeamFilter || null;
   var statusEl = opts.statusId ? document.getElementById(opts.statusId) : null;
 
-  var offices = {
-    abington: {name:'Abington Office', addr:'800 Brockton Ave, Abington, MA', lat:42.1048, lng:-70.9454, teams:['B1','B3','B5','S1','S3']},
-    marlborough: {name:'Marlborough Office', addr:'910 Boston Post Rd E, Marlborough, MA', lat:42.3483, lng:-71.5220, teams:['M1','M2','M3']}
-  };
+  // v11.0.4 (Issue A): offices come from PentaOffices (business_offices
+  // table scoped by tenant). Used to be hardcoded Manna depots.
+  // Reshape to the {abington, marlborough} object shape the rest of this
+  // function expects by keying on lowercase office name.
+  var offices = (function(){
+    var o = {};
+    try {
+      var rows = window.PentaOffices ? window.PentaOffices.listSync() : [];
+      rows.forEach(function(r){
+        var key = (r.name || '').toLowerCase().replace(/\s+/g,'_') || r.id;
+        o[key] = { name: (r.name || '') + ' Office', addr: r.addr, lat: r.lat, lng: r.lng, teams: r.teams || [] };
+      });
+    } catch (e) {}
+    return o;
+  })();
 
   // Legacy fallback colors for jobs whose team string isn't in PentaTeams cache.
   // Once Sprint 7 migrates job.team to team_id FK, this map can be deleted.
@@ -35102,10 +35285,18 @@ function renderInlineScheduleMap() {
 }
 
 function _plotInlineMapData(map, dayJobs, dateStr, activeFilter, doFitBounds) {
-  var offices = {
-    abington: {name:'Abington Office', addr:'800 Brockton Ave, Abington, MA', lat:42.1048, lng:-70.9454, teams:['B1','B3','B5','S1','S3']},
-    marlborough: {name:'Marlborough Office', addr:'910 Boston Post Rd E, Marlborough, MA', lat:42.3483, lng:-71.5220, teams:['M1','M2','M3']}
-  };
+  // v11.0.4 (Issue A): per-tenant offices via PentaOffices.
+  var offices = (function(){
+    var o = {};
+    try {
+      var rows = window.PentaOffices ? window.PentaOffices.listSync() : [];
+      rows.forEach(function(r){
+        var key = (r.name || '').toLowerCase().replace(/\s+/g,'_') || r.id;
+        o[key] = { name: (r.name || '') + ' Office', addr: r.addr, lat: r.lat, lng: r.lng, teams: r.teams || [] };
+      });
+    } catch (e) {}
+    return o;
+  })();
   var teamColors = {
     'B1':'#7c3aed','B3':'#db2777','B5':'#6b7280',
     'S1':'#ca8a04','S3':'#9333ea',
@@ -35601,13 +35792,73 @@ function toggleSchedList(id) {
   el.style.display = el.style.display === 'none' ? '' : 'none';
 }
 
-function getClientKey(ln) {
+// v11.0.5 (Issue B-1) — PentaClientKeys: per-tenant client access codes.
+//
+// Used to be CLIENT_KEYS hardcoded const containing ~90 Manna client
+// gate codes / door codes / key locations shipped in every JS bundle.
+// Now loaded from the client_keys table scoped to the current tenant
+// via RLS. Auto-hydrates on first sync read; cached for the session.
+window.PentaClientKeys = (function() {
+  var _byClientId = {};
+  var _hydrating = null;
+  var _ready = false;
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    var sb = _sb(); if (!sb) return false;
+    _hydrating = (async function() {
+      try {
+        var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+        if (!bid && window.PentaTenant && window.PentaTenant.ready) {
+          try { bid = await window.PentaTenant.ready(); } catch (e) {}
+        }
+        if (!bid) { _hydrating = null; return false; }
+        var res = await sb.from('client_keys')
+          .select('client_id, key_code, notes')
+          .eq('business_id', bid);
+        if (res.error) { console.warn('[PentaClientKeys] hydrate error', res.error); _hydrating = null; return false; }
+        _byClientId = {};
+        (res.data || []).forEach(function(r){
+          if (r && r.client_id) _byClientId[r.client_id] = { key: r.key_code || '', notes: r.notes || '' };
+        });
+        _ready = true;
+        return true;
+      } finally { _hydrating = null; }
+    })();
+    return _hydrating;
+  }
+  function ready() { return _hydrate(); }
+  async function refresh() { _ready = false; _byClientId = {}; return _hydrate(); }
+  // Sync getter — fires hydrate on first call; returns null until
+  // hydrate completes, then the next render picks up the data.
+  function forClient(clientId) {
+    if (!clientId) return null;
+    if (!_ready) _hydrate();
+    return _byClientId[clientId] || null;
+  }
+  return { forClient: forClient, ready: ready, refresh: refresh };
+})();
+
+// v11.0.5: backward-compat shim. Existing callers passed the client
+// lastname (legacy CLIENT_KEYS-by-lastname lookup) — we now expect the
+// client object so we can route by client_id. Keep the function name
+// for the two existing callsites and resolve internally.
+function getClientKey(clientOrLastName) {
   try {
-    var k = CLIENT_KEYS[ln.toLowerCase()];
-    if (k) return k;
-    var s = JSON.parse(localStorage.getItem('client_keys') || '{}');
-    return s[ln.toLowerCase()] || null;
-  } catch(e) { return null; }
+    var c = clientOrLastName;
+    if (typeof c === 'string') {
+      // Legacy callers passed lastname; resolve via PentaClients lookup.
+      if (window.PentaClients && window.PentaClients.list) {
+        var lname = c.toLowerCase().trim();
+        var match = (window.PentaClients.list() || []).find(function(x){
+          return (x.ln || '').toLowerCase().trim() === lname;
+        });
+        c = match || null;
+      } else { c = null; }
+    }
+    if (!c || !c.id) return null;
+    return window.PentaClientKeys ? window.PentaClientKeys.forClient(c.id) : null;
+  } catch (e) { return null; }
 }
 // SCORING
 function calcAutoScores(fn, ln, c) {
@@ -36519,10 +36770,26 @@ function flagProductLow(id) {
 // DOM outside .week-strip cells. Runs only when renderCal fires.
 // ═══════════════════════════════════════════════════════════════════════
 const WEATHER_API_KEY = '80446455c847e3572db15d7cc16a40da';
-const WEATHER_LOCATION = { lat: 42.0959, lon: -70.9495 };
+// v11.0.5 (Issue B-4): WEATHER_LOCATION used to be hardcoded to Manna's
+// Abington office coords. Now resolved per-tenant from the primary
+// office in PentaOffices. The forecast skips entirely when no office
+// is configured (graceful degrade).
 const WEATHER_UNITS = 'imperial';
 const WEATHER_CACHE_KEY = 'weather_cache_v1';
 const WEATHER_CACHE_TTL = 3 * 60 * 60 * 1000;
+
+function _resolveWeatherCoords() {
+  try {
+    if (window.PentaOffices && window.PentaOffices.listSync) {
+      var rows = window.PentaOffices.listSync();
+      var primary = rows && rows[0];
+      if (primary && primary.lat != null && primary.lng != null) {
+        return { lat: primary.lat, lon: primary.lng };
+      }
+    }
+  } catch (e) {}
+  return null;
+}
 
 async function fetchWeatherForecast() {
   try {
@@ -36534,9 +36801,17 @@ async function fetchWeatherForecast() {
 
   if (!WEATHER_API_KEY || WEATHER_API_KEY === 'PASTE_KEY_HERE') return null;
 
+  var coords = _resolveWeatherCoords();
+  if (!coords) {
+    // No office configured for this tenant — skip the fetch rather
+    // than defaulting to a wrong-region forecast.
+    console.warn('[weather] no primary office configured — skipping forecast');
+    return null;
+  }
+
   try {
-    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + WEATHER_LOCATION.lat
-            + '&lon=' + WEATHER_LOCATION.lon + '&units=' + WEATHER_UNITS
+    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + coords.lat
+            + '&lon=' + coords.lon + '&units=' + WEATHER_UNITS
             + '&appid=' + WEATHER_API_KEY;
     var res = await fetch(url);
     if (!res.ok) return null;
@@ -36768,6 +37043,159 @@ function openAdminScreen() {
   try { pentaBannerUpdateCount(); } catch(e){}
   try { pentaBannerRenderActive(); } catch(e){}
   try { renderPhoneIntegrationStatus(); } catch(e){}
+  try { renderOfficesStatus(); } catch(e){}
+}
+
+// v11.0.4 (Issue A): status line + list/edit modal for the tenant's
+// office locations. Backed by business_offices via PentaOffices.
+async function renderOfficesStatus() {
+  var el = document.getElementById('admin-offices-status');
+  if (!el) return;
+  try {
+    await window.PentaOffices.refresh();
+    var rows = window.PentaOffices.listSync();
+    if (!rows.length) {
+      el.textContent = 'No offices configured. Route optimization and "back to depot" estimates won\'t work until at least one is added.';
+      return;
+    }
+    el.innerHTML = '<span style="color:#34d399">●</span> ' + rows.length + ' office' + (rows.length === 1 ? '' : 's')
+      + ' configured · ' + rows.map(function(o){ return _adminEsc(o.name); }).join(', ');
+  } catch (e) { el.textContent = ''; }
+}
+
+async function openOfficesSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  await window.PentaOffices.refresh();
+  var rows = window.PentaOffices.listSync();
+  var overlay = document.createElement('div');
+  overlay.id = 'offices-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  var listHtml = rows.length
+    ? rows.map(function(o){
+        var teamsStr = (o.teams || []).join(', ');
+        return '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:8px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+          +   '<div style="font-weight:700;font-size:14px">' + _adminEsc(o.name) + '</div>'
+          +   '<div style="display:flex;gap:6px">'
+          +     '<button type="button" onclick="openOfficeEdit(\'' + o.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer">Edit</button>'
+          +     '<button type="button" onclick="deleteOffice(\'' + o.id + '\',\'' + o.name.replace(/'/g,"\\'") + '\')" style="background:var(--surface);border:1px solid var(--red);color:var(--red);font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer">Delete</button>'
+          +   '</div>'
+          + '</div>'
+          + '<div style="font-size:12px;color:var(--muted)">' + _adminEsc(o.addr) + '</div>'
+          + '<div style="font-size:11px;color:var(--muted);margin-top:3px">Teams: ' + (teamsStr || '<span style="color:var(--amber)">none assigned</span>') + ' · Radius: ' + (o.radius_km || 1.0) + ' km</div>'
+          + '</div>';
+      }).join('')
+    : '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:12px;color:#fde68a">No offices configured yet. Add at least one so route optimization and drive-time estimates work.</div>';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:540px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">🏢 Offices &amp; Depots</div>'
+    +     '<button type="button" onclick="document.getElementById(\'offices-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   listHtml
+    +   '<button type="button" onclick="openOfficeEdit(null)" style="width:100%;background:#5E5CE6;border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer;margin-top:8px">+ Add office</button>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+function openOfficeEdit(officeId) {
+  var rows = window.PentaOffices.listSync();
+  var existing = officeId ? rows.find(function(r){ return r.id === officeId; }) : null;
+  var overlay = document.createElement('div');
+  overlay.id = 'office-edit-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:910;background:rgba(0,0,0,0.82);display:flex;align-items:center;justify-content:center;padding:20px';
+  var teamsCsv = existing ? (existing.teams || []).join(',') : '';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:520px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">' + (existing ? 'Edit office' : 'New office') + '</div>'
+    +     '<button type="button" onclick="document.getElementById(\'office-edit-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Name (e.g. "Marlborough", "South Office")</div>'
+    +   '<input type="text" id="of-name" value="' + ((existing && existing.name) || '').replace(/"/g,'&quot;') + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Address (full)</div>'
+    +   '<input type="text" id="of-addr" value="' + ((existing && existing.addr) || '').replace(/"/g,'&quot;') + '" placeholder="123 Main St, City, ST" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:6px;outline:none">'
+    +   '<button type="button" onclick="officeGeocodeFromAddr()" style="margin-bottom:14px;background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;cursor:pointer">🌐 Lookup coords from address</button>'
+    +   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">'
+    +     '<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Latitude</div>'
+    +       '<input type="number" step="0.0000001" id="of-lat" value="' + (existing && existing.lat != null ? existing.lat : '') + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;outline:none"></div>'
+    +     '<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Longitude</div>'
+    +       '<input type="number" step="0.0000001" id="of-lng" value="' + (existing && existing.lng != null ? existing.lng : '') + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;outline:none"></div>'
+    +   '</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Teams that use this office as their depot (comma-separated codes, e.g. "M1,M2,M3")</div>'
+    +   '<input type="text" id="of-teams" value="' + teamsCsv.replace(/"/g,'&quot;') + '" placeholder="B1, B3, S1" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Geofence radius (km)</div>'
+    +   '<input type="number" step="0.1" id="of-radius" value="' + (existing && existing.radius_km != null ? existing.radius_km : 1.0) + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:18px;outline:none">'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button type="button" onclick="document.getElementById(\'office-edit-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button type="button" onclick="saveOffice(\'' + (officeId || '') + '\')" style="flex:2;background:#34d399;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function officeGeocodeFromAddr() {
+  var addr = (document.getElementById('of-addr') || {}).value || '';
+  addr = addr.trim();
+  if (!addr) { alert('Enter an address first.'); return; }
+  if (!window.PentaGeocode || !window.PentaGeocode.geocodeAddress) { alert('Geocoder unavailable.'); return; }
+  var res = await window.PentaGeocode.geocodeAddress(addr, '', '');
+  if (res && res.status === 'ok' && res.lat != null && res.lng != null) {
+    document.getElementById('of-lat').value = res.lat;
+    document.getElementById('of-lng').value = res.lng;
+  } else {
+    alert('Could not resolve coords for that address. Enter manually or try a more specific address.');
+  }
+}
+
+async function saveOffice(officeId) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  var name = ((document.getElementById('of-name') || {}).value || '').trim();
+  var addr = ((document.getElementById('of-addr') || {}).value || '').trim();
+  var latV = ((document.getElementById('of-lat') || {}).value || '').toString().trim();
+  var lngV = ((document.getElementById('of-lng') || {}).value || '').toString().trim();
+  var teamsCsv = ((document.getElementById('of-teams') || {}).value || '').trim();
+  var radiusV = ((document.getElementById('of-radius') || {}).value || '').toString().trim();
+  if (!name) { alert('Name is required.'); return; }
+  if (!addr) { alert('Address is required.'); return; }
+  var teams = teamsCsv ? teamsCsv.split(',').map(function(s){ return s.trim(); }).filter(Boolean) : [];
+  var payload = {
+    business_id: bid,
+    name: name,
+    addr: addr,
+    lat: latV ? parseFloat(latV) : null,
+    lng: lngV ? parseFloat(lngV) : null,
+    teams: teams,
+    radius_km: radiusV ? parseFloat(radiusV) : 1.0,
+    active: true
+  };
+  var res;
+  if (officeId) {
+    res = await sb.from('business_offices').update(payload).eq('id', officeId);
+  } else {
+    res = await sb.from('business_offices').insert(payload);
+  }
+  if (res.error) { alert('Save failed: ' + (res.error.message || 'unknown')); return; }
+  var editOv = document.getElementById('office-edit-overlay'); if (editOv) editOv.remove();
+  var listOv = document.getElementById('offices-overlay'); if (listOv) listOv.remove();
+  await window.PentaOffices.refresh();
+  renderOfficesStatus();
+  openOfficesSettings();
+}
+
+async function deleteOffice(officeId, displayName) {
+  if (!confirm('Delete office "' + displayName + '"? This is reversible — the row is soft-deleted.')) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Auth client not ready.'); return; }
+  var res = await sb.from('business_offices').update({ deleted_at: new Date().toISOString(), active: false }).eq('id', officeId);
+  if (res.error) { alert('Delete failed: ' + (res.error.message || 'unknown')); return; }
+  await window.PentaOffices.refresh();
+  renderOfficesStatus();
+  var listOv = document.getElementById('offices-overlay'); if (listOv) { listOv.remove(); openOfficesSettings(); }
 }
 
 // v11.0.2 (Item B): paint the small status line under the "Configure
@@ -38426,7 +38854,7 @@ function _p3dPage(dir) {
     <div style="height:1px;background:var(--border);margin:20px 0"></div>
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
       <div style="font-size:13px;color:var(--muted);line-height:1.6" id="app-consent-text">
-        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize Penta, Inc. to verify all information provided.
+        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize {{BUSINESS_LEGAL_NAME}} to verify all information provided.
       </div>
       <div class="field-group" style="margin-top:12px;margin-bottom:0">
         <div class="field-label" id="app-sig-label">Full name (acts as your signature) *</div>
@@ -38443,7 +38871,7 @@ function _p3dPage(dir) {
     <div style="font-size:48px;margin-bottom:16px">✅</div>
     <div style="font-size:22px;font-weight:700;margin-bottom:8px" id="app-success-title">Application Submitted!</div>
     <div style="font-size:14px;color:var(--muted);line-height:1.6" id="app-success-msg">
-      Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.
+      Thank you for applying to {{BUSINESS_LEGAL_NAME}} We will review your application and contact you within a few days.
     </div>
     <button onclick="hideApplicationDone()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
       Done
@@ -39446,6 +39874,16 @@ function _p3dPage(dir) {
         <button onclick="openPhoneIntegrationSettings()" style="flex:1;background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#a7f3d0;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📞 Configure RingCentral integration</button>
       </div>
       <div id="admin-phone-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- v11.0.4 (Issue A): Offices / Depots. Manager-or-higher gated by
+         business_offices RLS. Buttons render a list with edit/add/delete. -->
+    <div class="admin-sec" id="admin-offices-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Offices &amp; Depots</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openOfficesSettings()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🏢 Manage offices</button>
+      </div>
+      <div id="admin-offices-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.
