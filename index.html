@@ -368,6 +368,17 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 #cal-view.active { display: block; }
+
+/* v11.0.7: cap the inline schedule map's stacking context.
+   Leaflet's own CSS gives .leaflet-marker-pane z-index 600,
+   .leaflet-tooltip-pane 650, .leaflet-popup-pane 700, and
+   .leaflet-control 1000. Without a stacking context on the wrapper,
+   those descendants stack in the root document context and float over
+   the job modal at z-index 300 (zoom controls bleeding through the
+   Add Job overlay). Setting position:relative + z-index:0 on the wrap
+   makes it a stacking context so all leaflet descendants stack
+   *within* it, and the modal-overlay at z-index 300 covers them. */
+#schedule-inline-map-wrap { position: relative; z-index: 0; }
 #clients-view { display: block; }
 #clients-view.hidden { display: none; }
 
@@ -35871,6 +35882,14 @@ function renderInlineScheduleMap() {
     return;
   }
 
+  // v11.0.7: skip when the container isn't actually rendered. renderCal
+  // can fire from PentaJobs mirror callbacks while #cal-view is
+  // display:none (boot, tab inactive). If L.map() runs against a 0×0
+  // hidden container, Leaflet caches that size and the map stays stuck
+  // at one tile in the top-left even after the view becomes visible.
+  // The next renderCal that runs with the view visible will init.
+  if (!container.offsetParent || container.offsetWidth === 0) return;
+
   var dayJobs = _scheduleMapDayJobs();
   var dateStr = calDate.getFullYear()+'-'+String(calDate.getMonth()+1).padStart(2,'0')+'-'+String(calDate.getDate()).padStart(2,'0');
   var activeFilter = window.calTeamFilter || null;
@@ -35898,6 +35917,8 @@ function renderInlineScheduleMap() {
       _applyInlineFilterOpacity(activeFilter);
       _lastInlineFilter = activeFilter;
     }
+    // v11.0.7: honor any container size change since last render.
+    try { _inlineScheduleMap.invalidateSize(); } catch (e) {}
     return;
   }
 
@@ -35914,6 +35935,12 @@ function renderInlineScheduleMap() {
   _lastInlineFilter = activeFilter;
 
   _plotInlineMapData(_inlineScheduleMap, dayJobs, dateStr, activeFilter, dateChanged);
+
+  // v11.0.7: after a Path A init + Path C plot, force Leaflet to
+  // re-measure. Covers the case where the container size changed
+  // since the map was created (most commonly: first render after the
+  // view becomes visible).
+  try { _inlineScheduleMap.invalidateSize(); } catch (e) {}
 }
 
 function _plotInlineMapData(map, dayJobs, dateStr, activeFilter, doFitBounds) {
