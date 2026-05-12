@@ -179,6 +179,7 @@ Don't do it now. Wait for 12-18 months and 30+ Maids franchisees on Penta with o
 - May 10, 2026: Sprint 11.5 manual rewards loop shipped to main (v10.5.0). Auto-rewards rules engine deferred to Sprint 11.6 Phase 2.
 - May 11, 2026: v11.0.0 multi-tenant hardening (4-item push) shipped on `feat/multi-tenant-hardening`. Penta is production-safe for a second paying tenant. Claire Edge Function migration explicitly deferred — acceptable because Claire's current architecture is a budget security risk, not a tenant isolation risk.
 - May 11, 2026: v11.0.1 + v11.0.2 added two more items (A: dynamic tenant resolution for all string literals; B: per-tenant phone provider integrations). Branch now genuinely multi-tenant clean throughout — zero hardcoded tenant-specific values in runtime code.
+- May 12, 2026: v11.0.3 hotfix (seed jobs + auth column-name + soft-deleted test users), v11.0.4 (office pins per-tenant + chat seed retired + Issue B audit), v11.0.5 (B-1 client_keys migration + B-6 legal name + B-5 last SMS templates + B-4 weather location). Comprehensive Issue B audit complete; all four prioritized findings fixed. Per-tenant clean across all surfaces covered by audit. Item D (Geotab per-tenant credentials) + Claire Edge Function migration remain as separate scoped work.
 - Pricing tier structure locked: $149/$349/$599-799/$1,499 (with voice usage overage)
 - Voice receptionist locked as Full Stack tier driver
 - Financial intelligence layer foundational (not premium add-on)

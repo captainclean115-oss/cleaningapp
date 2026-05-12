@@ -205,6 +205,8 @@ Documented across migrations 036 / 037 / 038.
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **041** — `client_keys` UNIQUE INDEX on (business_id, client_id) + backfill of 59 rows from retired CLIENT_KEYS const
+- **040** — `business_offices` table + RLS (Issue A)
 - **039** — `business_phone_integrations` table + RLS + `get_active_phone_integration` / `mark_phone_integration_used` / `mark_phone_integration_error` RPCs
 - **038** — `aggregation_snapshots` SELECT restricted to authenticated role
 - **037** — `businesses.slug` + `get_business_by_slug` + `submit_job_application` RPCs + revoke anon INSERT on `job_applications`
