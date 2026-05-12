@@ -5914,7 +5914,7 @@ window.PentaGeocode = (function() {
         if (user) {
           console.debug('[PentaTeams._businessId] Path B: query users table');
           var pres = await _withTimeout(
-            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            sb.from('users').select('business_id').eq('auth_user_id', user.id).maybeSingle(),
             'users.select',
             3000
           );
@@ -6382,7 +6382,7 @@ window.PentaGeocode = (function() {
       var ures = await sb.auth.getUser();
       var user = ures && ures.data && ures.data.user;
       if (!user) return null;
-      var pres = await sb.from('users').select('business_id').eq('id', user.id).maybeSingle();
+      var pres = await sb.from('users').select('business_id').eq('auth_user_id', user.id).maybeSingle();
       return pres && pres.data && pres.data.business_id || null;
     } catch (e) { console.error('PentaEmployees _businessId error', e); return null; }
   }
@@ -7157,7 +7157,7 @@ window.PentaJobs = (function() {
         if (user) {
           console.debug('[PentaJobs._businessId] Path B: query users table');
           var pres = await _withTimeout(
-            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            sb.from('users').select('business_id').eq('auth_user_id', user.id).maybeSingle(),
             'users.select',
             3000
           );
@@ -7630,7 +7630,7 @@ window.PentaAssignments = (function() {
         if (user) {
           console.debug('[PentaAssignments._businessId] Path B: query users table');
           var pres = await _withTimeout(
-            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            sb.from('users').select('business_id').eq('auth_user_id', user.id).maybeSingle(),
             'users.select',
             3000
           );
@@ -7955,7 +7955,7 @@ window.PentaRewards = (function() {
         var user = ures && ures.data && ures.data.user;
         if (user) {
           var pres = await _withTimeout(
-            sb.from('users').select('business_id').eq('id', user.id).maybeSingle(),
+            sb.from('users').select('business_id').eq('auth_user_id', user.id).maybeSingle(),
             'users.select',
             3000
           );
@@ -12510,7 +12510,7 @@ window.addEventListener('DOMContentLoaded', function() {
           // v11.0.2 (Item B): also pull phone so the "send response to me"
           // path in Claire's tools (and any other operator-self SMS path)
           // doesn't hardcode Tom's RC primary.
-          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name, phone').eq('id', _u.id).maybeSingle();
+          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name, phone').eq('auth_user_id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
           dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
           dbBusinessId = rr && rr.data && rr.data.business_id;
@@ -26828,7 +26828,7 @@ async function _getClaireBusinessName() {
     const session = await sb.auth.getSession();
     if (!session || !session.data || !session.data.session) return 'this cleaning business';
     const userId = session.data.session.user.id;
-    const { data: userRow } = await sb.from('users').select('business_id').eq('id', userId).maybeSingle();
+    const { data: userRow } = await sb.from('users').select('business_id').eq('auth_user_id', userId).maybeSingle();
     if (!userRow || !userRow.business_id) return 'this cleaning business';
     const { data: bizRow } = await sb.from('businesses').select('name').eq('id', userRow.business_id).maybeSingle();
     if (!bizRow || !bizRow.name) return 'this cleaning business';
@@ -27154,7 +27154,7 @@ async function _pentaResolveRoleFromDB(authUserId) {
     const c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
     if (!c) return null;
     // v9.6: also pull manager_permissions (Migration 023 added the column).
-    const { data, error } = await c.from('users').select('role, manager_permissions').eq('id', authUserId).maybeSingle();
+    const { data, error } = await c.from('users').select('role, manager_permissions').eq('auth_user_id', authUserId).maybeSingle();
     if (error || !data) return null;
     _pentaCachedManagerPerms = (data && data.manager_permissions) || {};
     return data.role || null;
