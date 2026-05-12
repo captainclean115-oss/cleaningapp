@@ -369,16 +369,26 @@ body {
 }
 #cal-view.active { display: block; }
 
-/* v11.0.7: cap the inline schedule map's stacking context.
+/* v11.0.7: globally cap every Leaflet map's stacking context.
    Leaflet's own CSS gives .leaflet-marker-pane z-index 600,
    .leaflet-tooltip-pane 650, .leaflet-popup-pane 700, and
-   .leaflet-control 1000. Without a stacking context on the wrapper,
-   those descendants stack in the root document context and float over
-   the job modal at z-index 300 (zoom controls bleeding through the
-   Add Job overlay). Setting position:relative + z-index:0 on the wrap
-   makes it a stacking context so all leaflet descendants stack
-   *within* it, and the modal-overlay at z-index 300 covers them. */
-#schedule-inline-map-wrap { position: relative; z-index: 0; }
+   .leaflet-control 1000. Without a stacking context on .leaflet-container
+   itself, those descendants stack in the root document context and float
+   over modals — Tom saw the inline schedule map's zoom controls, popup
+   pin, and route polyline bleeding through the Add Job overlay
+   (.modal-overlay at z-index 300).
+
+   Leaflet's CSS already sets .leaflet-container { position: relative },
+   so adding z-index:0 makes every map's container a stacking context.
+   All leaflet descendants stack *within* it, and any modal-overlay
+   above z-index 0 covers them cleanly.
+
+   Scope: applies to all Leaflet instances — inline schedule map
+   (#cal-view), GPS map (#gps-view), client-card mini maps, and the
+   fullscreen schedule overlay (#schedule-map-overlay's #ff-map). The
+   fullscreen overlay is at z-index 9998 so its child map still
+   participates normally inside that overlay's own stacking context. */
+.leaflet-container { z-index: 0; }
 #clients-view { display: block; }
 #clients-view.hidden { display: none; }
 
