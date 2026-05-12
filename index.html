@@ -4383,7 +4383,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <!-- FILES VIEW (Finder-style grid) -->
 <!-- iOS-STYLE HOME SCREEN — default landing after login -->
 <div id="home-view">
-  <div class="home-greeting" id="home-greeting">Manna Maids</div>
+  <div class="home-greeting" id="home-greeting"></div>
   <div class="home-date" id="home-date"></div>
   <div class="home-pages-wrap" id="home-pages-wrap"></div>
   <div class="home-page-dots" id="home-page-dots"></div>
@@ -4876,6 +4876,38 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 </div>
 
 <script>
+// ─────────────────────────────────────────────────────────────────────────
+// PentaTenant — resolved business_id for the current session.
+// v11.0.0 (multi-tenant hardening): every consumer that previously read
+// the hardcoded BUSINESS_ID const inside PentaClients (or any other
+// place) reads from here instead. Populated by _bootRouteWithRoleCheck
+// after the user's `users.business_id` is fetched. Stays null until then
+// — callers that need it before boot completes must await ready().
+//
+// Defined as an IIFE at the very top of the script (before PentaClients
+// opens) so the namespace is always available regardless of source-order.
+// Storing the value on window so we cannot fall into the v10.5.37
+// var-hoisting trap (a `var` declared below an early call site is
+// undefined at execution time).
+// ─────────────────────────────────────────────────────────────────────────
+window.PentaTenant = (function() {
+  var _waiters = [];
+  function current() { return window.__pentaBusinessId || null; }
+  function _set(id) {
+    if (!id) return;
+    window.__pentaBusinessId = id;
+    var pending = _waiters.splice(0, _waiters.length);
+    pending.forEach(function(fn){ try { fn(id); } catch (e) {} });
+  }
+  function ready() {
+    return new Promise(function(resolve){
+      if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
+      _waiters.push(resolve);
+    });
+  }
+  return { current: current, ready: ready, _set: _set };
+})();
+
 // Phase 3E (April 27, 2026) — hardcoded CLIENTS array deleted.
 // Supabase is the sole source of truth. CLIENTS variable kept as empty array
 // for the divergence monitor's localMap construction (which short-circuits below).
@@ -4896,7 +4928,17 @@ window.PentaClients = (function() {
   var _cacheSource = 'local';   // 'local' | 'supabase'
   var _lastSyncAt = null;       // ISO timestamp string or null
 
-  var BUSINESS_ID = '48532f06-0625-415b-9091-2638bed6506d';
+  // v11.0.0 multi-tenant hardening: business_id is no longer a hardcoded
+  // constant. Read from PentaTenant.current() (populated by the boot
+  // routing after the users row is fetched). Throws if called before
+  // boot resolves — that's a defensive fail-loud: a write with a missing
+  // business_id either lands in the wrong tenant or is silently RLS-rejected,
+  // both of which are worse than a thrown error caught upstream.
+  function _bizId() {
+    var id = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!id) throw new Error('PentaClients: business_id not yet resolved — auth still in flight');
+    return id;
+  }
   var DIVERGENCE_KEY = 'phase3c_divergences';
   var MAX_DIVERGENCES = 500;
   var COMPARE_FIELDS = ['fn','ln','addr','city','zip','ph','em','fc','next','bal','pkg','notes','pref_day','pref_time'];
@@ -5250,16 +5292,16 @@ window.PentaClients = (function() {
     var q;
     try {
       if (op === 'insert') {
-        var row = Object.assign({}, payload, { business_id: BUSINESS_ID, updated_at: nowIso });
+        var row = Object.assign({}, payload, { business_id: _bizId(), updated_at: nowIso });
         q = sb.from('clients').insert(row).select();
       } else if (op === 'update') {
         var patch = Object.assign({}, payload, { updated_at: nowIso });
         q = sb.from('clients').update(patch)
-              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .eq('external_id', external_id).eq('business_id', _bizId())
               .select();
       } else if (op === 'soft_delete') {
         q = sb.from('clients').update({ deleted_at: nowIso, updated_at: nowIso })
-              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .eq('external_id', external_id).eq('business_id', _bizId())
               .select();
       } else {
         return Promise.reject(new Error('unknown_op:' + op));
@@ -5379,7 +5421,7 @@ window.PentaClients = (function() {
     }
     var tries = 0;
     function waitClient() {
-      if (window.PentaAuth && window.PentaAuth.client) return _doQuery(window.PentaAuth.client);
+      if (window.PentaAuth && window.PentaAuth.client) return _waitTenant(window.PentaAuth.client);
       if (++tries > 100) {
         console.warn('[Phase3C] PentaAuth.client never arrived — staying on local cache');
         onDone({ ok: false, reason: 'no_client' });
@@ -5387,12 +5429,34 @@ window.PentaClients = (function() {
       }
       setTimeout(waitClient, 100);
     }
+    // v11.0.0: also wait until PentaTenant resolves business_id. The boot
+    // routing populates it after fetching users.business_id. Without this
+    // gate, _doQuery would call _bizId() before resolution and throw.
+    function _waitTenant(client) {
+      if (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) {
+        return _doQuery(client);
+      }
+      if (window.PentaTenant && window.PentaTenant.ready) {
+        window.PentaTenant.ready().then(function(){ _doQuery(client); });
+      } else {
+        // PentaTenant somehow missing — bail rather than fall back to a default.
+        console.error('[Phase3C] PentaTenant unavailable — refusing to query without tenant scope');
+        onDone({ ok: false, reason: 'no_tenant' });
+      }
+    }
     function _doQuery(client) {
+      var bid;
+      try { bid = _bizId(); }
+      catch (e) {
+        console.error('[Phase3C] business_id not resolved at query time', e);
+        onDone({ ok: false, reason: 'no_tenant' });
+        return;
+      }
       var q;
       try {
         q = client.from('clients')
           .select('*')
-          .eq('business_id', BUSINESS_ID)
+          .eq('business_id', bid)
           .is('deleted_at', null);
       } catch (e) {
         console.error('[Phase3C] Failed to build Supabase query', e);
@@ -12397,16 +12461,27 @@ window.addEventListener('DOMContentLoaded', function() {
       var sbBoot = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
       var dbRole = null;
       var dbPerms = {};
+      var dbBusinessId = null;
       if (sbBoot) {
         try {
           // v9.6.3: also pull manager_permissions so the cache is populated
           // by the SAME query that drives the routing decision. Without this,
           // _pentaCachedManagerPerms stays {} and getPermissions() returns
           // all-true defaults — the home grid never filters for managers.
-          var rr = await sbBoot.from('users').select('role, manager_permissions').eq('id', _u.id).maybeSingle();
+          // v11.0.0: also pull business_id so PentaTenant can be set on the
+          // same round-trip. Every downstream consumer (PentaClients,
+          // renderApplicantsList, future Edge Functions) reads from there.
+          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id').eq('id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
           dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
+          dbBusinessId = rr && rr.data && rr.data.business_id;
         } catch (e) { dbRole = null; }
+      }
+      // v11.0.0: publish the resolved business_id BEFORE routing fires so
+      // any consumer that wakes up during appUnlockManager/Employee finds
+      // it already set. Use _set defensively — null/undefined is a no-op.
+      if (dbBusinessId && window.PentaTenant && window.PentaTenant._set) {
+        window.PentaTenant._set(dbBusinessId);
       }
 
       // v9.6.3: write the cache trio that getCurrentAppRole + getPermissions
@@ -28142,10 +28217,17 @@ async function renderApplicantsList() {
       target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Sign in to view applicants.</div>';
       return;
     }
+    // v11.0.0: tenant-scope the applications query through PentaTenant
+    // instead of the hardcoded Manna Maids id that used to live here.
+    var _bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!_bid) {
+      target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Loading tenant context…</div>';
+      return;
+    }
     const { data, error } = await sb
       .from('job_applications')
       .select('*')
-      .eq('business_id', '48532f06-0625-415b-9091-2638bed6506d')
+      .eq('business_id', _bid)
       .neq('status', 'archived')
       .order('submitted_at', { ascending: false });
     if (error) {
