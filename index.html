@@ -4892,20 +4892,39 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 // ─────────────────────────────────────────────────────────────────────────
 window.PentaTenant = (function() {
   var _waiters = [];
-  function current() { return window.__pentaBusinessId || null; }
+  function current()      { return window.__pentaBusinessId || null; }
+  function name()         { return window.__pentaBusinessName || ''; }
+  function operatorFirst(){ return window.__pentaOperatorFirstName || ''; }
+  // v11.0.1 (Item A): callers need a slug-safe form of the business name
+  // for hashtag generation (#TestBusinessTwo). Strip non-alphanumeric.
+  function nameSlugCompact() {
+    var n = window.__pentaBusinessName || '';
+    return n.replace(/[^a-zA-Z0-9]/g, '');
+  }
   function _set(id) {
     if (!id) return;
     window.__pentaBusinessId = id;
     var pending = _waiters.splice(0, _waiters.length);
     pending.forEach(function(fn){ try { fn(id); } catch (e) {} });
   }
+  function _setName(n)         { if (n) window.__pentaBusinessName = String(n); }
+  function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
   function ready() {
     return new Promise(function(resolve){
       if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
       _waiters.push(resolve);
     });
   }
-  return { current: current, ready: ready, _set: _set };
+  return {
+    current: current,
+    name: name,
+    operatorFirst: operatorFirst,
+    nameSlugCompact: nameSlugCompact,
+    ready: ready,
+    _set: _set,
+    _setName: _setName,
+    _setOperatorFirst: _setOperatorFirst
+  };
 })();
 
 // Phase 3E (April 27, 2026) — hardcoded CLIENTS array deleted.
@@ -12472,6 +12491,7 @@ window.addEventListener('DOMContentLoaded', function() {
       var dbRole = null;
       var dbPerms = {};
       var dbBusinessId = null;
+      var dbOperatorFirstName = null;
       if (sbBoot) {
         try {
           // v9.6.3: also pull manager_permissions so the cache is populated
@@ -12481,10 +12501,13 @@ window.addEventListener('DOMContentLoaded', function() {
           // v11.0.0: also pull business_id so PentaTenant can be set on the
           // same round-trip. Every downstream consumer (PentaClients,
           // renderApplicantsList, future Edge Functions) reads from there.
-          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id').eq('id', _u.id).maybeSingle();
+          // v11.0.1 (Item A): also pull first_name so signoffs ("— Tom" et al.)
+          // resolve from the actual operator instead of being hardcoded.
+          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name').eq('id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
           dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
           dbBusinessId = rr && rr.data && rr.data.business_id;
+          dbOperatorFirstName = rr && rr.data && rr.data.first_name;
         } catch (e) { dbRole = null; }
       }
       // v11.0.0: publish the resolved business_id BEFORE routing fires so
@@ -12492,6 +12515,21 @@ window.addEventListener('DOMContentLoaded', function() {
       // it already set. Use _set defensively — null/undefined is a no-op.
       if (dbBusinessId && window.PentaTenant && window.PentaTenant._set) {
         window.PentaTenant._set(dbBusinessId);
+      }
+      if (dbOperatorFirstName && window.PentaTenant && window.PentaTenant._setOperatorFirst) {
+        window.PentaTenant._setOperatorFirst(dbOperatorFirstName);
+      }
+      // v11.0.1 (Item A): also fetch businesses.name so every UI surface
+      // and outbound SMS can resolve "the business name" dynamically.
+      // Side-fetch, non-blocking — boot routing has already fired by here.
+      if (dbBusinessId && sbBoot) {
+        sbBoot.from('businesses').select('name').eq('id', dbBusinessId).maybeSingle()
+          .then(function(bres){
+            var nm = bres && bres.data && bres.data.name;
+            if (nm && window.PentaTenant && window.PentaTenant._setName) {
+              window.PentaTenant._setName(nm);
+            }
+          }).catch(function(){});
       }
 
       // v9.6.3: write the cache trio that getCurrentAppRole + getPermissions
@@ -16252,13 +16290,18 @@ async function contentGenerateCaption() {
   btn.innerHTML = 'Writing…'; btn.disabled = true;
   try {
     var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
     if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
       return;
     }
     var businessName = await _getClaireBusinessName();
+    // v11.0.1 (Item A): geo no longer hardcoded — pull metro/zip from
+    // businesses.address jsonb if available, otherwise omit the locality
+    // clause entirely. The prompt still works without it.
+    var _geo = await _getClaireGeoClause();
     var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
-      + businessName + ' is a residential cleaning company in Massachusetts. '
+      + businessName + ' is a residential cleaning company' + _geo + '. '
       + 'The caption should: sound proud of the work but not corporate, be 15–25 words max, include 2–3 relevant hashtags at the end, '
       + 'and match what you see in the attached ' + _currentContent.mediaType + '. '
       + 'Do NOT use quotation marks around the caption. Output the caption text only, nothing else.';
@@ -16284,9 +16327,11 @@ async function contentGenerateCaption() {
     var cap = '';
     (data.content||[]).forEach(function(b) { if (b.type === 'text') cap += b.text; });
     cap = cap.trim().replace(/^["']|["']$/g, '');
-    ta.value = cap || 'Another happy home! ✨ #MannaMaids';
+    var _ht = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
+    ta.value = cap || ('Another happy home! ✨' + (_ht ? ' #' + _ht : ''));
   } catch(e) {
-    ta.value = 'Another happy home! ✨ #CleanHouseHappyHome #MannaMaids';
+    var _ht2 = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
+    ta.value = 'Another happy home! ✨ #CleanHouseHappyHome' + (_ht2 ? ' #' + _ht2 : '');
   } finally {
     btn.innerHTML = orig; btn.disabled = false;
   }
@@ -16459,13 +16504,15 @@ async function contentRegenCaption(id) {
   if (btn) { btn.innerHTML = 'Writing…'; btn.disabled = true; }
   try {
     var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
     if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
       return;
     }
     var businessName = await _getClaireBusinessName();
+    var _geo = await _getClaireGeoClause();
     var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
-      + businessName + ' is a residential cleaning company in Massachusetts. '
+      + businessName + ' is a residential cleaning company' + _geo + '. '
       + '15–25 words max, proud of the work but not corporate, 2–3 relevant hashtags at the end. '
       + 'Match what you see in the attached ' + item.mediaType + '. '
       + 'Do NOT use quotation marks. Output caption text only.';
@@ -18169,27 +18216,39 @@ async function processVoiceCommand(text) {
     return EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
   })();
 
-  // Count how many distinct asks are in Tom's message — rough heuristic that
+  // Count how many distinct asks are in the operator's message — rough heuristic that
   // helps the model commit to chaining instead of stopping after one tool.
   var askHints = (text.match(/\b(also|and|then|plus|next)\b/gi) || []).length
                + (text.match(/[,;]/g) || []).length;
 
-  var systemPrompt = 'You are Claire, Tom\'s strategic business advisor for Penta — the field-service SaaS he\'s building, currently running his cleaning business Manna Maids in Massachusetts (8 teams, ~330 clients).\n'
+  // v11.0.1 (Item A): assemble Claire's tenant context dynamically.
+  // Previously baked in "Tom", "Manna Maids", "Massachusetts", "(8 teams,
+  // ~330 clients)". Now resolves per-tenant from auth + live counts.
+  var _opName     = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || 'the operator';
+  var _bizName    = await _getClaireBusinessName();
+  var _geoClause  = await _getClaireGeoClause();
+  var _scale      = await _getClaireScaleContext();
+  var _scaleClause = '';
+  if (_scale.teamCount != null && _scale.clientCount != null) {
+    _scaleClause = ' (' + _scale.teamCount + ' teams, ~' + _scale.clientCount + ' clients)';
+  }
+
+  var systemPrompt = 'You are Claire, ' + _opName + '\'s strategic business advisor for Penta — the field-service SaaS being built, currently running their cleaning business ' + _bizName + _geoClause + _scaleClause + '.\n'
     +'Today is '+todayStr+' ('+todayKey+').\n\n'
     +'YOUR ROLE\n'
-    +'Think with Tom about his business. Answer any question grounded in his actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
-    +'If Tom asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
+    +'Think with ' + _opName + ' about their business. Answer any question grounded in their actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
+    +'If ' + _opName + ' asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
     +'DATA YOU CAN SEE\n'
-    +'You have aggregate access to Tom\'s full operating data. Use these tools as your default for strategic questions:\n'
+    +'You have aggregate access to ' + _opName + '\'s full operating data. Use these tools as your default for strategic questions:\n'
     +'- query_clients — filter/aggregate across the book of business (by town, team, status, etc.)\n'
     +'- revenue_summary — rollup revenue by period and dimension\n'
     +'- accounts_receivable_summary — AR aging and breakdowns\n'
     +'- cancellation_analysis — who cancels and how often\n'
     +'- team_performance — team metrics\n'
     +'- at_risk_clients — composite churn risk signals\n'
-    +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when Tom asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
-    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data Tom doesn\'t have in the app.\n'
-    +'\nCite specific numbers from data. Never guess. If Tom asks something the tools can\'t answer, say so honestly.\n\n'
+    +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when ' + _opName + ' asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
+    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data ' + _opName + ' doesn\'t have in the app.\n'
+    +'\nCite specific numbers from data. Never guess. If ' + _opName + ' asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
     +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
     +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
@@ -18198,35 +18257,35 @@ async function processVoiceCommand(text) {
     +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text, sqft_source. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?" If sqft_source is "state_median" or starts with "book_average:", append a line like "Note: sqft estimated from <town> averages — confirm if you have actuals." If sqft_source is "massgis_res_area" or "massgis_bld_area_estimate" or "user_provided", no caveat needed.\n'
     +'3. WAIT for the user to say yes / send it / confirm. Do NOT call send_text in the same turn as compute_quote.\n'
     +'4. After the user confirms, call send_text with phone=<their phone> and message=<the sms_text from compute_quote>. Then report what came back.\n'
-    +'If compute_quote returns non_ma_address (geocoded outside MA), tell the user: "That address looks like it\'s outside MA — auto-lookup is MA-only right now. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
+    +'If compute_quote returns non_ma_address (geocoded outside the service area), tell the user: "That address looks like it\'s outside the service area — auto-lookup is restricted. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
     +'If compute_quote returns address_not_found, ask the user to confirm the full address with city and state, then retry.\n\n'
-    +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
+    +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
-        +'- Tom is reading this on screen, not listening. Take the room you need.\n'
-        +'- Structure for readability — Tom is scanning, not reading word-by-word. Lead with a one-line bottom-line answer in bold (**like this**). Then break the response into 2-4 sub-sections with bold sub-headers (## section header) covering different angles: data, market context, comparison, strategic take, recommendations. Use bullet points (- or *) when listing 3+ items, comparing options, or breaking out specifics like price ranges or competitor names. Use short paragraphs — 2-3 sentences max per paragraph. Insert blank lines between sections.\n'
-        +'- Markdown is OK in research mode (bold, headers, bullets) — it gives Tom visual structure on screen. The TTS engine handles markdown gracefully if he plays it aloud.\n'
-        +'- Cite sources inline as you use them: "according to Angi", "Care.com data shows", "Julianaspristinecleaning\'s 2026 rate guide". Don\'t dump citations at the end.\n'
-        +'- Use specific numbers from his data and from web sources. Anchor every claim.\n'
+        +'- ' + _opName + ' is reading this on screen, not listening. Take the room you need.\n'
+        +'- Structure for readability — ' + _opName + ' is scanning, not reading word-by-word. Lead with a one-line bottom-line answer in bold (**like this**). Then break the response into 2-4 sub-sections with bold sub-headers (## section header) covering different angles: data, market context, comparison, strategic take, recommendations. Use bullet points (- or *) when listing 3+ items, comparing options, or breaking out specifics like price ranges or competitor names. Use short paragraphs — 2-3 sentences max per paragraph. Insert blank lines between sections.\n'
+        +'- Markdown is OK in research mode (bold, headers, bullets) — it gives ' + _opName + ' visual structure on screen. The TTS engine handles markdown gracefully if played aloud.\n'
+        +'- Cite sources inline as you use them: "according to Angi", "Care.com data shows", or specific competitor rate guides. Don\'t dump citations at the end.\n'
+        +'- Use specific numbers from their data and from web sources. Anchor every claim.\n'
         +'- Length: 4-8 paragraphs is normal for a research answer, broken into sections. Don\'t pad, but don\'t chop. If the question deserves depth, give depth.\n'
-        +'- End with 1-2 sharpening questions if more context would refine the answer ("Want me to pull pricing from Merry Maids\' site for an apples-to-apples?", "Do you have a current rate card to benchmark against?").\n'
+        +'- End with 1-2 sharpening questions if more context would refine the answer.\n'
         +'- Strategic, blunt when warranted, but never dismissive. "Stop trying" is the wrong tone — explain the trade-offs, don\'t shut down the conversation.\n'
-        +'- For market/competitor/industry questions, USE web_search proactively. Tom expects you to actually look up the local data, not reason from training. Search for specific local info: "South Shore MA cleaning rates 2026", "Merry Maids South Shore pricing", "Massachusetts house cleaning average cost", etc. Cite every source.\n\n')
+        +'- For market/competitor/industry questions, USE web_search proactively. ' + _opName + ' expects you to actually look up the local data, not reason from training. Cite every source.\n\n')
       : ('VOICE STYLE (your replies are spoken aloud — keep tight)\n'
         +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
         +'- Operational confirmations: ONE short sentence. No filler.\n'
-        +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If Tom wants more depth, he\'ll ask. Do not lecture.\n'
+        +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If ' + _opName + ' wants more depth, they\'ll ask. Do not lecture.\n'
         +'- After confirming an action, stop. Don\'t add "let me know if you need anything else."\n'
-        +'- When citing data: be specific (client name, $ amount, date) but brief — "Pembroke clients average $185/clean vs $165 in Hingham" not a paragraph.\n\n'))
+        +'- When citing data: be specific (client name, $ amount, date) but brief.\n\n'))
     +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY)\n'
-    +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
-    +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; Tom will not see any words you say between tool calls.\n'
-    +'2. When the tool_result comes back, LOOK AT TOM\'S ORIGINAL MESSAGE AGAIN. Ask yourself: what else did he ask for that I haven\'t done yet?\n'
+    +_opName + ' often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When that happens:\n'
+    +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; ' + _opName + ' will not see any words you say between tool calls.\n'
+    +'2. When the tool_result comes back, LOOK AT THE ORIGINAL MESSAGE AGAIN. Ask yourself: what else was asked for that hasn\'t been done yet?\n'
     +'3. If anything is left, CALL THE NEXT TOOL IMMEDIATELY. Do not stop to confirm or explain mid-stream.\n'
-    +'4. Repeat until EVERY item from his message has its own tool call.\n'
-    +'5. After the LAST tool, give ONE final reply covering everything in one breath — this is the only thing Tom sees and hears. Example: "All set — cancelled Pat\'s Tuesday clean, moved Viviana to B3 for Monday, and switched Joe Agne to weekly." Keep it to 1-2 sentences, name each action briefly, then stop.\n'
-    +'You MUST NOT stop after the first tool if Tom asked for more than one thing. Keep calling tools until done.\n'
-    +(askHints >= 2 ? '\nHEADS UP: Tom\'s current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
+    +'4. Repeat until EVERY item from the message has its own tool call.\n'
+    +'5. After the LAST tool, give ONE final reply covering everything in one breath — this is the only thing ' + _opName + ' sees and hears. Example: "All set — cancelled Pat\'s Tuesday clean, moved Viviana to B3 for Monday, and switched Joe Agne to weekly." Keep it to 1-2 sentences, name each action briefly, then stop.\n'
+    +'You MUST NOT stop after the first tool if ' + _opName + ' asked for more than one thing. Keep calling tools until done.\n'
+    +(askHints >= 2 ? '\nHEADS UP: The current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
     +'\nCONTEXT\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
@@ -18863,7 +18922,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var nextCleanLabel = nextClean ? new Date(nextClean.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) : 'TBD';
 
     // Draft the SMS message
-    var smsText = 'Hi '+fClient.fn+'! This is Tom from Manna Maids. I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions! — Tom';
+    // v11.0.1 (Item A): operator + business resolved dynamically.
+    var _opF = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _bizF = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+    var _from = _opF && _bizF ? ('This is ' + _opF + ' from ' + _bizF + '.') : (_bizF ? ('This is ' + _bizF + '.') : '');
+    var _sign = _opF ? (' — ' + _opF) : '';
+    var smsText = 'Hi '+fClient.fn+'! ' + _from + ' I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions!' + _sign;
 
     var status2 = document.getElementById('voice-cmd-status');
     status2.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
@@ -19186,7 +19250,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var invClient = findClient(input.client);
     if (!invClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     if (invClient.bal <= 0) { _claireLastToolResult = invClient.fn+' '+invClient.ln+' has no outstanding balance. Nothing to invoice.'; claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
-    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from Manna Maids that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions! — Tom';
+    // v11.0.1 (Item A): operator + business resolved dynamically.
+    var _opF2 = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _bizF2 = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || 'us';
+    var _sign2 = _opF2 ? (' — ' + _opF2) : '';
+    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from ' + _bizF2 + ' that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions!' + _sign2;
     var status4 = document.getElementById('voice-cmd-status');
     status4.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
       +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||invClient.fn+' '+invClient.ln+' owes $'+Math.round(invClient.bal)+'. Here\'s the invoice message:')+'</div>'
@@ -22923,7 +22991,9 @@ function _buildHoursReport(offset) {
   var textLines = [];
   textLines.push(SEP_HEAVY);
   textLines.push('  HOURS REPORT');
-  textLines.push('  Week of ' + weekLabel + ' · Manna Maids');
+  // v11.0.1 (Item A): tenant name resolved dynamically.
+  var _wBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  textLines.push('  Week of ' + weekLabel + (_wBiz ? ' · ' + _wBiz : ''));
   textLines.push(SEP_HEAVY);
   textLines.push('');
 
@@ -24722,7 +24792,9 @@ function ceSendEmail(clientId) {
   var name = c ? (c.fn + ' ' + c.ln).trim() : '';
   // mailto: opens whatever default mail client they have configured.
   // When their themaids.com Gmail is set as default, From: will use it automatically.
-  var subject = encodeURIComponent('Manna Maids');
+  // v11.0.1 (Item A): subject = tenant business name.
+  var _emBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var subject = encodeURIComponent(_emBiz);
   var body = encodeURIComponent('Hi ' + (c ? c.fn : '') + ',\n\n');
   window.location.href = 'mailto:' + encodeURIComponent(em) + '?subject=' + subject + '&body=' + body;
 }
@@ -26749,6 +26821,47 @@ async function _getClaireBusinessName() {
   }
 }
 
+// v11.0.1 (Item A): resolve a geo clause ("in Massachusetts", "in the
+// 02118 area", or empty) from businesses.metro_area / zip_code. Used in
+// Claire prompts that previously hardcoded "in Massachusetts". Falls
+// back to empty string (no clause) when no location signal is on file.
+async function _getClaireGeoClause() {
+  try {
+    if (window._cachedGeoClause !== undefined) return window._cachedGeoClause;
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return '';
+    const bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return '';
+    const { data: biz } = await sb.from('businesses').select('metro_area, zip_code').eq('id', bid).maybeSingle();
+    var clause = '';
+    if (biz && biz.metro_area)   clause = ' in ' + biz.metro_area;
+    else if (biz && biz.zip_code) clause = ' in the ' + biz.zip_code + ' area';
+    window._cachedGeoClause = clause;
+    return clause;
+  } catch (e) { return ''; }
+}
+
+// v11.0.1 (Item A): live counts for Claire's system prompt. Previously
+// the Claire prompt baked in "8 teams, ~330 clients" — Tom's actual
+// numbers at one moment in time, wrong for every other tenant and stale
+// even for Tom. Resolve at request time from the tenant's actual rows.
+async function _getClaireScaleContext() {
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return { teamCount: null, clientCount: null };
+    const bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return { teamCount: null, clientCount: null };
+    const [teamsR, clientsR] = await Promise.all([
+      sb.from('teams').select('id', { count: 'exact', head: true }).eq('business_id', bid).is('deleted_at', null),
+      sb.from('clients').select('id', { count: 'exact', head: true }).eq('business_id', bid).is('deleted_at', null)
+    ]);
+    return {
+      teamCount:   (teamsR   && typeof teamsR.count   === 'number') ? teamsR.count   : null,
+      clientCount: (clientsR && typeof clientsR.count === 'number') ? clientsR.count : null
+    };
+  } catch (e) { return { teamCount: null, clientCount: null }; }
+}
+
 async function generateAIDraft(incomingMsg, client) {
   const draftEl = document.getElementById('draft-text');
   draftEl.value = '';
@@ -28029,7 +28142,13 @@ function printHandbook(sigName, sigDate, empName) {
   }
 
   const content = (typeof HANDBOOK_EN !== 'undefined') ? HANDBOOK_EN : '<p>Handbook not available</p>';
+  // v11.0.1 (Item A): substitute the {{BUSINESS_NAME_UPPER}} placeholder
+  // before applying print styles. Otherwise the print modal would show
+  // the literal token text.
+  var _printBname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _printBupper = _printBname ? (_printBname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
   const printContent = content
+    .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _printBupper)
     .replace(/class="handbook-h1"/g, 'style="font-size:22px;font-weight:bold;text-align:center;margin-bottom:4px"')
     .replace(/class="handbook-h2"/g, 'style="font-size:17px;font-weight:bold;margin-top:24px;border-bottom:1px solid #ccc;padding-bottom:4px"')
     .replace(/class="handbook-h3"/g, 'style="font-size:15px;font-weight:bold;margin-top:14px"')
@@ -30856,7 +30975,11 @@ function openGpsPicker(encodedAddr) {
 async function sendOnMyWay(jobId, phone, firstName) {
   if (!phone) { _toastSimple('No phone on file for this client', 'error'); return; }
   var name = (firstName || 'there').trim() || 'there';
-  var msg = "Hi " + name + ", your Manna Maids team is on the way! See you soon.";
+  // v11.0.1 (Item A): tenant name resolved dynamically; falls back to a
+  // generic "your cleaning team" when name isn't available.
+  var _omwBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _omwWho = _omwBiz ? ('your ' + _omwBiz + ' team') : 'your cleaning team';
+  var msg = "Hi " + name + ", " + _omwWho + " is on the way! See you soon.";
   if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
   try {
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
@@ -32729,7 +32852,7 @@ function renderPortalSubmittedForms() {
 // ─────────────────────────────────────────
 const HANDBOOK_EN = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Employee Handbook</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Effective April 10, 2026</div>
 <div class="handbook-p">Welcome to Penta, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
@@ -32834,7 +32957,7 @@ const HANDBOOK_EN = `
 
 const HANDBOOK_ES = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual del Empleado</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efectivo 10 de abril de 2026</div>
 <div class="handbook-p">Bienvenido a Penta, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
@@ -32909,7 +33032,7 @@ const HANDBOOK_ES = `
 
 const HANDBOOK_PT = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual do Funcionário</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Vigente a partir de 10 de abril de 2026</div>
 <div class="handbook-p">Bem-vindo à Penta, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
@@ -32984,7 +33107,7 @@ const HANDBOOK_PT = `
 
 const HANDBOOK_CV = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual di Trabalhador</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efetivo 10 di Abril di 2026</div>
 <div class="handbook-p">Binvindu na Penta, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
@@ -33059,7 +33182,13 @@ const HANDBOOK_CV = `
 function renderHandbook() {
   document.getElementById('handbook-label').textContent = t('handbook');
   const handbookMap = { en: HANDBOOK_EN, es: HANDBOOK_ES, pt: HANDBOOK_PT, cv: HANDBOOK_CV };
-  document.getElementById('handbook-content').innerHTML = handbookMap[currentLang] || HANDBOOK_EN;
+  // v11.0.1 (Item A): substitute {{BUSINESS_NAME_UPPER}} at render time
+  // using the tenant's name. Used in the handbook's title H1.
+  var _bname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _bupper = _bname ? (_bname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
+  var _raw = handbookMap[currentLang] || HANDBOOK_EN;
+  var _rendered = _raw.replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper);
+  document.getElementById('handbook-content').innerHTML = _rendered;
   document.getElementById('esign-title').textContent = t('signTitle');
   document.getElementById('esign-name-label').textContent = t('signNameLabel');
   document.getElementById('esign-btn').textContent = t('signBtn');
