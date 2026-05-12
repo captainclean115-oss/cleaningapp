@@ -2936,6 +2936,127 @@ html.pre-auth #filter-row { display: none !important; }
 .mr-modal-card textarea::placeholder {
   color: #98a2b3;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Maids Sync Report (v11.0.6) — manager-facing daily diff surface.
+   Single-screen fullscreen overlay. Shares the .mr-topbar look but
+   uses .sync- prefix for inside-view styles.
+   ═══════════════════════════════════════════════════════════════════════ */
+#sync-report-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: var(--bg-gradient);
+  flex-direction: column; overflow: hidden;
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+}
+#sync-report-view.active { display: flex; }
+#sync-report-view .mr-title { font-size: 17px; font-weight: 700; }
+#sync-report-view .mr-subtitle { font-size: 12px; color: var(--muted); }
+.sync-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(var(--safe-bottom) + 24px);
+}
+.sync-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+.sync-controls {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 12px; flex-wrap: wrap;
+}
+.sync-chip {
+  background: var(--surface2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 18px;
+  padding: 6px 14px; font: 600 13px 'DM Sans'; cursor: pointer;
+}
+.sync-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sync-date-picker {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; font: 500 13px 'DM Sans';
+  margin-left: auto;
+}
+.sync-recent-strip {
+  display: flex; gap: 6px; overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sync-recent-strip::-webkit-scrollbar { display: none; }
+.sync-recent-dot {
+  display: inline-flex; flex-direction: column; align-items: center;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 6px 8px;
+  font: 600 11px 'DM Sans'; color: var(--muted); cursor: pointer;
+  flex-shrink: 0; min-width: 48px;
+}
+.sync-recent-dot::before {
+  content: ''; display: block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dot, #999); margin-bottom: 4px;
+}
+.sync-recent-dot.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.sync-recent-dot.active::before { background: #fff; }
+.sync-summary {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 12px;
+  margin-bottom: 12px;
+}
+.sync-summary-date { font: 700 18px 'DM Sans'; letter-spacing: -0.01em; }
+.sync-summary-total { font: 500 13px 'DM Sans'; color: var(--muted); margin-top: 2px; }
+.sync-summary-badge {
+  font: 700 12px 'DM Sans'; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 6px 10px; border-radius: 18px;
+}
+.sync-synced-banner {
+  font: 600 12px 'DM Sans'; color: #10b981;
+  background: rgba(16,185,129,.08); padding: 8px 12px;
+  border-radius: 8px; margin-bottom: 12px;
+}
+.sync-section {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; margin-bottom: 10px; overflow: hidden;
+}
+.sync-section-header {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; background: none; border: none;
+  padding: 12px 14px; cursor: pointer; color: var(--text);
+  font: 600 14px 'DM Sans'; text-align: left;
+}
+.sync-section-caret { color: var(--muted); width: 14px; }
+.sync-section-title { flex: 1; min-width: 0; }
+.sync-section-count {
+  background: var(--surface); color: var(--muted);
+  border-radius: 12px; padding: 2px 10px;
+  font: 700 12px 'DM Sans'; font-variant-numeric: tabular-nums;
+}
+.sync-section-count.has-items { background: var(--accent); color: #fff; }
+.sync-section-body { padding: 0 14px 12px; }
+.sync-section-empty { padding: 0 14px 12px; font-size: 12px; color: var(--muted); font-style: italic; }
+.sync-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.sync-row:last-child { border-bottom: none; }
+.sync-row-main { flex: 1 1 auto; min-width: 0; }
+.sync-row-meta { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.sync-row-time { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.sync-footer { margin-top: 18px; }
+.sync-notes-label { display: block; font: 600 12px 'DM Sans'; color: var(--muted); margin-bottom: 6px; }
+.sync-notes {
+  width: 100%; box-sizing: border-box;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font: 500 14px 'DM Sans'; resize: vertical;
+}
+.sync-notes:focus { outline: none; border-color: var(--accent); }
+.sync-mark-btn {
+  margin-top: 10px; width: 100%;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 10px;
+  padding: 14px; font: 700 15px 'DM Sans'; cursor: pointer;
+}
+.sync-mark-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
 .inv-topbar {
   flex: 0 0 auto;
   padding: calc(var(--safe-top) + 12px) 16px 10px;
@@ -9784,6 +9905,327 @@ window.PentaRewards = (function() {
 })();
 
 
+// ═══════════════════════════════════════════════════════════════════════
+// PentaSync + MgrSync — Maids Sync Report Phase 1 (v11.0.6).
+//
+// Phase 1 surfaces a daily "what changed today" report so a Maids
+// franchisee can quickly transcribe events into the upstream Maids
+// system. Source of truth is the audit_log table (filled by triggers
+// in mig 043 + app-level supplements). sync_reports table tracks
+// per-day status (viewed_at, marked_synced_at, marked_synced_by).
+//
+// Manager-only surface. Owner/admin/manager roles see the report.
+// All other roles get a "manager-only" empty state.
+//
+// PentaSync — thin facade around two RPCs:
+//   - get_daily_sync_data(business_id, date)  → diff payload (jsonb)
+//   - mark_sync_report_synced(business_id, date, notes) → state row
+// Plus a SELECT for sync_reports (recent rows) to drive the status
+// strip / nudge.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaSync = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _isoDate(d) {
+    // YYYY-MM-DD in local time (Maids ops are local-time, not UTC).
+    if (!(d instanceof Date)) d = new Date(d || Date.now());
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+  async function fetchReport(dateStr) {
+    var sb = _sb(); if (!sb) throw new Error('PentaSync.fetchReport: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaSync.fetchReport: no tenant');
+    dateStr = dateStr || _isoDate(new Date());
+    var res = await sb.rpc('get_daily_sync_data', { p_business_id: bid, p_date: dateStr });
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function markSynced(dateStr, notes) {
+    var sb = _sb(); if (!sb) throw new Error('PentaSync.markSynced: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaSync.markSynced: no tenant');
+    dateStr = dateStr || _isoDate(new Date());
+    var res = await sb.rpc('mark_sync_report_synced', { p_business_id: bid, p_date: dateStr, p_notes: notes || null });
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function getStatusRows(daysBack) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - (daysBack || 14));
+    var res = await sb.from('sync_reports').select('*')
+      .eq('business_id', bid).gte('report_date', _isoDate(cutoff))
+      .order('report_date', { ascending: false });
+    if (res.error) { console.warn('[PentaSync] getStatusRows error', res.error); return []; }
+    return res.data || [];
+  }
+  return { fetchReport: fetchReport, markSynced: markSynced, getStatusRows: getStatusRows, _isoDate: _isoDate };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// MgrSync — UI for #sync-report-view. Single-screen Phase 1.
+// Date selector (today/yesterday/picker) + 5 collapsible sections +
+// notes + mark-synced action. Refreshes on open.
+// ═══════════════════════════════════════════════════════════════════════
+(function() {
+  var S = {
+    date: null,              // YYYY-MM-DD currently displayed
+    report: null,            // last fetched diff
+    statusRow: null,         // sync_reports row for that date, if any
+    recent: [],              // last 14 days of sync_reports
+    loading: false,
+    expanded: { new_clients: true, schedule_changes: true, time_entries: false, client_deletions: false, applications: true },
+    error: null,
+  };
+
+  function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]; }); }
+  function _isoToday() { return window.PentaSync._isoDate(new Date()); }
+  function _isoYesterday() { var d = new Date(); d.setDate(d.getDate() - 1); return window.PentaSync._isoDate(d); }
+  function _fmtTime(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return String(iso); }
+  }
+
+  async function openSyncReport() {
+    var v = document.getElementById('sync-report-view');
+    if (!v) return;
+    v.classList.add('active'); v.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('overlay-open');
+    if (!S.date) S.date = _isoToday();
+    await _refresh();
+  }
+  function closeSyncReport() {
+    var v = document.getElementById('sync-report-view');
+    if (!v) return;
+    v.classList.remove('active'); v.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('overlay-open');
+  }
+
+  async function _refresh() {
+    S.loading = true; S.error = null; _render();
+    try {
+      var [report, recent] = await Promise.all([
+        window.PentaSync.fetchReport(S.date),
+        window.PentaSync.getStatusRows(14)
+      ]);
+      S.report = report || null;
+      S.recent = recent || [];
+      S.statusRow = S.recent.find(function(r){ return r.report_date === S.date; }) || null;
+    } catch (e) {
+      console.error('[MgrSync] refresh error', e);
+      S.error = (e && e.message) || String(e);
+    } finally {
+      S.loading = false; _render();
+    }
+  }
+
+  function setDate(dateStr) { S.date = dateStr; _refresh(); }
+
+  async function markSynced() {
+    var noteEl = document.getElementById('sync-notes');
+    var notes = (noteEl && noteEl.value || '').trim();
+    var btn = document.getElementById('sync-mark-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Marking…'; }
+    try {
+      await window.PentaSync.markSynced(S.date, notes || null);
+      if (typeof toast === 'function') toast('Marked synced for ' + S.date);
+      await _refresh();
+    } catch (e) {
+      console.error('[MgrSync] markSynced error', e);
+      alert('Could not mark synced: ' + ((e && e.message) || e));
+      if (btn) { btn.disabled = false; btn.textContent = 'Mark as Synced to Maids'; }
+    }
+  }
+
+  function toggleSection(key) {
+    S.expanded[key] = !S.expanded[key];
+    _render();
+  }
+
+  function _statusBadge(row) {
+    if (!row) return { label: 'Pending', color: '#f59e0b', bg: 'rgba(245,158,11,.14)' };
+    if (row.marked_synced_at) return { label: 'Synced', color: '#10b981', bg: 'rgba(16,185,129,.14)' };
+    return { label: 'In progress', color: '#3b82f6', bg: 'rgba(59,130,246,.14)' };
+  }
+
+  function _renderDateChips() {
+    var today = _isoToday(), yesterday = _isoYesterday();
+    var chips = [
+      { v: today,     label: 'Today' },
+      { v: yesterday, label: 'Yesterday' },
+    ];
+    var html = chips.map(function(c){
+      var active = (c.v === S.date);
+      return '<button class="sync-chip' + (active ? ' active' : '') + '" onclick="MgrSync.setDate(\'' + c.v + '\')">' + _esc(c.label) + '</button>';
+    }).join('');
+    html += '<input type="date" class="sync-date-picker" value="' + _esc(S.date) + '" onchange="MgrSync.setDate(this.value)" />';
+    return html;
+  }
+
+  function _renderRecentStrip() {
+    if (!S.recent || S.recent.length === 0) return '';
+    var html = '<div class="sync-recent-strip">';
+    for (var i = 0; i < Math.min(14, S.recent.length); i++) {
+      var r = S.recent[i];
+      var s = _statusBadge(r);
+      var active = (r.report_date === S.date) ? ' active' : '';
+      html += '<button class="sync-recent-dot' + active + '" style="--dot:' + s.color + '" '
+            + 'title="' + _esc(r.report_date + ' — ' + s.label) + '" '
+            + 'onclick="MgrSync.setDate(\'' + r.report_date + '\')">'
+            + '<span class="sync-recent-dot-day">' + _esc(r.report_date.slice(5)) + '</span>'
+            + '</button>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function _renderSection(key, title, count, rows, renderRow) {
+    var open = !!S.expanded[key];
+    var caret = open ? '▾' : '▸';
+    var safeCount = count || 0;
+    var html = '<div class="sync-section">'
+      + '<button class="sync-section-header" onclick="MgrSync.toggleSection(\'' + key + '\')">'
+      + '<span class="sync-section-caret">' + caret + '</span>'
+      + '<span class="sync-section-title">' + _esc(title) + '</span>'
+      + '<span class="sync-section-count' + (safeCount ? ' has-items' : '') + '">' + safeCount + '</span>'
+      + '</button>';
+    if (open) {
+      if (!rows || rows.length === 0) {
+        html += '<div class="sync-section-empty">No items.</div>';
+      } else {
+        html += '<div class="sync-section-body">' + rows.map(renderRow).join('') + '</div>';
+      }
+    }
+    return html + '</div>';
+  }
+
+  function _renderClientRow(r) {
+    var name = ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || '(unnamed)';
+    var city = r.city ? ' · ' + r.city : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main">' + _esc(name) + '<span class="sync-row-meta">' + _esc(city) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderScheduleRow(r) {
+    var verb;
+    switch (r.action_type) {
+      case 'cancelled': verb = 'Cancelled'; break;
+      case 'created':   verb = 'New job';   break;
+      case 'started':   verb = 'Started';   break;
+      case 'ended':     verb = 'Ended';     break;
+      case 'restored':  verb = 'Restored';  break;
+      case 'deleted':   verb = 'Removed';   break;
+      case 'updated':   verb = 'Updated';   break;
+      default:          verb = r.action_type || 'Change';
+    }
+    var bits = [];
+    if (r.client_name) bits.push(r.client_name);
+    if (r.team)        bits.push('Team ' + r.team);
+    if (r.job_date)    bits.push(r.job_date);
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main"><strong>' + _esc(verb) + '</strong><span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderTimeEntryRow(r) {
+    var verb = (r.action_type === 'created') ? 'Clock entry'
+             : (r.action_type === 'updated') ? 'Updated entry'
+             : (r.action_type === 'deleted') ? 'Removed entry'
+             : r.action_type || 'Entry';
+    var bits = [];
+    if (r.clock_in_at)  bits.push('in ' + _fmtTime(r.clock_in_at).split(',').pop().trim());
+    if (r.clock_out_at) bits.push('out ' + _fmtTime(r.clock_out_at).split(',').pop().trim());
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main"><strong>' + _esc(verb) + '</strong><span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+  function _renderApplicationRow(r) {
+    var name = (r.applicant_name || '(unnamed applicant)');
+    var bits = [];
+    if (r.preferred_language) bits.push(r.preferred_language.toUpperCase());
+    if (r.hear_about_us)      bits.push('via ' + r.hear_about_us);
+    var sub = bits.length ? ' · ' + bits.join(' · ') : '';
+    return '<div class="sync-row">'
+      + '<div class="sync-row-main">' + _esc(name) + '<span class="sync-row-meta">' + _esc(sub) + '</span></div>'
+      + '<div class="sync-row-time">' + _esc(_fmtTime(r.created_at)) + '</div>'
+      + '</div>';
+  }
+
+  function _render() {
+    var v = document.getElementById('sync-report-view');
+    if (!v || !v.classList.contains('active')) return;
+    var body = document.getElementById('sync-body');
+    if (!body) return;
+
+    if (typeof isManagerRole === 'function' && !isManagerRole()) {
+      body.innerHTML = '<div class="sync-empty">Manager-only view.</div>';
+      return;
+    }
+
+    if (S.loading && !S.report) {
+      body.innerHTML = '<div class="sync-empty">Loading…</div>';
+      return;
+    }
+    if (S.error) {
+      body.innerHTML = '<div class="sync-empty">Could not load: ' + _esc(S.error) + '</div>';
+      return;
+    }
+
+    var r = S.report || {};
+    var statusInfo = _statusBadge(S.statusRow);
+    var total = r.total_items || 0;
+    var synced = S.statusRow && S.statusRow.marked_synced_at;
+
+    var head = '<div class="sync-controls">' + _renderDateChips() + '</div>'
+      + _renderRecentStrip()
+      + '<div class="sync-summary">'
+        + '<div class="sync-summary-left">'
+          + '<div class="sync-summary-date">' + _esc(S.date) + '</div>'
+          + '<div class="sync-summary-total">' + total + ' item' + (total === 1 ? '' : 's') + ' to sync</div>'
+        + '</div>'
+        + '<div class="sync-summary-badge" style="background:' + statusInfo.bg + ';color:' + statusInfo.color + '">' + statusInfo.label + '</div>'
+      + '</div>';
+
+    if (synced) {
+      head += '<div class="sync-synced-banner">Marked synced ' + _esc(_fmtTime(S.statusRow.marked_synced_at)) + '</div>';
+    }
+
+    var sections = ''
+      + _renderSection('new_clients',      '📋 New Clients',        r.new_clients_count,      r.new_clients,      _renderClientRow)
+      + _renderSection('schedule_changes', '🗓 Schedule Changes',   r.schedule_changes_count, r.schedule_changes, _renderScheduleRow)
+      + _renderSection('time_entries',     '⏱ Time Entries',        r.time_entries_count,     r.time_entries,     _renderTimeEntryRow)
+      + _renderSection('client_deletions', '❌ Client Deletions',   r.client_deletions_count, r.client_deletions, _renderClientRow)
+      + _renderSection('applications',     '📨 New Applications',   r.applications_count,     r.applications,     _renderApplicationRow);
+
+    var footer = '<div class="sync-footer">'
+      + '<label for="sync-notes" class="sync-notes-label">Notes (optional — recorded with the sync event)</label>'
+      + '<textarea id="sync-notes" class="sync-notes" rows="2" placeholder="e.g. Maids entry #4811">' + _esc((S.statusRow && S.statusRow.notes) || '') + '</textarea>'
+      + '<button id="sync-mark-btn" class="sync-mark-btn" onclick="MgrSync.markSynced()">'
+      +   (synced ? 'Re-mark as Synced (overwrite)' : 'Mark as Synced to Maids')
+      + '</button>'
+      + '</div>';
+
+    body.innerHTML = head + sections + footer;
+  }
+
+  window.MgrSync = {
+    open: openSyncReport, close: closeSyncReport,
+    setDate: setDate, markSynced: markSynced, toggleSection: toggleSection,
+    _state: S, _render: _render, _refresh: _refresh,
+  };
+  window.openSyncReport = openSyncReport;
+  window.closeSyncReport = closeSyncReport;
+})();
+
+
 // =====================================================================
 // Employee Rewards UI — Sprint 11.5+ Phase 4 + Gifting.
 // Renders #employee-rewards-body. PentaRewards-backed (replaces the
@@ -13769,6 +14211,22 @@ function _cxlCommit(jobId, source) {
     window.PentaJobs.update(jobId, { cancelled: true, cancelReason: full })
       .catch(function(e){ console.warn('[PentaJobs] cancelJob sync failed', e); });
   }
+  // v11.0.6 (audit log supplement): the jobs trigger captures
+  // action_type='cancelled' for the cancelled-flag transition, but
+  // the trigger can only see column diffs — it doesn't know the
+  // *reason* or *source*. Write a supplemental audit row capturing
+  // the structured cancel context so Sync Report + analytics can
+  // group/explain cancellations without parsing the cancel_reason
+  // text. Best-effort: a failed audit insert doesn't unwind the
+  // user-visible cancel.
+  _auditSupplement('cancelled', 'job', jobId, {
+    source: source,            // 'client' | 'business'
+    reason: reason,
+    notes: notes || null,
+    client_name: job.clientName || null,
+    client_id: job.clientId || null,
+    date: job.date || null
+  });
   var overlay = document.getElementById('cancel-job-overlay');
   if (overlay) overlay.remove();
   closeJobModal();
@@ -13834,63 +14292,215 @@ function logPendingUpdate(action, details, actor, clientId, photo) {
   logActivity(action, details, who, clientId);
 }
 
+// v11.0.6 — app-level audit_log supplement.
+// The DB triggers attached in Migration 043 capture the can't-miss
+// floor (created/updated/deleted/started/ended/cancelled/restored
+// derived from column diffs). They CAN'T see the *why* — cancel
+// reason, payment source, applicant slug, manual-override note, etc.
+// This helper writes an additional audit_log row carrying that
+// context. It's a best-effort write — RLS will allow it for any
+// authenticated user in the tenant; failures are logged-and-ignored
+// so an audit hiccup never blocks the user's action.
+//
+// Calling convention:
+//   _auditSupplement('cancelled', 'job', jobId, { source, reason, ... })
+// Action_type must be in the controlled vocabulary from Migration 042.
+// Entity_type must be in the controlled list. New_values is jsonb-shaped.
+async function _auditSupplement(action_type, entity_type, entity_id, new_values) {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return;
+    // user_id resolution — let the INSERT WITH CHECK pick the right
+    // users.id for us by passing NULL. If we passed a UID directly we'd
+    // have to do the auth_user_id → users.id lookup client-side; the
+    // RLS policy already handles that via subquery for the != NULL case,
+    // but NULL is simpler and tags the row as system-flavored. For
+    // app-level supplements we DO want the actor attributed, so query
+    // users.id explicitly. Best-effort: if the lookup fails, write NULL.
+    var u_id = null;
+    try {
+      var ures = await sb.auth.getUser();
+      if (ures && ures.data && ures.data.user) {
+        var ur = await sb.from('users').select('id').eq('auth_user_id', ures.data.user.id).maybeSingle();
+        if (ur && ur.data) u_id = ur.data.id;
+      }
+    } catch (e) {}
+    var ins = await sb.from('audit_log').insert({
+      business_id: bid,
+      user_id: u_id,
+      action_type: action_type,
+      entity_type: entity_type,
+      entity_id: entity_id || null,
+      new_values: new_values || null
+    });
+    if (ins && ins.error) console.warn('[audit] supplement failed', action_type, entity_type, ins.error.message || ins.error);
+  } catch (e) {
+    console.warn('[audit] supplement exception', e);
+  }
+}
+
 // ── PERMANENT ACTIVITY LOG ──
+// v11.0.6: rewritten to write into audit_log (action_type='manual_note',
+// entity_type='client' if a clientId was provided, otherwise 'system').
+// Existing 3 callers keep the same signature so no callsite changes.
+// localStorage `cleanco_activity_log` is kept as an offline write-cache
+// for one release so any UI that still reads from localStorage during
+// the transition doesn't break. Read paths are migrated to audit_log
+// SELECT in Part 4 (renderActivityLog rewrite).
 function logActivity(action, details, actor, clientId) {
   var now = new Date();
   var timestamp = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' ' +
     now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'});
-  var who = actor || getCurrentActor();
-  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime(), clientId: clientId || null });
-  // Keep last 500 entries
-  if (log.length > 500) log = log.slice(0, 500);
-  localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
-  renderActivityLog();
+  var who = actor || (typeof getCurrentActor === 'function' ? getCurrentActor() : '');
+  // (1) Write to audit_log (canonical going forward).
+  _auditSupplement('manual_note',
+    clientId ? 'client' : 'system',
+    clientId || null,
+    { action: action, details: details || '', actor_label: who }
+  );
+  // (2) Keep the localStorage shadow write for one release for any
+  // unmigrated read paths. Will be deleted in v11.0.7.
+  try {
+    var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
+    log.unshift({ action: action, details: details || '', actor: who, time: timestamp, ts: now.getTime(), clientId: clientId || null });
+    if (log.length > 500) log = log.slice(0, 500);
+    localStorage.setItem('cleanco_activity_log', JSON.stringify(log));
+  } catch (e) {}
+  try { renderActivityLog(); } catch (e) {}
 }
 
-function renderActivityLog() {
+// v11.0.6 — renderActivityLog now reads from audit_log.
+// Fetches up to 250 most-recent events for the current tenant. RLS
+// gates by role; managers see all, dispatchers see the
+// scheduling-related subset, employees see only their own.
+//
+// Recognized action_types from the controlled vocabulary
+// (Migration 042) get human-readable labels here. Anything not
+// listed falls through to a generic "{action_type} {entity_type}".
+var _auditActionLabels = {
+  created:         { en: 'Created' },
+  updated:         { en: 'Updated' },
+  deleted:         { en: 'Deleted' },
+  restored:        { en: 'Restored' },
+  moved:           { en: 'Moved' },
+  cancelled:       { en: 'Cancelled' },
+  started:         { en: 'Started' },
+  ended:           { en: 'Ended' },
+  submitted:       { en: 'Submitted' },
+  approved:        { en: 'Approved' },
+  rejected:        { en: 'Rejected' },
+  manual_note:     { en: 'Note' },
+  manual_override: { en: 'Manual override' },
+  received:        { en: 'Received' },
+  refunded:        { en: 'Refunded' }
+};
+
+function _auditDescribe(row) {
+  // row: { action_type, entity_type, entity_id, new_values, ... }
+  var nv = row.new_values || {};
+  // For 'cancelled' supplements: prefer the operator-supplied context.
+  if (row.action_type === 'cancelled' && row.entity_type === 'job' && nv.client_name) {
+    var parts = ['Cancelled job: ' + nv.client_name];
+    if (nv.source) parts.push((nv.source === 'client' ? 'Client' : 'Business') + ' · ' + (nv.reason || ''));
+    if (nv.notes) parts.push(nv.notes);
+    return { action: parts[0], details: parts.slice(1).join(' — ') };
+  }
+  // 'submitted' application: applicant name + slug.
+  if (row.action_type === 'submitted' && row.entity_type === 'application') {
+    return {
+      action: 'Application: ' + (nv.applicant_name || 'unknown'),
+      details: nv.hear_about_us ? ('Heard via ' + nv.hear_about_us) : (nv.slug ? ('Slug: ' + nv.slug) : '')
+    };
+  }
+  // 'manual_note' (logActivity callers): preserve the legacy shape.
+  if (row.action_type === 'manual_note') {
+    return { action: nv.action || 'Note', details: nv.details || '' };
+  }
+  // Generic fallback: "{verb} {entity_type}" with optional first_name hint.
+  var verb = (_auditActionLabels[row.action_type] && _auditActionLabels[row.action_type].en) || row.action_type;
+  var entityHint = '';
+  if (nv.first_name || nv.last_name) entityHint = ': ' + ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim();
+  else if (nv.client_name) entityHint = ': ' + nv.client_name;
+  return { action: verb + ' ' + row.entity_type + entityHint, details: '' };
+}
+
+async function renderActivityLog() {
   var btn = document.getElementById('actor-name-btn');
   if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
   var el = document.getElementById('activity-log-list');
   if (!el) return;
-  var log = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-  if (log.length === 0) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Loading…</div>';
     return;
   }
-
-  // Group by date
-  var grouped = {};
-  log.forEach(function(entry) {
-    var d = new Date(entry.ts);
-    var dateKey2 = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    if (!grouped[dateKey2]) grouped[dateKey2] = [];
-    grouped[dateKey2].push(entry);
-  });
-
-  var html = '';
-  var dates = Object.keys(grouped);
-  dates.forEach(function(dateLabel, di) {
-    if (di > 7) return; // show last 7 days max
-    html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
-    grouped[dateLabel].forEach(function(entry) {
-      var timeOnly = new Date(entry.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-      var actorLabel = entry.actor || 'Manager';
-      var actorColor = actorLabel === 'AI Chat' ? 'var(--accent2)' : 'var(--teal)';
-      html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
-        + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
-        + '<div style="flex:1;min-width:0">'
-        + '<div style="font-weight:500;color:var(--text)">' + (entry.action||'') + '</div>'
-        + (entry.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + entry.details + '</div>' : '')
-        + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+actorLabel+'</div>'
-        + '</div></div>';
+  try {
+    var res = await sb.from('audit_log')
+      .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+      .eq('business_id', bid)
+      .order('created_at', { ascending: false })
+      .limit(250);
+    if (res.error) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable: ' + (res.error.message || 'error') + '</div>';
+      return;
+    }
+    var rows = res.data || [];
+    if (rows.length === 0) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
+      return;
+    }
+    // Resolve user_id → display name once per render. We pull all
+    // distinct user_ids in one query and build a lookup map.
+    var distinctUids = Array.from(new Set(rows.map(function(r){ return r.user_id; }).filter(Boolean)));
+    var actorByUid = {};
+    if (distinctUids.length > 0) {
+      try {
+        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', distinctUids);
+        (ures.data || []).forEach(function(u){
+          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+        });
+      } catch (e) {}
+    }
+    var grouped = {};
+    rows.forEach(function(row){
+      var d = new Date(row.created_at);
+      var dateLabel = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      (grouped[dateLabel] = grouped[dateLabel] || []).push(row);
     });
-  });
-  el.innerHTML = html;
+    var html = '';
+    var dates = Object.keys(grouped);
+    dates.forEach(function(dateLabel, di) {
+      if (di > 7) return;
+      html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
+      grouped[dateLabel].forEach(function(row) {
+        var timeOnly = new Date(row.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+        var actorLabel = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
+        var actorColor = actorLabel === 'System' ? 'var(--muted)' : 'var(--teal)';
+        var desc = _auditDescribe(row);
+        html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
+          + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
+          + '<div style="flex:1;min-width:0">'
+          + '<div style="font-weight:500;color:var(--text)">' + _adminEsc(desc.action) + '</div>'
+          + (desc.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + _adminEsc(desc.details) + '</div>' : '')
+          + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+_adminEsc(actorLabel)+'</div>'
+          + '</div></div>';
+      });
+    });
+    el.innerHTML = html;
+  } catch (e) {
+    console.warn('[activity log] render failed', e);
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable</div>';
+  }
 }
 
+// v11.0.6: clearActivityLog now only purges the localStorage shadow
+// cache (kept for one-release transition cushion per Part 3). audit_log
+// is immutable by design — clearing it isn't supported from the UI.
 function clearActivityLog() {
-  if (!confirm('Clear the entire activity log?')) return;
+  if (!confirm('Clear the local activity cache? (Server-side audit_log is preserved.)')) return;
   localStorage.removeItem('cleanco_activity_log');
   renderActivityLog();
 }
@@ -16833,6 +17443,9 @@ var HOME_APPS = [
       // Replaces the legacy Content Hub Rewards tab (localStorage-backed).
       if (typeof openManagerRewards === 'function') openManagerRewards();
     } },
+  { id: 'sync',       permKey: 'sync_icon', label: 'Maids Sync', grad: 'linear-gradient(135deg,#06b6d4 0%,#0284c7 100%)',
+    iconHtml: LUCIDE['clipboard-list'],
+    go: function(){ if (typeof openSyncReport === 'function') openSyncReport(); } },
   { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
@@ -24448,11 +25061,11 @@ function applyClientEdits() {
   });
 }
 
-// Client Activity Log viewer. Read-only sheet that filters the two activity
-// stores (cleanco_activity_log + cleanco_pending) by clientId and renders
-// them newest-first. De-duped on ts+action because logPendingUpdate writes
-// to both stores.
-function openClientActivityLog(clientId) {
+// v11.0.6 — Client Activity Log viewer.
+// Reads from audit_log scoped to entity_id = clientId, plus
+// audit_log rows where a job/payment/application's new_values
+// reference this client. RLS handles the tenant scope.
+async function openClientActivityLog(clientId) {
   var c = PentaClients.getClient(clientId);
   if (!c) {
     if (typeof showToast === 'function') showToast('Client not found', 'error');
@@ -24460,28 +25073,51 @@ function openClientActivityLog(clientId) {
     return;
   }
 
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
   var log = [];
-  try {
-    var perm = JSON.parse(localStorage.getItem('cleanco_activity_log') || '[]');
-    var pend = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-    var seen = {};
-    perm.forEach(function(e){
-      if (e && e.clientId === clientId) {
-        var k = (e.ts || 0) + '|' + (e.action || '');
-        if (!seen[k]) { seen[k] = true; log.push(e); }
-      }
-    });
-    pend.forEach(function(e){
-      if (e && e.clientId === clientId) {
-        var k = (e.ts || 0) + '|' + (e.action || '');
-        if (!seen[k]) { seen[k] = true; log.push(e); }
-      }
-    });
-  } catch (err) {
-    console.error('[ClientActivityLog] read failed', err);
+  if (sb && bid) {
+    try {
+      // Direct events on this client row (entity_type='client', entity_id=clientId).
+      var directRes = await sb.from('audit_log')
+        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .eq('business_id', bid)
+        .eq('entity_type', 'client')
+        .eq('entity_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      var direct = (directRes && directRes.data) || [];
+      // Related events: jobs/payments/applications/manual_notes where
+      // new_values.client_id matches. Server-side JSONB filter.
+      var relRes = await sb.from('audit_log')
+        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .eq('business_id', bid)
+        .filter('new_values->>client_id', 'eq', clientId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      var related = (relRes && relRes.data) || [];
+      // Merge + dedupe by id.
+      var seen = {};
+      direct.concat(related).forEach(function(r){ if (r && r.id && !seen[r.id]) { seen[r.id] = 1; log.push(r); }});
+      log.sort(function(a, b){ return new Date(b.created_at) - new Date(a.created_at); });
+    } catch (err) {
+      console.warn('[ClientActivityLog] read failed', err);
+    }
   }
 
-  log.sort(function(a, b){ return (b.ts || 0) - (a.ts || 0); });
+  // Resolve actor names in one batch.
+  var actorByUid = {};
+  if (sb && bid) {
+    var uids = Array.from(new Set(log.map(function(r){ return r.user_id; }).filter(Boolean)));
+    if (uids.length > 0) {
+      try {
+        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', uids);
+        (ures.data || []).forEach(function(u){
+          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+        });
+      } catch (e) {}
+    }
+  }
 
   var old = document.getElementById('client-activity-overlay');
   if (old) old.remove();
@@ -24509,23 +25145,19 @@ function openClientActivityLog(clientId) {
     bodyHtml = '<div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:14px">No activity recorded for this client yet.</div>';
   } else {
     bodyHtml = '<div style="padding:8px 20px 20px">';
-    log.forEach(function(entry) {
-      var timeStr = entry.time || '';
-      if (!timeStr && entry.ts) {
-        timeStr = new Date(entry.ts).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
-      }
-      var actionStr  = (entry.action  || '').replace(/</g, '&lt;');
-      var detailsStr = (entry.details || '').replace(/</g, '&lt;');
-      var actorStr   = (entry.actor   || '').replace(/</g, '&lt;');
+    log.forEach(function(row) {
+      var timeStr = new Date(row.created_at).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+      var desc = (typeof _auditDescribe === 'function') ? _auditDescribe(row) : { action: row.action_type + ' ' + row.entity_type, details: '' };
+      var actorStr = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
 
       bodyHtml += ''
         + '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
         +   '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;gap:12px">'
-        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + actionStr + '</div>'
+        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + desc.action.replace(/</g,'&lt;') + '</div>'
         +     '<div style="font-size:11px;color:var(--muted);white-space:nowrap">' + timeStr + '</div>'
         +   '</div>'
-        +   (detailsStr ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + detailsStr + '</div>' : '')
-        +   (actorStr   ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr + '</div>' : '')
+        +   (desc.details ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + desc.details.replace(/</g,'&lt;') + '</div>' : '')
+        +   '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr.replace(/</g,'&lt;') + '</div>'
         + '</div>';
     });
     bodyHtml += '</div>';
@@ -39823,6 +40455,22 @@ function _p3dPage(dir) {
 </div>
 <div class="mr-modal-overlay" id="mr-modal-overlay" onclick="if(event.target===this)_mrCloseModal()" aria-hidden="true">
   <div class="mr-modal-card" id="mr-modal-card" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Maids Sync Report (v11.0.6) — fullscreen overlay. Single-screen
+     Phase 1: date selector + 5 collapsible sections + mark-synced.
+     Rendered into #sync-body by MgrSync._render().
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div id="sync-report-view" data-permission-role="manager" aria-hidden="true">
+  <div class="mr-topbar">
+    <button class="mr-back-btn" onclick="closeSyncReport()" aria-label="Back">‹</button>
+    <div class="mr-title-wrap">
+      <div class="mr-title">Maids Sync Report</div>
+      <div class="mr-subtitle">Daily diff for upstream sync</div>
+    </div>
+  </div>
+  <div class="sync-body" id="sync-body"></div>
 </div>
 
 <!-- Employee Supplies sub-page -->
