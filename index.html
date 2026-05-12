@@ -10177,6 +10177,181 @@ window.PentaJobIssues = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaIncidents — v11.0.12 — Phase B.
+//
+// Liability-track incident reports. Manager-only resolution flow with
+// a four-step status workflow: open → in_review → resolved | closed.
+// Replaces the legacy localStorage cleanco_pending write that
+// submitJobIncident used. Photos go to Supabase Storage bucket
+// 'incident-photos' (Tom creates bucket via Dashboard before testing).
+// audit_log captures inserts + status→resolved transitions via the
+// trigger extension in mig 050.
+//
+// Path convention: <business_id>/<incident_id>/photo.<ext>
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaIncidents = (function() {
+  var BUCKET = 'incident-photos';
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _toUuidOrNull(v) {
+    if (!v) return null;
+    var s = String(v);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null;
+  }
+  function _resolveJobUuid(jobId) {
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var r = window.PentaJobs.getById(jobId);
+        if (r && r.id) return r.id;
+      }
+    } catch (e) {}
+    return _toUuidOrNull(jobId);
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+  function _extOf(file) {
+    var name = (file && file.name) || '';
+    var dot = name.lastIndexOf('.');
+    if (dot >= 0) return name.slice(dot + 1).toLowerCase() || 'jpg';
+    // Fallback by MIME type.
+    var m = (file && file.type) || '';
+    if (/png/i.test(m)) return 'png';
+    if (/webp/i.test(m)) return 'webp';
+    if (/heic/i.test(m)) return 'heic';
+    return 'jpg';
+  }
+  async function _uploadPhoto(bid, incidentId, file) {
+    var sb = _sb(); if (!sb || !file) return { path: null, url: null };
+    var ext = _extOf(file);
+    var path = bid + '/' + incidentId + '/photo.' + ext;
+    var up = await sb.storage.from(BUCKET).upload(path, file, {
+      cacheControl: '3600', upsert: true, contentType: file.type || 'image/jpeg'
+    });
+    if (up.error) throw up.error;
+    // Signed URL stored on the row for convenience (90 days). Real-time
+    // access still goes through getSignedPhotoUrl which mints a fresh
+    // short-lived URL each time the manager views the row.
+    var signed = await sb.storage.from(BUCKET).createSignedUrl(path, 60 * 60 * 24 * 90);
+    return { path: path, url: (signed && signed.data && signed.data.signedUrl) || null };
+  }
+  async function report(input) {
+    var sb = _sb(); if (!sb) throw new Error('PentaIncidents.report: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaIncidents.report: no tenant');
+    if (!input || !input.incidentType) throw new Error('PentaIncidents.report: incidentType required');
+    var incidentId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
+    if (!incidentId) throw new Error('PentaIncidents.report: crypto.randomUUID unavailable');
+    var photo = { path: null, url: null };
+    if (input.photoFile) {
+      try {
+        photo = await _uploadPhoto(bid, incidentId, input.photoFile);
+      } catch (e) {
+        console.warn('[PentaIncidents.report] photo upload failed', e);
+        // Surface to caller — UX should ask whether to retry / skip.
+        throw new Error('Photo upload failed: ' + (e.message || e));
+      }
+    }
+    var reportedBy = await _resolveCallerUserId();
+    var row = {
+      id: incidentId,
+      business_id: bid,
+      job_id: _resolveJobUuid(input.jobId),
+      client_id: _toUuidOrNull(input.clientId),
+      reported_by: reportedBy,
+      incident_type: input.incidentType,
+      description: (input.description || null),
+      photo_url: photo.url,
+      photo_path: photo.path
+    };
+    var res = await sb.from('incidents').insert(row).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function listForJob(jobId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var jobUuid = _resolveJobUuid(jobId);
+    if (!jobUuid) return [];
+    var res = await sb.from('incidents').select('*')
+      .eq('business_id', bid).eq('job_id', jobUuid)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaIncidents] listForJob error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listForClient(clientId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var clientUuid = _toUuidOrNull(clientId);
+    if (!clientUuid) return [];
+    var res = await sb.from('incidents').select('*')
+      .eq('business_id', bid).eq('client_id', clientUuid)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaIncidents] listForClient error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listOpen() {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('incidents').select('*')
+      .eq('business_id', bid).in('status', ['open','in_review'])
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaIncidents] listOpen error', res.error); return []; }
+    return res.data || [];
+  }
+  async function countOpen() {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var res = await sb.from('incidents').select('id', { count: 'exact', head: true })
+      .eq('business_id', bid).in('status', ['open','in_review']);
+    if (res.error) { console.warn('[PentaIncidents] countOpen error', res.error); return 0; }
+    return res.count || 0;
+  }
+  async function changeStatus(incidentId, newStatus, resolutionNote) {
+    var sb = _sb(); if (!sb) throw new Error('PentaIncidents.changeStatus: no Supabase client');
+    if (!incidentId) throw new Error('PentaIncidents.changeStatus: incidentId required');
+    var allowed = ['open','in_review','resolved','closed'];
+    if (allowed.indexOf(newStatus) === -1) throw new Error('PentaIncidents.changeStatus: invalid status ' + newStatus);
+    var patch = { status: newStatus };
+    // resolution_note is meaningful for 'resolved' / 'closed' transitions.
+    if (newStatus === 'resolved' || newStatus === 'closed') {
+      var n = (resolutionNote && String(resolutionNote).trim()) || null;
+      if (n) patch.resolution_note = n;
+    }
+    // status_changed_at + status_changed_by are auto-stamped by the
+    // BEFORE UPDATE trigger when status changes.
+    var res = await sb.from('incidents').update(patch).eq('id', incidentId).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function getSignedPhotoUrl(photoPath) {
+    var sb = _sb(); if (!sb || !photoPath) return null;
+    var res = await sb.storage.from(BUCKET).createSignedUrl(photoPath, 90);
+    if (res.error) { console.warn('[PentaIncidents] getSignedPhotoUrl error', res.error); return null; }
+    return (res.data && res.data.signedUrl) || null;
+  }
+  return {
+    report: report,
+    listForJob: listForJob,
+    listForClient: listForClient,
+    listOpen: listOpen,
+    countOpen: countOpen,
+    changeStatus: changeStatus,
+    getSignedPhotoUrl: getSignedPhotoUrl
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // MgrSync — UI for #sync-report-view. Single-screen Phase 1.
 // Date selector (today/yesterday/picker) + 5 collapsible sections +
 // notes + mark-synced action. Refreshes on open.
@@ -17623,6 +17798,12 @@ var LUCIDE = {
 //   - PentaJobs.onChange / login completion didn't re-trigger the refresh
 // v11.0.10 fix: log every step + retry once when count is still 0 after
 // PentaTenant resolves + refresh on the same triggers that paint home.
+// v11.0.12 (Phase B): cached COMBINED count surfaced on the Schedule
+// home tile + dock badge. Combines:
+//   - PentaJobIssues.countUnresolved()  (unresolved job_issues)
+//   - PentaIncidents.countOpen()        (open + in_review incidents)
+// Single number for simplicity. Manager drills into either by tapping
+// the Schedule tile and seeing per-job-card sections.
 var _pentaSchedBadgeCount = 0;
 function _refreshSchedTileBadge() {
   if (!window.PentaJobIssues || !window.PentaJobIssues.countUnresolved) {
@@ -17633,20 +17814,26 @@ function _refreshSchedTileBadge() {
   if (!tenant) {
     console.log('[schedBadge] tenant not resolved yet — retrying in 1.5s');
     // One delayed retry covers the boot-race where renderHomeScreen
-    // paints before PentaTenant resolves. Without this, the badge
-    // never updates until the user re-enters the home tab.
+    // paints before PentaTenant resolves.
     setTimeout(function(){
       try { _refreshSchedTileBadge(); } catch (e) {}
     }, 1500);
     return;
   }
-  window.PentaJobIssues.countUnresolved().then(function(n){
-    console.log('[schedBadge] countUnresolved =', n, '(cached was ' + _pentaSchedBadgeCount + ')');
-    if (n === _pentaSchedBadgeCount) return;
-    _pentaSchedBadgeCount = n;
+  var pIssues = window.PentaJobIssues.countUnresolved();
+  var pInc = (window.PentaIncidents && window.PentaIncidents.countOpen)
+    ? window.PentaIncidents.countOpen()
+    : Promise.resolve(0);
+  Promise.all([pIssues, pInc]).then(function(parts){
+    var issues = parts[0] || 0;
+    var incidents = parts[1] || 0;
+    var combined = issues + incidents;
+    console.log('[schedBadge] combined =', combined, '(issues=' + issues + ' incidents=' + incidents + ', cached was ' + _pentaSchedBadgeCount + ')');
+    if (combined === _pentaSchedBadgeCount) return;
+    _pentaSchedBadgeCount = combined;
     try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
   }).catch(function(err){
-    console.warn('[schedBadge] countUnresolved error', err);
+    console.warn('[schedBadge] count error', err);
   });
 }
 
@@ -32648,7 +32835,15 @@ function renderSchedule() {
         <div>
           <div class="job-num">${t('job')} ${i+1} ${t('of')} ${jobs.length}${j.time ? ' · ' + (()=>{ const [h,m]=j.time.split(':'); const hr=parseInt(h); return (hr%12||12)+':'+m+' '+(hr>=12?'PM':'AM'); })() : ''}</div>
           <div class="job-name">${j.clientName || '—'}</div>
-          <div class="job-addr">${j.addr || '—'}</div>
+          <!-- v11.0.12 (Phase B): GPS moved out of the action row and
+               inlined next to the address as a small icon button. Frees
+               a slot in the action row for the future Client Request
+               button (Phase B.5). -->
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <div class="job-addr" style="flex:1;min-width:0">${j.addr || '—'}</div>
+            <button onclick="event.stopPropagation();openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" title="Get directions" aria-label="Get directions"
+              style="background:rgba(108,143,255,0.12);border:1px solid rgba(108,143,255,0.30);color:var(--accent);width:32px;height:32px;border-radius:8px;font-size:15px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">🚗</button>
+          </div>
           <!-- v11.0.9: PentaJobIssues unresolved-issue chips. Async-painted
                by _empPaintJobIssues(jobId) after render. Hidden until
                populated. -->
@@ -32741,28 +32936,26 @@ function renderSchedule() {
         return "<div style=\"width:100%;background:rgba(52,211,153,0.10);border:1px solid rgba(52,211,153,0.30);color:#34D399;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:11px;border-radius:10px;margin-top:8px;text-align:center\">✓ Completed in " + _dur + "</div>";
       })() : ''}
       ${(_isTodayView && currentEmployee && currentEmployee.position === 'team_leader') ? `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+      <!-- v11.0.12 (Phase B): GPS removed from this row — now lives
+           inline next to the address. The 4th slot is reserved for the
+           upcoming Client Request button (Phase B.5); for now the grid
+           is 1×3 row: Report Issue, Report Incident, Receive Payment.
+           Once Client Request lands we'll restore the 2x2 grid. -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
         <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
-          ⚠ Report Issue
-        </button>
-        <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer">
-          🚗 GPS
+          ⚠ Issue
         </button>
         <button onclick="openJobIncident('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
-          🚨 Report Incident
+          🚨 Incident
         </button>
         <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
-          💵 Receive Payment
+          💵 Payment
         </button>
       </div>
       ${j.phone ? `
       <button onclick="sendOnMyWay('${j.id}','${String(j.phone).replace(/'/g,'\\\'')}','${(clientObj && clientObj.fn || (j.clientName||'').split(',').slice(-1)[0]||'').trim().replace(/'/g,'\\\'')}')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#6c8fff,#5478e6);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">
         📲 On My Way
-      </button>` : ''}` : `
-      <!-- Non-TL: just GPS, full-width. -->
-      <button onclick="openGpsPicker('${encodeURIComponent((j.addr||'')+(j.city?', '+j.city:'')).replace(/'/g,'%27')}')" style="width:100%;margin-top:8px;background:#1A1A1A;color:#fff;border:none;border-radius:10px;padding:13px 8px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer">
-        🚗 GPS
-      </button>`}
+      </button>` : ''}` : ``}
     </div>`;
   }).join('');
 
@@ -32862,13 +33055,19 @@ function openJobIncident(jobId, clientName) {
   modal.querySelector('.field-label:first-of-type') && (modal.querySelector('.field-label').textContent = l.what);
   document.getElementById('job-incident-client').textContent = clientName;
   // Rebuild select options in language
+  // v11.0.12 (Phase B): option values match the public.incidents
+  // incident_type CHECK constraint. Removed theft_accusation (not in
+  // the new schema); added pet_issue + safety_hazard. The legacy
+  // 'complaint' value renamed to 'client_complaint' and 'vehicle' to
+  // 'vehicle_accident'. Label strings still pulled from the L map.
   const sel = document.getElementById('ji-type');
   if (sel) sel.innerHTML = `<option value="">${l.placeholder}</option>
     <option value="property_damage">${l.propDmg}</option>
     <option value="injury">${l.injury}</option>
-    <option value="complaint">${l.complaint}</option>
-    <option value="theft_accusation">${l.theft}</option>
-    <option value="vehicle">${l.vehicle}</option>
+    <option value="vehicle_accident">${l.vehicle}</option>
+    <option value="client_complaint">${l.complaint}</option>
+    <option value="pet_issue">${l.pet || 'Pet issue'}</option>
+    <option value="safety_hazard">${l.hazard || 'Safety hazard'}</option>
     <option value="other">${l.other}</option>`;
   // Update title
   modal.querySelector('[style*="font-weight:700"]').textContent = l.title;
@@ -32898,46 +33097,44 @@ function openJobIncident(jobId, clientName) {
   };
 }
 
-function submitJobIncident() {
+async function submitJobIncident() {
+  // v11.0.12 (Phase B): rewritten to write to public.incidents via
+  // PentaIncidents.report. Photo uploads to Supabase Storage bucket
+  // 'incident-photos' at <business_id>/<incident_id>/photo.<ext>.
+  // Replaces the legacy localStorage cleanco_pending write.
   const type = document.getElementById('ji-type').value;
   const desc = document.getElementById('ji-desc').value.trim();
-  if (!type || !desc) { alert('Please select an incident type and describe what happened.'); return; }
-  const emp = currentEmployee;
-  const now = new Date();
-  const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-  const clientEl = document.getElementById('job-incident-client');
-  const clientName = clientEl ? clientEl.textContent : '';
-  const typeLabels = { property_damage:'Property Damage', injury:'Injury', complaint:'Client Complaint', theft_accusation:'Theft Accusation', vehicle:'Vehicle Incident', other:'Other' };
-
-  const readPhoto = () => new Promise(resolve => {
-    const file = document.getElementById('ji-photo').files[0];
-    if (!file) { resolve(null); return; }
-    const r = new FileReader();
-    r.onload = e => resolve(e.target.result);
-    r.readAsDataURL(file);
-  });
-
-  readPhoto().then(photo => {
-    try {
-      const pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-      pending.unshift({
-        id: Date.now().toString(),
-        action: '⚠ Incident Report — ' + (emp ? emp.name : '') + (clientName ? ' @ ' + clientName : ''),
-        details: typeLabels[type] + ': ' + desc,
-        time: timeStr,
-        done: false,
-        type: 'incident',
-        photo: photo || null,
-        employee: emp ? emp.name : '',
-        team: emp ? emp.team : ''
-      });
-      localStorage.setItem('cleanco_pending', JSON.stringify(pending));
-    } catch(e) {}
+  if (!type) { alert('Please select an incident type.'); return; }
+  if (!desc) { alert('Please describe what happened.'); return; }
+  const photoFile = document.getElementById('ji-photo').files[0] || null;
+  const lang = currentLang || 'en';
+  const submitBtn = document.querySelector('button[onclick*="submitJobIncident"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.dataset._origText = submitBtn.textContent; submitBtn.textContent = 'Sending…'; }
+  try {
+    var row = await window.PentaIncidents.report({
+      jobId: _jiJobId,
+      clientId: null,            // resolved manager-side on the card view
+      incidentType: type,
+      description: desc,
+      photoFile: photoFile
+    });
+    console.log('[submitJobIncident] inserted', row);
     document.getElementById('job-incident-modal').style.display = 'none';
-    const lang = currentLang || 'en';
-    const msg = {en:'Incident report submitted. Your manager will review it.', es:'Reporte enviado. Tu gerente lo revisará.', pt:'Relatório enviado. Seu gerente vai revisar.', cv:'Relatoriu mandadu. Bu jefe ta reviza.'}[lang];
-    alert(msg);
-  });
+    const okMsg = { en: 'Incident report submitted. Your manager will review it.',
+                    es: 'Reporte enviado. Tu gerente lo revisará.',
+                    pt: 'Relatório enviado. Seu gerente vai revisar.',
+                    cv: 'Relatoriu mandadu. Bu jefe ta reviza.' }[lang];
+    alert(okMsg);
+    // Refresh schedule + manager badges so the new incident surfaces.
+    try { if (typeof renderSchedule === 'function') renderSchedule(); } catch (e) {}
+    try { if (typeof renderCal === 'function' && (sessionStorage.getItem('cc_tab') === 'cal')) renderCal(); } catch (e) {}
+    try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+  } catch (e) {
+    console.error('[submitJobIncident] failed', e);
+    alert('Could not submit: ' + ((e && e.message) || e));
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = submitBtn.dataset._origText || 'Submit Report'; }
+  }
 }
 
 function selectPayMethod(method) {
@@ -36539,6 +36736,10 @@ function _renderJobCardContent(j, opts) {
     // from v11.0.9 was removed — the iOS-style badge on the
     // collapsed timeline block is the surfacing path now.
     + '<div class="mgr-issues-section" id="cjc-issues-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
+    // v11.0.12 (Phase B): Incidents section placeholder. Painted by
+    // _mgrPaintJobIncidents asynchronously with open/in_review on top
+    // + resolved/closed dimmed below. Hidden until populated.
+    + '<div class="mgr-incidents-section" id="cjc-incidents-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
@@ -36709,6 +36910,157 @@ async function _mgrResolveIssue(issueId, jobId) {
   }
 }
 
+// v11.0.12 (Phase B) — incident_type → display label/icon lookup +
+// status pill styling. Shared by manager job card + client profile.
+var INCIDENT_DISPLAY = {
+  property_damage:  { icon: '🔨', label: 'Property damage' },
+  injury:           { icon: '🚑', label: 'Injury' },
+  vehicle_accident: { icon: '🚗', label: 'Vehicle accident' },
+  client_complaint: { icon: '💬', label: 'Client complaint' },
+  pet_issue:        { icon: '🐾', label: 'Pet issue' },
+  safety_hazard:    { icon: '⚠️', label: 'Safety hazard' },
+  other:            { icon: '📋', label: 'Other' }
+};
+function _incidentDisplay(t) { return INCIDENT_DISPLAY[t] || { icon: '⚠', label: t || 'Incident' }; }
+function _incidentStatusPill(status) {
+  var styles = {
+    open:      { bg: 'rgba(249,115,22,0.14)', fg: '#c2410c',  label: 'Open' },
+    in_review: { bg: 'rgba(59,130,246,0.14)', fg: '#1d4ed8',  label: 'In Review' },
+    resolved:  { bg: 'rgba(34,197,94,0.14)',  fg: '#15803d',  label: 'Resolved' },
+    closed:    { bg: 'rgba(107,114,128,0.16)',fg: '#374151',  label: 'Closed' }
+  };
+  var s = styles[status] || styles.open;
+  return '<span style="display:inline-flex;align-items:center;background:' + s.bg + ';color:' + s.fg
+    + ';font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.04em">'
+    + _escIssue(s.label) + '</span>';
+}
+function _fmtIncidentTime(iso) {
+  if (!iso) return '';
+  try {
+    var d = new Date(iso);
+    return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  } catch (e) { return ''; }
+}
+
+// Async paint of incidents onto a manager job card body. Targets
+// #cjc-incidents-${safeId}. Open + in_review render at the top with
+// a status dropdown and a "View photo" link if a photo_path exists;
+// resolved + closed render below dimmed.
+async function _mgrPaintJobIncidents(rootEl, j) {
+  var safeId = String(j.id || '').replace(/['"]/g, '');
+  var section = rootEl.querySelector('#cjc-incidents-' + safeId);
+  if (!section) return;
+  if (!window.PentaIncidents || !window.PentaIncidents.listForJob) return;
+  var rows = [];
+  try { rows = await window.PentaIncidents.listForJob(j.id); } catch (e) { return; }
+  if (!rows || rows.length === 0) { section.style.display = 'none'; section.innerHTML = ''; return; }
+  section.style.display = '';
+  var live = rows.filter(function(r){ return r.status === 'open' || r.status === 'in_review'; });
+  var done = rows.filter(function(r){ return r.status === 'resolved' || r.status === 'closed'; });
+  var statusOptions = ['open','in_review','resolved','closed'];
+
+  function _rowHtml(r, dim) {
+    var d = _incidentDisplay(r.incident_type);
+    var descShort = (r.description || '').slice(0, 140) + ((r.description || '').length > 140 ? '…' : '');
+    var photoHtml = '';
+    if (r.photo_path) {
+      photoHtml = '<button onclick="_mgrOpenIncidentPhoto(\'' + _escIssue(r.photo_path) + '\')" '
+        + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);'
+        + 'border-radius:8px;padding:4px 10px;font:600 11px DM Sans,sans-serif;cursor:pointer;margin-top:6px">'
+        + '📷 View photo</button>';
+    }
+    var statusDropdown = '<select onchange="_mgrChangeIncidentStatus(\'' + _escIssue(r.id) + '\',\'' + _escIssue(j.id) + '\',this.value)" '
+      + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--text);'
+      + 'border-radius:8px;padding:5px 10px;font:600 12px DM Sans,sans-serif;cursor:pointer">'
+      + statusOptions.map(function(s){
+          return '<option value="' + s + '"' + (s === r.status ? ' selected' : '') + '>'
+            + _incidentDisplay({}).label.replace('Incident', '') + s.charAt(0).toUpperCase() + s.slice(1).replace('_',' ') + '</option>';
+        }).join('')
+      + '</select>';
+    return '<div style="background:' + (dim ? 'var(--surface2)' : 'rgba(248,113,113,0.08)') + ';'
+      + 'border:1px solid ' + (dim ? 'var(--border)' : 'rgba(248,113,113,0.30)') + ';'
+      + 'border-radius:10px;padding:10px 12px;margin-bottom:6px;'
+      + (dim ? 'opacity:0.7;' : '') + '">'
+      +   '<div style="display:flex;align-items:flex-start;gap:10px">'
+      +     '<div style="font-size:18px;line-height:1.2">' + d.icon + '</div>'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      +         '<span style="font-size:13px;font-weight:700;color:var(--text)">' + _escIssue(d.label) + '</span>'
+      +         _incidentStatusPill(r.status)
+      +       '</div>'
+      +       (descShort ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.4;white-space:pre-wrap">' + _escIssue(descShort) + '</div>' : '')
+      +       '<div style="font-size:11px;color:var(--muted);margin-top:4px">Reported ' + _escIssue(_fmtIncidentTime(r.reported_at)) + '</div>'
+      +       (r.resolution_note ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">Note: ' + _escIssue(r.resolution_note) + '</div>' : '')
+      +       photoHtml
+      +     '</div>'
+      +     (dim ? '' : '<div style="flex-shrink:0">' + statusDropdown + '</div>')
+      +   '</div>'
+      + '</div>';
+  }
+
+  var html = '';
+  if (live.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">🚨 Incidents</div>';
+    html += live.map(function(r){ return _rowHtml(r, false); }).join('');
+  }
+  if (done.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">Past Incidents</div>';
+    html += done.map(function(r){ return _rowHtml(r, true); }).join('');
+  }
+  section.innerHTML = html;
+}
+
+// v11.0.12 (Phase B) — change incident status from a manager card.
+// Prompts for an optional resolution note when transitioning to
+// resolved or closed. Re-paints affected cards + refreshes badges.
+async function _mgrChangeIncidentStatus(incidentId, jobId, newStatus) {
+  if (!incidentId || !newStatus) return;
+  console.log('[mgrIncidentStatus]', { incidentId: incidentId, newStatus: newStatus });
+  var note = null;
+  if (newStatus === 'resolved' || newStatus === 'closed') {
+    note = prompt('Resolution note (optional):', '');
+    if (note === null) {
+      // User cancelled — but the <select> already changed. Force a
+      // re-paint so the dropdown reflects the actual (unchanged) state.
+      try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
+      return;
+    }
+  }
+  try {
+    var row = await window.PentaIncidents.changeStatus(incidentId, newStatus, note);
+    console.log('[mgrIncidentStatus] updated row', row);
+    document.querySelectorAll('[data-jid="' + jobId + '"]').forEach(function(el){
+      try { _mgrPaintJobIncidents(el, { id: jobId }); } catch (e) {}
+    });
+    var overlay = document.querySelector('#cal-job-card-overlay');
+    if (overlay) {
+      var inner = overlay.firstElementChild;
+      if (inner) { try { _mgrPaintJobIncidents(inner, { id: jobId }); } catch (e) {} }
+    }
+    try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
+    try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+  } catch (e) {
+    console.error('[mgrIncidentStatus] failed', e);
+    alert('Could not update status: ' + ((e && e.message) || e));
+  }
+}
+
+// v11.0.12 (Phase B) — full-size photo lightbox. Mints a fresh
+// signed URL each open (PentaIncidents.getSignedPhotoUrl, 90s expiry).
+async function _mgrOpenIncidentPhoto(photoPath) {
+  if (!photoPath) return;
+  var url = await window.PentaIncidents.getSignedPhotoUrl(photoPath);
+  if (!url) { alert('Could not load photo.'); return; }
+  var ex = document.getElementById('incident-photo-lightbox'); if (ex) ex.remove();
+  var ov = document.createElement('div');
+  ov.id = 'incident-photo-lightbox';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.onclick = function(){ ov.remove(); };
+  ov.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px">'
+    + '<button onclick="document.getElementById(\'incident-photo-lightbox\').remove()" style="position:absolute;top:20px;right:20px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:40px;height:40px;border-radius:50%;font-size:20px;cursor:pointer">×</button>';
+  document.body.appendChild(ov);
+}
+
 function _attachJobCardActions(rootEl, j) {
   // Sprint 7: build action buttons via DOM into the per-job action row.
   // Idempotent — clears prior buttons before re-attaching. Safe to call for
@@ -36716,6 +37068,8 @@ function _attachJobCardActions(rootEl, j) {
   var safeId = String(j.id || '').replace(/['"]/g, '');
   // v11.0.9 (Phase A): paint issues + red dot async on every attach.
   try { _mgrPaintJobIssues(rootEl, j); } catch (e) {}
+  // v11.0.12 (Phase B): paint incidents section async on every attach.
+  try { _mgrPaintJobIncidents(rootEl, j); } catch (e) {}
   var actionRow = rootEl.querySelector('#cjc-action-row-' + safeId);
   if (!actionRow) return;
   actionRow.innerHTML = '';
