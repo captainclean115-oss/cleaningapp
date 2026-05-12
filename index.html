@@ -4383,7 +4383,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <!-- FILES VIEW (Finder-style grid) -->
 <!-- iOS-STYLE HOME SCREEN — default landing after login -->
 <div id="home-view">
-  <div class="home-greeting" id="home-greeting">Manna Maids</div>
+  <div class="home-greeting" id="home-greeting"></div>
   <div class="home-date" id="home-date"></div>
   <div class="home-pages-wrap" id="home-pages-wrap"></div>
   <div class="home-page-dots" id="home-page-dots"></div>
@@ -4876,6 +4876,61 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 </div>
 
 <script>
+// ─────────────────────────────────────────────────────────────────────────
+// PentaTenant — resolved business_id for the current session.
+// v11.0.0 (multi-tenant hardening): every consumer that previously read
+// the hardcoded BUSINESS_ID const inside PentaClients (or any other
+// place) reads from here instead. Populated by _bootRouteWithRoleCheck
+// after the user's `users.business_id` is fetched. Stays null until then
+// — callers that need it before boot completes must await ready().
+//
+// Defined as an IIFE at the very top of the script (before PentaClients
+// opens) so the namespace is always available regardless of source-order.
+// Storing the value on window so we cannot fall into the v10.5.37
+// var-hoisting trap (a `var` declared below an early call site is
+// undefined at execution time).
+// ─────────────────────────────────────────────────────────────────────────
+window.PentaTenant = (function() {
+  var _waiters = [];
+  function current()        { return window.__pentaBusinessId || null; }
+  function name()           { return window.__pentaBusinessName || ''; }
+  function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
+  function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
+  // v11.0.1 (Item A): callers need a slug-safe form of the business name
+  // for hashtag generation (#TestBusinessTwo). Strip non-alphanumeric.
+  function nameSlugCompact() {
+    var n = window.__pentaBusinessName || '';
+    return n.replace(/[^a-zA-Z0-9]/g, '');
+  }
+  function _set(id) {
+    if (!id) return;
+    window.__pentaBusinessId = id;
+    var pending = _waiters.splice(0, _waiters.length);
+    pending.forEach(function(fn){ try { fn(id); } catch (e) {} });
+  }
+  function _setName(n)         { if (n) window.__pentaBusinessName = String(n); }
+  function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
+  function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
+  function ready() {
+    return new Promise(function(resolve){
+      if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
+      _waiters.push(resolve);
+    });
+  }
+  return {
+    current: current,
+    name: name,
+    operatorFirst: operatorFirst,
+    operatorPhone: operatorPhone,
+    nameSlugCompact: nameSlugCompact,
+    ready: ready,
+    _set: _set,
+    _setName: _setName,
+    _setOperatorFirst: _setOperatorFirst,
+    _setOperatorPhone: _setOperatorPhone
+  };
+})();
+
 // Phase 3E (April 27, 2026) — hardcoded CLIENTS array deleted.
 // Supabase is the sole source of truth. CLIENTS variable kept as empty array
 // for the divergence monitor's localMap construction (which short-circuits below).
@@ -4896,7 +4951,17 @@ window.PentaClients = (function() {
   var _cacheSource = 'local';   // 'local' | 'supabase'
   var _lastSyncAt = null;       // ISO timestamp string or null
 
-  var BUSINESS_ID = '48532f06-0625-415b-9091-2638bed6506d';
+  // v11.0.0 multi-tenant hardening: business_id is no longer a hardcoded
+  // constant. Read from PentaTenant.current() (populated by the boot
+  // routing after the users row is fetched). Throws if called before
+  // boot resolves — that's a defensive fail-loud: a write with a missing
+  // business_id either lands in the wrong tenant or is silently RLS-rejected,
+  // both of which are worse than a thrown error caught upstream.
+  function _bizId() {
+    var id = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!id) throw new Error('PentaClients: business_id not yet resolved — auth still in flight');
+    return id;
+  }
   var DIVERGENCE_KEY = 'phase3c_divergences';
   var MAX_DIVERGENCES = 500;
   var COMPARE_FIELDS = ['fn','ln','addr','city','zip','ph','em','fc','next','bal','pkg','notes','pref_day','pref_time'];
@@ -5250,16 +5315,16 @@ window.PentaClients = (function() {
     var q;
     try {
       if (op === 'insert') {
-        var row = Object.assign({}, payload, { business_id: BUSINESS_ID, updated_at: nowIso });
+        var row = Object.assign({}, payload, { business_id: _bizId(), updated_at: nowIso });
         q = sb.from('clients').insert(row).select();
       } else if (op === 'update') {
         var patch = Object.assign({}, payload, { updated_at: nowIso });
         q = sb.from('clients').update(patch)
-              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .eq('external_id', external_id).eq('business_id', _bizId())
               .select();
       } else if (op === 'soft_delete') {
         q = sb.from('clients').update({ deleted_at: nowIso, updated_at: nowIso })
-              .eq('external_id', external_id).eq('business_id', BUSINESS_ID)
+              .eq('external_id', external_id).eq('business_id', _bizId())
               .select();
       } else {
         return Promise.reject(new Error('unknown_op:' + op));
@@ -5379,7 +5444,7 @@ window.PentaClients = (function() {
     }
     var tries = 0;
     function waitClient() {
-      if (window.PentaAuth && window.PentaAuth.client) return _doQuery(window.PentaAuth.client);
+      if (window.PentaAuth && window.PentaAuth.client) return _waitTenant(window.PentaAuth.client);
       if (++tries > 100) {
         console.warn('[Phase3C] PentaAuth.client never arrived — staying on local cache');
         onDone({ ok: false, reason: 'no_client' });
@@ -5387,12 +5452,34 @@ window.PentaClients = (function() {
       }
       setTimeout(waitClient, 100);
     }
+    // v11.0.0: also wait until PentaTenant resolves business_id. The boot
+    // routing populates it after fetching users.business_id. Without this
+    // gate, _doQuery would call _bizId() before resolution and throw.
+    function _waitTenant(client) {
+      if (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) {
+        return _doQuery(client);
+      }
+      if (window.PentaTenant && window.PentaTenant.ready) {
+        window.PentaTenant.ready().then(function(){ _doQuery(client); });
+      } else {
+        // PentaTenant somehow missing — bail rather than fall back to a default.
+        console.error('[Phase3C] PentaTenant unavailable — refusing to query without tenant scope');
+        onDone({ ok: false, reason: 'no_tenant' });
+      }
+    }
     function _doQuery(client) {
+      var bid;
+      try { bid = _bizId(); }
+      catch (e) {
+        console.error('[Phase3C] business_id not resolved at query time', e);
+        onDone({ ok: false, reason: 'no_tenant' });
+        return;
+      }
       var q;
       try {
         q = client.from('clients')
           .select('*')
-          .eq('business_id', BUSINESS_ID)
+          .eq('business_id', bid)
           .is('deleted_at', null);
       } catch (e) {
         console.error('[Phase3C] Failed to build Supabase query', e);
@@ -12368,6 +12455,16 @@ window.addEventListener('DOMContentLoaded', function() {
     if (tb) tb.style.display = 'none';
     if (nav) nav.style.display = 'none';
     pentaWireLoginForm();
+    // v11.0.0 Item 3: if the visitor landed at …?biz=<slug>, auto-open
+    // the application form scoped to that tenant. Slug resolution
+    // happens inside showApplication() — invalid slugs surface the
+    // error message there instead of opening the form.
+    try {
+      var _bizSlug = (typeof _getApplyUrlSlug === 'function') ? _getApplyUrlSlug() : null;
+      if (_bizSlug && typeof showApplication === 'function') {
+        setTimeout(function(){ try { showApplication(); } catch (e) { console.warn('[apply] auto-open failed', e); } }, 50);
+      }
+    } catch (e) {}
     return;
   }
 
@@ -12397,16 +12494,53 @@ window.addEventListener('DOMContentLoaded', function() {
       var sbBoot = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
       var dbRole = null;
       var dbPerms = {};
+      var dbBusinessId = null;
+      var dbOperatorFirstName = null;
       if (sbBoot) {
         try {
           // v9.6.3: also pull manager_permissions so the cache is populated
           // by the SAME query that drives the routing decision. Without this,
           // _pentaCachedManagerPerms stays {} and getPermissions() returns
           // all-true defaults — the home grid never filters for managers.
-          var rr = await sbBoot.from('users').select('role, manager_permissions').eq('id', _u.id).maybeSingle();
+          // v11.0.0: also pull business_id so PentaTenant can be set on the
+          // same round-trip. Every downstream consumer (PentaClients,
+          // renderApplicantsList, future Edge Functions) reads from there.
+          // v11.0.1 (Item A): also pull first_name so signoffs ("— Tom" et al.)
+          // resolve from the actual operator instead of being hardcoded.
+          // v11.0.2 (Item B): also pull phone so the "send response to me"
+          // path in Claire's tools (and any other operator-self SMS path)
+          // doesn't hardcode Tom's RC primary.
+          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name, phone').eq('id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
           dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
+          dbBusinessId = rr && rr.data && rr.data.business_id;
+          dbOperatorFirstName = rr && rr.data && rr.data.first_name;
+          var dbOperatorPhone = rr && rr.data && rr.data.phone;
+          if (dbOperatorPhone && window.PentaTenant && window.PentaTenant._setOperatorPhone) {
+            window.PentaTenant._setOperatorPhone(dbOperatorPhone);
+          }
         } catch (e) { dbRole = null; }
+      }
+      // v11.0.0: publish the resolved business_id BEFORE routing fires so
+      // any consumer that wakes up during appUnlockManager/Employee finds
+      // it already set. Use _set defensively — null/undefined is a no-op.
+      if (dbBusinessId && window.PentaTenant && window.PentaTenant._set) {
+        window.PentaTenant._set(dbBusinessId);
+      }
+      if (dbOperatorFirstName && window.PentaTenant && window.PentaTenant._setOperatorFirst) {
+        window.PentaTenant._setOperatorFirst(dbOperatorFirstName);
+      }
+      // v11.0.1 (Item A): also fetch businesses.name so every UI surface
+      // and outbound SMS can resolve "the business name" dynamically.
+      // Side-fetch, non-blocking — boot routing has already fired by here.
+      if (dbBusinessId && sbBoot) {
+        sbBoot.from('businesses').select('name').eq('id', dbBusinessId).maybeSingle()
+          .then(function(bres){
+            var nm = bres && bres.data && bres.data.name;
+            if (nm && window.PentaTenant && window.PentaTenant._setName) {
+              window.PentaTenant._setName(nm);
+            }
+          }).catch(function(){});
       }
 
       // v9.6.3: write the cache trio that getCurrentAppRole + getPermissions
@@ -16167,13 +16301,18 @@ async function contentGenerateCaption() {
   btn.innerHTML = 'Writing…'; btn.disabled = true;
   try {
     var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
     if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
       return;
     }
     var businessName = await _getClaireBusinessName();
+    // v11.0.1 (Item A): geo no longer hardcoded — pull metro/zip from
+    // businesses.address jsonb if available, otherwise omit the locality
+    // clause entirely. The prompt still works without it.
+    var _geo = await _getClaireGeoClause();
     var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
-      + businessName + ' is a residential cleaning company in Massachusetts. '
+      + businessName + ' is a residential cleaning company' + _geo + '. '
       + 'The caption should: sound proud of the work but not corporate, be 15–25 words max, include 2–3 relevant hashtags at the end, '
       + 'and match what you see in the attached ' + _currentContent.mediaType + '. '
       + 'Do NOT use quotation marks around the caption. Output the caption text only, nothing else.';
@@ -16199,9 +16338,11 @@ async function contentGenerateCaption() {
     var cap = '';
     (data.content||[]).forEach(function(b) { if (b.type === 'text') cap += b.text; });
     cap = cap.trim().replace(/^["']|["']$/g, '');
-    ta.value = cap || 'Another happy home! ✨ #MannaMaids';
+    var _ht = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
+    ta.value = cap || ('Another happy home! ✨' + (_ht ? ' #' + _ht : ''));
   } catch(e) {
-    ta.value = 'Another happy home! ✨ #CleanHouseHappyHome #MannaMaids';
+    var _ht2 = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
+    ta.value = 'Another happy home! ✨ #CleanHouseHappyHome' + (_ht2 ? ' #' + _ht2 : '');
   } finally {
     btn.innerHTML = orig; btn.disabled = false;
   }
@@ -16374,13 +16515,15 @@ async function contentRegenCaption(id) {
   if (btn) { btn.innerHTML = 'Writing…'; btn.disabled = true; }
   try {
     var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
+    var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
     if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome #MannaMaids';
+      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
       return;
     }
     var businessName = await _getClaireBusinessName();
+    var _geo = await _getClaireGeoClause();
     var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
-      + businessName + ' is a residential cleaning company in Massachusetts. '
+      + businessName + ' is a residential cleaning company' + _geo + '. '
       + '15–25 words max, proud of the work but not corporate, 2–3 relevant hashtags at the end. '
       + 'Match what you see in the attached ' + item.mediaType + '. '
       + 'Do NOT use quotation marks. Output caption text only.';
@@ -18084,27 +18227,39 @@ async function processVoiceCommand(text) {
     return EMPLOYEE_ROSTER.map(function(e){ return e.name + ' ('+e.defaultTeam+')'; }).join(', ');
   })();
 
-  // Count how many distinct asks are in Tom's message — rough heuristic that
+  // Count how many distinct asks are in the operator's message — rough heuristic that
   // helps the model commit to chaining instead of stopping after one tool.
   var askHints = (text.match(/\b(also|and|then|plus|next)\b/gi) || []).length
                + (text.match(/[,;]/g) || []).length;
 
-  var systemPrompt = 'You are Claire, Tom\'s strategic business advisor for Penta — the field-service SaaS he\'s building, currently running his cleaning business Manna Maids in Massachusetts (8 teams, ~330 clients).\n'
+  // v11.0.1 (Item A): assemble Claire's tenant context dynamically.
+  // Previously baked in "Tom", "Manna Maids", "Massachusetts", "(8 teams,
+  // ~330 clients)". Now resolves per-tenant from auth + live counts.
+  var _opName     = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || 'the operator';
+  var _bizName    = await _getClaireBusinessName();
+  var _geoClause  = await _getClaireGeoClause();
+  var _scale      = await _getClaireScaleContext();
+  var _scaleClause = '';
+  if (_scale.teamCount != null && _scale.clientCount != null) {
+    _scaleClause = ' (' + _scale.teamCount + ' teams, ~' + _scale.clientCount + ' clients)';
+  }
+
+  var systemPrompt = 'You are Claire, ' + _opName + '\'s strategic business advisor for Penta — the field-service SaaS being built, currently running their cleaning business ' + _bizName + _geoClause + _scaleClause + '.\n'
     +'Today is '+todayStr+' ('+todayKey+').\n\n'
     +'YOUR ROLE\n'
-    +'Think with Tom about his business. Answer any question grounded in his actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
-    +'If Tom asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
+    +'Think with ' + _opName + ' about their business. Answer any question grounded in their actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
+    +'If ' + _opName + ' asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
     +'DATA YOU CAN SEE\n'
-    +'You have aggregate access to Tom\'s full operating data. Use these tools as your default for strategic questions:\n'
+    +'You have aggregate access to ' + _opName + '\'s full operating data. Use these tools as your default for strategic questions:\n'
     +'- query_clients — filter/aggregate across the book of business (by town, team, status, etc.)\n'
     +'- revenue_summary — rollup revenue by period and dimension\n'
     +'- accounts_receivable_summary — AR aging and breakdowns\n'
     +'- cancellation_analysis — who cancels and how often\n'
     +'- team_performance — team metrics\n'
     +'- at_risk_clients — composite churn risk signals\n'
-    +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when Tom asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
-    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data Tom doesn\'t have in the app.\n'
-    +'\nCite specific numbers from data. Never guess. If Tom asks something the tools can\'t answer, say so honestly.\n\n'
+    +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when ' + _opName + ' asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
+    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data ' + _opName + ' doesn\'t have in the app.\n'
+    +'\nCite specific numbers from data. Never guess. If ' + _opName + ' asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
     +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
     +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
@@ -18113,35 +18268,35 @@ async function processVoiceCommand(text) {
     +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text, sqft_source. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?" If sqft_source is "state_median" or starts with "book_average:", append a line like "Note: sqft estimated from <town> averages — confirm if you have actuals." If sqft_source is "massgis_res_area" or "massgis_bld_area_estimate" or "user_provided", no caveat needed.\n'
     +'3. WAIT for the user to say yes / send it / confirm. Do NOT call send_text in the same turn as compute_quote.\n'
     +'4. After the user confirms, call send_text with phone=<their phone> and message=<the sms_text from compute_quote>. Then report what came back.\n'
-    +'If compute_quote returns non_ma_address (geocoded outside MA), tell the user: "That address looks like it\'s outside MA — auto-lookup is MA-only right now. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
+    +'If compute_quote returns non_ma_address (geocoded outside the service area), tell the user: "That address looks like it\'s outside the service area — auto-lookup is restricted. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
     +'If compute_quote returns address_not_found, ask the user to confirm the full address with city and state, then retry.\n\n'
-    +'You can also send any response as SMS to Tom or a named employee using send_response_to — useful when Tom asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
+    +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
-        +'- Tom is reading this on screen, not listening. Take the room you need.\n'
-        +'- Structure for readability — Tom is scanning, not reading word-by-word. Lead with a one-line bottom-line answer in bold (**like this**). Then break the response into 2-4 sub-sections with bold sub-headers (## section header) covering different angles: data, market context, comparison, strategic take, recommendations. Use bullet points (- or *) when listing 3+ items, comparing options, or breaking out specifics like price ranges or competitor names. Use short paragraphs — 2-3 sentences max per paragraph. Insert blank lines between sections.\n'
-        +'- Markdown is OK in research mode (bold, headers, bullets) — it gives Tom visual structure on screen. The TTS engine handles markdown gracefully if he plays it aloud.\n'
-        +'- Cite sources inline as you use them: "according to Angi", "Care.com data shows", "Julianaspristinecleaning\'s 2026 rate guide". Don\'t dump citations at the end.\n'
-        +'- Use specific numbers from his data and from web sources. Anchor every claim.\n'
+        +'- ' + _opName + ' is reading this on screen, not listening. Take the room you need.\n'
+        +'- Structure for readability — ' + _opName + ' is scanning, not reading word-by-word. Lead with a one-line bottom-line answer in bold (**like this**). Then break the response into 2-4 sub-sections with bold sub-headers (## section header) covering different angles: data, market context, comparison, strategic take, recommendations. Use bullet points (- or *) when listing 3+ items, comparing options, or breaking out specifics like price ranges or competitor names. Use short paragraphs — 2-3 sentences max per paragraph. Insert blank lines between sections.\n'
+        +'- Markdown is OK in research mode (bold, headers, bullets) — it gives ' + _opName + ' visual structure on screen. The TTS engine handles markdown gracefully if played aloud.\n'
+        +'- Cite sources inline as you use them: "according to Angi", "Care.com data shows", or specific competitor rate guides. Don\'t dump citations at the end.\n'
+        +'- Use specific numbers from their data and from web sources. Anchor every claim.\n'
         +'- Length: 4-8 paragraphs is normal for a research answer, broken into sections. Don\'t pad, but don\'t chop. If the question deserves depth, give depth.\n'
-        +'- End with 1-2 sharpening questions if more context would refine the answer ("Want me to pull pricing from Merry Maids\' site for an apples-to-apples?", "Do you have a current rate card to benchmark against?").\n'
+        +'- End with 1-2 sharpening questions if more context would refine the answer.\n'
         +'- Strategic, blunt when warranted, but never dismissive. "Stop trying" is the wrong tone — explain the trade-offs, don\'t shut down the conversation.\n'
-        +'- For market/competitor/industry questions, USE web_search proactively. Tom expects you to actually look up the local data, not reason from training. Search for specific local info: "South Shore MA cleaning rates 2026", "Merry Maids South Shore pricing", "Massachusetts house cleaning average cost", etc. Cite every source.\n\n')
+        +'- For market/competitor/industry questions, USE web_search proactively. ' + _opName + ' expects you to actually look up the local data, not reason from training. Cite every source.\n\n')
       : ('VOICE STYLE (your replies are spoken aloud — keep tight)\n'
         +'- Plain conversational English. NEVER use markdown — no bold, bullets, numbered lists, headings, asterisks, backticks.\n'
         +'- Operational confirmations: ONE short sentence. No filler.\n'
-        +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If Tom wants more depth, he\'ll ask. Do not lecture.\n'
+        +'- Strategic / advisory answers: 2-4 sentences MAX. Lead with the answer, then one or two reasons. If ' + _opName + ' wants more depth, they\'ll ask. Do not lecture.\n'
         +'- After confirming an action, stop. Don\'t add "let me know if you need anything else."\n'
-        +'- When citing data: be specific (client name, $ amount, date) but brief — "Pembroke clients average $185/clean vs $165 in Hingham" not a paragraph.\n\n'))
+        +'- When citing data: be specific (client name, $ amount, date) but brief.\n\n'))
     +'MULTI-ACTION REQUESTS (CRITICAL — READ CAREFULLY)\n'
-    +'Tom often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When he does:\n'
-    +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; Tom will not see any words you say between tool calls.\n'
-    +'2. When the tool_result comes back, LOOK AT TOM\'S ORIGINAL MESSAGE AGAIN. Ask yourself: what else did he ask for that I haven\'t done yet?\n'
+    +_opName + ' often packs several requests into one message ("cancel A, move B, change C frequency to weekly"). When that happens:\n'
+    +'1. Call the tool for the FIRST request. Do NOT narrate before the tool — the system runs tools silently; ' + _opName + ' will not see any words you say between tool calls.\n'
+    +'2. When the tool_result comes back, LOOK AT THE ORIGINAL MESSAGE AGAIN. Ask yourself: what else was asked for that hasn\'t been done yet?\n'
     +'3. If anything is left, CALL THE NEXT TOOL IMMEDIATELY. Do not stop to confirm or explain mid-stream.\n'
-    +'4. Repeat until EVERY item from his message has its own tool call.\n'
-    +'5. After the LAST tool, give ONE final reply covering everything in one breath — this is the only thing Tom sees and hears. Example: "All set — cancelled Pat\'s Tuesday clean, moved Viviana to B3 for Monday, and switched Joe Agne to weekly." Keep it to 1-2 sentences, name each action briefly, then stop.\n'
-    +'You MUST NOT stop after the first tool if Tom asked for more than one thing. Keep calling tools until done.\n'
-    +(askHints >= 2 ? '\nHEADS UP: Tom\'s current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
+    +'4. Repeat until EVERY item from the message has its own tool call.\n'
+    +'5. After the LAST tool, give ONE final reply covering everything in one breath — this is the only thing ' + _opName + ' sees and hears. Example: "All set — cancelled Pat\'s Tuesday clean, moved Viviana to B3 for Monday, and switched Joe Agne to weekly." Keep it to 1-2 sentences, name each action briefly, then stop.\n'
+    +'You MUST NOT stop after the first tool if ' + _opName + ' asked for more than one thing. Keep calling tools until done.\n'
+    +(askHints >= 2 ? '\nHEADS UP: The current message appears to contain multiple requests (detected '+askHints+' connective words/commas). Plan to call multiple tools.\n' : '')
     +'\nCONTEXT\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
@@ -18778,7 +18933,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var nextCleanLabel = nextClean ? new Date(nextClean.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) : 'TBD';
 
     // Draft the SMS message
-    var smsText = 'Hi '+fClient.fn+'! This is Tom from Manna Maids. I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions! — Tom';
+    // v11.0.1 (Item A): operator + business resolved dynamically.
+    var _opF = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _bizF = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+    var _from = _opF && _bizF ? ('This is ' + _opF + ' from ' + _bizF + '.') : (_bizF ? ('This is ' + _bizF + '.') : '');
+    var _sign = _opF ? (' — ' + _opF) : '';
+    var smsText = 'Hi '+fClient.fn+'! ' + _from + ' I wanted to let you know we\'ve updated your cleaning schedule from '+oldFreq+' to '+newFreq.freq+'. Your next upcoming clean is '+nextCleanLabel+'. Let me know if you have any questions!' + _sign;
 
     var status2 = document.getElementById('voice-cmd-status');
     status2.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
@@ -19101,7 +19261,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var invClient = findClient(input.client);
     if (!invClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     if (invClient.bal <= 0) { _claireLastToolResult = invClient.fn+' '+invClient.ln+' has no outstanding balance. Nothing to invoice.'; claireReply(invClient.fn+' '+invClient.ln+' has no outstanding balance.'); return; }
-    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from Manna Maids that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions! — Tom';
+    // v11.0.1 (Item A): operator + business resolved dynamically.
+    var _opF2 = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _bizF2 = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || 'us';
+    var _sign2 = _opF2 ? (' — ' + _opF2) : '';
+    var invMsg = 'Hi '+invClient.fn+'! This is a friendly reminder from ' + _bizF2 + ' that there is an outstanding balance of $'+Math.round(invClient.bal)+' on your account. You can pay by check, Venmo, or Zelle. Please let us know if you have any questions!' + _sign2;
     var status4 = document.getElementById('voice-cmd-status');
     status4.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
       +'<div style="font-size:13px;color:var(--text);margin-bottom:8px">'+(message||invClient.fn+' '+invClient.ln+' owes $'+Math.round(invClient.bal)+'. Here\'s the invoice message:')+'</div>'
@@ -19483,9 +19647,17 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var srContent = String(input.content||'').trim();
     if (!srRecipient || !srContent) { _claireLastToolResult = 'send_response_to needs both recipient and content.'; return; }
     var srPhone = '', srLabel = '';
-    if (srRecipient.toLowerCase() === 'me' || srRecipient.toLowerCase() === 'tom') {
-      srPhone = '15085598062';  // Tom's RingCentral primary
-      srLabel = 'Send to Tom';
+    // v11.0.2 (Item B): "me" / operator-first-name routes to the
+    // current operator's phone from users.phone (via PentaTenant). No
+    // hardcoded Manna Maids RC number, no hardcoded "tom" name match.
+    var _opF = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _opP = (window.PentaTenant && window.PentaTenant.operatorPhone && window.PentaTenant.operatorPhone()) || '';
+    var _isSelfRequest = (srRecipient.toLowerCase() === 'me') ||
+                        (!!_opF && srRecipient.toLowerCase() === _opF.toLowerCase());
+    if (_isSelfRequest) {
+      if (!_opP) { _claireLastToolResult = 'send_response_to: operator phone not on file in users.phone — set it in account settings and retry.'; return; }
+      srPhone = _opP.replace(/\D/g,'');
+      srLabel = 'Send to ' + (_opF || 'you');
     } else {
       // Phase 6.4: facade lookup by name.
       var srMatch = null;
@@ -22838,7 +23010,9 @@ function _buildHoursReport(offset) {
   var textLines = [];
   textLines.push(SEP_HEAVY);
   textLines.push('  HOURS REPORT');
-  textLines.push('  Week of ' + weekLabel + ' · Manna Maids');
+  // v11.0.1 (Item A): tenant name resolved dynamically.
+  var _wBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  textLines.push('  Week of ' + weekLabel + (_wBiz ? ' · ' + _wBiz : ''));
   textLines.push(SEP_HEAVY);
   textLines.push('');
 
@@ -24637,7 +24811,9 @@ function ceSendEmail(clientId) {
   var name = c ? (c.fn + ' ' + c.ln).trim() : '';
   // mailto: opens whatever default mail client they have configured.
   // When their themaids.com Gmail is set as default, From: will use it automatically.
-  var subject = encodeURIComponent('Manna Maids');
+  // v11.0.1 (Item A): subject = tenant business name.
+  var _emBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var subject = encodeURIComponent(_emBiz);
   var body = encodeURIComponent('Hi ' + (c ? c.fn : '') + ',\n\n');
   window.location.href = 'mailto:' + encodeURIComponent(em) + '?subject=' + subject + '&body=' + body;
 }
@@ -26664,6 +26840,47 @@ async function _getClaireBusinessName() {
   }
 }
 
+// v11.0.1 (Item A): resolve a geo clause ("in Massachusetts", "in the
+// 02118 area", or empty) from businesses.metro_area / zip_code. Used in
+// Claire prompts that previously hardcoded "in Massachusetts". Falls
+// back to empty string (no clause) when no location signal is on file.
+async function _getClaireGeoClause() {
+  try {
+    if (window._cachedGeoClause !== undefined) return window._cachedGeoClause;
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return '';
+    const bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return '';
+    const { data: biz } = await sb.from('businesses').select('metro_area, zip_code').eq('id', bid).maybeSingle();
+    var clause = '';
+    if (biz && biz.metro_area)   clause = ' in ' + biz.metro_area;
+    else if (biz && biz.zip_code) clause = ' in the ' + biz.zip_code + ' area';
+    window._cachedGeoClause = clause;
+    return clause;
+  } catch (e) { return ''; }
+}
+
+// v11.0.1 (Item A): live counts for Claire's system prompt. Previously
+// the Claire prompt baked in "8 teams, ~330 clients" — Tom's actual
+// numbers at one moment in time, wrong for every other tenant and stale
+// even for Tom. Resolve at request time from the tenant's actual rows.
+async function _getClaireScaleContext() {
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return { teamCount: null, clientCount: null };
+    const bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!bid) return { teamCount: null, clientCount: null };
+    const [teamsR, clientsR] = await Promise.all([
+      sb.from('teams').select('id', { count: 'exact', head: true }).eq('business_id', bid).is('deleted_at', null),
+      sb.from('clients').select('id', { count: 'exact', head: true }).eq('business_id', bid).is('deleted_at', null)
+    ]);
+    return {
+      teamCount:   (teamsR   && typeof teamsR.count   === 'number') ? teamsR.count   : null,
+      clientCount: (clientsR && typeof clientsR.count === 'number') ? clientsR.count : null
+    };
+  } catch (e) { return { teamCount: null, clientCount: null }; }
+}
+
 async function generateAIDraft(incomingMsg, client) {
   const draftEl = document.getElementById('draft-text');
   draftEl.value = '';
@@ -26796,11 +27013,59 @@ async function sendReply() {
   sendBtn.disabled = false;
 }
 
-const RC_NUMBERS = [
-  { label: '508-559-8062', value: '+15085598062' },
-  { label: '508-460-1551', value: '+15084601551' },
-  { label: '781-341-4444', value: '+17813414444' }
-];
+// v11.0.2 (Item B): RC_NUMBERS used to be a hardcoded list of Tom's
+// three RingCentral numbers. Now resolved per-tenant from:
+//   1. business_phone_integrations.phone_number_e164 (the active
+//      outbound integration — always shown first as the default)
+//   2. business_phone_numbers rows for the current tenant, sorted by
+//      default_outbound DESC, label ASC.
+// Returns [{ value: '+1...', label: 'XXX-XXX-XXXX' }, ...] for the
+// picker. Empty list when nothing is configured.
+async function _loadTenantPhoneNumbers() {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) return [];
+    var out = [];
+    var seen = {};
+    // Source A: the active outbound integration's phone (read via
+    // SECURITY DEFINER RPC so owners aren't required for sender-list).
+    var ai = await sb.rpc('get_active_phone_integration', { p_business_id: bid, p_provider: 'ringcentral' });
+    if (ai && ai.data) {
+      (ai.data || []).forEach(function(r){
+        if (r && r.phone_number_e164 && !seen[r.phone_number_e164]) {
+          seen[r.phone_number_e164] = 1;
+          out.push({ value: r.phone_number_e164, label: _fmtUsPhone(r.phone_number_e164), is_default: true });
+        }
+      });
+    }
+    // Source B: additional business_phone_numbers rows.
+    var bp = await sb.from('business_phone_numbers')
+      .select('phone_number, label, default_outbound')
+      .eq('business_id', bid)
+      .eq('active', true)
+      .order('default_outbound', { ascending: false })
+      .order('label', { ascending: true });
+    if (bp && bp.data) {
+      (bp.data || []).forEach(function(r){
+        var v = r.phone_number;
+        if (!v) return;
+        if (!v.startsWith('+')) v = (v.length === 10) ? ('+1' + v) : ('+' + v);
+        if (seen[v]) return;
+        seen[v] = 1;
+        out.push({ value: v, label: r.label || _fmtUsPhone(v) });
+      });
+    }
+    return out;
+  } catch (e) { console.warn('[rc] _loadTenantPhoneNumbers failed', e); return []; }
+}
+
+function _fmtUsPhone(e164) {
+  var d = String(e164 || '').replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '1') d = d.slice(1);
+  if (d.length === 10) return d.slice(0,3) + '-' + d.slice(3,6) + '-' + d.slice(6);
+  return e164 || '';
+}
 
 async function getMyRCNumber() {
   const cached = localStorage.getItem('rc_my_number');
@@ -26809,25 +27074,34 @@ async function getMyRCNumber() {
   return pickRCNumber();
 }
 
-function pickRCNumber() {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
+async function pickRCNumber() {
+  // v11.0.2 (Item B): outbound numbers now come from the tenant's
+  // configured integration + business_phone_numbers, not a hardcoded
+  // list. If nothing is configured, the picker shows a setup prompt
+  // instead of an empty list.
+  var nums = await _loadTenantPhoneNumbers();
+  return new Promise(function(resolve){
+    var overlay = document.createElement('div');
     overlay.id = 'rc-num-picker';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.75);display:flex;align-items:flex-end';
-    overlay.innerHTML = `
-      <div style="background:var(--surface);width:100%;border-radius:14px 14px 0 0;padding:20px;border-top:1px solid var(--border2)">
-        <div style="font-size:17px;font-weight:600;margin-bottom:4px">Send from which number?</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:16px">This will be saved for future messages</div>
-        ${RC_NUMBERS.map(n => `
-          <button onclick="selectRCNum('${n.value}')"
-            style="display:block;width:100%;padding:14px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;font-weight:500;cursor:pointer;text-align:left">
-            📞 ${n.label}
-          </button>`).join('')}
-        <button onclick="selectRCNum(null)"
-          style="display:block;width:100%;padding:12px;background:none;border:none;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">
-          Cancel
-        </button>
-      </div>`;
+    var body;
+    if (!nums.length) {
+      body = '<div style="font-size:17px;font-weight:600;margin-bottom:4px">No outbound numbers configured</div>'
+        + '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Have an owner or admin set up your phone integration in Settings → Phone &amp; SMS, then try again.</div>'
+        + '<button onclick="selectRCNum(null)" style="display:block;width:100%;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Close</button>';
+    } else {
+      body = '<div style="font-size:17px;font-weight:600;margin-bottom:4px">Send from which number?</div>'
+        + '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">This will be saved for future messages</div>'
+        + nums.map(function(n){
+            var def = n.is_default ? ' <span style="font-size:11px;color:var(--accent);margin-left:6px">DEFAULT</span>' : '';
+            return '<button onclick="selectRCNum(\'' + n.value + '\')"'
+              + ' style="display:block;width:100%;padding:14px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;font-weight:500;cursor:pointer;text-align:left">'
+              + '📞 ' + n.label + def
+              + '</button>';
+          }).join('')
+        + '<button onclick="selectRCNum(null)" style="display:block;width:100%;padding:12px;background:none;border:none;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>';
+    }
+    overlay.innerHTML = '<div style="background:var(--surface);width:100%;border-radius:14px 14px 0 0;padding:20px;border-top:1px solid var(--border2)">' + body + '</div>';
     document.body.appendChild(overlay);
     window._rcNumResolve = resolve;
   });
@@ -27944,7 +28218,13 @@ function printHandbook(sigName, sigDate, empName) {
   }
 
   const content = (typeof HANDBOOK_EN !== 'undefined') ? HANDBOOK_EN : '<p>Handbook not available</p>';
+  // v11.0.1 (Item A): substitute the {{BUSINESS_NAME_UPPER}} placeholder
+  // before applying print styles. Otherwise the print modal would show
+  // the literal token text.
+  var _printBname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _printBupper = _printBname ? (_printBname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
   const printContent = content
+    .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _printBupper)
     .replace(/class="handbook-h1"/g, 'style="font-size:22px;font-weight:bold;text-align:center;margin-bottom:4px"')
     .replace(/class="handbook-h2"/g, 'style="font-size:17px;font-weight:bold;margin-top:24px;border-bottom:1px solid #ccc;padding-bottom:4px"')
     .replace(/class="handbook-h3"/g, 'style="font-size:15px;font-weight:bold;margin-top:14px"')
@@ -28142,10 +28422,17 @@ async function renderApplicantsList() {
       target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Sign in to view applicants.</div>';
       return;
     }
+    // v11.0.0: tenant-scope the applications query through PentaTenant
+    // instead of the hardcoded Manna Maids id that used to live here.
+    var _bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!_bid) {
+      target.innerHTML = '<div style="padding:20px;color:#888;text-align:center">Loading tenant context…</div>';
+      return;
+    }
     const { data, error } = await sb
       .from('job_applications')
       .select('*')
-      .eq('business_id', '48532f06-0625-415b-9091-2638bed6506d')
+      .eq('business_id', _bid)
       .neq('status', 'archived')
       .order('submitted_at', { ascending: false });
     if (error) {
@@ -28158,7 +28445,27 @@ async function renderApplicantsList() {
       badge.textContent = newCount;
       badge.style.display = newCount > 0 ? 'inline-block' : 'none';
     }
+    // v11.0.0 Item 3: look up this tenant's slug + name so the share-link
+    // surface can show the operator their unique apply URL. Best-effort
+    // — if it fails the share row just hides.
+    var _shareSlug = null, _shareName = '';
+    try {
+      var _sr = await sb.from('businesses').select('slug, name').eq('id', _bid).maybeSingle();
+      if (_sr && _sr.data) { _shareSlug = _sr.data.slug || null; _shareName = _sr.data.name || ''; }
+    } catch (e) {}
+    var _shareUrl = _shareSlug ? (window.location.origin + window.location.pathname + '?biz=' + encodeURIComponent(_shareSlug)) : '';
+    var shareRow = _shareUrl
+      ? ('<div style="padding:10px 12px;margin-bottom:12px;background:#1A1F26;border:1px solid #2A3038;border-radius:10px">'
+        +   '<div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Your application link</div>'
+        +   '<div style="display:flex;gap:8px;align-items:center">'
+        +     '<input id="apply-share-url" readonly value="' + _appHtmlEscape(_shareUrl) + '" style="flex:1;background:#0F1419;border:1px solid #2A3038;border-radius:8px;color:#cbd6ff;font-family:ui-monospace,monospace;font-size:12px;padding:8px 10px;outline:none">'
+        +     '<button onclick="(function(){var el=document.getElementById(\'apply-share-url\');if(!el)return;el.select();document.execCommand(\'copy\');this.textContent=\'Copied\';setTimeout(function(){var b=document.querySelector(\'#applicants-list-staff [data-share-copy]\');if(b)b.textContent=\'Copy\';},1500);}).call(this);" data-share-copy="1" style="background:#5E5CE6;color:#fff;border:none;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;font-size:12px">Copy</button>'
+        +   '</div>'
+        +   '<div style="font-size:11px;color:#888;margin-top:6px">Share this link with applicants. They submit to ' + _appHtmlEscape(_shareName || 'your business') + '.</div>'
+        + '</div>')
+      : '';
     const headerHtml =
+      shareRow +
       '<div style="padding:0 0 12px;display:flex;justify-content:flex-end">' +
         '<button onclick="openManagerApplication()" style="background:#5E5CE6;color:white;border:none;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">+ New Application (in-person)</button>' +
       '</div>';
@@ -28348,7 +28655,29 @@ async function hireApplicant(id) {
 function openManagerApplication() {
   // Sprint 4.2.B Section 4 — Manager-mode entry button.
   // Sets the global flag so submitApplication's manager-mode block fires after submit.
+  // v11.0.0 Item 3: bind the form to the authenticated manager's tenant
+  // (PentaTenant.current()) so the in-person submission writes under the
+  // right business_id without depending on the old hardcoded constant.
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!bid) {
+    alert('Tenant not resolved — refresh and try again.');
+    return;
+  }
   window._appManagerMode = true;
+  window._appTargetBusinessId = bid;
+  window._appTargetSlug = null;
+  // Best-effort: fetch the business name for the form hero. Non-blocking.
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      sb.from('businesses').select('name').eq('id', bid).maybeSingle().then(function(r){
+        var nm = (r && r.data && r.data.name) || '';
+        window._appTargetBusinessName = nm;
+        var brandEl = document.getElementById('app-hero-brand');
+        if (brandEl) brandEl.textContent = nm;
+      }).catch(function(){});
+    }
+  } catch (e) {}
   const screen = document.getElementById('application-screen');
   if (screen) screen.style.display = 'flex';
   const homeScreen = document.getElementById('home-screen');
@@ -30001,9 +30330,76 @@ function renderAppTranslations() {
     <option value="flyer">${at.flyer}</option>`;
 }
 
-function showApplication() {
+// v11.0.0 Item 3 — slug-routed public application form.
+//
+// The form has two entry modes:
+//   - PUBLIC: applicant visits …/?biz=<slug>. Slug → business_id via
+//     get_business_by_slug RPC. Form is scoped to that tenant.
+//   - MANAGER: signed-in operator hits the in-person "+ New Application"
+//     button. Tenant resolves from PentaTenant.current() (auth path).
+//
+// Either way, the resolved tenant lives on three globals so
+// submitApplication doesn't have to re-resolve:
+//   window._appTargetBusinessId
+//   window._appTargetBusinessName
+//   window._appTargetSlug   (null for manager mode)
+//
+// If the public path can't resolve a tenant (missing slug, unknown
+// slug, RPC fails), the form refuses to open and shows an error.
+function _getApplyUrlSlug() {
+  try {
+    var qs = new URLSearchParams(window.location.search);
+    var raw = (qs.get('biz') || qs.get('apply') || '').trim().toLowerCase();
+    return raw || null;
+  } catch (e) { return null; }
+}
+
+function _showApplyError(msg) {
+  // Reuse the login screen as a frame, show the error in its error slot.
+  var login = document.getElementById('login-screen');
+  if (login) login.style.display = 'flex';
+  var appScreen = document.getElementById('application-screen');
+  if (appScreen) appScreen.style.display = 'none';
+  alert(msg);
+}
+
+async function showApplication() {
+  // Tenant resolution. Manager mode short-circuits via the auth path.
+  var slug = _getApplyUrlSlug();
+  var resolved = null;
+  if (slug) {
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) {
+        _showApplyError('Unable to load application form — refresh and try again.');
+        return;
+      }
+      var res = await sb.rpc('get_business_by_slug', { p_slug: slug });
+      if (res.error) throw res.error;
+      var row = (res.data && res.data[0]) || null;
+      if (!row || !row.id) {
+        _showApplyError('That application link is invalid or expired. Please use the link your employer shared with you.');
+        return;
+      }
+      resolved = { id: row.id, name: row.name, slug: slug };
+    } catch (e) {
+      console.error('[apply] slug resolution failed', e);
+      _showApplyError('Could not look up your employer. Please check the link and try again.');
+      return;
+    }
+  } else {
+    // No slug in URL → can't safely route the application. Refuse to open.
+    _showApplyError('To apply, please use the application link your employer shared with you (it ends with ?biz=<your-company>).');
+    return;
+  }
+  window._appTargetBusinessId = resolved.id;
+  window._appTargetBusinessName = resolved.name;
+  window._appTargetSlug = resolved.slug;
+
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('application-screen').style.display = 'block';
+  var brandEl = document.getElementById('app-hero-brand');
+  if (brandEl) brandEl.textContent = resolved.name;
   appLang = currentLang || 'en';
   document.querySelectorAll('#application-screen .portal-lang-btn').forEach((b, i) => {
     const langs = ['en','es','pt','cv'];
@@ -30655,7 +31051,11 @@ function openGpsPicker(encodedAddr) {
 async function sendOnMyWay(jobId, phone, firstName) {
   if (!phone) { _toastSimple('No phone on file for this client', 'error'); return; }
   var name = (firstName || 'there').trim() || 'there';
-  var msg = "Hi " + name + ", your Manna Maids team is on the way! See you soon.";
+  // v11.0.1 (Item A): tenant name resolved dynamically; falls back to a
+  // generic "your cleaning team" when name isn't available.
+  var _omwBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _omwWho = _omwBiz ? ('your ' + _omwBiz + ' team') : 'your cleaning team';
+  var msg = "Hi " + name + ", " + _omwWho + " is on the way! See you soon.";
   if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
   try {
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
@@ -32528,7 +32928,7 @@ function renderPortalSubmittedForms() {
 // ─────────────────────────────────────────
 const HANDBOOK_EN = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Employee Handbook</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Effective April 10, 2026</div>
 <div class="handbook-p">Welcome to Penta, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
@@ -32633,7 +33033,7 @@ const HANDBOOK_EN = `
 
 const HANDBOOK_ES = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual del Empleado</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efectivo 10 de abril de 2026</div>
 <div class="handbook-p">Bienvenido a Penta, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
@@ -32708,7 +33108,7 @@ const HANDBOOK_ES = `
 
 const HANDBOOK_PT = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual do Funcionário</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Vigente a partir de 10 de abril de 2026</div>
 <div class="handbook-p">Bem-vindo à Penta, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
@@ -32783,7 +33183,7 @@ const HANDBOOK_PT = `
 
 const HANDBOOK_CV = `
 <div class="handbook-section">
-<div class="handbook-h1">MANNA MAIDS, INC.</div>
+<div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual di Trabalhador</div>
 <div class="handbook-p">800 Brockton Ave, Abington, MA 02351 · Efetivo 10 di Abril di 2026</div>
 <div class="handbook-p">Binvindu na Penta, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
@@ -32858,7 +33258,13 @@ const HANDBOOK_CV = `
 function renderHandbook() {
   document.getElementById('handbook-label').textContent = t('handbook');
   const handbookMap = { en: HANDBOOK_EN, es: HANDBOOK_ES, pt: HANDBOOK_PT, cv: HANDBOOK_CV };
-  document.getElementById('handbook-content').innerHTML = handbookMap[currentLang] || HANDBOOK_EN;
+  // v11.0.1 (Item A): substitute {{BUSINESS_NAME_UPPER}} at render time
+  // using the tenant's name. Used in the handbook's title H1.
+  var _bname = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+  var _bupper = _bname ? (_bname.toUpperCase() + ', INC.') : 'EMPLOYEE HANDBOOK';
+  var _raw = handbookMap[currentLang] || HANDBOOK_EN;
+  var _rendered = _raw.replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper);
+  document.getElementById('handbook-content').innerHTML = _rendered;
   document.getElementById('esign-title').textContent = t('signTitle');
   document.getElementById('esign-name-label').textContent = t('signNameLabel');
   document.getElementById('esign-btn').textContent = t('signBtn');
@@ -33512,6 +33918,15 @@ async function submitApplication() {
   };
   const appUuid = _generateUuidV4();
 
+  // v11.0.0 Item 3: tenant id comes from the form-open path (slug-resolved
+  // for public mode, PentaTenant.current() for manager mode). The old
+  // hardcoded Manna Maids UUID is gone. Refuse to proceed without it.
+  var targetBusinessId = window._appTargetBusinessId;
+  if (!targetBusinessId) {
+    document.getElementById('app-error').textContent = 'Application can\'t be submitted — tenant not resolved. Please reopen this page from your employer\'s application link.';
+    return;
+  }
+
   if (sb) {
     const docMap = [
       { id: 'app-license-front', col: 'driver_license_front_url' },
@@ -33524,7 +33939,7 @@ async function submitApplication() {
       if (!inp || !inp.files || !inp.files[0]) continue;
       const f = inp.files[0];
       const ext = (f.name.split('.').pop() || 'jpg').toLowerCase();
-      const path = '48532f06-0625-415b-9091-2638bed6506d/' + appUuid + '/' + d.col + '.' + ext;
+      const path = targetBusinessId + '/' + appUuid + '/' + d.col + '.' + ext;
       try {
         const { error: upErr } = await sb.storage.from('applications').upload(path, f, {
           cacheControl: '3600',
@@ -33638,12 +34053,14 @@ async function submitApplication() {
     // Sprint 4.2.B — Manager-mode dual-write to Supabase employees.
     // PentaEmployees facade has no add() method, so insert directly via the
     // shared client. Best-effort: log on failure but don't block UI flow.
+    // v11.0.0 Item 3: business_id is the resolved tenant target (manager's
+    // own tenant via PentaTenant.current()).
     if (sb) {
       try {
         const langMap = { es: 'mx', pt: 'br', cv: 'cv', en: 'us' };
         const phoneClean = String(app.phone || '').replace(/\D/g, '');
         const empRow = {
-          business_id: '48532f06-0625-415b-9091-2638bed6506d',
+          business_id: targetBusinessId,
           first_name: app.firstName,
           last_name: app.lastName || '-',
           phone: phoneClean || null,
@@ -33673,51 +34090,54 @@ async function submitApplication() {
     return;
   }
 
-  // Sprint 4.2.B — INSERT to Supabase job_applications instead of localStorage.
+  // v11.0.0 Item 3 — public submit routes through the
+  // submit_job_application(slug, payload) SECURITY DEFINER RPC. The
+  // server validates the slug, resolves business_id, and writes the
+  // row atomically. Browser never gets to claim a business_id.
   if (sb) {
-    const insertRow = {
-      id: appUuid,
-      business_id: '48532f06-0625-415b-9091-2638bed6506d',
+    if (!window._appTargetSlug) {
+      console.error('[apply] target slug missing at submit time');
+      document.getElementById('app-error').textContent = 'Submit failed — tenant context lost. Please reopen the page from your employer\'s application link.';
+      return;
+    }
+    var rpcPayload = {
       first_name: app.firstName,
       last_name: app.lastName,
       phone: app.phone,
       email: app.email,
       address: app.address,
       city: app.city,
-      state: null,
-      zip_code: null,
       preferred_language: submitLang || 'en',
       work_authorization: app.workAuth,
       drivers_license_status: app.hasLicense,
-      has_reliable_transportation: null,
       available_days: (app.availDays || []).join(','),
-      preferred_start_time: null,
       hours_per_week_desired: app.prefHours,
-      earliest_start_date: null,
       prior_cleaning_experience: app.experience,
-      prior_employer: null,
       emergency_contact_name: app.emergencyName,
       emergency_contact_phone: app.emergencyPhone,
       emergency_contact_relation: app.emergencyRel,
       hear_about_us: app.heardFrom,
-      referred_by: null,
       prior_cleaning_experience_en: (submitLang !== 'en' && expNotesEn) ? expNotesEn : null,
       emergency_contact_relation_en: (submitLang !== 'en' && emRelEn) ? emRelEn : null,
       signature_full_name: app.signature,
       signature_date_iso: now.toISOString(),
-      status: 'new',
-      submitted_at: now.toISOString(),
-      ...docUrls
+      driver_license_front_url: docUrls.driver_license_front_url,
+      driver_license_back_url: docUrls.driver_license_back_url,
+      ssn_card_url: docUrls.ssn_card_url,
+      passport_url: docUrls.passport_url
     };
-    const insRes = await sb.from('job_applications').insert(insertRow);
-    if (insRes.error) {
-      console.error('[Sprint 4.2.B] job_applications INSERT failed:', insRes.error);
+    var rpcRes = await sb.rpc('submit_job_application', {
+      p_slug: window._appTargetSlug,
+      p_payload: rpcPayload
+    });
+    if (rpcRes.error) {
+      console.error('[apply] submit_job_application RPC failed:', rpcRes.error);
       document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
       return;
     }
-    console.log('[Sprint 4.2.B.1] Application saved:', appUuid);
+    console.log('[apply] Application saved via RPC:', rpcRes.data);
   } else {
-    console.error('[Sprint 4.2.B] Supabase client unavailable — application not persisted');
+    console.error('[apply] Supabase client unavailable — application not persisted');
     document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
     return;
   }
@@ -36347,6 +36767,130 @@ function openAdminScreen() {
   try { pentaBannerUpdateScope(); } catch(e){}
   try { pentaBannerUpdateCount(); } catch(e){}
   try { pentaBannerRenderActive(); } catch(e){}
+  try { renderPhoneIntegrationStatus(); } catch(e){}
+}
+
+// v11.0.2 (Item B): paint the small status line under the "Configure
+// RingCentral integration" button — "Active · +1 508…", "Error: …",
+// "Not configured". Reads via the SECURITY DEFINER RPC (any
+// authenticated user can call; only owners + admins can see raw
+// credentials via the table SELECT policy).
+async function renderPhoneIntegrationStatus() {
+  var el = document.getElementById('admin-phone-status');
+  if (!el) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) { el.textContent = ''; return; }
+    var res = await sb.rpc('get_active_phone_integration', { p_business_id: bid, p_provider: 'ringcentral' });
+    var row = (res && res.data && res.data[0]) || null;
+    if (!row) {
+      el.textContent = 'Not configured — applicants can\'t receive automated SMS until set up.';
+      return;
+    }
+    el.innerHTML = '<span style="color:#34d399">●</span> ' + (row.status === 'active' ? 'Active' : ('Status: ' + row.status))
+      + ' · sends from ' + (row.phone_number_e164 || '(no number)');
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+// v11.0.2 (Item B): open the RingCentral integration settings modal.
+// Owners + admins only — the underlying table RLS blocks SELECT for
+// other roles. Manager-or-below sees a friendly notice.
+async function openPhoneIntegrationSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  // Try to read the existing row. SELECT RLS gates this to owner+admin.
+  var existing = null;
+  try {
+    var er = await sb.from('business_phone_integrations')
+      .select('id, provider, phone_number_e164, credentials, status, last_used_at, last_error')
+      .eq('business_id', bid)
+      .eq('provider', 'ringcentral')
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (er.error && (er.error.code === '42501' || /permission/i.test(er.error.message || ''))) {
+      alert('Only owners and admins can view or edit phone integration settings.');
+      return;
+    }
+    existing = er.data || null;
+  } catch (e) {
+    alert('Could not load integration: ' + (e.message || e));
+    return;
+  }
+  var creds = (existing && existing.credentials) || {};
+  var isEnvSource = (creds.source === 'env');
+  var overlay = document.createElement('div');
+  overlay.id = 'phone-integ-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:520px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">📞 RingCentral SMS Integration</div>'
+    +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   (isEnvSource
+        ? '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#fde68a">This tenant is using platform-level credentials (env-var fallback). To take ownership, fill in the fields below and save — the row will switch to credentials-in-DB.</div>'
+        : '')
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Outbound phone number (E.164, e.g. +15555550100)</div>'
+    +   '<input type="text" id="pi-phone" value="' + ((existing && existing.phone_number_e164) || '').replace(/"/g,'&quot;') + '" placeholder="+15555550100" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client ID</div>'
+    +   '<input type="text" id="pi-cid" value="' + (isEnvSource ? '' : String(creds.client_id || '')).replace(/"/g,'&quot;') + '" placeholder="from developers.ringcentral.com → app → Credentials" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client Secret</div>'
+    +   '<input type="password" id="pi-csec" value="' + (isEnvSource ? '' : String(creds.client_secret || '')).replace(/"/g,'&quot;') + '" placeholder="•••" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Refresh Token</div>'
+    +   '<input type="password" id="pi-rt" value="' + (isEnvSource ? '' : String(creds.refresh_token || '')).replace(/"/g,'&quot;') + '" placeholder="paste the long-lived refresh token" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none">'
+    +   '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Capture via your RingCentral developer app\'s OAuth flow. Refresh tokens last ~60 days and rotate automatically when used.</div>'
+    +   (existing && existing.last_error ? '<div style="background:rgba(248,113,113,0.10);border:1px solid rgba(248,113,113,0.35);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5">Last error: ' + _adminEsc(existing.last_error) + '</div>' : '')
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button type="button" onclick="savePhoneIntegrationSettings()" style="flex:2;background:#34d399;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function savePhoneIntegrationSettings() {
+  var phone = (document.getElementById('pi-phone') || {}).value || '';
+  var cid   = (document.getElementById('pi-cid')   || {}).value || '';
+  var csec  = (document.getElementById('pi-csec')  || {}).value || '';
+  var rt    = (document.getElementById('pi-rt')    || {}).value || '';
+  phone = phone.trim();
+  if (!/^\+\d{8,15}$/.test(phone)) { alert('Phone number must be E.164 (e.g. +15555550100).'); return; }
+  if (!cid.trim() || !csec.trim() || !rt.trim()) { alert('All three RingCentral credential fields are required.'); return; }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  var payload = {
+    business_id: bid,
+    provider: 'ringcentral',
+    phone_number_e164: phone,
+    credentials: { client_id: cid.trim(), client_secret: csec.trim(), refresh_token: rt.trim() },
+    status: 'active',
+    last_error: null
+  };
+  // Upsert: existing row → update; no row → insert.
+  var existing = null;
+  try {
+    var er = await sb.from('business_phone_integrations').select('id').eq('business_id', bid).eq('provider','ringcentral').is('deleted_at', null).maybeSingle();
+    existing = er.data || null;
+  } catch (e) {}
+  var res;
+  if (existing && existing.id) {
+    res = await sb.from('business_phone_integrations').update(payload).eq('id', existing.id);
+  } else {
+    res = await sb.from('business_phone_integrations').insert(payload);
+  }
+  if (res.error) {
+    alert('Save failed: ' + (res.error.message || 'unknown'));
+    return;
+  }
+  var ov = document.getElementById('phone-integ-overlay');
+  if (ov) ov.remove();
+  renderPhoneIntegrationStatus();
+  alert('Saved. Test a send to confirm credentials.');
 }
 function closeAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -37696,7 +38240,7 @@ function _p3dPage(dir) {
 <div id="application-screen" style="display:none;margin:0 auto">
   <div class="app-hero">
     <button class="app-hero-back" onclick="hideApplication()">←</button>
-    <div class="app-hero-brand">Manna <span>Maids</span></div>
+    <div class="app-hero-brand" id="app-hero-brand"></div>
     <div class="app-hero-sub" id="app-subtitle">Join Our Team — apply in 5 minutes</div>
   </div>
   <div class="app-lang-row">
@@ -38891,6 +39435,17 @@ function _p3dPage(dir) {
       <div class="admin-row" style="gap:8px">
         <button onclick="showHoursReport()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📊 Hours Report (All Staff)</button>
       </div>
+    </div>
+
+    <!-- v11.0.2 (Item B): Phone & SMS Integration. Owners + admins only.
+         Reads/writes the tenant's business_phone_integrations row. RLS
+         enforces role gating on top of the visibility check. -->
+    <div class="admin-sec" id="admin-phone-sms-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Phone &amp; SMS</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openPhoneIntegrationSettings()" style="flex:1;background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#a7f3d0;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📞 Configure RingCentral integration</button>
+      </div>
+      <div id="admin-phone-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.
