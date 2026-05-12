@@ -1987,6 +1987,22 @@ body.home-dragging, body.home-dragging * {
   box-shadow: 0 0 0 2px #000;
   z-index: 2;
 }
+/* v11.0.10: iOS-style notification badge on collapsed timeline job
+   blocks (#cal-view day-mode squares). Mirrors .home-app-badge with
+   slightly different positioning since the parent is .sqjob-block,
+   not the home tile. Hidden until _mgrPaintCollapsedIssueBadges
+   populates a count. Pointer-events:none so taps still fall through
+   to the parent block's onclick (which opens the modal card). */
+.sqjob-issue-badge {
+  position: absolute; top: -6px; right: -6px;
+  background: #ff3b30; color: #fff;
+  border-radius: 10px; font: 700 11px 'DM Sans', sans-serif;
+  padding: 1px 6px; min-width: 18px; height: 18px; line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--surface), 0 1px 4px rgba(0,0,0,0.3);
+  z-index: 3;
+  pointer-events: none;
+}
 /* "Coming Soon" tiles — small SOON pill in the upper-right of the icon.
    Marks roadmap-only features so Tom can point at them in a demo without
    anyone tapping expecting them to work. */
@@ -13952,8 +13968,14 @@ function renderCal() {
             +' onclick="jobSquareTap(event,this)"'
             +' style="position:absolute;left:'+blockL+'px;top:4px;bottom:4px;width:'+blockW+'px;'
             +'background:'+(isCancelled?'rgba(248,113,113,0.08)':(isOMS?'#34C759':'var(--surface)'))+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
-            +'border-radius:8px;padding:5px 6px;overflow:hidden;box-sizing:border-box;'
+            +'border-radius:8px;padding:5px 6px;overflow:visible;box-sizing:border-box;'
             +'cursor:grab;opacity:'+(isDone||isCancelled?'0.5':'1')+';user-select:none;-webkit-user-select:none;touch-action:auto">'
+            // v11.0.10: iOS-style red notification badge for unresolved
+            // job_issues. Painted by _mgrPaintCollapsedIssueBadges after
+            // the timeline renders. Hidden until count > 0. Lives at
+            // top-right of the block — overflow:visible on the parent so
+            // the badge can stick out cleanly.
+            +'<span class="sqjob-issue-badge" id="sqjob-issue-badge-'+safeId+'" style="display:none"></span>'
             +'<div style="font-size:13px;font-weight:600;color:'+(isCancelled?'var(--red)':omsTextColor)+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
             +(timeLabel?'<div style="font-size:11px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
             +(city&&blockW>80?'<div style="font-size:11px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
@@ -14060,6 +14082,10 @@ function renderCal() {
   }
   // Sprint 6.11: refresh inline schedule map whenever schedule re-renders.
   try { if (typeof renderInlineScheduleMap === 'function') renderInlineScheduleMap(); } catch (e) { console.warn('[6.11] inline map refresh failed', e); }
+  // v11.0.10: paint iOS-style red badges on collapsed timeline blocks
+  // for any jobs with unresolved job_issues. Fire-and-forget; one
+  // listUnresolved call covers every block.
+  try { if (typeof _mgrPaintCollapsedIssueBadges === 'function') _mgrPaintCollapsedIssueBadges(); } catch (e) {}
 }
 
 function toggleJobDone(id) {
@@ -17568,18 +17594,42 @@ var LUCIDE = {
   'credit-card': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
 };
 
-// v11.0.9 (Phase A): cached unresolved job_issues count for the Schedule
-// home tile's red-dot badge. Refreshed by _refreshSchedTileBadge on home
-// render and after _mgrResolveIssue. badge() returns this cached value
-// synchronously so the tile renderer doesn't await.
+// v11.0.10: cached unresolved job_issues count for the Schedule home
+// tile's iOS-style red badge. Refreshed by _refreshSchedTileBadge on
+// home render and after _mgrResolveIssue. badge() returns this cached
+// value synchronously so the tile renderer doesn't await.
+//
+// v11.0.9 bug: count never made it to render. Causes were a mix of
+//   - first render fired before PentaJobIssues / PentaTenant were ready
+//     → countUnresolved returned 0 → cache stuck at 0
+//   - PentaJobs.onChange / login completion didn't re-trigger the refresh
+// v11.0.10 fix: log every step + retry once when count is still 0 after
+// PentaTenant resolves + refresh on the same triggers that paint home.
 var _pentaSchedBadgeCount = 0;
 function _refreshSchedTileBadge() {
-  if (!window.PentaJobIssues || !window.PentaJobIssues.countUnresolved) return;
+  if (!window.PentaJobIssues || !window.PentaJobIssues.countUnresolved) {
+    console.log('[schedBadge] PentaJobIssues not ready');
+    return;
+  }
+  var tenant = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!tenant) {
+    console.log('[schedBadge] tenant not resolved yet — retrying in 1.5s');
+    // One delayed retry covers the boot-race where renderHomeScreen
+    // paints before PentaTenant resolves. Without this, the badge
+    // never updates until the user re-enters the home tab.
+    setTimeout(function(){
+      try { _refreshSchedTileBadge(); } catch (e) {}
+    }, 1500);
+    return;
+  }
   window.PentaJobIssues.countUnresolved().then(function(n){
+    console.log('[schedBadge] countUnresolved =', n, '(cached was ' + _pentaSchedBadgeCount + ')');
     if (n === _pentaSchedBadgeCount) return;
     _pentaSchedBadgeCount = n;
     try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
-  }).catch(function(){});
+  }).catch(function(err){
+    console.warn('[schedBadge] countUnresolved error', err);
+  });
 }
 
 var HOME_APPS = [
@@ -36437,22 +36487,18 @@ function _renderJobCardContent(j, opts) {
     endTimeStr = ' – ' + (endHr % 12 || 12) + ':' + (endMn < 10 ? '0' : '') + endMn + ' ' + (endHr >= 12 ? 'PM' : 'AM');
   }
 
-  return '<div style="background:' + tc + ';padding:16px 20px 14px;border-radius:20px 20px 0 0;position:relative">'
+  return '<div style="background:' + tc + ';padding:16px 20px 14px;border-radius:20px 20px 0 0">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
     + '<div><div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.75);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">' + team + ' · ' + timeStr + endTimeStr + '</div>'
     + '<div style="font-size:20px;font-weight:700;color:#fff">' + (j.clientName || '—') + '</div></div>'
     + (showCloseButton ? '<button onclick="closeCalJobCard()" style="background:rgba(0,0,0,.25);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">✕</button>' : '')
-    + '</div>'
-    // v11.0.9 (Phase A): red dot indicator for unresolved issues.
-    // Painted by _mgrPaintJobIssues. Absolutely positioned in the
-    // colored header band's top-right; the parent now has
-    // position:relative so this anchors to the card.
-    + '<span class="mgr-issue-dot" id="cjc-issue-dot-' + safeId + '" style="display:none;position:absolute;top:8px;right:' + (showCloseButton ? '52px' : '12px') + ';width:10px;height:10px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 2px ' + tc + ',0 0 8px rgba(220,38,38,0.6)"></span>'
-    + '</div>'
+    + '</div></div>'
     + '<div style="padding:16px 20px">'
-    // v11.0.9 (Phase A): Issues section placeholder. Painted by
+    // v11.0.10: Issues section placeholder (painted by
     // _mgrPaintJobIssues with unresolved + resolved lists; hidden
-    // until there's something to show.
+    // until there's something to show). The header-band red dot
+    // from v11.0.9 was removed — the iOS-style badge on the
+    // collapsed timeline block is the surfacing path now.
     + '<div class="mgr-issues-section" id="cjc-issues-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
@@ -36480,24 +36526,66 @@ function _renderJobCardContent(j, opts) {
     + '</div>';
 }
 
-// v11.0.9 (Phase A) — async paint of issues onto a manager job card.
-// Targets two placeholders inserted by _renderJobCardContent:
-//   #cjc-issue-dot-${safeId}  — red dot on header band when unresolved > 0
-//   #cjc-issues-${safeId}     — Issues section in card body
+// v11.0.10 — iOS-style notification badge on collapsed timeline blocks.
+// Fetches ALL unresolved issues for the tenant in one call, groups by
+// job_id (the DB uuid), then updates each rendered sqjob-* block whose
+// resolved uuid matches. Called after renderCal sets cal-body.innerHTML.
+async function _mgrPaintCollapsedIssueBadges() {
+  if (!window.PentaJobIssues || !window.PentaJobIssues.listUnresolved) return;
+  var rows = [];
+  try { rows = await window.PentaJobIssues.listUnresolved(); } catch (e) { return; }
+  var byJob = {};
+  (rows || []).forEach(function(r){
+    if (!r || !r.job_id) return;
+    byJob[r.job_id] = (byJob[r.job_id] || 0) + 1;
+  });
+  // Walk every rendered timeline block. data-jid may be a legacy_id or a
+  // uuid depending on the cache; resolve to uuid to match the row map.
+  var blocks = document.querySelectorAll('#cal-body [id^="sqjob_"][data-jid]');
+  blocks.forEach(function(block){
+    var jid = block.getAttribute('data-jid');
+    var dbUuid = jid;
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var jr = window.PentaJobs.getById(jid);
+        if (jr && jr.id) dbUuid = jr.id;
+      }
+    } catch (e) {}
+    var count = byJob[dbUuid] || 0;
+    var badge = block.querySelector('#sqjob-issue-badge-' + (jid || '').replace(/['"]/g,''));
+    if (!badge) return;
+    if (count > 0) {
+      // iOS pattern: solid dot for 1, count for 2+. We always show the
+      // count so manager can see at-a-glance how many.
+      badge.textContent = count > 1 ? String(count) : '';
+      badge.style.display = '';
+      // Narrow + circular for the dot case; wider for the count case.
+      badge.style.width = count > 1 ? '' : '12px';
+      badge.style.minWidth = count > 1 ? '' : '12px';
+      badge.style.height = count > 1 ? '' : '12px';
+      badge.style.padding = count > 1 ? '' : '0';
+    } else {
+      badge.style.display = 'none';
+    }
+  });
+}
+
+// v11.0.10 — async paint of issues onto a manager job card body.
+// Targets one placeholder inserted by _renderJobCardContent:
+//   #cjc-issues-${safeId} — Issues section in card body
 // Unresolved issues each get a Resolve button; resolved issues are
-// rendered below in a dimmed/collapsed style.
+// rendered below in a dimmed/collapsed style. The v11.0.9 header-band
+// red dot was removed; the collapsed timeline block carries the
+// iOS-style notification badge instead (see _mgrPaintCollapsedIssueBadges).
 async function _mgrPaintJobIssues(rootEl, j) {
   var safeId = String(j.id || '').replace(/['"]/g, '');
-  var dot = rootEl.querySelector('#cjc-issue-dot-' + safeId);
   var section = rootEl.querySelector('#cjc-issues-' + safeId);
-  if (!section && !dot) return;
+  if (!section) return;
   if (!window.PentaJobIssues || !window.PentaJobIssues.listForJob) return;
   var rows = [];
   try { rows = await window.PentaJobIssues.listForJob(j.id); } catch (e) { return; }
   var unresolved = (rows || []).filter(function(r){ return !r.resolved_at; });
   var resolved   = (rows || []).filter(function(r){ return !!r.resolved_at; });
-  if (dot) dot.style.display = unresolved.length > 0 ? 'block' : 'none';
-  if (!section) return;
   if (unresolved.length === 0 && resolved.length === 0) {
     section.style.display = 'none'; section.innerHTML = '';
     return;
@@ -36533,25 +36621,51 @@ async function _mgrPaintJobIssues(rootEl, j) {
   section.innerHTML = html;
 }
 
-// v11.0.9 (Phase A) — Resolve a single job_issue from the manager card.
+// v11.0.10 — Resolve a single job_issue from the manager card.
 // Prompts for an optional note, calls PentaJobIssues.resolve, then
-// re-paints the affected card + refreshes the home tile red-dot count.
+// re-paints the affected card + refreshes the home tile badge.
+//
+// v11.0.9 bug: post-resolve repaint used the wrong selector
+// (#cal-job-card; real id is #cal-job-card-overlay) and the modal
+// card's inner div has no data-jid attribute, so the [data-jid=…]
+// pass also missed. UI stayed stale even though the DB UPDATE
+// succeeded (Tom's first resolve produced row 27add781 with
+// resolution_note "hi" — proves the server path works).
+//
+// v11.0.10 fix: target the right modal id, fall back to a full
+// renderCal() so the timeline + any inline cards always reflect the
+// new state, and log each step for diagnostics.
 async function _mgrResolveIssue(issueId, jobId) {
   if (!issueId) return;
+  console.log('[mgrResolve] start', { issueId: issueId, jobId: jobId });
   var note = prompt('Resolution note (optional):', '');
-  if (note === null) return; // cancelled
+  if (note === null) { console.log('[mgrResolve] cancelled'); return; }
   try {
-    await window.PentaJobIssues.resolve(issueId, note);
-    // Re-paint any card on screen for this job. Multiple selectors
-    // because the same card can appear inline + modal at once.
+    var row = await window.PentaJobIssues.resolve(issueId, note);
+    console.log('[mgrResolve] resolved row', row);
+    // Re-paint inline cards that have data-jid on the wrapper div.
     document.querySelectorAll('[data-jid="' + jobId + '"]').forEach(function(el){
       try { _mgrPaintJobIssues(el, { id: jobId }); } catch (e) {}
     });
-    var modalCard = document.querySelector('#cal-job-card');
-    if (modalCard) { try { _mgrPaintJobIssues(modalCard, { id: jobId }); } catch (e) {} }
+    // The modal opener (openCalJobCard) creates #cal-job-card-overlay
+    // and puts the card content in a child div with no data-jid. Re-
+    // paint by querying the overlay's inner card.
+    var overlay = document.querySelector('#cal-job-card-overlay');
+    if (overlay) {
+      var inner = overlay.firstElementChild;
+      if (inner) {
+        try { _mgrPaintJobIssues(inner, { id: jobId }); } catch (e) {}
+      }
+    }
+    // Force-refresh the calendar so the timeline-block badge clears
+    // immediately. Without this, the badge count on the collapsed
+    // block stays stale until the next renderCal trigger.
+    try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
     // Refresh the home tile badge.
     try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+    console.log('[mgrResolve] done');
   } catch (e) {
+    console.error('[mgrResolve] failed', e);
     alert('Could not resolve: ' + ((e && e.message) || e));
   }
 }
