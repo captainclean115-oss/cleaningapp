@@ -10251,17 +10251,20 @@ window.PentaIncidents = (function() {
     if (!input || !input.incidentType) throw new Error('PentaIncidents.report: incidentType required');
     var incidentId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
     if (!incidentId) throw new Error('PentaIncidents.report: crypto.randomUUID unavailable');
+    console.log('[PentaIncidents.report] start', { bid: bid, incidentId: incidentId, hasPhoto: !!input.photoFile, type: input.incidentType });
     var photo = { path: null, url: null };
     if (input.photoFile) {
       try {
         photo = await _uploadPhoto(bid, incidentId, input.photoFile);
+        console.log('[PentaIncidents.report] photo uploaded', photo);
       } catch (e) {
-        console.warn('[PentaIncidents.report] photo upload failed', e);
+        console.error('[PentaIncidents.report] photo upload failed', e);
         // Surface to caller — UX should ask whether to retry / skip.
         throw new Error('Photo upload failed: ' + (e.message || e));
       }
     }
     var reportedBy = await _resolveCallerUserId();
+    console.log('[PentaIncidents.report] reportedBy resolved to', reportedBy);
     var row = {
       id: incidentId,
       business_id: bid,
@@ -10273,8 +10276,13 @@ window.PentaIncidents = (function() {
       photo_url: photo.url,
       photo_path: photo.path
     };
+    console.log('[PentaIncidents.report] inserting row', row);
     var res = await sb.from('incidents').insert(row).select().single();
-    if (res.error) throw res.error;
+    if (res.error) {
+      console.error('[PentaIncidents.report] insert failed', res.error);
+      throw res.error;
+    }
+    console.log('[PentaIncidents.report] insert succeeded', res.data);
     return res.data;
   }
   async function listForJob(jobId) {
@@ -33101,12 +33109,16 @@ async function submitJobIncident() {
   // v11.0.12 (Phase B): rewritten to write to public.incidents via
   // PentaIncidents.report. Photo uploads to Supabase Storage bucket
   // 'incident-photos' at <business_id>/<incident_id>/photo.<ext>.
-  // Replaces the legacy localStorage cleanco_pending write.
+  // v11.0.13: heavy console.log instrumentation so silent failures
+  // can be traced via the next reproduction.
+  console.log('[submitJobIncident] tapped, _jiJobId =', _jiJobId);
   const type = document.getElementById('ji-type').value;
   const desc = document.getElementById('ji-desc').value.trim();
-  if (!type) { alert('Please select an incident type.'); return; }
-  if (!desc) { alert('Please describe what happened.'); return; }
+  console.log('[submitJobIncident] type =', type, 'desc len =', desc.length);
+  if (!type) { console.warn('[submitJobIncident] no type — early return'); alert('Please select an incident type.'); return; }
+  if (!desc) { console.warn('[submitJobIncident] no desc — early return'); alert('Please describe what happened.'); return; }
   const photoFile = document.getElementById('ji-photo').files[0] || null;
+  console.log('[submitJobIncident] photo file =', photoFile ? (photoFile.name + ' (' + photoFile.size + 'B)') : 'none');
   const lang = currentLang || 'en';
   const submitBtn = document.querySelector('button[onclick*="submitJobIncident"]');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.dataset._origText = submitBtn.textContent; submitBtn.textContent = 'Sending…'; }
@@ -36949,10 +36961,18 @@ function _fmtIncidentTime(iso) {
 async function _mgrPaintJobIncidents(rootEl, j) {
   var safeId = String(j.id || '').replace(/['"]/g, '');
   var section = rootEl.querySelector('#cjc-incidents-' + safeId);
-  if (!section) return;
-  if (!window.PentaIncidents || !window.PentaIncidents.listForJob) return;
+  if (!section) {
+    console.log('[mgrIncidents] section placeholder not found for job', safeId);
+    return;
+  }
+  if (!window.PentaIncidents || !window.PentaIncidents.listForJob) {
+    console.log('[mgrIncidents] PentaIncidents not ready');
+    return;
+  }
   var rows = [];
-  try { rows = await window.PentaIncidents.listForJob(j.id); } catch (e) { return; }
+  try { rows = await window.PentaIncidents.listForJob(j.id); }
+  catch (e) { console.error('[mgrIncidents] listForJob threw', e); return; }
+  console.log('[mgrIncidents] job', safeId, 'rows =', (rows || []).length);
   if (!rows || rows.length === 0) { section.style.display = 'none'; section.innerHTML = ''; return; }
   section.style.display = '';
   var live = rows.filter(function(r){ return r.status === 'open' || r.status === 'in_review'; });
