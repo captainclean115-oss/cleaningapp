@@ -4898,6 +4898,7 @@ window.PentaTenant = (function() {
   var _waiters = [];
   function current()        { return window.__pentaBusinessId || null; }
   function name()           { return window.__pentaBusinessName || ''; }
+  function legalName()      { return window.__pentaBusinessLegalName || ''; }
   function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
   function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
   // v11.0.1 (Item A): callers need a slug-safe form of the business name
@@ -4913,6 +4914,7 @@ window.PentaTenant = (function() {
     pending.forEach(function(fn){ try { fn(id); } catch (e) {} });
   }
   function _setName(n)         { if (n) window.__pentaBusinessName = String(n); }
+  function _setLegalName(n)    { if (n) window.__pentaBusinessLegalName = String(n); }
   function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
   function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
   function ready() {
@@ -4924,12 +4926,14 @@ window.PentaTenant = (function() {
   return {
     current: current,
     name: name,
+    legalName: legalName,
     operatorFirst: operatorFirst,
     operatorPhone: operatorPhone,
     nameSlugCompact: nameSlugCompact,
     ready: ready,
     _set: _set,
     _setName: _setName,
+    _setLegalName: _setLegalName,
     _setOperatorFirst: _setOperatorFirst,
     _setOperatorPhone: _setOperatorPhone
   };
@@ -12538,11 +12542,18 @@ window.addEventListener('DOMContentLoaded', function() {
       // and outbound SMS can resolve "the business name" dynamically.
       // Side-fetch, non-blocking — boot routing has already fired by here.
       if (dbBusinessId && sbBoot) {
-        sbBoot.from('businesses').select('name').eq('id', dbBusinessId).maybeSingle()
+        // v11.0.5 (Issue B-6): also pull legal_name for handbook /
+        // applicant-consent surfaces that need to identify the actual
+        // legal entity, not just the display name.
+        sbBoot.from('businesses').select('name, legal_name').eq('id', dbBusinessId).maybeSingle()
           .then(function(bres){
             var nm = bres && bres.data && bres.data.name;
+            var ln = bres && bres.data && bres.data.legal_name;
             if (nm && window.PentaTenant && window.PentaTenant._setName) {
               window.PentaTenant._setName(nm);
+            }
+            if (ln && window.PentaTenant && window.PentaTenant._setLegalName) {
+              window.PentaTenant._setLegalName(ln);
             }
           }).catch(function(){});
       }
@@ -28351,9 +28362,12 @@ function printHandbook(sigName, sigDate, empName) {
   var _printBaddr = (function(){
     try { var rows = window.PentaOffices ? window.PentaOffices.listSync() : []; return rows[0] && rows[0].addr || ''; } catch(e) { return ''; }
   })();
+  var _printBlegal = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName())
+                   || (_printBname ? (_printBname + ', Inc.') : 'the company');
   const printContent = content
     .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _printBupper)
     .replace(/\{\{BUSINESS_ADDR\}\}/g, _printBaddr)
+    .replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _printBlegal)
     .replace(/class="handbook-h1"/g, 'style="font-size:22px;font-weight:bold;text-align:center;margin-bottom:4px"')
     .replace(/class="handbook-h2"/g, 'style="font-size:17px;font-weight:bold;margin-top:24px;border-bottom:1px solid #ccc;padding-bottom:4px"')
     .replace(/class="handbook-h3"/g, 'style="font-size:15px;font-weight:bold;margin-top:14px"')
@@ -28372,7 +28386,7 @@ function printHandbook(sigName, sigDate, empName) {
     '<p style="font-size:14px"><b>Employee:</b> ' + empName + '</p>' +
     '<p style="font-size:14px"><b>Signed as:</b> ' + sigName + '</p>' +
     '<p style="font-size:14px"><b>Date:</b> ' + sigDate + '</p>' +
-    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the Penta, Inc. Employee Handbook.</p>' +
+    '<p style="font-size:12px;color:#555;margin-top:12px">By signing, the employee confirmed reading and agreeing to the ' + ((window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName()) || 'company') + ' Employee Handbook.</p>' +
     '</div>' +
     '<div style="margin-top:24px;background:#f0f0f0;border-radius:10px;padding:14px;font-size:13px;color:#444;text-align:center">' +
     '📱 To print or save as PDF: tap the <b>Share</b> button in Safari → <b>Print</b> or <b>Save to Files</b>' +
@@ -30202,11 +30216,11 @@ const APP_T = {
     emergency: 'Emergency Contact',
     emName: 'Name *', emPhone: 'Phone *', emRel: 'Relationship',
     emRelPlaceholder: 'e.g. Spouse, Parent, Sibling',
-    consent: 'By signing below, I certify that all information provided is accurate. I authorize Penta, Inc. to verify all information.',
+    consent: 'By signing below, I certify that all information provided is accurate. I authorize {{BUSINESS_LEGAL_NAME}} to verify all information.',
     sigLabel: 'Full name (acts as your signature) *',
     submit: 'Submit Application',
     successTitle: 'Application Submitted!',
-    successMsg: 'Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.',
+    successMsg: 'Thank you for applying to {{BUSINESS_LEGAL_NAME}} We will review your application and contact you within a few days.',
     backBtn: 'Back to Login',
     docsSection: 'Identity Documents',
     licFront: "Driver\'s License (front)",
@@ -30236,11 +30250,11 @@ const APP_T = {
     emergency: 'Contacto de emergencia',
     emName: 'Nombre *', emPhone: 'Teléfono *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ej. Esposo/a, Padre/Madre, Hermano/a',
-    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a Penta, Inc. a verificarla.',
+    consent: 'Al firmar, certifico que toda la información es correcta y autorizo a {{BUSINESS_LEGAL_NAME}} a verificarla.',
     sigLabel: 'Nombre completo (sirve como tu firma) *',
     submit: 'Enviar solicitud',
     successTitle: '¡Solicitud enviada!',
-    successMsg: 'Gracias por aplicar a Penta, Inc. Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
+    successMsg: 'Gracias por aplicar a {{BUSINESS_LEGAL_NAME}} Revisaremos tu solicitud y nos pondremos en contacto contigo en unos días.',
     backBtn: 'Volver al inicio',
     docsSection: 'Documentos de Identidad',
     licFront: 'Licencia de conducir (frente)',
@@ -30270,11 +30284,11 @@ const APP_T = {
     emergency: 'Contato de emergência',
     emName: 'Nome *', emPhone: 'Telefone *', emRel: 'Parentesco',
     emRelPlaceholder: 'Ex. Cônjuge, Pai/Mãe, Irmão/ã',
-    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a Penta, Inc. a verificá-las.',
+    consent: 'Ao assinar, certifico que todas as informações são precisas e autorizo a {{BUSINESS_LEGAL_NAME}} a verificá-las.',
     sigLabel: 'Nome completo (serve como sua assinatura) *',
     submit: 'Enviar candidatura',
     successTitle: 'Candidatura Enviada!',
-    successMsg: 'Obrigado por se candidatar à Penta, Inc. Analisaremos sua candidatura e entraremos em contato em alguns dias.',
+    successMsg: 'Obrigado por se candidatar à {{BUSINESS_LEGAL_NAME}} Analisaremos sua candidatura e entraremos em contato em alguns dias.',
     backBtn: 'Voltar ao início',
     docsSection: 'Documentos de Identidade',
     licFront: 'CNH (frente)',
@@ -30304,11 +30318,11 @@ const APP_T = {
     emergency: 'Kontatu di emerjensia',
     emName: 'Nomi *', emPhone: 'Telefoni *', emRel: 'Parentesku',
     emRelPlaceholder: 'Ex. Maridun/Mudjer, Pai/Mai, Irmaun/Irma',
-    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu Penta, Inc. pa verifica-l.',
+    consent: 'Na firma, N ta sertifika ki tudu informasaun e korretu y autorizu {{BUSINESS_LEGAL_NAME}} pa verifica-l.',
     sigLabel: 'Nomi kumpletu (ta sirvi komu bo firma) *',
     submit: 'Manda pedidu',
     successTitle: 'Pedidu Mandadu!',
-    successMsg: 'Obrigadu pa kandidata na Penta, Inc. Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
+    successMsg: 'Obrigadu pa kandidata na {{BUSINESS_LEGAL_NAME}} Nu ta revê bo kandidatura y ta kontakta-bu dentu di algus dias.',
     backBtn: 'Volta pa login',
     docsSection: 'Dokumentus di Identidadi',
     licFront: 'Karteira di kondusaun (frenti)',
@@ -30374,8 +30388,17 @@ function setAppLang(lang) {
 
 function renderAppTranslations() {
   const at = APP_T[appLang] || APP_T.en;
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-  const setph = (id, val) => { const el = document.getElementById(id); if (el) el.placeholder = val; };
+  // v11.0.5 (Issue B-6): substitute {{BUSINESS_LEGAL_NAME}} at render
+  // time so the applicant sees the *tenant's* legal name in consent +
+  // success strings, not "Penta, Inc." (the platform). Source: tenant
+  // legalName for manager mode, or _appTargetBusinessName + ", Inc."
+  // for the public slug-resolved form.
+  const _legalFromTenant = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName()) || '';
+  const _legalFromAppTarget = window._appTargetBusinessName ? (window._appTargetBusinessName + ', Inc.') : '';
+  const _legal = _legalFromTenant || _legalFromAppTarget || 'the company';
+  const sub = (s) => (typeof s === 'string') ? s.replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _legal) : s;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = sub(val); };
+  const setph = (id, val) => { const el = document.getElementById(id); if (el) el.placeholder = sub(val); };
 
   set('app-subtitle', at.subtitle);
   set('app-section-personal', at.personal);
@@ -33060,14 +33083,14 @@ const HANDBOOK_EN = `
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Employee Handbook</div>
 <div class="handbook-p">{{BUSINESS_ADDR}} · Effective April 10, 2026</div>
-<div class="handbook-p">Welcome to Penta, Inc. We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
+<div class="handbook-p">Welcome to {{BUSINESS_LEGAL_NAME}} We are proud to have you as part of our team. This handbook outlines our company policies, your rights as an employee, and what we expect from one another. Please read it carefully and keep it as a reference.</div>
 </div>
 <div class="handbook-divider"></div>
 
 <div class="handbook-section">
 <div class="handbook-h2">SECTION 1 — EMPLOYMENT</div>
 <div class="handbook-h3">1.1 At-Will Employment</div>
-<div class="handbook-p">Employment at Penta, Inc. is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
+<div class="handbook-p">Employment at {{BUSINESS_LEGAL_NAME}} is at-will. Either you or the company may end the employment relationship at any time, for any reason, with or without notice, as permitted by Massachusetts law.</div>
 <div class="handbook-h3">1.2 Equal Opportunity</div>
 <div class="handbook-p">We do not discriminate based on race, color, religion, sex, national origin, age, disability, sexual orientation, gender identity, or any other characteristic protected by Massachusetts or federal law.</div>
 <div class="handbook-h3">1.3 Anti-Harassment</div>
@@ -33165,13 +33188,13 @@ const HANDBOOK_ES = `
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual del Empleado</div>
 <div class="handbook-p">{{BUSINESS_ADDR}} · Efectivo 10 de abril de 2026</div>
-<div class="handbook-p">Bienvenido a Penta, Inc. Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
+<div class="handbook-p">Bienvenido a {{BUSINESS_LEGAL_NAME}} Estamos orgullosos de tenerte como parte de nuestro equipo. Este manual describe nuestras políticas, tus derechos como empleado y lo que esperamos el uno del otro.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SECCIÓN 1 — EMPLEO</div>
 <div class="handbook-h3">1.1 Empleo a voluntad</div>
-<div class="handbook-p">El empleo en Penta, Inc. es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
+<div class="handbook-p">El empleo en {{BUSINESS_LEGAL_NAME}} es a voluntad. Cualquiera de las partes puede terminar la relación laboral en cualquier momento, por cualquier razón, según lo permitido por la ley de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdad de oportunidades</div>
 <div class="handbook-p">No discriminamos por raza, color, religión, sexo, origen nacional, edad, discapacidad, orientación sexual, identidad de género ni ninguna otra característica protegida por la ley.</div>
 <div class="handbook-h3">1.3 Política contra el acoso</div>
@@ -33240,13 +33263,13 @@ const HANDBOOK_PT = `
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual do Funcionário</div>
 <div class="handbook-p">{{BUSINESS_ADDR}} · Vigente a partir de 10 de abril de 2026</div>
-<div class="handbook-p">Bem-vindo à Penta, Inc. Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
+<div class="handbook-p">Bem-vindo à {{BUSINESS_LEGAL_NAME}} Temos orgulho em tê-lo como parte de nossa equipe. Este manual descreve nossas políticas, seus direitos como funcionário e o que esperamos uns dos outros.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SEÇÃO 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a qualquer tempo</div>
-<div class="handbook-p">O emprego na Penta, Inc. é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
+<div class="handbook-p">O emprego na {{BUSINESS_LEGAL_NAME}} é a qualquer tempo. Qualquer uma das partes pode encerrar o vínculo empregatício a qualquer momento, por qualquer motivo, conforme permitido pela lei de Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdade de oportunidades</div>
 <div class="handbook-p">Não discriminamos por raça, cor, religião, sexo, origem nacional, idade, deficiência, orientação sexual, identidade de gênero ou qualquer outra característica protegida por lei.</div>
 <div class="handbook-h3">1.3 Política anti-assédio</div>
@@ -33315,13 +33338,13 @@ const HANDBOOK_CV = `
 <div class="handbook-h1">{{BUSINESS_NAME_UPPER}}</div>
 <div class="handbook-h2">Manual di Trabalhador</div>
 <div class="handbook-p">{{BUSINESS_ADDR}} · Efetivo 10 di Abril di 2026</div>
-<div class="handbook-p">Binvindu na Penta, Inc. Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
+<div class="handbook-p">Binvindu na {{BUSINESS_LEGAL_NAME}} Nu ta orgulhozu pa tene-bu konnosu. Esi manual ta deskreve nosa politikas, bo direitus komu trabalhador, y kuzas ki nu ta spera uns di otrus.</div>
 </div>
 <div class="handbook-divider"></div>
 <div class="handbook-section">
 <div class="handbook-h2">SESAUN 1 — EMPREGO</div>
 <div class="handbook-h3">1.1 Emprego a vontadi</div>
-<div class="handbook-p">Emprego na Penta, Inc. e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
+<div class="handbook-p">Emprego na {{BUSINESS_LEGAL_NAME}} e a vontadi. Kalkuer parti pode termina relasaun di trabalhu na kalkuer momentu, pa kalkuer motivo, segundu lei di Massachusetts.</div>
 <div class="handbook-h3">1.2 Igualdadi di oportunidadi</div>
 <div class="handbook-p">Nu ka ta diskrimina pa rasa, kor, religiaun, sexu, origem nasional, idadi, defisiensia, orientasaun sexual, identidadi di jeneru, ou kalkuer otra karakteristika protejidu pa lei.</div>
 <div class="handbook-h3">1.3 Politika kontra asediu</div>
@@ -33396,8 +33419,16 @@ function renderHandbook() {
   var _baddr = (function(){
     try { var rows = window.PentaOffices ? window.PentaOffices.listSync() : []; return rows[0] && rows[0].addr || ''; } catch(e) { return ''; }
   })();
+  // v11.0.5 (Issue B-6): legal name for handbook welcome + at-will
+  // paragraphs. Pulls from businesses.legal_name (already backfilled
+  // for all four existing tenants).
+  var _blegal = (window.PentaTenant && window.PentaTenant.legalName && window.PentaTenant.legalName())
+              || (_bname ? (_bname + ', Inc.') : 'the company');
   var _raw = handbookMap[currentLang] || HANDBOOK_EN;
-  var _rendered = _raw.replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper).replace(/\{\{BUSINESS_ADDR\}\}/g, _baddr);
+  var _rendered = _raw
+    .replace(/\{\{BUSINESS_NAME_UPPER\}\}/g, _bupper)
+    .replace(/\{\{BUSINESS_ADDR\}\}/g, _baddr)
+    .replace(/\{\{BUSINESS_LEGAL_NAME\}\}/g, _blegal);
   document.getElementById('handbook-content').innerHTML = _rendered;
   document.getElementById('esign-title').textContent = t('signTitle');
   document.getElementById('esign-name-label').textContent = t('signNameLabel');
@@ -38792,7 +38823,7 @@ function _p3dPage(dir) {
     <div style="height:1px;background:var(--border);margin:20px 0"></div>
     <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
       <div style="font-size:13px;color:var(--muted);line-height:1.6" id="app-consent-text">
-        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize Penta, Inc. to verify all information provided.
+        By signing below, I certify that all information provided is accurate and complete. I understand that false information may result in disqualification or termination. I authorize {{BUSINESS_LEGAL_NAME}} to verify all information provided.
       </div>
       <div class="field-group" style="margin-top:12px;margin-bottom:0">
         <div class="field-label" id="app-sig-label">Full name (acts as your signature) *</div>
@@ -38809,7 +38840,7 @@ function _p3dPage(dir) {
     <div style="font-size:48px;margin-bottom:16px">✅</div>
     <div style="font-size:22px;font-weight:700;margin-bottom:8px" id="app-success-title">Application Submitted!</div>
     <div style="font-size:14px;color:var(--muted);line-height:1.6" id="app-success-msg">
-      Thank you for applying to Penta, Inc. We will review your application and contact you within a few days.
+      Thank you for applying to {{BUSINESS_LEGAL_NAME}} We will review your application and contact you within a few days.
     </div>
     <button onclick="hideApplicationDone()" style="margin-top:24px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 32px;cursor:pointer">
       Done
