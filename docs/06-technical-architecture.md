@@ -110,9 +110,28 @@ Storage: doc uploads go to `applications/{business_id}/{appUuid}/{col}.{ext}` �
 | `accept-invite` | none (JWT verify off — uses signed invite token) | Bootstraps a new business + first user during signup |
 | `set-employee-password` | none (JWT verify off) | Sets initial password from an emailed/SMS'd token |
 | `translate-chat` | JWT required | Server-side Anthropic Haiku call for chat translation. Holds `ANTHROPIC_API_KEY` as a Supabase secret |
-| `send-sms` | JWT required | Server-side RingCentral SMS send. Holds RC OAuth refresh token + client id/secret as secrets. Used for On-My-Way and (future) applicant confirmation |
+| `send-sms` (v2, v11.0.2) | JWT required | Server-side SMS send. Resolves caller tenant from JWT, looks up `business_phone_integrations` row, branches on `credentials.source` to either env-source (Manna Maids transitional state) or in-DB credentials. Marks `mark_phone_integration_used` / `mark_phone_integration_error` after each attempt. Returns 424 with hint when no integration is configured for the tenant |
 
 Edge Functions verify the caller's JWT and resolve tenant via `users.business_id` server-side. They do not trust browser-supplied tenant ids.
+
+### Per-tenant phone provider integrations (v11.0.2)
+
+Schema (Migration 039):
+
+`business_phone_integrations` — one row per (business_id, provider). Columns: `provider` (check constraint: `ringcentral | text_request | twilio`), `phone_number_e164`, `credentials jsonb` (provider-specific shape), `status` (`active | disconnected | error`), `last_used_at`, `last_error`, soft delete. UNIQUE index on (business_id, provider) WHERE not deleted.
+
+RLS gates the table to owners + admins for SELECT / INSERT / UPDATE / DELETE. Managers and below cannot read raw credentials — they invoke `send-sms` which uses service_role internally.
+
+RPCs (all SECURITY DEFINER):
+- `get_active_phone_integration(business_id, provider) → (phone_number_e164, credentials, status)` — used by the EF and the manager Settings status line.
+- `mark_phone_integration_used(business_id, provider)` — service-role write after successful send. Resets status to active.
+- `mark_phone_integration_error(business_id, provider, error_text)` — service-role write on failure. Sets status='error', stores last_error truncated to 500 chars.
+
+For RingCentral, the `credentials` JSONB carries `{client_id, client_secret, refresh_token}`. Transitional case: `{source: "env"}` tells the EF to read from `RC_CLIENT_ID` / `RC_CLIENT_SECRET` / `RC_REFRESH_TOKEN` env vars instead — that's how Manna Maids' existing setup migrated without a credential rotation. Future tenants paste their RC credentials via the Admin → Phone & SMS settings modal; the row switches to in-DB credentials and env vars are no longer consulted for that tenant.
+
+**Encryption at rest:** credentials live in plaintext within the JSONB today. RLS gates reads to owner+admin, and the EF reads via service_role which is the only path that touches the actual values. A future hardening step is to move credential values into Supabase Vault (pgsodium) and reference them by handle from the JSONB. Tracked as a follow-up; not blocking v11.0.x.
+
+**Multi-provider support:** the provider check constraint already accepts `text_request` and `twilio`. Adding either is a matter of (a) extending the EF with the new send-path and (b) extending the Admin settings modal with the new credential fields. The schema doesn't change.
 
 ---
 
@@ -165,24 +184,20 @@ Documented across migrations 036 / 037 / 038.
 
 ## 8. Tenant onboarding — what works today, what doesn't
 
-**Works today (v11.0.0):**
+**Works today (v11.0.2):**
 - New business row + first user can be created via the `accept-invite` Edge Function (server-side, service role).
 - Operator sets a `slug` on their `businesses` row (defaults populated for the 4 existing tenants).
 - Operator shares `…/?biz=<slug>` as their public application link.
 - Applicants land on a form scoped to that tenant. Submissions write to the right `business_id`. Manager Applicants tab shows them.
 - All tenant data reads + writes RLS-scoped via `auth_belongs_to_business`.
+- Every operator-facing or applicant-facing string (handbook, social captions, Claire prompt context, SMS templates, weekly hours header, mailto subject, On-My-Way SMS, employee team chips) renders from the tenant's actual `businesses.name` / `users.first_name` / `businesses.metro_area` / live counts via PentaTenant readers. Zero hardcoded "Manna Maids" or "Tom" in runtime code.
+- Each tenant brings its own RingCentral credentials via Admin → Phone & SMS settings. The active integration's `phone_number_e164` is the default outbound number. Multiple outbound numbers supported via `business_phone_numbers`.
+- Manna Maids continues to work via env-source fallback during transition; switching to in-DB credentials is a 30-second modal action when ready.
 
-**Outstanding for the broader "no hardcoded Manna" principle (separate sweep, surfaced during v11.0.0):**
-- 18 hardcoded "Manna Maids" / "MannaMaids" string occurrences in: handbook H1s, social caption hashtags, Claire system prompt, SMS templates (3), weekly hours report header, mailto subject, On-My-Way SMS, reward catalog hoodie name.
-- Tom's RingCentral primary `15085598062` hardcoded in 2 places.
-- "in Massachusetts (8 teams, ~330 clients)" baked into Claire system prompt.
-- "— Tom" sign-off on 2 outgoing SMS templates.
-
-Resolution path: read business name from `businesses.name`, phone from `business_phone_numbers`, and add per-tenant onboarding fields for Claire-context items (vertical, geo, team count). These don't block a second tenant onboarding the application form path, but they make every cross-tenant surface (texts, prints, captions, Claire) wrong until cleaned up.
-
-**Also outstanding:**
+**Outstanding:**
 - Claire Edge Function migration (§6).
 - Storage bucket-level RLS audit (§5).
+- Credentials encryption-at-rest (pgsodium / Supabase Vault) for `business_phone_integrations.credentials`.
 
 ---
 
@@ -190,6 +205,7 @@ Resolution path: read business name from `businesses.name`, phone from `business
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **039** — `business_phone_integrations` table + RLS + `get_active_phone_integration` / `mark_phone_integration_used` / `mark_phone_integration_error` RPCs
 - **038** — `aggregation_snapshots` SELECT restricted to authenticated role
 - **037** — `businesses.slug` + `get_business_by_slug` + `submit_job_application` RPCs + revoke anon INSERT on `job_applications`
 - **036** — Harden `job_applications_public_insert` WITH CHECK
