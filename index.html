@@ -389,6 +389,20 @@ body {
    fullscreen overlay is at z-index 9998 so its child map still
    participates normally inside that overlay's own stacking context. */
 .leaflet-container { z-index: 0; }
+
+/* v11.0.8: cap the inline schedule map's *wrapper* too. The ⛶
+   fullscreen-expand button (rendered ~line 4488) is a SIBLING of
+   .leaflet-container, not a descendant, so the .leaflet-container
+   rule above doesn't reach it. The button has inline z-index:1000
+   (set to sit above Leaflet's own z:1000 controls in the
+   pre-v11.0.7 uncapped world); without a stacking context on the
+   wrapper, that z:1000 stacks in the body root and floats over the
+   Add Job modal (.modal-overlay at z:300). Adding position:relative
+   + z-index:0 here forms a stacking context around the wrapper, so
+   the button (and any future non-leaflet siblings inside the wrap)
+   get capped at z:0 in body, and modals above z:0 paint over them
+   cleanly. */
+#schedule-inline-map-wrap { position: relative; z-index: 0; }
 #clients-view { display: block; }
 #clients-view.hidden { display: none; }
 
