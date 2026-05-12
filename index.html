@@ -12432,6 +12432,16 @@ window.addEventListener('DOMContentLoaded', function() {
     if (tb) tb.style.display = 'none';
     if (nav) nav.style.display = 'none';
     pentaWireLoginForm();
+    // v11.0.0 Item 3: if the visitor landed at …?biz=<slug>, auto-open
+    // the application form scoped to that tenant. Slug resolution
+    // happens inside showApplication() — invalid slugs surface the
+    // error message there instead of opening the form.
+    try {
+      var _bizSlug = (typeof _getApplyUrlSlug === 'function') ? _getApplyUrlSlug() : null;
+      if (_bizSlug && typeof showApplication === 'function') {
+        setTimeout(function(){ try { showApplication(); } catch (e) { console.warn('[apply] auto-open failed', e); } }, 50);
+      }
+    } catch (e) {}
     return;
   }
 
@@ -28240,7 +28250,27 @@ async function renderApplicantsList() {
       badge.textContent = newCount;
       badge.style.display = newCount > 0 ? 'inline-block' : 'none';
     }
+    // v11.0.0 Item 3: look up this tenant's slug + name so the share-link
+    // surface can show the operator their unique apply URL. Best-effort
+    // — if it fails the share row just hides.
+    var _shareSlug = null, _shareName = '';
+    try {
+      var _sr = await sb.from('businesses').select('slug, name').eq('id', _bid).maybeSingle();
+      if (_sr && _sr.data) { _shareSlug = _sr.data.slug || null; _shareName = _sr.data.name || ''; }
+    } catch (e) {}
+    var _shareUrl = _shareSlug ? (window.location.origin + window.location.pathname + '?biz=' + encodeURIComponent(_shareSlug)) : '';
+    var shareRow = _shareUrl
+      ? ('<div style="padding:10px 12px;margin-bottom:12px;background:#1A1F26;border:1px solid #2A3038;border-radius:10px">'
+        +   '<div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Your application link</div>'
+        +   '<div style="display:flex;gap:8px;align-items:center">'
+        +     '<input id="apply-share-url" readonly value="' + _appHtmlEscape(_shareUrl) + '" style="flex:1;background:#0F1419;border:1px solid #2A3038;border-radius:8px;color:#cbd6ff;font-family:ui-monospace,monospace;font-size:12px;padding:8px 10px;outline:none">'
+        +     '<button onclick="(function(){var el=document.getElementById(\'apply-share-url\');if(!el)return;el.select();document.execCommand(\'copy\');this.textContent=\'Copied\';setTimeout(function(){var b=document.querySelector(\'#applicants-list-staff [data-share-copy]\');if(b)b.textContent=\'Copy\';},1500);}).call(this);" data-share-copy="1" style="background:#5E5CE6;color:#fff;border:none;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;font-size:12px">Copy</button>'
+        +   '</div>'
+        +   '<div style="font-size:11px;color:#888;margin-top:6px">Share this link with applicants. They submit to ' + _appHtmlEscape(_shareName || 'your business') + '.</div>'
+        + '</div>')
+      : '';
     const headerHtml =
+      shareRow +
       '<div style="padding:0 0 12px;display:flex;justify-content:flex-end">' +
         '<button onclick="openManagerApplication()" style="background:#5E5CE6;color:white;border:none;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">+ New Application (in-person)</button>' +
       '</div>';
@@ -28430,7 +28460,29 @@ async function hireApplicant(id) {
 function openManagerApplication() {
   // Sprint 4.2.B Section 4 — Manager-mode entry button.
   // Sets the global flag so submitApplication's manager-mode block fires after submit.
+  // v11.0.0 Item 3: bind the form to the authenticated manager's tenant
+  // (PentaTenant.current()) so the in-person submission writes under the
+  // right business_id without depending on the old hardcoded constant.
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!bid) {
+    alert('Tenant not resolved — refresh and try again.');
+    return;
+  }
   window._appManagerMode = true;
+  window._appTargetBusinessId = bid;
+  window._appTargetSlug = null;
+  // Best-effort: fetch the business name for the form hero. Non-blocking.
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      sb.from('businesses').select('name').eq('id', bid).maybeSingle().then(function(r){
+        var nm = (r && r.data && r.data.name) || '';
+        window._appTargetBusinessName = nm;
+        var brandEl = document.getElementById('app-hero-brand');
+        if (brandEl) brandEl.textContent = nm;
+      }).catch(function(){});
+    }
+  } catch (e) {}
   const screen = document.getElementById('application-screen');
   if (screen) screen.style.display = 'flex';
   const homeScreen = document.getElementById('home-screen');
@@ -30083,9 +30135,76 @@ function renderAppTranslations() {
     <option value="flyer">${at.flyer}</option>`;
 }
 
-function showApplication() {
+// v11.0.0 Item 3 — slug-routed public application form.
+//
+// The form has two entry modes:
+//   - PUBLIC: applicant visits …/?biz=<slug>. Slug → business_id via
+//     get_business_by_slug RPC. Form is scoped to that tenant.
+//   - MANAGER: signed-in operator hits the in-person "+ New Application"
+//     button. Tenant resolves from PentaTenant.current() (auth path).
+//
+// Either way, the resolved tenant lives on three globals so
+// submitApplication doesn't have to re-resolve:
+//   window._appTargetBusinessId
+//   window._appTargetBusinessName
+//   window._appTargetSlug   (null for manager mode)
+//
+// If the public path can't resolve a tenant (missing slug, unknown
+// slug, RPC fails), the form refuses to open and shows an error.
+function _getApplyUrlSlug() {
+  try {
+    var qs = new URLSearchParams(window.location.search);
+    var raw = (qs.get('biz') || qs.get('apply') || '').trim().toLowerCase();
+    return raw || null;
+  } catch (e) { return null; }
+}
+
+function _showApplyError(msg) {
+  // Reuse the login screen as a frame, show the error in its error slot.
+  var login = document.getElementById('login-screen');
+  if (login) login.style.display = 'flex';
+  var appScreen = document.getElementById('application-screen');
+  if (appScreen) appScreen.style.display = 'none';
+  alert(msg);
+}
+
+async function showApplication() {
+  // Tenant resolution. Manager mode short-circuits via the auth path.
+  var slug = _getApplyUrlSlug();
+  var resolved = null;
+  if (slug) {
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) {
+        _showApplyError('Unable to load application form — refresh and try again.');
+        return;
+      }
+      var res = await sb.rpc('get_business_by_slug', { p_slug: slug });
+      if (res.error) throw res.error;
+      var row = (res.data && res.data[0]) || null;
+      if (!row || !row.id) {
+        _showApplyError('That application link is invalid or expired. Please use the link your employer shared with you.');
+        return;
+      }
+      resolved = { id: row.id, name: row.name, slug: slug };
+    } catch (e) {
+      console.error('[apply] slug resolution failed', e);
+      _showApplyError('Could not look up your employer. Please check the link and try again.');
+      return;
+    }
+  } else {
+    // No slug in URL → can't safely route the application. Refuse to open.
+    _showApplyError('To apply, please use the application link your employer shared with you (it ends with ?biz=<your-company>).');
+    return;
+  }
+  window._appTargetBusinessId = resolved.id;
+  window._appTargetBusinessName = resolved.name;
+  window._appTargetSlug = resolved.slug;
+
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('application-screen').style.display = 'block';
+  var brandEl = document.getElementById('app-hero-brand');
+  if (brandEl) brandEl.textContent = resolved.name;
   appLang = currentLang || 'en';
   document.querySelectorAll('#application-screen .portal-lang-btn').forEach((b, i) => {
     const langs = ['en','es','pt','cv'];
@@ -33594,6 +33713,15 @@ async function submitApplication() {
   };
   const appUuid = _generateUuidV4();
 
+  // v11.0.0 Item 3: tenant id comes from the form-open path (slug-resolved
+  // for public mode, PentaTenant.current() for manager mode). The old
+  // hardcoded Manna Maids UUID is gone. Refuse to proceed without it.
+  var targetBusinessId = window._appTargetBusinessId;
+  if (!targetBusinessId) {
+    document.getElementById('app-error').textContent = 'Application can\'t be submitted — tenant not resolved. Please reopen this page from your employer\'s application link.';
+    return;
+  }
+
   if (sb) {
     const docMap = [
       { id: 'app-license-front', col: 'driver_license_front_url' },
@@ -33606,7 +33734,7 @@ async function submitApplication() {
       if (!inp || !inp.files || !inp.files[0]) continue;
       const f = inp.files[0];
       const ext = (f.name.split('.').pop() || 'jpg').toLowerCase();
-      const path = '48532f06-0625-415b-9091-2638bed6506d/' + appUuid + '/' + d.col + '.' + ext;
+      const path = targetBusinessId + '/' + appUuid + '/' + d.col + '.' + ext;
       try {
         const { error: upErr } = await sb.storage.from('applications').upload(path, f, {
           cacheControl: '3600',
@@ -33720,12 +33848,14 @@ async function submitApplication() {
     // Sprint 4.2.B — Manager-mode dual-write to Supabase employees.
     // PentaEmployees facade has no add() method, so insert directly via the
     // shared client. Best-effort: log on failure but don't block UI flow.
+    // v11.0.0 Item 3: business_id is the resolved tenant target (manager's
+    // own tenant via PentaTenant.current()).
     if (sb) {
       try {
         const langMap = { es: 'mx', pt: 'br', cv: 'cv', en: 'us' };
         const phoneClean = String(app.phone || '').replace(/\D/g, '');
         const empRow = {
-          business_id: '48532f06-0625-415b-9091-2638bed6506d',
+          business_id: targetBusinessId,
           first_name: app.firstName,
           last_name: app.lastName || '-',
           phone: phoneClean || null,
@@ -33755,51 +33885,54 @@ async function submitApplication() {
     return;
   }
 
-  // Sprint 4.2.B — INSERT to Supabase job_applications instead of localStorage.
+  // v11.0.0 Item 3 — public submit routes through the
+  // submit_job_application(slug, payload) SECURITY DEFINER RPC. The
+  // server validates the slug, resolves business_id, and writes the
+  // row atomically. Browser never gets to claim a business_id.
   if (sb) {
-    const insertRow = {
-      id: appUuid,
-      business_id: '48532f06-0625-415b-9091-2638bed6506d',
+    if (!window._appTargetSlug) {
+      console.error('[apply] target slug missing at submit time');
+      document.getElementById('app-error').textContent = 'Submit failed — tenant context lost. Please reopen the page from your employer\'s application link.';
+      return;
+    }
+    var rpcPayload = {
       first_name: app.firstName,
       last_name: app.lastName,
       phone: app.phone,
       email: app.email,
       address: app.address,
       city: app.city,
-      state: null,
-      zip_code: null,
       preferred_language: submitLang || 'en',
       work_authorization: app.workAuth,
       drivers_license_status: app.hasLicense,
-      has_reliable_transportation: null,
       available_days: (app.availDays || []).join(','),
-      preferred_start_time: null,
       hours_per_week_desired: app.prefHours,
-      earliest_start_date: null,
       prior_cleaning_experience: app.experience,
-      prior_employer: null,
       emergency_contact_name: app.emergencyName,
       emergency_contact_phone: app.emergencyPhone,
       emergency_contact_relation: app.emergencyRel,
       hear_about_us: app.heardFrom,
-      referred_by: null,
       prior_cleaning_experience_en: (submitLang !== 'en' && expNotesEn) ? expNotesEn : null,
       emergency_contact_relation_en: (submitLang !== 'en' && emRelEn) ? emRelEn : null,
       signature_full_name: app.signature,
       signature_date_iso: now.toISOString(),
-      status: 'new',
-      submitted_at: now.toISOString(),
-      ...docUrls
+      driver_license_front_url: docUrls.driver_license_front_url,
+      driver_license_back_url: docUrls.driver_license_back_url,
+      ssn_card_url: docUrls.ssn_card_url,
+      passport_url: docUrls.passport_url
     };
-    const insRes = await sb.from('job_applications').insert(insertRow);
-    if (insRes.error) {
-      console.error('[Sprint 4.2.B] job_applications INSERT failed:', insRes.error);
+    var rpcRes = await sb.rpc('submit_job_application', {
+      p_slug: window._appTargetSlug,
+      p_payload: rpcPayload
+    });
+    if (rpcRes.error) {
+      console.error('[apply] submit_job_application RPC failed:', rpcRes.error);
       document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
       return;
     }
-    console.log('[Sprint 4.2.B.1] Application saved:', appUuid);
+    console.log('[apply] Application saved via RPC:', rpcRes.data);
   } else {
-    console.error('[Sprint 4.2.B] Supabase client unavailable — application not persisted');
+    console.error('[apply] Supabase client unavailable — application not persisted');
     document.getElementById('app-error').textContent = 'Submit failed. Please try again or contact support.';
     return;
   }
@@ -37778,7 +37911,7 @@ function _p3dPage(dir) {
 <div id="application-screen" style="display:none;margin:0 auto">
   <div class="app-hero">
     <button class="app-hero-back" onclick="hideApplication()">←</button>
-    <div class="app-hero-brand">Manna <span>Maids</span></div>
+    <div class="app-hero-brand" id="app-hero-brand"></div>
     <div class="app-hero-sub" id="app-subtitle">Join Our Team — apply in 5 minutes</div>
   </div>
   <div class="app-lang-row">
