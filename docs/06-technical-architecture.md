@@ -223,10 +223,40 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8a. Job Issues (v11.0.9 — Phase A)
+
+`job_issues` is the manager-facing event stream for "something went wrong at this job". Replaced a localStorage-backed STUB flow where one branch (`notifyClient`) was a hardcoded `Demo: simulate sending SMS to client` toast.
+
+**Surfaces:**
+- **Employee** (Schedule tab → job card) — Report Issue sheet with 5 typed options. Tap → row inserted via `PentaJobIssues.report(...)`. No client SMS. Unresolved issues render as yellow chips below the address.
+- **Manager** (Schedule tab → job card, both inline and modal) — red dot on the colored header band when unresolved count > 0; Issues section in the card body lists unresolved with a Resolve button per row + resolved history below dimmed. Schedule home tile carries a red-dot badge with the tenant-wide unresolved count via `PentaJobIssues.countUnresolved()`.
+
+**Issue types** (CHECK-constrained): `locked_out`, `no_one_home`, `cant_find_house`, `forgot_key`, `running_late`.
+
+**ding_target** is set at insert time and snapshotted. It's the anchor for the future Service Quality Score (client side) and Team Health Score (staff side):
+
+| issue_type | within_window | ding_target |
+|---|---|---|
+| locked_out, no_one_home | true (±1hr of `scheduled_start_at`) | `client` |
+| locked_out, no_one_home | false (we arrived too early or too late) | `none` |
+| cant_find_house | (n/a) | `none` (on us but not punitive) |
+| forgot_key, running_late | (n/a) | `staff` |
+
+`within_window` and `scheduled_start_at` are computed in `PentaJobIssues.report` from `j.date + 'T' + j.time` in local time, never recomputed after insert.
+
+**Resolution:** manager-only. Manager taps Resolve on the card → optional `resolution_note` prompt → `PentaJobIssues.resolve(issueId, note)` sets `resolved_at`, `resolved_by`, `resolution_note`. No DELETE path — `job_issues` is append-only via the same RLS pattern as `audit_log`.
+
+**Audit:** the `audit_log_capture()` trigger detects `resolved_at` NULL→NOT NULL transition and writes `action_type='resolved'` (mirrors the `jobs.cancelled_at` handling). INSERTs write `action_type='created'`. `entity_type='job_issue'`. Both vocabulary additions are CHECK-constrained.
+
+---
+
 ## 9. Migration log
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **048** — `audit_log` extension for `job_issues`: adds `'resolved'` to action_type CHECK, `'job_issue'` to entity_type CHECK, extends `audit_log_capture()` to handle `resolved_at` NULL→NOT NULL, attaches the trigger to `public.job_issues`
+- **047** — `job_issues` table + RLS (same-tenant SELECT/INSERT/UPDATE) + indexes (unresolved partial index on `business_id`, `(business_id, job_id)`, partial `(business_id, client_id)`)
+- **046** — Audit trigger fix: replaced reference to non-existent `jobs.cancelled` boolean with `cancelled_at` NULL→NOT NULL transition detection
 - **045** — `sync_reports` table (per-(tenant,date) state) + `get_daily_sync_data` + `mark_sync_report_synced` RPCs (Maids Sync Report Phase 1)
 - **044** — `submit_job_application` RPC supplement: writes a richer `'submitted'/'application'` audit_log row alongside the trigger's auto-fired `'created'` event
 - **043** — `audit_log_capture` trigger function attached AFTER INSERT/UPDATE/DELETE to 8 tenant-scoped tables: `jobs`, `clients`, `employees`, `payments`, `job_applications`, `time_entries`, `lunch_breaks`, `daily_assignments`. Filters noise (skips updates that only touch `updated_at`) and derives semantic action types (`cancelled`, `started`, `ended`, `restored`, `deleted` soft vs hard)
