@@ -4892,9 +4892,10 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 // ─────────────────────────────────────────────────────────────────────────
 window.PentaTenant = (function() {
   var _waiters = [];
-  function current()      { return window.__pentaBusinessId || null; }
-  function name()         { return window.__pentaBusinessName || ''; }
-  function operatorFirst(){ return window.__pentaOperatorFirstName || ''; }
+  function current()        { return window.__pentaBusinessId || null; }
+  function name()           { return window.__pentaBusinessName || ''; }
+  function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
+  function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
   // v11.0.1 (Item A): callers need a slug-safe form of the business name
   // for hashtag generation (#TestBusinessTwo). Strip non-alphanumeric.
   function nameSlugCompact() {
@@ -4909,6 +4910,7 @@ window.PentaTenant = (function() {
   }
   function _setName(n)         { if (n) window.__pentaBusinessName = String(n); }
   function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
+  function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
   function ready() {
     return new Promise(function(resolve){
       if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
@@ -4919,11 +4921,13 @@ window.PentaTenant = (function() {
     current: current,
     name: name,
     operatorFirst: operatorFirst,
+    operatorPhone: operatorPhone,
     nameSlugCompact: nameSlugCompact,
     ready: ready,
     _set: _set,
     _setName: _setName,
-    _setOperatorFirst: _setOperatorFirst
+    _setOperatorFirst: _setOperatorFirst,
+    _setOperatorPhone: _setOperatorPhone
   };
 })();
 
@@ -12503,11 +12507,18 @@ window.addEventListener('DOMContentLoaded', function() {
           // renderApplicantsList, future Edge Functions) reads from there.
           // v11.0.1 (Item A): also pull first_name so signoffs ("— Tom" et al.)
           // resolve from the actual operator instead of being hardcoded.
-          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name').eq('id', _u.id).maybeSingle();
+          // v11.0.2 (Item B): also pull phone so the "send response to me"
+          // path in Claire's tools (and any other operator-self SMS path)
+          // doesn't hardcode Tom's RC primary.
+          var rr = await sbBoot.from('users').select('role, manager_permissions, business_id, first_name, phone').eq('id', _u.id).maybeSingle();
           dbRole = rr && rr.data && rr.data.role;
           dbPerms = (rr && rr.data && rr.data.manager_permissions) || {};
           dbBusinessId = rr && rr.data && rr.data.business_id;
           dbOperatorFirstName = rr && rr.data && rr.data.first_name;
+          var dbOperatorPhone = rr && rr.data && rr.data.phone;
+          if (dbOperatorPhone && window.PentaTenant && window.PentaTenant._setOperatorPhone) {
+            window.PentaTenant._setOperatorPhone(dbOperatorPhone);
+          }
         } catch (e) { dbRole = null; }
       }
       // v11.0.0: publish the resolved business_id BEFORE routing fires so
@@ -19636,9 +19647,17 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var srContent = String(input.content||'').trim();
     if (!srRecipient || !srContent) { _claireLastToolResult = 'send_response_to needs both recipient and content.'; return; }
     var srPhone = '', srLabel = '';
-    if (srRecipient.toLowerCase() === 'me' || srRecipient.toLowerCase() === 'tom') {
-      srPhone = '15085598062';  // Tom's RingCentral primary
-      srLabel = 'Send to Tom';
+    // v11.0.2 (Item B): "me" / operator-first-name routes to the
+    // current operator's phone from users.phone (via PentaTenant). No
+    // hardcoded Manna Maids RC number, no hardcoded "tom" name match.
+    var _opF = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _opP = (window.PentaTenant && window.PentaTenant.operatorPhone && window.PentaTenant.operatorPhone()) || '';
+    var _isSelfRequest = (srRecipient.toLowerCase() === 'me') ||
+                        (!!_opF && srRecipient.toLowerCase() === _opF.toLowerCase());
+    if (_isSelfRequest) {
+      if (!_opP) { _claireLastToolResult = 'send_response_to: operator phone not on file in users.phone — set it in account settings and retry.'; return; }
+      srPhone = _opP.replace(/\D/g,'');
+      srLabel = 'Send to ' + (_opF || 'you');
     } else {
       // Phase 6.4: facade lookup by name.
       var srMatch = null;
@@ -26994,11 +27013,59 @@ async function sendReply() {
   sendBtn.disabled = false;
 }
 
-const RC_NUMBERS = [
-  { label: '508-559-8062', value: '+15085598062' },
-  { label: '508-460-1551', value: '+15084601551' },
-  { label: '781-341-4444', value: '+17813414444' }
-];
+// v11.0.2 (Item B): RC_NUMBERS used to be a hardcoded list of Tom's
+// three RingCentral numbers. Now resolved per-tenant from:
+//   1. business_phone_integrations.phone_number_e164 (the active
+//      outbound integration — always shown first as the default)
+//   2. business_phone_numbers rows for the current tenant, sorted by
+//      default_outbound DESC, label ASC.
+// Returns [{ value: '+1...', label: 'XXX-XXX-XXXX' }, ...] for the
+// picker. Empty list when nothing is configured.
+async function _loadTenantPhoneNumbers() {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) return [];
+    var out = [];
+    var seen = {};
+    // Source A: the active outbound integration's phone (read via
+    // SECURITY DEFINER RPC so owners aren't required for sender-list).
+    var ai = await sb.rpc('get_active_phone_integration', { p_business_id: bid, p_provider: 'ringcentral' });
+    if (ai && ai.data) {
+      (ai.data || []).forEach(function(r){
+        if (r && r.phone_number_e164 && !seen[r.phone_number_e164]) {
+          seen[r.phone_number_e164] = 1;
+          out.push({ value: r.phone_number_e164, label: _fmtUsPhone(r.phone_number_e164), is_default: true });
+        }
+      });
+    }
+    // Source B: additional business_phone_numbers rows.
+    var bp = await sb.from('business_phone_numbers')
+      .select('phone_number, label, default_outbound')
+      .eq('business_id', bid)
+      .eq('active', true)
+      .order('default_outbound', { ascending: false })
+      .order('label', { ascending: true });
+    if (bp && bp.data) {
+      (bp.data || []).forEach(function(r){
+        var v = r.phone_number;
+        if (!v) return;
+        if (!v.startsWith('+')) v = (v.length === 10) ? ('+1' + v) : ('+' + v);
+        if (seen[v]) return;
+        seen[v] = 1;
+        out.push({ value: v, label: r.label || _fmtUsPhone(v) });
+      });
+    }
+    return out;
+  } catch (e) { console.warn('[rc] _loadTenantPhoneNumbers failed', e); return []; }
+}
+
+function _fmtUsPhone(e164) {
+  var d = String(e164 || '').replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '1') d = d.slice(1);
+  if (d.length === 10) return d.slice(0,3) + '-' + d.slice(3,6) + '-' + d.slice(6);
+  return e164 || '';
+}
 
 async function getMyRCNumber() {
   const cached = localStorage.getItem('rc_my_number');
@@ -27007,25 +27074,34 @@ async function getMyRCNumber() {
   return pickRCNumber();
 }
 
-function pickRCNumber() {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div');
+async function pickRCNumber() {
+  // v11.0.2 (Item B): outbound numbers now come from the tenant's
+  // configured integration + business_phone_numbers, not a hardcoded
+  // list. If nothing is configured, the picker shows a setup prompt
+  // instead of an empty list.
+  var nums = await _loadTenantPhoneNumbers();
+  return new Promise(function(resolve){
+    var overlay = document.createElement('div');
     overlay.id = 'rc-num-picker';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.75);display:flex;align-items:flex-end';
-    overlay.innerHTML = `
-      <div style="background:var(--surface);width:100%;border-radius:14px 14px 0 0;padding:20px;border-top:1px solid var(--border2)">
-        <div style="font-size:17px;font-weight:600;margin-bottom:4px">Send from which number?</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:16px">This will be saved for future messages</div>
-        ${RC_NUMBERS.map(n => `
-          <button onclick="selectRCNum('${n.value}')"
-            style="display:block;width:100%;padding:14px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;font-weight:500;cursor:pointer;text-align:left">
-            📞 ${n.label}
-          </button>`).join('')}
-        <button onclick="selectRCNum(null)"
-          style="display:block;width:100%;padding:12px;background:none;border:none;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">
-          Cancel
-        </button>
-      </div>`;
+    var body;
+    if (!nums.length) {
+      body = '<div style="font-size:17px;font-weight:600;margin-bottom:4px">No outbound numbers configured</div>'
+        + '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Have an owner or admin set up your phone integration in Settings → Phone &amp; SMS, then try again.</div>'
+        + '<button onclick="selectRCNum(null)" style="display:block;width:100%;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Close</button>';
+    } else {
+      body = '<div style="font-size:17px;font-weight:600;margin-bottom:4px">Send from which number?</div>'
+        + '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">This will be saved for future messages</div>'
+        + nums.map(function(n){
+            var def = n.is_default ? ' <span style="font-size:11px;color:var(--accent);margin-left:6px">DEFAULT</span>' : '';
+            return '<button onclick="selectRCNum(\'' + n.value + '\')"'
+              + ' style="display:block;width:100%;padding:14px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;font-weight:500;cursor:pointer;text-align:left">'
+              + '📞 ' + n.label + def
+              + '</button>';
+          }).join('')
+        + '<button onclick="selectRCNum(null)" style="display:block;width:100%;padding:12px;background:none;border:none;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>';
+    }
+    overlay.innerHTML = '<div style="background:var(--surface);width:100%;border-radius:14px 14px 0 0;padding:20px;border-top:1px solid var(--border2)">' + body + '</div>';
     document.body.appendChild(overlay);
     window._rcNumResolve = resolve;
   });
@@ -36691,6 +36767,130 @@ function openAdminScreen() {
   try { pentaBannerUpdateScope(); } catch(e){}
   try { pentaBannerUpdateCount(); } catch(e){}
   try { pentaBannerRenderActive(); } catch(e){}
+  try { renderPhoneIntegrationStatus(); } catch(e){}
+}
+
+// v11.0.2 (Item B): paint the small status line under the "Configure
+// RingCentral integration" button — "Active · +1 508…", "Error: …",
+// "Not configured". Reads via the SECURITY DEFINER RPC (any
+// authenticated user can call; only owners + admins can see raw
+// credentials via the table SELECT policy).
+async function renderPhoneIntegrationStatus() {
+  var el = document.getElementById('admin-phone-status');
+  if (!el) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) { el.textContent = ''; return; }
+    var res = await sb.rpc('get_active_phone_integration', { p_business_id: bid, p_provider: 'ringcentral' });
+    var row = (res && res.data && res.data[0]) || null;
+    if (!row) {
+      el.textContent = 'Not configured — applicants can\'t receive automated SMS until set up.';
+      return;
+    }
+    el.innerHTML = '<span style="color:#34d399">●</span> ' + (row.status === 'active' ? 'Active' : ('Status: ' + row.status))
+      + ' · sends from ' + (row.phone_number_e164 || '(no number)');
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+// v11.0.2 (Item B): open the RingCentral integration settings modal.
+// Owners + admins only — the underlying table RLS blocks SELECT for
+// other roles. Manager-or-below sees a friendly notice.
+async function openPhoneIntegrationSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  // Try to read the existing row. SELECT RLS gates this to owner+admin.
+  var existing = null;
+  try {
+    var er = await sb.from('business_phone_integrations')
+      .select('id, provider, phone_number_e164, credentials, status, last_used_at, last_error')
+      .eq('business_id', bid)
+      .eq('provider', 'ringcentral')
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (er.error && (er.error.code === '42501' || /permission/i.test(er.error.message || ''))) {
+      alert('Only owners and admins can view or edit phone integration settings.');
+      return;
+    }
+    existing = er.data || null;
+  } catch (e) {
+    alert('Could not load integration: ' + (e.message || e));
+    return;
+  }
+  var creds = (existing && existing.credentials) || {};
+  var isEnvSource = (creds.source === 'env');
+  var overlay = document.createElement('div');
+  overlay.id = 'phone-integ-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:520px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">📞 RingCentral SMS Integration</div>'
+    +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   (isEnvSource
+        ? '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#fde68a">This tenant is using platform-level credentials (env-var fallback). To take ownership, fill in the fields below and save — the row will switch to credentials-in-DB.</div>'
+        : '')
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Outbound phone number (E.164, e.g. +15555550100)</div>'
+    +   '<input type="text" id="pi-phone" value="' + ((existing && existing.phone_number_e164) || '').replace(/"/g,'&quot;') + '" placeholder="+15555550100" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client ID</div>'
+    +   '<input type="text" id="pi-cid" value="' + (isEnvSource ? '' : String(creds.client_id || '')).replace(/"/g,'&quot;') + '" placeholder="from developers.ringcentral.com → app → Credentials" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client Secret</div>'
+    +   '<input type="password" id="pi-csec" value="' + (isEnvSource ? '' : String(creds.client_secret || '')).replace(/"/g,'&quot;') + '" placeholder="•••" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Refresh Token</div>'
+    +   '<input type="password" id="pi-rt" value="' + (isEnvSource ? '' : String(creds.refresh_token || '')).replace(/"/g,'&quot;') + '" placeholder="paste the long-lived refresh token" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none">'
+    +   '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Capture via your RingCentral developer app\'s OAuth flow. Refresh tokens last ~60 days and rotate automatically when used.</div>'
+    +   (existing && existing.last_error ? '<div style="background:rgba(248,113,113,0.10);border:1px solid rgba(248,113,113,0.35);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5">Last error: ' + _adminEsc(existing.last_error) + '</div>' : '')
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button type="button" onclick="savePhoneIntegrationSettings()" style="flex:2;background:#34d399;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function savePhoneIntegrationSettings() {
+  var phone = (document.getElementById('pi-phone') || {}).value || '';
+  var cid   = (document.getElementById('pi-cid')   || {}).value || '';
+  var csec  = (document.getElementById('pi-csec')  || {}).value || '';
+  var rt    = (document.getElementById('pi-rt')    || {}).value || '';
+  phone = phone.trim();
+  if (!/^\+\d{8,15}$/.test(phone)) { alert('Phone number must be E.164 (e.g. +15555550100).'); return; }
+  if (!cid.trim() || !csec.trim() || !rt.trim()) { alert('All three RingCentral credential fields are required.'); return; }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  var payload = {
+    business_id: bid,
+    provider: 'ringcentral',
+    phone_number_e164: phone,
+    credentials: { client_id: cid.trim(), client_secret: csec.trim(), refresh_token: rt.trim() },
+    status: 'active',
+    last_error: null
+  };
+  // Upsert: existing row → update; no row → insert.
+  var existing = null;
+  try {
+    var er = await sb.from('business_phone_integrations').select('id').eq('business_id', bid).eq('provider','ringcentral').is('deleted_at', null).maybeSingle();
+    existing = er.data || null;
+  } catch (e) {}
+  var res;
+  if (existing && existing.id) {
+    res = await sb.from('business_phone_integrations').update(payload).eq('id', existing.id);
+  } else {
+    res = await sb.from('business_phone_integrations').insert(payload);
+  }
+  if (res.error) {
+    alert('Save failed: ' + (res.error.message || 'unknown'));
+    return;
+  }
+  var ov = document.getElementById('phone-integ-overlay');
+  if (ov) ov.remove();
+  renderPhoneIntegrationStatus();
+  alert('Saved. Test a send to confirm credentials.');
 }
 function closeAdminScreen() {
   var v = document.getElementById('admin-view');
@@ -39235,6 +39435,17 @@ function _p3dPage(dir) {
       <div class="admin-row" style="gap:8px">
         <button onclick="showHoursReport()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📊 Hours Report (All Staff)</button>
       </div>
+    </div>
+
+    <!-- v11.0.2 (Item B): Phone & SMS Integration. Owners + admins only.
+         Reads/writes the tenant's business_phone_integrations row. RLS
+         enforces role gating on top of the visibility check. -->
+    <div class="admin-sec" id="admin-phone-sms-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Phone &amp; SMS</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openPhoneIntegrationSettings()" style="flex:1;background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#a7f3d0;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📞 Configure RingCentral integration</button>
+      </div>
+      <div id="admin-phone-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.
