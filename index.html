@@ -25935,7 +25935,12 @@ function openBalanceFollowup() {
   // Set default message
   const tmpl = document.getElementById('bal-msg-template');
   if (tmpl && !tmpl.value) {
-    tmpl.value = 'Hi {name}! Just a friendly reminder that you have an unpaid balance of {balance} from your clean on {last}. Whenever you get a chance works perfectly! Thank you so much — we really appreciate you! 😊\n\n— The Maids';
+    // v11.0.5 (Issue B-5): sign-off resolves to operator first name +
+    // business name from PentaTenant. Fallback degrades gracefully.
+    var _bizSig = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+    var _opSig = (window.PentaTenant && window.PentaTenant.operatorFirst && window.PentaTenant.operatorFirst()) || '';
+    var _sign = _opSig && _bizSig ? ('— ' + _opSig + ', ' + _bizSig) : (_bizSig ? ('— ' + _bizSig) : '— Thanks!');
+    tmpl.value = 'Hi {name}! Just a friendly reminder that you have an unpaid balance of {balance} from your clean on {last}. Whenever you get a chance works perfectly! Thank you so much — we really appreciate you! 😊\n\n' + _sign;
   }
 
   // Render client list
@@ -26426,7 +26431,9 @@ function _buildQuoteSmsText(args) {
     walls  ? '✔ Walls wiped down (+1hr)' : null,
     windows && windowCount > 0 ? '✔ Windows cleaned (' + windowCount + ')' : null,
   ].filter(Boolean).join(nl);
-  return 'Hi ' + (firstName || 'there') + '! 👋 Here is your personalized cleaning quote from The Maids:' + nl + nl +
+  // v11.0.5 (Issue B-5): business name resolved from PentaTenant.
+  var _qBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || 'us';
+  return 'Hi ' + (firstName || 'there') + '! 👋 Here is your personalized cleaning quote from ' + _qBiz + ':' + nl + nl +
     (address ? '📍 ' + address + nl : '') +
     (sqftDisplay ? '📐 ' + sqftDisplay + ' sq ft' + nl : '') +
     nl +
