@@ -223,6 +223,27 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8b. Incidents (v11.0.12 — Phase B)
+
+`incidents` is the liability-track event stream — distinct from `job_issues` (Phase A) by severity, photo support, and a four-step status workflow. Replaces the legacy localStorage `cleanco_pending` write that the employee Report Incident form used.
+
+**Surfaces:**
+- **Employee** (Report Incident modal on the schedule job card) — `incident_type` dropdown, description textarea, optional photo, Submit. Goes through `PentaIncidents.report()`. Photo uploaded to Storage; row inserted in `public.incidents`.
+- **Manager** (Schedule job card body, expanded view) — Incidents section below Issues. Open + in_review at top with status `<select>` dropdown + "View photo" lightbox link. Resolved + closed dimmed below.
+- **Client profile** — same row layout listing all incidents for that client (Phase B continues into the client card UI work).
+
+**Incident types** (CHECK-constrained): `property_damage`, `injury`, `vehicle_accident`, `client_complaint`, `pet_issue`, `safety_hazard`, `other`.
+
+**Status workflow:** `open → in_review → resolved | closed`. CHECK-constrained. Status changes auto-stamp `status_changed_at` + `status_changed_by` via the `incidents_set_updated_at` BEFORE UPDATE trigger.
+
+**Photo storage:** Supabase Storage bucket `incident-photos` (private, 10MB limit, JPEG/PNG/WebP/HEIC). Path convention `<business_id>/<incident_id>/photo.<ext>`. RLS via `storage.objects` policies (mig 051): SELECT/INSERT for same-business members, UPDATE/DELETE for manager-tier. Photo URLs minted as short-lived signed URLs via `PentaIncidents.getSignedPhotoUrl(90s)` for every view. `photo_url` cached on the row is a 90-day signed URL (convenience only — fresh signed URLs are the authoritative path).
+
+**Audit:** `audit_log_capture()` writes `action_type='created'` on INSERT and `action_type='resolved'` on `status` → `'resolved'` transition. Other UPDATEs use the generic `'updated'` path. `entity_type='incident'` (both vocabulary additions CHECK-constrained in mig 050).
+
+**Combined badge (v11.0.12):** The Schedule home tile + dock badge shows ONE combined count: `PentaJobIssues.countUnresolved() + PentaIncidents.countOpen()`. Open + in_review incidents both contribute. Per-card surfacing differentiates by section: yellow Issues vs red Incidents.
+
+---
+
 ## 8a. Job Issues (v11.0.9 — Phase A)
 
 `job_issues` is the manager-facing event stream for "something went wrong at this job". Replaced a localStorage-backed STUB flow where one branch (`notifyClient`) was a hardcoded `Demo: simulate sending SMS to client` toast.
@@ -254,6 +275,9 @@ Documented across migrations 036 / 037 / 038.
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **051** — `incident-photos` Storage RLS policies on `storage.objects`: same-business SELECT/INSERT, manager-tier UPDATE/DELETE. Bucket itself created by tenant admin via Dashboard (private, 10MB, image/* MIME)
+- **050** — `audit_log` extension for `incidents`: adds `'incident'` to entity_type CHECK, extends `audit_log_capture()` to detect `status` → `'resolved'` transition, attaches trigger to `public.incidents`
+- **049** — `incidents` table (Phase B) + RLS + indexes + `incidents_set_updated_at` BEFORE UPDATE trigger (bumps `updated_at` + auto-stamps `status_changed_at`/`status_changed_by` on status changes). Drops a legacy zero-row `incidents` table with a different schema first
 - **048** — `audit_log` extension for `job_issues`: adds `'resolved'` to action_type CHECK, `'job_issue'` to entity_type CHECK, extends `audit_log_capture()` to handle `resolved_at` NULL→NOT NULL, attaches the trigger to `public.job_issues`
 - **047** — `job_issues` table + RLS (same-tenant SELECT/INSERT/UPDATE) + indexes (unresolved partial index on `business_id`, `(business_id, job_id)`, partial `(business_id, client_id)`)
 - **046** — Audit trigger fix: replaced reference to non-existent `jobs.cancelled` boolean with `cancelled_at` NULL→NOT NULL transition detection
