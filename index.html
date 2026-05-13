@@ -4787,6 +4787,23 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 <!-- ISSUE CONFIRMATION TOAST -->
 <div id="issue-toast" style="display:none;position:fixed;top:calc(var(--safe-top) + 60px);left:50%;transform:translateX(-50%);background:var(--green);color:#000;padding:12px 20px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.4);max-width:90%"></div>
 
+<!-- v11.0.17 (Phase B.5) — Client Request sheet. Mirrors the issue
+     sheet shape: option chips + free-text description + Submit. -->
+<div id="client-request-sheet" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.7);align-items:flex-end" onclick="if(event.target===this)closeClientRequestSheet()">
+  <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);padding:20px 16px calc(var(--safe-bottom) + 20px)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:17px;font-weight:600" id="cr-title">Client Request</div>
+      <button onclick="closeClientRequestSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px" id="cr-sub"></div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px">Request type</div>
+    <div id="cr-type-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px"></div>
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px">Details</div>
+    <textarea id="cr-desc" rows="3" placeholder="What did the client say? e.g. 'going on vacation next week'" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:10px;border-radius:9px;resize:vertical;margin-bottom:14px"></textarea>
+    <button id="cr-submit-btn" onclick="submitClientRequest()" style="width:100%;background:#34d399;border:none;color:#000;font-family:inherit;font-size:15px;font-weight:700;padding:13px;border-radius:12px;cursor:pointer">Send to Manager</button>
+  </div>
+</div>
+
 <!-- FILE DETAIL MODAL -->
 <div id="file-detail-modal" style="display:none;position:fixed;inset:0;z-index:280;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;padding:24px" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;padding:24px;text-align:center">
@@ -10447,6 +10464,149 @@ window.PentaIncidents = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaClientRequests — v11.0.17 — Phase B.5.
+//
+// Lightweight operational capture. Employee relays a request from the
+// client (skip next clean, reschedule, change frequency, etc), manager
+// acknowledges. No photos, no status workflow — single
+// acknowledged_at NULL→NOT NULL transition.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaClientRequests = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _toUuidOrNull(v) {
+    if (!v) return null;
+    var s = String(v);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null;
+  }
+  function _resolveJobUuid(jobId) {
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var r = window.PentaJobs.getById(jobId);
+        if (r && r.id) return r.id;
+      }
+    } catch (e) {}
+    return _toUuidOrNull(jobId);
+  }
+  function _resolveClientUuid(clientId) {
+    if (!clientId) return null;
+    var asUuid = _toUuidOrNull(clientId);
+    if (asUuid) return asUuid;
+    try {
+      if (window.PentaClients && window.PentaClients.getClient) {
+        var c = window.PentaClients.getClient(clientId);
+        if (c && c.id) return _toUuidOrNull(c.id);
+      }
+    } catch (e) {}
+    return null;
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+  async function report(input) {
+    var sb = _sb(); if (!sb) throw new Error('PentaClientRequests.report: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaClientRequests.report: no tenant');
+    if (!input || !input.requestType) throw new Error('PentaClientRequests.report: requestType required');
+    if (!input.clientId) throw new Error('PentaClientRequests.report: clientId required');
+    var clientUuid = _resolveClientUuid(input.clientId);
+    if (!clientUuid) throw new Error('PentaClientRequests.report: could not resolve clientId');
+    var reportedBy = await _resolveCallerUserId();
+    var row = {
+      business_id: bid,
+      job_id: _resolveJobUuid(input.jobId),
+      client_id: clientUuid,
+      reported_by: reportedBy,
+      request_type: input.requestType,
+      description: (input.description || null)
+    };
+    var res = await sb.from('client_requests').insert(row).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function listForClient(clientId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var clientUuid = _resolveClientUuid(clientId);
+    if (!clientUuid) return [];
+    var res = await sb.from('client_requests').select('*')
+      .eq('business_id', bid).eq('client_id', clientUuid)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaClientRequests] listForClient error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listForJob(jobId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var jobUuid = _resolveJobUuid(jobId);
+    if (!jobUuid) return [];
+    var res = await sb.from('client_requests').select('*')
+      .eq('business_id', bid).eq('job_id', jobUuid)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaClientRequests] listForJob error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listForReporter(userId) {
+    var sb = _sb(); if (!sb || !userId) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('client_requests').select('*')
+      .eq('business_id', bid).eq('reported_by', userId)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaClientRequests] listForReporter error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listUnacknowledged() {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('client_requests').select('*')
+      .eq('business_id', bid).is('acknowledged_at', null)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaClientRequests] listUnacknowledged error', res.error); return []; }
+    return res.data || [];
+  }
+  async function countUnacknowledged() {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var res = await sb.from('client_requests').select('id', { count: 'exact', head: true })
+      .eq('business_id', bid).is('acknowledged_at', null);
+    if (res.error) { console.warn('[PentaClientRequests] countUnacknowledged error', res.error); return 0; }
+    return res.count || 0;
+  }
+  async function acknowledge(requestId, note) {
+    var sb = _sb(); if (!sb) throw new Error('PentaClientRequests.acknowledge: no Supabase client');
+    if (!requestId) throw new Error('PentaClientRequests.acknowledge: requestId required');
+    var by = await _resolveCallerUserId();
+    var patch = {
+      acknowledged_at: new Date().toISOString(),
+      acknowledged_by: by,
+      acknowledgment_note: (note && String(note).trim()) || null
+    };
+    var res = await sb.from('client_requests').update(patch).eq('id', requestId).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  return {
+    report: report,
+    listForClient: listForClient,
+    listForJob: listForJob,
+    listForReporter: listForReporter,
+    listUnacknowledged: listUnacknowledged,
+    countUnacknowledged: countUnacknowledged,
+    acknowledge: acknowledge
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // PentaPayments — v11.0.16 — Phase C.
 //
 // Payment Receive system. Replaces the localStorage cleanco_pending
@@ -15411,6 +15571,38 @@ function _renderAuditRowSummary(row, ctx) {
       drill = { type: 'job', id: row.entity_id };
     }
   }
+  // ─── client_request ────────────────────────────────────────────
+  // v11.0.17 (Phase B.5)
+  else if (et === 'client_request') {
+    var crTypeLabels = {
+      skip_next_clean: 'Skip next clean', add_service_today: 'Add service today',
+      reschedule: 'Reschedule', change_frequency: 'Change frequency',
+      general_message: 'General message', other: 'Other'
+    };
+    var crType = nv.request_type || ov.request_type;
+    var crTypeLabel = crTypeLabels[crType] || crType || 'request';
+    var crCid = nv.client_id || ov.client_id;
+    var crCn = _audClientName(ctx, crCid) || '(client)';
+    var crJid = nv.job_id || ov.job_id;
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' flagged &lsquo;<strong>' + _audEsc(crTypeLabel) + '</strong>&rsquo;';
+      if (crCn) summary += ' for ' + _audEsc(crCn);
+      var crDesc = nv.description;
+      if (crDesc) summary += ' — note: &lsquo;' + _audEsc(_audTrunc(crDesc, 80)) + '&rsquo;';
+      chips.push({ label: 'REQUEST: ' + crTypeLabel.toUpperCase(), color: '#c2410c', bg: 'rgba(249,115,22,0.14)' });
+    } else if (at === 'acknowledged') {
+      summary = _audEsc(actor) + ' acknowledged ';
+      if (crCn) summary += _audEsc(crCn) + '&rsquo;s request';
+      else summary += 'request';
+      summary += ' to <strong>' + _audEsc(crTypeLabel.toLowerCase()) + '</strong>';
+      var crNote = nv.acknowledgment_note;
+      if (crNote) summary += ' — note: &lsquo;' + _audEsc(_audTrunc(crNote, 80)) + '&rsquo;';
+      chips.push({ label: 'ACKNOWLEDGED', color: '#15803d', bg: 'rgba(34,197,94,0.14)' });
+    } else {
+      summary = _audEsc(actor) + ' updated request';
+    }
+    drill = crJid ? { type: 'job', id: crJid } : (crCid ? { type: 'client', id: crCid } : null);
+  }
   // ─── application ───────────────────────────────────────────────
   else if (et === 'application') {
     var applicant = nv.applicant_name || ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim() || 'unknown';
@@ -15709,6 +15901,17 @@ function _buildSyntheticAuditRow(entityType, row) {
       createdAt = row.reported_at || row.created_at;
       userId = row.reported_by;
     }
+  } else if (entityType === 'client_request') {
+    // v11.0.17 (Phase B.5)
+    if (row.acknowledged_at) {
+      actionType = 'acknowledged';
+      createdAt = row.acknowledged_at;
+      userId = row.acknowledged_by || row.reported_by;
+    } else {
+      actionType = 'created';
+      createdAt = row.reported_at || row.created_at;
+      userId = row.reported_by;
+    }
   } else if (entityType === 'payment') {
     // v11.0.16 (Phase C): voided payments emit 'refunded' so the chip
     // reads "VOIDED" and the time reflects the void event, not the
@@ -15778,7 +15981,30 @@ function _renderInlineAuditAction(entityType, row, j) {
         }).join('')
       + '</select>';
   }
+  // v11.0.17 (Phase B.5): unacknowledged client_request → Acknowledge button.
+  if (entityType === 'client_request' && !row.acknowledged_at) {
+    return '<button onclick="event.stopPropagation();_mgrAcknowledgeRequest(\'' + _audEsc(row.id) + '\',\'' + _audEsc(row.job_id || '') + '\',\'' + _audEsc(row.client_id || '') + '\')" '
+      + 'style="background:var(--accent);border:none;color:#fff;border-radius:8px;padding:5px 12px;font:600 11px DM Sans,sans-serif;cursor:pointer">Acknowledge</button>';
+  }
   return '';
+}
+
+// v11.0.17 (Phase B.5) — Acknowledge a client_request from any
+// manager surface. Optional note prompt. Cascades through all surfaces.
+async function _mgrAcknowledgeRequest(requestId, jobId, clientId) {
+  if (!requestId) return;
+  var note = prompt('Acknowledgment note (optional):', '');
+  if (note === null) return; // cancel
+  try {
+    var row = await window.PentaClientRequests.acknowledge(requestId, note);
+    console.log('[mgrAcknowledgeReq] updated', row);
+    try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
+    try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+    try { if (typeof _refreshAllAuditSurfaces === 'function') _refreshAllAuditSurfaces(jobId, clientId); } catch (e) {}
+  } catch (e) {
+    console.error('[mgrAcknowledgeReq] failed', e);
+    alert('Could not acknowledge: ' + ((e && e.message) || e));
+  }
 }
 
 // Render a stack of synthetic rows (mixed incidents + job_issues) with
@@ -15842,7 +16068,7 @@ async function _renderClientHistorySection(clientId, hostId) {
   if (!host) return;
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>'; return; }
-  var incidents = [], issues = [], payments = [];
+  var incidents = [], issues = [], payments = [], requests = [];
   try {
     if (window.PentaIncidents && window.PentaIncidents.listForClient) {
       incidents = await window.PentaIncidents.listForClient(clientId);
@@ -15858,10 +16084,17 @@ async function _renderClientHistorySection(clientId, hostId) {
       payments = await window.PentaPayments.listForClient(clientId, { includeVoided: true });
     }
   } catch (e) { console.warn('[clientHistory] payments failed', e); }
+  // v11.0.17 (Phase B.5): include client_requests in History.
+  try {
+    if (window.PentaClientRequests && window.PentaClientRequests.listForClient) {
+      requests = await window.PentaClientRequests.listForClient(clientId);
+    }
+  } catch (e) { console.warn('[clientHistory] requests failed', e); }
   var items = []
     .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
     .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }))
-    .concat(payments.map(function(r){ return { entityType: 'payment', row: r }; }));
+    .concat(payments.map(function(r){ return { entityType: 'payment', row: r }; }))
+    .concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }));
   items.sort(function(a, b){
     var at = a.row.reported_at || a.row.received_at || a.row.created_at;
     var bt = b.row.reported_at || b.row.received_at || b.row.created_at;
@@ -15883,7 +16116,7 @@ async function _renderStaffActivitySection(emp, hostId) {
     host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;text-align:center">No recorded activity for this employee yet.</div>';
     return;
   }
-  var incidents = [], issues = [];
+  var incidents = [], issues = [], requests = [];
   try {
     if (window.PentaIncidents && window.PentaIncidents.listForReporter) {
       incidents = await window.PentaIncidents.listForReporter(uid);
@@ -15894,9 +16127,16 @@ async function _renderStaffActivitySection(emp, hostId) {
       issues = await window.PentaJobIssues.listForReporter(uid);
     }
   } catch (e) { console.warn('[staffActivity] issues failed', e); }
+  // v11.0.17 (Phase B.5): include client_requests this user reported.
+  try {
+    if (window.PentaClientRequests && window.PentaClientRequests.listForReporter) {
+      requests = await window.PentaClientRequests.listForReporter(uid);
+    }
+  } catch (e) { console.warn('[staffActivity] requests failed', e); }
   var items = []
     .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
-    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }));
+    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }))
+    .concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }));
   items.sort(function(a, b){
     var at = a.row.reported_at || a.row.created_at;
     var bt = b.row.reported_at || b.row.created_at;
@@ -15917,7 +16157,7 @@ async function _renderStaffActivitySection(emp, hostId) {
 }
 
 // ─── Surface 3: Open Items admin view ─────────────────────────────
-var _openItemsTab = 'all'; // 'all' | 'issues' | 'incidents'
+var _openItemsTab = 'all'; // 'all' | 'issues' | 'incidents' | 'requests'
 async function openOpenItemsView() {
   var v = document.getElementById('open-items-view');
   if (!v) return;
@@ -15933,7 +16173,7 @@ function closeOpenItemsView() {
 }
 function _setOpenItemsTab(tab) {
   _openItemsTab = tab;
-  ['all','issues','incidents'].forEach(function(t){
+  ['all','issues','incidents','requests'].forEach(function(t){
     var btn = document.getElementById('oi-tab-' + t);
     if (btn) {
       btn.style.borderBottomColor = (t === tab) ? 'var(--accent)' : 'transparent';
@@ -15948,12 +16188,16 @@ async function _refreshOpenItems() {
   body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">Loading…</div>';
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">No connection</div>'; return; }
-  var issues = [], incidents = [];
+  var issues = [], incidents = [], requests = [];
   try {
     if (window.PentaJobIssues && window.PentaJobIssues.listUnresolved) issues = await window.PentaJobIssues.listUnresolved();
   } catch (e) {}
   try {
     if (window.PentaIncidents && window.PentaIncidents.listOpen) incidents = await window.PentaIncidents.listOpen();
+  } catch (e) {}
+  // v11.0.17 (Phase B.5): include unacknowledged client_requests.
+  try {
+    if (window.PentaClientRequests && window.PentaClientRequests.listUnacknowledged) requests = await window.PentaClientRequests.listUnacknowledged();
   } catch (e) {}
   var items = [];
   if (_openItemsTab === 'all' || _openItemsTab === 'issues') {
@@ -15961,6 +16205,9 @@ async function _refreshOpenItems() {
   }
   if (_openItemsTab === 'all' || _openItemsTab === 'incidents') {
     items = items.concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }));
+  }
+  if (_openItemsTab === 'all' || _openItemsTab === 'requests') {
+    items = items.concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }));
   }
   // Sort OLDEST first — the rows that have been ignored longest float
   // to the top. Per the spec.
@@ -16710,6 +16957,74 @@ function openJobIssueSheet(jobId, clientName, clientId) {
 
 function closeJobIssueSheet() {
   document.getElementById('job-issue-sheet').style.display = 'none';
+}
+
+// ─── v11.0.17 (Phase B.5) — Client Request controller ──────────────
+var CLIENT_REQUEST_OPTIONS = [
+  { id: 'skip_next_clean',   icon: '⏭', label: 'Skip next clean' },
+  { id: 'add_service_today', icon: '➕', label: 'Add service today' },
+  { id: 'reschedule',        icon: '📅', label: 'Reschedule' },
+  { id: 'change_frequency',  icon: '🔁', label: 'Change frequency' },
+  { id: 'general_message',   icon: '💬', label: 'General message' },
+  { id: 'other',             icon: '❓', label: 'Other' }
+];
+var _crJobId = null, _crClientId = null, _crClientName = null, _crType = null;
+
+function openClientRequestSheet(jobId, clientName, clientId) {
+  _crJobId = jobId; _crClientId = clientId; _crClientName = clientName; _crType = null;
+  document.getElementById('cr-title').textContent = 'Client Request';
+  document.getElementById('cr-sub').textContent = clientName || '';
+  document.getElementById('cr-desc').value = '';
+  var chips = document.getElementById('cr-type-chips');
+  chips.innerHTML = CLIENT_REQUEST_OPTIONS.map(function(o){
+    return '<button type="button" data-cr-type="' + o.id + '" onclick="_crPickType(this)" '
+      + 'style="background:var(--surface2);border:1.5px solid var(--border);color:var(--text);font:600 13px DM Sans,sans-serif;'
+      + 'padding:7px 12px;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">'
+      + '<span>' + o.icon + '</span><span>' + o.label + '</span>'
+      + '</button>';
+  }).join('');
+  document.getElementById('client-request-sheet').style.display = 'flex';
+}
+function closeClientRequestSheet() {
+  document.getElementById('client-request-sheet').style.display = 'none';
+}
+function _crPickType(btn) {
+  var chips = document.getElementById('cr-type-chips');
+  if (chips) chips.querySelectorAll('button[data-cr-type]').forEach(function(b){
+    b.style.background = 'var(--surface2)';
+    b.style.borderColor = 'var(--border)';
+    b.style.color = 'var(--text)';
+  });
+  btn.style.background = 'rgba(108,143,255,0.20)';
+  btn.style.borderColor = 'var(--accent)';
+  btn.style.color = 'var(--text)';
+  _crType = btn.getAttribute('data-cr-type');
+}
+async function submitClientRequest() {
+  if (!_crType) { alert('Please pick a request type.'); return; }
+  var desc = (document.getElementById('cr-desc').value || '').trim();
+  if (_crType === 'other' && !desc) { alert('Please describe the request.'); return; }
+  var btn = document.getElementById('cr-submit-btn');
+  if (btn) { btn.disabled = true; btn.dataset._orig = btn.textContent; btn.textContent = 'Sending…'; }
+  closeClientRequestSheet();
+  try {
+    await window.PentaClientRequests.report({
+      jobId: _crJobId,
+      clientId: _crClientId,
+      requestType: _crType,
+      description: desc || null
+    });
+    var okLabels = { en: '✓ Request sent to manager', es: '✓ Solicitud enviada al gerente', pt: '✓ Pedido enviado ao gerente', cv: '✓ Pedidu mandadu pa jefe' };
+    var lang = (currentEmployee && currentEmployee.lang) || currentLang || 'en';
+    showIssueToast(okLabels[lang] || okLabels.en);
+    try { if (typeof renderSchedule === 'function') renderSchedule(); } catch (e) {}
+    try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+  } catch (e) {
+    console.error('[submitClientRequest] failed', e);
+    alert('Could not send: ' + ((e && e.message) || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset._orig || 'Send to Manager'; }
+  }
 }
 
 function showIssueToast(text) {
@@ -18974,11 +19289,15 @@ function _refreshSchedTileBadge() {
   var pInc = (window.PentaIncidents && window.PentaIncidents.countOpen)
     ? window.PentaIncidents.countOpen()
     : Promise.resolve(0);
-  Promise.all([pIssues, pInc]).then(function(parts){
+  var pReq = (window.PentaClientRequests && window.PentaClientRequests.countUnacknowledged)
+    ? window.PentaClientRequests.countUnacknowledged()
+    : Promise.resolve(0);
+  Promise.all([pIssues, pInc, pReq]).then(function(parts){
     var issues = parts[0] || 0;
     var incidents = parts[1] || 0;
-    var combined = issues + incidents;
-    console.log('[schedBadge] combined =', combined, '(issues=' + issues + ' incidents=' + incidents + ', cached was ' + _pentaSchedBadgeCount + ')');
+    var requests = parts[2] || 0;
+    var combined = issues + incidents + requests;
+    console.log('[schedBadge] combined =', combined, '(issues=' + issues + ' incidents=' + incidents + ' requests=' + requests + ', cached was ' + _pentaSchedBadgeCount + ')');
     if (combined === _pentaSchedBadgeCount) return;
     _pentaSchedBadgeCount = combined;
     try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
@@ -34104,7 +34423,10 @@ function renderSchedule() {
            upcoming Client Request button (Phase B.5); for now the grid
            is 1×3 row: Report Issue, Report Incident, Receive Payment.
            Once Client Request lands we'll restore the 2x2 grid. -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+      <!-- v11.0.17 (Phase B.5): 4 buttons now — Issue / Incident /
+           Payment / Request. 2x2 grid restores the original layout
+           planned in Phase B.5 anchor note. -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
         <button onclick="openJobIssueSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.4);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           ⚠ Issue
         </button>
@@ -34113,6 +34435,9 @@ function renderSchedule() {
         </button>
         <button onclick="openJobPayment('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}')" style="background:rgba(52,211,153,0.12);border:1px solid rgba(52,211,153,0.3);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
           💵 Payment
+        </button>
+        <button onclick="openClientRequestSheet('${j.id}','${(j.clientName||'').replace(/'/g,'\'')}','${j.clientId||''}')" style="background:rgba(108,143,255,0.14);border:1px solid rgba(108,143,255,0.35);color:#1A1A1A;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:13px 8px;border-radius:10px;cursor:pointer">
+          📝 Request
         </button>
       </div>
       ${j.phone ? `
@@ -37953,6 +38278,8 @@ function _renderJobCardContent(j, opts) {
     // _mgrPaintJobPayments. Hidden until there's at least one payment
     // attached to this job. Voided payments shown dimmed below.
     + '<div class="mgr-payments-section" id="cjc-payments-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
+    // v11.0.17 (Phase B.5): Client Requests section placeholder.
+    + '<div class="mgr-requests-section" id="cjc-requests-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
@@ -38432,6 +38759,65 @@ async function _mgrOpenPaymentPhoto(photoPath) {
   document.body.appendChild(ov);
 }
 
+// v11.0.17 (Phase B.5) — async paint of client_requests on the
+// manager job card. Unacknowledged at top with Acknowledge button;
+// acknowledged dimmed below.
+async function _mgrPaintJobRequests(rootEl, j) {
+  var safeId = String(j.id || '').replace(/['"]/g, '');
+  var section = rootEl.querySelector('#cjc-requests-' + safeId);
+  if (!section) return;
+  if (!window.PentaClientRequests || !window.PentaClientRequests.listForJob) return;
+  var rows = [];
+  try { rows = await window.PentaClientRequests.listForJob(j.id); }
+  catch (e) { console.warn('[mgrRequests] listForJob threw', e); return; }
+  if (!rows || rows.length === 0) { section.style.display = 'none'; section.innerHTML = ''; return; }
+  section.style.display = '';
+  var live = rows.filter(function(r){ return !r.acknowledged_at; });
+  var done = rows.filter(function(r){ return !!r.acknowledged_at; });
+  var crTypeLabels = {
+    skip_next_clean: 'Skip next clean', add_service_today: 'Add service today',
+    reschedule: 'Reschedule', change_frequency: 'Change frequency',
+    general_message: 'General message', other: 'Other'
+  };
+  var crTypeIcons = {
+    skip_next_clean: '⏭', add_service_today: '➕', reschedule: '📅',
+    change_frequency: '🔁', general_message: '💬', other: '❓'
+  };
+  function _rowHtml(r, dim) {
+    var label = crTypeLabels[r.request_type] || r.request_type || 'Request';
+    var icon = crTypeIcons[r.request_type] || '📝';
+    var when = (r.reported_at) ? new Date(r.reported_at).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+    var ackBtn = dim ? ''
+      : '<button onclick="event.stopPropagation();_mgrAcknowledgeRequest(\'' + _audEsc(r.id) + '\',\'' + _audEsc(j.id || '') + '\',\'' + _audEsc(r.client_id || '') + '\')" '
+        + 'style="background:var(--accent);border:none;color:#fff;border-radius:8px;padding:5px 12px;font:600 11px DM Sans,sans-serif;cursor:pointer">Acknowledge</button>';
+    return '<div style="background:' + (dim ? 'var(--surface2)' : 'rgba(108,143,255,0.10)') + ';'
+      + 'border:1px solid ' + (dim ? 'var(--border)' : 'rgba(108,143,255,0.35)') + ';'
+      + 'border-radius:10px;padding:10px 12px;margin-bottom:6px;'
+      + (dim ? 'opacity:0.7;' : '') + '">'
+      +   '<div style="display:flex;align-items:flex-start;gap:10px">'
+      +     '<div style="font-size:18px;line-height:1.2">' + icon + '</div>'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="font-size:13px;font-weight:700;color:var(--text)">' + _audEsc(label) + '</div>'
+      +       (r.description ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.4;white-space:pre-wrap">' + _audEsc(_audTrunc(r.description, 140)) + '</div>' : '')
+      +       '<div style="font-size:11px;color:var(--muted);margin-top:4px">Reported ' + _audEsc(when) + '</div>'
+      +       (r.acknowledgment_note ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">Note: ' + _audEsc(r.acknowledgment_note) + '</div>' : '')
+      +     '</div>'
+      +     (ackBtn ? '<div style="flex-shrink:0">' + ackBtn + '</div>' : '')
+      +   '</div>'
+      + '</div>';
+  }
+  var html = '';
+  if (live.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:#1d4ed8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">📝 Client Requests</div>';
+    html += live.map(function(r){ return _rowHtml(r, false); }).join('');
+  }
+  if (done.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">Acknowledged</div>';
+    html += done.map(function(r){ return _rowHtml(r, true); }).join('');
+  }
+  section.innerHTML = html;
+}
+
 function _attachJobCardActions(rootEl, j) {
   // Sprint 7: build action buttons via DOM into the per-job action row.
   // Idempotent — clears prior buttons before re-attaching. Safe to call for
@@ -38443,6 +38829,8 @@ function _attachJobCardActions(rootEl, j) {
   try { _mgrPaintJobIncidents(rootEl, j); } catch (e) {}
   // v11.0.16 (Phase C): paint payments section async on every attach.
   try { _mgrPaintJobPayments(rootEl, j); } catch (e) {}
+  // v11.0.17 (Phase B.5): paint client_requests section.
+  try { _mgrPaintJobRequests(rootEl, j); } catch (e) {}
   var actionRow = rootEl.querySelector('#cjc-action-row-' + safeId);
   if (!actionRow) return;
   actionRow.innerHTML = '';
@@ -42754,6 +43142,7 @@ function _p3dPage(dir) {
     <button id="oi-tab-all" onclick="_setOpenItemsTab('all')" type="button" style="flex:1;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid var(--accent)">All</button>
     <button id="oi-tab-issues" onclick="_setOpenItemsTab('issues')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Issues</button>
     <button id="oi-tab-incidents" onclick="_setOpenItemsTab('incidents')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Incidents</button>
+    <button id="oi-tab-requests" onclick="_setOpenItemsTab('requests')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Requests</button>
   </div>
   <div class="oi-body" id="open-items-body"></div>
 </div>
