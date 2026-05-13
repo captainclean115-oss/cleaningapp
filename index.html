@@ -10447,6 +10447,195 @@ window.PentaIncidents = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaPayments — v11.0.16 — Phase C.
+//
+// Payment Receive system. Replaces the localStorage cleanco_pending
+// write submitJobPayment used. Photos go to Supabase Storage bucket
+// 'payment-photos' (Tom creates the bucket via Dashboard before
+// testing). audit_log captures inserts via the existing trigger
+// (mig 053 special-cases: INSERT → 'received', voided false→true →
+// 'refunded').
+//
+// Path convention: <business_id>/<payment_id>/photo.<ext>
+//
+// Six payment methods: cash, check, venmo, zelle, credit_card, other.
+// 'other' uses payment_method_other for the free-text label.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaPayments = (function() {
+  var BUCKET = 'payment-photos';
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _toUuidOrNull(v) {
+    if (!v) return null;
+    var s = String(v);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null;
+  }
+  function _resolveJobUuid(jobId) {
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var r = window.PentaJobs.getById(jobId);
+        if (r && r.id) return r.id;
+      }
+    } catch (e) {}
+    return _toUuidOrNull(jobId);
+  }
+  function _resolveClientUuid(clientId) {
+    // clients can carry either uuid or legacy external_id; the payments
+    // table expects the uuid. PentaClients lookups by either.
+    if (!clientId) return null;
+    var asUuid = _toUuidOrNull(clientId);
+    if (asUuid) return asUuid;
+    try {
+      if (window.PentaClients && window.PentaClients.getClient) {
+        var c = window.PentaClients.getClient(clientId);
+        if (c && c.id) return _toUuidOrNull(c.id);
+      }
+    } catch (e) {}
+    return null;
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+  function _extOf(file) {
+    var name = (file && file.name) || '';
+    var dot = name.lastIndexOf('.');
+    if (dot >= 0) return name.slice(dot + 1).toLowerCase() || 'jpg';
+    var m = (file && file.type) || '';
+    if (/png/i.test(m)) return 'png';
+    if (/webp/i.test(m)) return 'webp';
+    if (/heic/i.test(m)) return 'heic';
+    return 'jpg';
+  }
+  async function _uploadPhoto(bid, paymentId, file) {
+    var sb = _sb(); if (!sb || !file) return { path: null, url: null };
+    var ext = _extOf(file);
+    var path = bid + '/' + paymentId + '/photo.' + ext;
+    var up = await sb.storage.from(BUCKET).upload(path, file, {
+      cacheControl: '3600', upsert: true, contentType: file.type || 'image/jpeg'
+    });
+    if (up.error) throw up.error;
+    var signed = await sb.storage.from(BUCKET).createSignedUrl(path, 60 * 60 * 24 * 90);
+    return { path: path, url: (signed && signed.data && signed.data.signedUrl) || null };
+  }
+  async function record(input) {
+    var sb = _sb(); if (!sb) throw new Error('PentaPayments.record: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaPayments.record: no tenant');
+    if (!input || !input.paymentMethod) throw new Error('PentaPayments.record: paymentMethod required');
+    if (!input.clientId) throw new Error('PentaPayments.record: clientId required');
+    if (input.amount == null || !(parseFloat(input.amount) > 0)) {
+      throw new Error('PentaPayments.record: amount must be greater than 0');
+    }
+    var clientUuid = _resolveClientUuid(input.clientId);
+    if (!clientUuid) throw new Error('PentaPayments.record: could not resolve client_id to a uuid');
+    var paymentId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : null;
+    if (!paymentId) throw new Error('PentaPayments.record: crypto.randomUUID unavailable');
+    var photo = { path: null, url: null };
+    if (input.photoFile) {
+      try {
+        photo = await _uploadPhoto(bid, paymentId, input.photoFile);
+      } catch (e) {
+        console.error('[PentaPayments.record] photo upload failed', e);
+        throw new Error('Photo upload failed: ' + (e.message || e));
+      }
+    }
+    var recordedBy = await _resolveCallerUserId();
+    var row = {
+      id: paymentId,
+      business_id: bid,
+      client_id: clientUuid,
+      job_id: _resolveJobUuid(input.jobId),
+      recorded_by: recordedBy,
+      method: input.paymentMethod,
+      payment_method_other: (input.paymentMethod === 'other' ? (input.paymentMethodOther || null) : null),
+      amount: parseFloat(input.amount),
+      check_number: (input.paymentMethod === 'check' ? (input.checkNumber || null) : null),
+      memo: (input.memo || null),
+      photo_url: photo.url,
+      photo_path: photo.path,
+      received_at: (input.receivedAt || new Date().toISOString())
+    };
+    var res = await sb.from('payments').insert(row).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function listForClient(clientId, opts) {
+    opts = opts || {};
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var clientUuid = _resolveClientUuid(clientId);
+    if (!clientUuid) return [];
+    var q = sb.from('payments').select('*')
+      .eq('business_id', bid).eq('client_id', clientUuid)
+      .order('received_at', { ascending: false });
+    if (!opts.includeVoided) q = q.eq('voided', false);
+    var res = await q;
+    if (res.error) { console.warn('[PentaPayments] listForClient error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listForJob(jobId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var jobUuid = _resolveJobUuid(jobId);
+    if (!jobUuid) return [];
+    var res = await sb.from('payments').select('*')
+      .eq('business_id', bid).eq('job_id', jobUuid)
+      .order('received_at', { ascending: false });
+    if (res.error) { console.warn('[PentaPayments] listForJob error', res.error); return []; }
+    return res.data || [];
+  }
+  async function listRecent(daysBack) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - (daysBack || 30));
+    var res = await sb.from('payments').select('*')
+      .eq('business_id', bid).gte('received_at', cutoff.toISOString())
+      .order('received_at', { ascending: false });
+    if (res.error) { console.warn('[PentaPayments] listRecent error', res.error); return []; }
+    return res.data || [];
+  }
+  async function voidPayment(paymentId, reason) {
+    var sb = _sb(); if (!sb) throw new Error('PentaPayments.void: no Supabase client');
+    if (!paymentId) throw new Error('PentaPayments.void: paymentId required');
+    var voidedBy = await _resolveCallerUserId();
+    var patch = {
+      voided: true,
+      voided_at: new Date().toISOString(),
+      voided_by: voidedBy,
+      void_reason: (reason && String(reason).trim()) || null
+    };
+    var res = await sb.from('payments').update(patch).eq('id', paymentId).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+  async function getSignedPhotoUrl(photoPath) {
+    var sb = _sb(); if (!sb || !photoPath) return null;
+    var res = await sb.storage.from(BUCKET).createSignedUrl(photoPath, 90);
+    if (res.error) { console.warn('[PentaPayments] getSignedPhotoUrl error', res.error); return null; }
+    return (res.data && res.data.signedUrl) || null;
+  }
+  return {
+    record: record,
+    listForClient: listForClient,
+    listForJob: listForJob,
+    listRecent: listRecent,
+    void: voidPayment,        // 'void' is a reserved word in strict mode; expose explicitly
+    voidPayment: voidPayment,
+    getSignedPhotoUrl: getSignedPhotoUrl
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // MgrSync — UI for #sync-report-view. Single-screen Phase 1.
 // Date selector (today/yesterday/picker) + 5 collapsible sections +
 // notes + mark-synced action. Refreshes on open.
@@ -15321,19 +15510,32 @@ function _renderAuditRowSummary(row, ctx) {
     drill = { type: 'employee', id: row.entity_id };
   }
   // ─── payment ───────────────────────────────────────────────────
+  // v11.0.16 (Phase C): expanded with full method labels, photo chip,
+  // and void/refunded path with reason.
   else if (et === 'payment') {
     var pCid = nv.client_id || ov.client_id;
     var pcn = _audClientName(ctx, pCid) || nv.client_name || '(unknown client)';
     var amt = nv.amount || nv.amt;
-    if (at === 'created' || at === 'received') {
+    var methodKey = nv.method || ov.method;
+    var methodLabels = { cash: 'cash', check: 'check', venmo: 'Venmo', zelle: 'Zelle', credit_card: 'credit card', other: 'other' };
+    var methodLabel = methodLabels[methodKey] || methodKey || 'payment';
+    var hasPhoto = !!(nv.photo_path || ov.photo_path);
+    if (at === 'received' || at === 'created') {
       summary = _audEsc(actor) + ' recorded';
-      if (amt) summary += ' $' + _audEsc(String(amt)) + ' payment';
-      else     summary += ' payment';
+      if (amt != null) summary += ' $' + _audEsc(String(amt));
+      summary += ' ' + _audEsc(methodLabel) + ' payment';
       if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
-      if (nv.method) summary += ' · ' + _audEsc(nv.method);
-      if (nv.check_number) summary += ' #' + _audEsc(nv.check_number);
+      if (methodKey === 'check' && nv.check_number) summary += ' · check #' + _audEsc(nv.check_number);
+      if (methodKey === 'other' && nv.payment_method_other) summary += ' · ' + _audEsc(nv.payment_method_other);
+      if (hasPhoto) chips.push({ label: '📎 PHOTO', color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
     } else if (at === 'refunded') {
-      summary = _audEsc(actor) + ' refunded payment from ' + _audEsc(pcn);
+      summary = _audEsc(actor) + ' voided';
+      if (amt != null) summary += ' $' + _audEsc(String(amt));
+      summary += ' ' + _audEsc(methodLabel) + ' payment';
+      if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
+      var voidReason = nv.void_reason;
+      if (voidReason) summary += ' — reason: &lsquo;' + _audEsc(_audTrunc(voidReason, 80)) + '&rsquo;';
+      chips.push({ label: 'VOIDED', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
     } else {
       summary = _audEsc(actor) + ' ' + _audEsc(at) + ' payment';
     }
@@ -15507,6 +15709,19 @@ function _buildSyntheticAuditRow(entityType, row) {
       createdAt = row.reported_at || row.created_at;
       userId = row.reported_by;
     }
+  } else if (entityType === 'payment') {
+    // v11.0.16 (Phase C): voided payments emit 'refunded' so the chip
+    // reads "VOIDED" and the time reflects the void event, not the
+    // original receipt.
+    if (row.voided) {
+      actionType = 'refunded';
+      createdAt = row.voided_at || row.received_at || row.recorded_at;
+      userId = row.voided_by || row.recorded_by;
+    } else {
+      actionType = 'received';
+      createdAt = row.received_at || row.recorded_at || row.created_at;
+      userId = row.recorded_by;
+    }
   } else {
     actionType = 'created';
     createdAt = row.created_at || row.reported_at;
@@ -15620,12 +15835,14 @@ async function _renderSyntheticAuditList(items, sb, opts) {
 }
 
 // ─── Surface 1: Client History section in openClientEdit ──────────
+// v11.0.16 (Phase C): also includes payments (synthetic-audit-row
+// adapter handles them via entity_type='payment').
 async function _renderClientHistorySection(clientId, hostId) {
   var host = document.getElementById(hostId || ('ce-history-' + clientId));
   if (!host) return;
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>'; return; }
-  var incidents = [], issues = [];
+  var incidents = [], issues = [], payments = [];
   try {
     if (window.PentaIncidents && window.PentaIncidents.listForClient) {
       incidents = await window.PentaIncidents.listForClient(clientId);
@@ -15636,15 +15853,21 @@ async function _renderClientHistorySection(clientId, hostId) {
       issues = await window.PentaJobIssues.listForClient(clientId);
     }
   } catch (e) { console.warn('[clientHistory] issues failed', e); }
+  try {
+    if (window.PentaPayments && window.PentaPayments.listForClient) {
+      payments = await window.PentaPayments.listForClient(clientId, { includeVoided: true });
+    }
+  } catch (e) { console.warn('[clientHistory] payments failed', e); }
   var items = []
     .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
-    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }));
+    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }))
+    .concat(payments.map(function(r){ return { entityType: 'payment', row: r }; }));
   items.sort(function(a, b){
-    var at = a.row.reported_at || a.row.created_at;
-    var bt = b.row.reported_at || b.row.created_at;
+    var at = a.row.reported_at || a.row.received_at || a.row.created_at;
+    var bt = b.row.reported_at || b.row.received_at || b.row.created_at;
     return new Date(bt) - new Date(at);
   });
-  var html = await _renderSyntheticAuditList(items, sb, { empty: 'No issues or incidents recorded for this client.' });
+  var html = await _renderSyntheticAuditList(items, sb, { empty: 'No history yet for this client.' });
   host.innerHTML = html;
   _wireAuditDrill(host);
 }
@@ -34082,6 +34305,26 @@ async function submitJobIncident() {
 }
 
 function selectPayMethod(method) {
+  // v11.0.16 (Phase C): six methods (cash/check/venmo/zelle/credit_card/
+  // other). Toggles the active style + reveals conditional fields.
+  _jpMethod = method;
+  ['cash','check','venmo','zelle','credit_card','other'].forEach(function(m){
+    var btn = document.getElementById('jp-btn-' + m);
+    if (!btn) return;
+    var active = (m === method);
+    btn.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = active ? 'rgba(108,143,255,0.15)' : 'var(--surface2)';
+    btn.style.color = active ? 'var(--text)' : 'var(--text)';
+  });
+  var cn = document.getElementById('jp-check-num-group');
+  if (cn) cn.style.display = (method === 'check') ? '' : 'none';
+  var oth = document.getElementById('jp-other-group');
+  if (oth) oth.style.display = (method === 'other') ? '' : 'none';
+  var pr = document.getElementById('jp-photo-required');
+  if (pr) pr.style.display = (method === 'check') ? '' : 'none';
+}
+// Stub kept for backward-compat (the old fn signature only handled 2 methods).
+function _legacySelectPayMethodOld(method) {
   _jpMethod = method;
   const checkBtn = document.getElementById('jp-btn-check');
   const cashBtn = document.getElementById('jp-btn-cash');
@@ -34144,47 +34387,69 @@ function openJobPayment(jobId, clientName) {
   };
 }
 
-function submitJobPayment() {
+async function submitJobPayment() {
+  // v11.0.16 (Phase C): rewritten to write to public.payments via
+  // PentaPayments.record. Photo uploads to Supabase Storage bucket
+  // 'payment-photos'. Replaces the legacy localStorage cleanco_pending
+  // write. Six payment methods supported.
+  console.log('[submitJobPayment] tapped, _jpJobId =', _jpJobId, '_jpMethod =', _jpMethod);
   const amount = document.getElementById('jp-amount').value.trim();
-  if (!amount) { alert('Please enter the amount received.'); return; }
-  if (!_jpMethod) { alert('Please select Check or Cash.'); return; }
-  const emp = currentEmployee;
-  const now = new Date();
-  const timeStr = now.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-  const clientName = document.getElementById('job-payment-client').textContent;
-  const notes = document.getElementById('jp-notes').value.trim();
-
-  const readPhoto = () => new Promise(resolve => {
-    const file = document.getElementById('jp-photo').files[0];
-    if (!file) { resolve(null); return; }
-    const r = new FileReader();
-    r.onload = e => resolve(e.target.result);
-    r.readAsDataURL(file);
-  });
-
-  readPhoto().then(photo => {
-    try {
-      const pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-      pending.unshift({
-        id: Date.now().toString(),
-        action: '💵 Payment Received — ' + clientName,
-        details: '$' + amount + ' by ' + (_jpMethod === 'check' ? 'Check' : 'Cash') + (notes ? ' · ' + notes : '') + ' — collected by ' + (emp ? emp.name : ''),
-        time: timeStr,
-        done: false,
-        type: 'payment_received',
-        photo: photo || null,
-        amount: amount,
-        method: _jpMethod,
-        employee: emp ? emp.name : '',
-        team: emp ? emp.team : ''
-      });
-      localStorage.setItem('cleanco_pending', JSON.stringify(pending));
-    } catch(e) {}
+  if (!_jpMethod) { alert('Please select a payment method.'); return; }
+  if (!amount || !(parseFloat(amount) > 0)) {
+    alert('Please enter a payment amount greater than 0.');
+    return;
+  }
+  const checkNumber = document.getElementById('jp-check-number') ? document.getElementById('jp-check-number').value.trim() : '';
+  const methodOther = document.getElementById('jp-method-other') ? document.getElementById('jp-method-other').value.trim() : '';
+  const memo = document.getElementById('jp-notes').value.trim();
+  const photoFile = document.getElementById('jp-photo').files[0] || null;
+  // Photo required when method=check.
+  if (_jpMethod === 'check' && !photoFile) {
+    alert('A photo of the check is required.');
+    return;
+  }
+  // Resolve clientId via the in-memory jobs[] cache from _jpJobId.
+  var clientId = null;
+  try {
+    if (_jpJobId && typeof jobs !== 'undefined') {
+      var j = jobs.find(function(x){ return x.id === _jpJobId; });
+      if (j) clientId = j.clientId || j.client_id;
+    }
+  } catch (e) {}
+  if (!clientId) {
+    alert('Could not resolve client for this job.');
+    return;
+  }
+  const submitBtn = document.querySelector('button[onclick*="submitJobPayment"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.dataset._orig = submitBtn.textContent; submitBtn.textContent = 'Sending…'; }
+  try {
+    var row = await window.PentaPayments.record({
+      jobId: _jpJobId,
+      clientId: clientId,
+      paymentMethod: _jpMethod,
+      paymentMethodOther: methodOther,
+      amount: parseFloat(amount),
+      checkNumber: checkNumber,
+      memo: memo,
+      photoFile: photoFile
+    });
+    console.log('[submitJobPayment] inserted', row);
     document.getElementById('job-payment-modal').style.display = 'none';
-    const lang = currentLang || 'en';
-    const msg = {en:'Payment recorded! Your manager will see it.', es:'¡Pago registrado! Tu gerente lo verá.', pt:'Pagamento registrado! Seu gerente vai ver.', cv:'Pagamentu registradu! Bu jefe ta odja.'}[lang];
-    alert(msg);
-  });
+    var lang = currentLang || 'en';
+    var ok = { en: 'Payment recorded! Your manager will see it.',
+               es: '¡Pago registrado! Tu gerente lo verá.',
+               pt: 'Pagamento registrado! Seu gerente vai ver.',
+               cv: 'Pagamentu registradu! Bu jefe ta odja.' }[lang];
+    alert(ok);
+    // Refresh surfaces that show payments.
+    try { if (typeof _refreshAllAuditSurfaces === 'function') _refreshAllAuditSurfaces(_jpJobId, clientId); } catch (e) {}
+    try { if (typeof renderActivityLog === 'function') renderActivityLog(); } catch (e) {}
+  } catch (e) {
+    console.error('[submitJobPayment] failed', e);
+    alert('Could not record payment: ' + ((e && e.message) || e));
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = submitBtn.dataset._orig || 'Submit Payment'; }
+  }
 }
 
 
@@ -37684,6 +37949,10 @@ function _renderJobCardContent(j, opts) {
     // _mgrPaintJobIncidents asynchronously with open/in_review on top
     // + resolved/closed dimmed below. Hidden until populated.
     + '<div class="mgr-incidents-section" id="cjc-incidents-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
+    // v11.0.16 (Phase C): Payments section placeholder. Painted by
+    // _mgrPaintJobPayments. Hidden until there's at least one payment
+    // attached to this job. Voided payments shown dimmed below.
+    + '<div class="mgr-payments-section" id="cjc-payments-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
@@ -38060,6 +38329,109 @@ async function _mgrOpenIncidentPhoto(photoPath) {
   document.body.appendChild(ov);
 }
 
+// v11.0.16 (Phase C) — async paint of payments onto a manager job card.
+// Targets #cjc-payments-${safeId}. Live payments at top, voided dimmed
+// below. Manager can void from here (button per row).
+async function _mgrPaintJobPayments(rootEl, j) {
+  var safeId = String(j.id || '').replace(/['"]/g, '');
+  var section = rootEl.querySelector('#cjc-payments-' + safeId);
+  if (!section) return;
+  if (!window.PentaPayments || !window.PentaPayments.listForJob) return;
+  var rows = [];
+  try { rows = await window.PentaPayments.listForJob(j.id); } catch (e) { console.warn('[mgrPayments] listForJob threw', e); return; }
+  if (!rows || rows.length === 0) { section.style.display = 'none'; section.innerHTML = ''; return; }
+  section.style.display = '';
+  var live = rows.filter(function(r){ return !r.voided; });
+  var voided = rows.filter(function(r){ return !!r.voided; });
+  var methodLabels = { cash:'Cash', check:'Check', venmo:'Venmo', zelle:'Zelle', credit_card:'Card', other:'Other' };
+  var methodIcons = { cash:'💵', check:'🏦', venmo:'Ⓥ', zelle:'Ⓩ', credit_card:'💳', other:'…' };
+  function _rowHtml(r, dim) {
+    var label = (methodIcons[r.method] || '💲') + ' ' + (methodLabels[r.method] || r.method || 'payment');
+    if (r.method === 'check' && r.check_number) label += ' #' + r.check_number;
+    if (r.method === 'other' && r.payment_method_other) label += ' · ' + r.payment_method_other;
+    var when = r.received_at ? new Date(r.received_at).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '';
+    var photoLink = r.photo_path
+      ? '<button onclick="event.stopPropagation();_mgrOpenPaymentPhoto(\'' + _audEsc(r.photo_path) + '\')" '
+        + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:4px 10px;font:600 11px DM Sans,sans-serif;cursor:pointer;margin-top:6px">📷 View photo</button>'
+      : '';
+    var voidBtn = dim
+      ? ''
+      : '<button onclick="event.stopPropagation();_mgrVoidPayment(\'' + _audEsc(r.id) + '\',\'' + _audEsc(j.id || '') + '\')" '
+        + 'style="background:rgba(220,38,38,0.12);border:1px solid rgba(220,38,38,0.35);color:#dc2626;border-radius:8px;padding:5px 10px;font:600 11px DM Sans,sans-serif;cursor:pointer">Void</button>';
+    return '<div style="background:' + (dim ? 'var(--surface2)' : 'rgba(34,197,94,0.08)') + ';'
+      + 'border:1px solid ' + (dim ? 'var(--border)' : 'rgba(34,197,94,0.30)') + ';'
+      + 'border-radius:10px;padding:10px 12px;margin-bottom:6px;'
+      + (dim ? 'opacity:0.7;' : '') + '">'
+      +   '<div style="display:flex;align-items:flex-start;gap:10px">'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'
+      +         '<span style="font-size:15px;font-weight:700;color:var(--text)' + (dim ? ';text-decoration:line-through' : '') + '">$' + _audEsc(r.amount) + '</span>'
+      +         '<span style="font-size:12px;color:var(--muted)">' + _audEsc(label) + '</span>'
+      +       '</div>'
+      +       '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + _audEsc(when) + '</div>'
+      +       (r.memo ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">' + _audEsc(r.memo) + '</div>' : '')
+      +       (dim && r.void_reason ? '<div style="font-size:11px;color:#dc2626;margin-top:2px">Voided: ' + _audEsc(_audTrunc(r.void_reason, 60)) + '</div>' : '')
+      +       photoLink
+      +     '</div>'
+      +     (voidBtn ? '<div style="flex-shrink:0">' + voidBtn + '</div>' : '')
+      +   '</div>'
+      + '</div>';
+  }
+  var html = '';
+  if (live.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">💵 Payments</div>';
+    html += live.map(function(r){ return _rowHtml(r, false); }).join('');
+  }
+  if (voided.length > 0) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">Voided</div>';
+    html += voided.map(function(r){ return _rowHtml(r, true); }).join('');
+  }
+  section.innerHTML = html;
+}
+
+// v11.0.16 (Phase C) — void a payment from any manager surface.
+async function _mgrVoidPayment(paymentId, jobId) {
+  if (!paymentId) return;
+  var reason = prompt('Void reason (required for the audit trail):', '');
+  if (reason === null) return;
+  if (!String(reason).trim()) { alert('A reason is required to void a payment.'); return; }
+  try {
+    var row = await window.PentaPayments.voidPayment(paymentId, reason);
+    console.log('[mgrVoidPayment] voided', row);
+    // Re-paint cards with this jobId.
+    if (jobId) {
+      document.querySelectorAll('[data-jid="' + jobId + '"]').forEach(function(el){
+        try { _mgrPaintJobPayments(el, { id: jobId }); } catch (e) {}
+      });
+      var overlay = document.querySelector('#cal-job-card-overlay');
+      if (overlay) {
+        var inner = overlay.firstElementChild;
+        if (inner) { try { _mgrPaintJobPayments(inner, { id: jobId }); } catch (e) {} }
+      }
+    }
+    try { if (typeof _refreshAllAuditSurfaces === 'function') _refreshAllAuditSurfaces(jobId, row && row.client_id); } catch (e) {}
+    try { if (typeof renderActivityLog === 'function') renderActivityLog(); } catch (e) {}
+  } catch (e) {
+    console.error('[mgrVoidPayment] failed', e);
+    alert('Could not void: ' + ((e && e.message) || e));
+  }
+}
+
+// v11.0.16 (Phase C) — full-size photo lightbox for payment images.
+async function _mgrOpenPaymentPhoto(photoPath) {
+  if (!photoPath) return;
+  var url = await window.PentaPayments.getSignedPhotoUrl(photoPath);
+  if (!url) { alert('Could not load photo.'); return; }
+  var ex = document.getElementById('payment-photo-lightbox'); if (ex) ex.remove();
+  var ov = document.createElement('div');
+  ov.id = 'payment-photo-lightbox';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.onclick = function(){ ov.remove(); };
+  ov.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px">'
+    + '<button onclick="document.getElementById(\'payment-photo-lightbox\').remove()" style="position:absolute;top:20px;right:20px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;width:40px;height:40px;border-radius:50%;font-size:20px;cursor:pointer">×</button>';
+  document.body.appendChild(ov);
+}
+
 function _attachJobCardActions(rootEl, j) {
   // Sprint 7: build action buttons via DOM into the per-job action row.
   // Idempotent — clears prior buttons before re-attaching. Safe to call for
@@ -38069,6 +38441,8 @@ function _attachJobCardActions(rootEl, j) {
   try { _mgrPaintJobIssues(rootEl, j); } catch (e) {}
   // v11.0.12 (Phase B): paint incidents section async on every attach.
   try { _mgrPaintJobIncidents(rootEl, j); } catch (e) {}
+  // v11.0.16 (Phase C): paint payments section async on every attach.
+  try { _mgrPaintJobPayments(rootEl, j); } catch (e) {}
   var actionRow = rootEl.querySelector('#cjc-action-row-' + safeId);
   if (!actionRow) return;
   actionRow.innerHTML = '';
@@ -42043,21 +42417,33 @@ function _p3dPage(dir) {
     <div id="job-payment-client" style="font-size:13px;color:var(--muted);margin-bottom:16px"></div>
     <div class="field-group">
       <div class="field-label">Amount Received</div>
-      <input type="number" class="field-input" id="jp-amount" placeholder="e.g. 180" inputmode="decimal" style="font-size:24px;font-weight:700;text-align:center">
+      <input type="number" class="field-input" id="jp-amount" placeholder="e.g. 180" inputmode="decimal" step="0.01" min="0.01" style="font-size:24px;font-weight:700;text-align:center">
     </div>
+    <!-- v11.0.16 (Phase C): six payment methods. selectPayMethod()
+         switches active style + reveals conditional fields below. -->
     <div class="field-group">
       <div class="field-label">Payment Method</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <button id="jp-btn-check" onclick="selectPayMethod('check')" style="padding:14px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">
-          🏦 Check
-        </button>
-        <button id="jp-btn-cash" onclick="selectPayMethod('cash')" style="padding:14px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">
-          💵 Cash
-        </button>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <button id="jp-btn-cash" type="button" onclick="selectPayMethod('cash')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">💵 Cash</button>
+        <button id="jp-btn-check" type="button" onclick="selectPayMethod('check')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">🏦 Check</button>
+        <button id="jp-btn-venmo" type="button" onclick="selectPayMethod('venmo')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">Ⓥ Venmo</button>
+        <button id="jp-btn-zelle" type="button" onclick="selectPayMethod('zelle')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">Ⓩ Zelle</button>
+        <button id="jp-btn-credit_card" type="button" onclick="selectPayMethod('credit_card')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">💳 Card</button>
+        <button id="jp-btn-other" type="button" onclick="selectPayMethod('other')" class="jp-method-btn" style="padding:12px 6px;background:var(--surface2);border:2px solid var(--border);border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;transition:all .15s">… Other</button>
       </div>
     </div>
+    <!-- Conditional: check_number, visible only when method=check. -->
+    <div class="field-group" id="jp-check-num-group" style="display:none">
+      <div class="field-label">Check Number</div>
+      <input type="text" class="field-input" id="jp-check-number" placeholder="e.g. 4811">
+    </div>
+    <!-- Conditional: payment_method_other label, visible only when method=other. -->
+    <div class="field-group" id="jp-other-group" style="display:none">
+      <div class="field-label">Method Detail</div>
+      <input type="text" class="field-input" id="jp-method-other" placeholder="e.g. Wire transfer">
+    </div>
     <div class="field-group">
-      <div class="field-label">📷 Photo of Check / Cash</div>
+      <div class="field-label">📷 Photo of Check / Cash <span id="jp-photo-required" style="display:none;color:var(--red);font-size:11px;font-weight:700;margin-left:6px">REQUIRED FOR CHECKS</span></div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Take a photo so the manager can verify</div>
       <label for="jp-photo" style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;cursor:pointer;font-size:15px;font-weight:500;color:var(--text)">
         <span style="font-size:22px">📷</span> <span id="jp-photo-label">Take or choose photo</span>
@@ -42066,8 +42452,8 @@ function _p3dPage(dir) {
       <div id="jp-photo-preview" style="margin-top:8px"></div>
     </div>
     <div class="field-group">
-      <div class="field-label">Notes (optional)</div>
-      <input type="text" class="field-input" id="jp-notes" placeholder="e.g. Check #1234">
+      <div class="field-label">Memo (optional)</div>
+      <input type="text" class="field-input" id="jp-notes" placeholder="e.g. for May invoice">
     </div>
     <button onclick="submitJobPayment()" style="width:100%;background:#34d399;border:none;color:#000;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;margin-top:8px">Submit Payment</button>
   </div>
