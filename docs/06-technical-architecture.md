@@ -223,6 +223,34 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8f. Client Requests (v11.0.17 — Phase B.5)
+
+Lightweight operational capture distinct from incidents and job_issues. Employee relays a request from the client (skip next clean, reschedule, change frequency, etc.); manager acknowledges. No photos, no status workflow — single `acknowledged_at` NULL→NOT NULL transition.
+
+**Six request types** (CHECK-constrained): `skip_next_clean`, `add_service_today`, `reschedule`, `change_frequency`, `general_message`, `other`. Description text is required only when type=`other`.
+
+**Audit trigger** (mig 056) extends `audit_log_capture()`:
+- INSERT → `action_type='created'`, `entity_type='client_request'` (new entity value, CHECK-constrained)
+- UPDATE `acknowledged_at` NULL→NOT NULL → `action_type='acknowledged'` (new action value, CHECK-constrained)
+- Other UPDATE → `'updated'`
+
+**`PentaClientRequests` facade** near `PentaIncidents`: `report({jobId, clientId, requestType, description})`, `listForClient`, `listForJob`, `listForReporter`, `listUnacknowledged`, `countUnacknowledged`, `acknowledge(id, note)`.
+
+**Surfaces** (re-using the Build 1 renderer pipeline via `_buildSyntheticAuditRow`):
+
+- **Employee TL action grid**: new 📝 **Request** button restored the 2×2 grid (Issue / Incident / Payment / Request). Opens `#client-request-sheet` — 6 type chips + free-text description.
+- **Manager job card**: new Client Requests section painted by `_mgrPaintJobRequests`, below Payments. Unacknowledged rows at top with **Acknowledge** button + optional note prompt; acknowledged rows dimmed below.
+- **Client History** (Build 2 §8d) now includes requests alongside issues/incidents/payments.
+- **Employee Activity** (Build 2 §8d) now includes requests reported by that employee.
+- **Open Items view** gains a 4th tab **Requests**. Same oldest-first sort. Inline Acknowledge button on each row.
+- **Combined badge** on Schedule dock + Schedule home tile + Open Items home tile now sums `unresolved_issues + open_incidents + unacknowledged_requests`.
+- **Activity Log** — `_renderAuditRowSummary` renders "Viviana V flagged 'Skip next clean' for Stephanie Weiss — note: '…'" with `[REQUEST: SKIP NEXT CLEAN]` chip on created and "Tom acknowledged Stephanie Weiss's request to skip next clean" with `[ACKNOWLEDGED]` chip on the acknowledge transition.
+- **Maids Sync Report** auto-includes requests through `audit_log` (entity_type `client_request`).
+
+`_refreshAllAuditSurfaces` cascades any acknowledge action through all surfaces simultaneously.
+
+---
+
 ## 8e. Payment Receive system (v11.0.16 — Phase C)
 
 `public.payments` pre-existed as an empty stub; this phase aligned it with the Phase A/B architectural pattern. Migration 052 renamed three legacy columns (`applied_to_job_id → job_id`, `created_by_user_id → recorded_by`, `vision_extracted_data → ocr_results`), added the missing columns, replaced the legacy method CHECK with the new six-value one, added indexes + RLS policies + a 90-day photo retention default. Migration 053 special-cased the existing audit trigger so payment INSERTs emit `action_type='received'` (not `'created'`) and the `voided` false→true transition emits `'refunded'`. Migration 054 added storage.objects policies for the `payment-photos` bucket.
