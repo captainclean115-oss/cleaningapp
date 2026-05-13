@@ -14801,32 +14801,582 @@ var _auditActionLabels = {
 };
 
 function _auditDescribe(row) {
-  // row: { action_type, entity_type, entity_id, new_values, ... }
+  // v11.0.14 backward-compat shim. Pre-Build-1 code path returned
+  // { action, details } strings. Build 1 replaces the renderer with
+  // _renderAuditRowSummary (richer one-line summaries + chips + drill-in).
+  // This shim is kept for any non-activity-log caller that hasn't
+  // migrated yet — it returns a stripped-down approximation by
+  // running through the new renderer's text-only branch.
+  var html = _renderAuditRowSummary(row, { users: {}, clients: {}, jobs: {}, employees: {} });
+  // Extract plain text for legacy callers.
+  var tmp = document.createElement('div');
+  tmp.innerHTML = (html && html.summary) || '';
+  return { action: tmp.textContent || (row.action_type + ' ' + row.entity_type), details: '' };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v11.0.14 — Build 1: Activity Log readability rewrite.
+//
+// _renderAuditRowSummary(row, ctx) returns { summary, chips, drill }
+// where summary is HTML-escaped text, chips is an array of
+// { label, color }, and drill is { type, id, jobId? } or null.
+//
+// ctx = { users:{id->name}, clients:{id->client}, jobs:{id->job},
+//         employees:{id->employee} } — pre-built once per render via
+// _buildAuditContext() so each row resolves O(1) from in-memory caches.
+//
+// For 'updated' events we diff old_values vs new_values, list the top
+// 3 changed fields with friendly labels. The SELECT in both
+// renderActivityLog + openClientActivityLog includes old_values so the
+// diff path always has both sides.
+// ═══════════════════════════════════════════════════════════════════════
+var _AUDIT_ISSUE_TYPE_LABEL = {
+  locked_out: 'Locked out', no_one_home: 'No one home',
+  cant_find_house: "Can't find house", forgot_key: 'Forgot key',
+  running_late: 'Running late'
+};
+var _AUDIT_INCIDENT_TYPE_LABEL = {
+  property_damage: 'Property damage', injury: 'Injury',
+  vehicle_accident: 'Vehicle accident', client_complaint: 'Client complaint',
+  pet_issue: 'Pet issue', safety_hazard: 'Safety hazard', other: 'Other'
+};
+var _AUDIT_STATUS_LABEL = {
+  open: 'Open', in_review: 'In Review', resolved: 'Resolved', closed: 'Closed'
+};
+var _AUDIT_FIELD_LABEL = {
+  fn: 'first name', first_name: 'first name', ln: 'last name', last_name: 'last name',
+  addr: 'address', address: 'address', city: 'city', state: 'state',
+  zip: 'zip', zip_code: 'zip', ph: 'phone', phone: 'phone',
+  email: 'email', notes: 'notes',
+  team: 'team', team_text: 'team', team_id: 'team',
+  time: 'time', endTime: 'end time', date: 'date',
+  fc: 'frequency', frequency: 'frequency', pkg: 'package',
+  price: 'price', avgRev: 'avg revenue',
+  status: 'status', cancelled: 'cancellation', cancelReason: 'cancel reason',
+  pref_day: 'preferred day', pref_time: 'preferred time',
+  position: 'position', is_team_leader: 'team leader flag', is_driver: 'driver flag',
+  clock_in_at: 'clock in', clock_out_at: 'clock out',
+  description: 'description', resolution_note: 'resolution note',
+  occasional: 'occasional flag', keyCode: 'key code'
+};
+var _AUDIT_NOISE_FIELDS = {
+  id:1, business_id:1, created_at:1, updated_at:1, last_seen_at:1,
+  version:1, photo_url:1, status_changed_at:1, status_changed_by:1,
+  reported_at:1, resolved_at:1, resolved_by:1, viewed_at:1,
+  viewed_by_user_id:1, generated_at:1, items_count:1,
+  external_id:1, legacy_id:1, legacy_roster_id:1,
+  is_team_leader_synced_at:1, actual_start_at:1, actual_end_at:1,
+  actual_start_by:1, actual_end_by:1, items_loaded_at:1,
+  auth_user_id:1, first_seen_at:1, last_login_at:1
+};
+
+function _audEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+function _audTrunc(s, max) {
+  s = String(s || '');
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '…';
+}
+function _audRelativeTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  var now = new Date();
+  var diffMs = now.getTime() - d.getTime();
+  if (diffMs < 60000) return 'just now';
+  if (diffMs < 3600000) return Math.round(diffMs / 60000) + ' min ago';
+  var sameDay = d.toDateString() === now.toDateString();
+  var yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+  var isYesterday = d.toDateString() === yesterday.toDateString();
+  var hh = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return hh + ' today';
+  if (isYesterday) return 'Yesterday ' + hh;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + hh;
+}
+function _audFmtTime24to12(t) {
+  if (!t) return '';
+  var p = String(t).split(':');
+  var h = parseInt(p[0]) || 0;
+  var m = parseInt(p[1] || 0);
+  var ap = h >= 12 ? 'PM' : 'AM';
+  if (h > 12) h -= 12; if (h === 0) h = 12;
+  return h + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+function _audFmtDateShort(ymd) {
+  if (!ymd) return '';
+  try {
+    var d = new Date(ymd + (ymd.length === 10 ? 'T00:00:00' : ''));
+    return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  } catch (e) { return ymd; }
+}
+function _audClientName(ctx, cid) {
+  if (!cid) return null;
+  var c = ctx.clients[cid];
+  if (!c) return '(deleted client)';
+  var fn = c.fn || c.first_name || '';
+  var ln = c.ln || c.last_name || '';
+  var n = (fn + ' ' + ln).trim();
+  return n || '(unnamed client)';
+}
+function _audJobCtx(ctx, jid) {
+  if (!jid) return { text: '', clientId: null };
+  var j = ctx.jobs[jid];
+  if (!j) return { text: '', clientId: null };
+  var bits = [];
+  if (j.date) bits.push(_audFmtDateShort(j.date));
+  if (j.time) bits.push(_audFmtTime24to12(j.time));
+  if (j.team) bits.push('Team ' + j.team);
+  return { text: bits.join(' · '), clientId: j.clientId || j.client_id || null };
+}
+function _audEmpName(ctx, eid) {
+  if (!eid) return null;
+  var e = ctx.employees[eid];
+  if (!e) return '(former staff)';
+  var fn = e.first_name || e.fn || '';
+  var ln = e.last_name || e.ln || '';
+  var n = (fn + ' ' + ln).trim();
+  return n || e.name || 'Employee';
+}
+function _audDiffFields(oldV, newV) {
+  oldV = oldV || {}; newV = newV || {};
+  var keys = {};
+  Object.keys(oldV).forEach(function(k){ keys[k] = 1; });
+  Object.keys(newV).forEach(function(k){ keys[k] = 1; });
+  var out = [];
+  Object.keys(keys).forEach(function(k){
+    if (_AUDIT_NOISE_FIELDS[k]) return;
+    var a = oldV[k], b = newV[k];
+    // Treat null/'' as equivalent; nested objects compared by JSON.
+    var aStr = (a == null) ? '' : (typeof a === 'object' ? JSON.stringify(a) : String(a));
+    var bStr = (b == null) ? '' : (typeof b === 'object' ? JSON.stringify(b) : String(b));
+    if (aStr === bStr) return;
+    out.push({
+      field: k,
+      label: _AUDIT_FIELD_LABEL[k] || k.replace(/_/g, ' '),
+      from: aStr || '∅',
+      to: bStr || '∅'
+    });
+  });
+  return out;
+}
+
+function _renderAuditRowSummary(row, ctx) {
   var nv = row.new_values || {};
-  // For 'cancelled' supplements: prefer the operator-supplied context.
-  if (row.action_type === 'cancelled' && row.entity_type === 'job' && nv.client_name) {
-    var parts = ['Cancelled job: ' + nv.client_name];
-    if (nv.source) parts.push((nv.source === 'client' ? 'Client' : 'Business') + ' · ' + (nv.reason || ''));
-    if (nv.notes) parts.push(nv.notes);
-    return { action: parts[0], details: parts.slice(1).join(' — ') };
+  var ov = row.old_values || {};
+  var actor = row.user_id ? (ctx.users[row.user_id] || 'User') : 'System';
+  var et = row.entity_type, at = row.action_type;
+  var summary = '';
+  var chips = [];
+  var drill = null;
+
+  // ─── job_issue ─────────────────────────────────────────────────
+  if (et === 'job_issue') {
+    var t = nv.issue_type || ov.issue_type;
+    var typeLabel = _AUDIT_ISSUE_TYPE_LABEL[t] || t || 'Issue';
+    var jid = nv.job_id || ov.job_id;
+    var jc = _audJobCtx(ctx, jid);
+    var cName = _audClientName(ctx, jc.clientId);
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' reported &lsquo;<strong>' + _audEsc(typeLabel) + '</strong>&rsquo;';
+      if (cName) summary += ' on ' + _audEsc(cName);
+      if (jc.text) summary += ' (' + _audEsc(jc.text) + ')';
+      if (nv.within_window === true) summary += ' — within window';
+      else if (nv.within_window === false) summary += ' — outside window';
+      if (nv.ding_target && nv.ding_target !== 'none') summary += ', ding to ' + _audEsc(nv.ding_target);
+      chips.push({ label: typeLabel.toUpperCase(), color: '#f59e0b', bg: 'rgba(245,158,11,0.14)' });
+      if (nv.ding_target && nv.ding_target !== 'none') {
+        chips.push({ label: 'DING: ' + nv.ding_target.toUpperCase(), color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+      }
+      drill = jid ? { type: 'job', id: jid } : null;
+    } else if (at === 'resolved') {
+      summary = _audEsc(actor) + ' resolved ';
+      summary += (cName ? _audEsc(cName) + '&rsquo;s ' : '');
+      summary += '&lsquo;<strong>' + _audEsc(typeLabel) + '</strong>&rsquo; issue';
+      var note = nv.resolution_note;
+      if (note) summary += ' — note: &lsquo;' + _audEsc(_audTrunc(note, 80)) + '&rsquo;';
+      chips.push({ label: 'RESOLVED', color: '#15803d', bg: 'rgba(34,197,94,0.14)' });
+      drill = jid ? { type: 'job', id: jid } : null;
+    } else {
+      summary = _audEsc(actor) + ' updated a ' + _audEsc(typeLabel) + ' issue';
+      drill = jid ? { type: 'job', id: jid } : null;
+    }
   }
-  // 'submitted' application: applicant name + slug.
-  if (row.action_type === 'submitted' && row.entity_type === 'application') {
-    return {
-      action: 'Application: ' + (nv.applicant_name || 'unknown'),
-      details: nv.hear_about_us ? ('Heard via ' + nv.hear_about_us) : (nv.slug ? ('Slug: ' + nv.slug) : '')
-    };
+  // ─── incident ──────────────────────────────────────────────────
+  else if (et === 'incident') {
+    var it = nv.incident_type || ov.incident_type;
+    var itLabel = _AUDIT_INCIDENT_TYPE_LABEL[it] || it || 'Incident';
+    var ijid = nv.job_id || ov.job_id;
+    var ijc = _audJobCtx(ctx, ijid);
+    var iCid = nv.client_id || ov.client_id || ijc.clientId;
+    var icName = _audClientName(ctx, iCid);
+    var hasPhoto = !!(nv.photo_path || ov.photo_path);
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' reported <strong>' + _audEsc(itLabel) + '</strong>';
+      if (icName) summary += ' on ' + _audEsc(icName) + '&rsquo;s job';
+      var desc = nv.description;
+      if (desc) summary += ' — &lsquo;' + _audEsc(_audTrunc(desc, 70)) + '&rsquo;';
+      if (hasPhoto) summary += ' [photo attached]';
+      chips.push({ label: itLabel.toUpperCase(), color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+      chips.push({ label: 'STATUS: ' + (nv.status || 'OPEN').toUpperCase(), color: '#c2410c', bg: 'rgba(249,115,22,0.14)' });
+      if (hasPhoto) chips.push({ label: '📎 PHOTO', color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
+      drill = ijid ? { type: 'job', id: ijid } : (iCid ? { type: 'client', id: iCid } : null);
+    } else if (at === 'resolved') {
+      summary = _audEsc(actor) + ' resolved <strong>' + _audEsc(itLabel) + '</strong>';
+      if (icName) summary += ' on ' + _audEsc(icName);
+      if (nv.resolution_note) summary += ' — note: &lsquo;' + _audEsc(_audTrunc(nv.resolution_note, 80)) + '&rsquo;';
+      chips.push({ label: 'RESOLVED', color: '#15803d', bg: 'rgba(34,197,94,0.14)' });
+      drill = ijid ? { type: 'job', id: ijid } : (iCid ? { type: 'client', id: iCid } : null);
+    } else if (at === 'updated') {
+      // Status change is the common case here.
+      if (ov.status && nv.status && ov.status !== nv.status) {
+        summary = _audEsc(actor) + ' marked <strong>' + _audEsc(itLabel) + '</strong>';
+        if (icName) summary += ' on ' + _audEsc(icName);
+        summary += ' → ' + _audEsc(_AUDIT_STATUS_LABEL[nv.status] || nv.status);
+        chips.push({ label: 'STATUS: ' + (nv.status || '').toUpperCase().replace('_',' '), color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
+      } else {
+        summary = _audEsc(actor) + ' updated incident';
+        if (icName) summary += ' on ' + _audEsc(icName);
+      }
+      drill = ijid ? { type: 'job', id: ijid } : (iCid ? { type: 'client', id: iCid } : null);
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' incident';
+    }
   }
-  // 'manual_note' (logActivity callers): preserve the legacy shape.
-  if (row.action_type === 'manual_note') {
-    return { action: nv.action || 'Note', details: nv.details || '' };
+  // ─── client ────────────────────────────────────────────────────
+  else if (et === 'client') {
+    var cn = _audClientName(ctx, row.entity_id) || ((nv.first_name || nv.fn || '') + ' ' + (nv.last_name || nv.ln || '')).trim() || '(unnamed client)';
+    var city = nv.city || ov.city || '';
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' added new client <strong>' + _audEsc(cn) + '</strong>';
+      if (city) summary += ' (' + _audEsc(city) + ')';
+      drill = { type: 'client', id: row.entity_id };
+    } else if (at === 'deleted') {
+      summary = _audEsc(actor) + ' deleted client <strong>' + _audEsc(cn) + '</strong>';
+    } else if (at === 'updated') {
+      var diffs = _audDiffFields(ov, nv).slice(0, 3);
+      summary = _audEsc(actor) + ' updated <strong>' + _audEsc(cn) + '</strong>';
+      if (diffs.length > 0) {
+        var changeStrs = diffs.map(function(dd){
+          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(dd.from, 22)) + ' → ' + _audEsc(_audTrunc(dd.to, 22));
+        });
+        summary += ' — changed: ' + changeStrs.join(', ');
+      }
+      drill = { type: 'client', id: row.entity_id };
+    } else if (at === 'restored') {
+      summary = _audEsc(actor) + ' restored client <strong>' + _audEsc(cn) + '</strong>';
+      drill = { type: 'client', id: row.entity_id };
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' client <strong>' + _audEsc(cn) + '</strong>';
+    }
   }
-  // Generic fallback: "{verb} {entity_type}" with optional first_name hint.
-  var verb = (_auditActionLabels[row.action_type] && _auditActionLabels[row.action_type].en) || row.action_type;
-  var entityHint = '';
-  if (nv.first_name || nv.last_name) entityHint = ': ' + ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim();
-  else if (nv.client_name) entityHint = ': ' + nv.client_name;
-  return { action: verb + ' ' + row.entity_type + entityHint, details: '' };
+  // ─── job ───────────────────────────────────────────────────────
+  else if (et === 'job') {
+    var jcid = nv.client_id || ov.client_id;
+    var jcn = _audClientName(ctx, jcid) || nv.client_name || ov.client_name || '(unknown client)';
+    var jdate = nv.date || ov.date;
+    var jtime = nv.time || ov.time;
+    var jteam = nv.team || ov.team;
+    if (at === 'created') {
+      var bits = [_audEsc(jcn)];
+      if (jdate) bits.push(_audFmtDateShort(jdate));
+      if (jtime) bits.push(_audFmtTime24to12(jtime));
+      if (jteam) bits.push('Team ' + _audEsc(jteam));
+      if (nv.price) bits.push('$' + _audEsc(String(nv.price)));
+      summary = _audEsc(actor) + ' added new job: <strong>' + bits.join(' · ') + '</strong>';
+      drill = { type: 'job', id: row.entity_id };
+    } else if (at === 'cancelled') {
+      summary = _audEsc(actor) + ' cancelled <strong>' + _audEsc(jcn) + '</strong>';
+      if (jdate) summary += '&rsquo;s ' + _audEsc(_audFmtDateShort(jdate)) + ' cleaning';
+      var reason = nv.reason || nv.cancel_reason || ov.cancel_reason;
+      if (reason) summary += ' — reason: &lsquo;' + _audEsc(_audTrunc(String(reason), 80)) + '&rsquo;';
+      if (nv.source) chips.push({ label: nv.source.toUpperCase(), color: '#c2410c', bg: 'rgba(249,115,22,0.14)' });
+      drill = { type: 'job', id: row.entity_id };
+    } else if (at === 'updated') {
+      var jdiffs = _audDiffFields(ov, nv).slice(0, 3);
+      // Time move is the common case — special-case to read clean.
+      var timeDiff = jdiffs.find(function(d){ return d.field === 'time'; });
+      var teamDiff = jdiffs.find(function(d){ return d.field === 'team'; });
+      var dateDiff = jdiffs.find(function(d){ return d.field === 'date'; });
+      if (timeDiff && jdiffs.length === 1) {
+        summary = _audEsc(actor) + ' moved <strong>' + _audEsc(jcn) + '</strong>: '
+          + _audEsc(_audFmtTime24to12(timeDiff.from)) + ' → ' + _audEsc(_audFmtTime24to12(timeDiff.to));
+      } else if (teamDiff && jdiffs.length === 1) {
+        summary = _audEsc(actor) + ' reassigned <strong>' + _audEsc(jcn) + '</strong>: Team '
+          + _audEsc(teamDiff.from) + ' → Team ' + _audEsc(teamDiff.to);
+      } else if (dateDiff && jdiffs.length === 1) {
+        summary = _audEsc(actor) + ' rescheduled <strong>' + _audEsc(jcn) + '</strong>: '
+          + _audEsc(_audFmtDateShort(dateDiff.from)) + ' → ' + _audEsc(_audFmtDateShort(dateDiff.to));
+      } else if (jdiffs.length > 0) {
+        var jChangeStrs = jdiffs.map(function(dd){
+          var fr = dd.field === 'time' ? _audFmtTime24to12(dd.from) : (dd.field === 'date' ? _audFmtDateShort(dd.from) : dd.from);
+          var to = dd.field === 'time' ? _audFmtTime24to12(dd.to)   : (dd.field === 'date' ? _audFmtDateShort(dd.to)   : dd.to);
+          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(fr, 20)) + ' → ' + _audEsc(_audTrunc(to, 20));
+        });
+        summary = _audEsc(actor) + ' updated <strong>' + _audEsc(jcn) + '</strong> — ' + jChangeStrs.join(', ');
+      } else {
+        summary = _audEsc(actor) + ' updated <strong>' + _audEsc(jcn) + '</strong>';
+      }
+      drill = { type: 'job', id: row.entity_id };
+    } else if (at === 'started') {
+      summary = _audEsc(actor) + ' started job: <strong>' + _audEsc(jcn) + '</strong>';
+      drill = { type: 'job', id: row.entity_id };
+    } else if (at === 'ended') {
+      summary = _audEsc(actor) + ' ended job: <strong>' + _audEsc(jcn) + '</strong>';
+      drill = { type: 'job', id: row.entity_id };
+    } else if (at === 'deleted') {
+      summary = _audEsc(actor) + ' deleted job: <strong>' + _audEsc(jcn) + '</strong>';
+    } else if (at === 'restored') {
+      summary = _audEsc(actor) + ' restored job: <strong>' + _audEsc(jcn) + '</strong>';
+      drill = { type: 'job', id: row.entity_id };
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' job <strong>' + _audEsc(jcn) + '</strong>';
+      drill = { type: 'job', id: row.entity_id };
+    }
+  }
+  // ─── application ───────────────────────────────────────────────
+  else if (et === 'application') {
+    var applicant = nv.applicant_name || ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim() || 'unknown';
+    if (at === 'submitted' || at === 'created') {
+      summary = 'New applicant: <strong>' + _audEsc(applicant) + '</strong> applied';
+      if (nv.slug) summary += ' via /apply' + (nv.preferred_language ? '' : '');
+      var bizName = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+      if (bizName) summary += ' (' + _audEsc(bizName) + ')';
+      var hbits = [];
+      if (nv.preferred_language) hbits.push(nv.preferred_language === 'es' ? 'Spanish' : nv.preferred_language === 'pt' ? 'Portuguese' : nv.preferred_language === 'cv' ? 'Creole' : 'English');
+      if (nv.hear_about_us) hbits.push('heard via ' + nv.hear_about_us);
+      if (hbits.length) summary += ' — ' + _audEsc(hbits.join(', '));
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' application from ' + _audEsc(applicant);
+    }
+  }
+  // ─── time_entry ────────────────────────────────────────────────
+  else if (et === 'time_entry') {
+    var eid = nv.employee_id || ov.employee_id;
+    var en = _audEmpName(ctx, eid) || actor;
+    if (at === 'created') {
+      var ci = nv.clock_in_at ? new Date(nv.clock_in_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      summary = _audEsc(en) + ' clocked in';
+      if (ci) summary += ' at ' + _audEsc(ci);
+      if (nv.team) summary += ' (Team ' + _audEsc(nv.team) + ')';
+    } else if (at === 'updated') {
+      var teDiffs = _audDiffFields(ov, nv).slice(0, 2);
+      summary = _audEsc(en) + ' updated time entry';
+      if (teDiffs.length) {
+        var teStrs = teDiffs.map(function(dd){
+          var f = (dd.field === 'clock_in_at' || dd.field === 'clock_out_at')
+            ? (dd.from === '∅' ? '∅' : new Date(dd.from).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })) : dd.from;
+          var t = (dd.field === 'clock_in_at' || dd.field === 'clock_out_at')
+            ? (dd.to   === '∅' ? '∅' : new Date(dd.to).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })) : dd.to;
+          return _audEsc(dd.label) + ' ' + _audEsc(f) + ' → ' + _audEsc(t);
+        });
+        summary += ' — ' + teStrs.join(', ');
+      }
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' time entry for ' + _audEsc(en);
+    }
+    if (eid) drill = { type: 'employee', id: eid };
+  }
+  // ─── lunch_break ───────────────────────────────────────────────
+  else if (et === 'lunch_break') {
+    var leid = nv.employee_id || ov.employee_id;
+    var len = _audEmpName(ctx, leid) || actor;
+    if (at === 'created') {
+      var st = nv.started_at ? new Date(nv.started_at).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }) : '';
+      summary = _audEsc(len) + ' started lunch' + (st ? ' at ' + _audEsc(st) : '');
+    } else if (at === 'updated' && nv.ended_at && !ov.ended_at) {
+      var et2 = new Date(nv.ended_at).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+      summary = _audEsc(len) + ' ended lunch at ' + _audEsc(et2);
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' lunch for ' + _audEsc(len);
+    }
+    if (leid) drill = { type: 'employee', id: leid };
+  }
+  // ─── daily_assignment ─────────────────────────────────────────
+  else if (et === 'daily_assignment') {
+    var daEid = nv.employee_id || ov.employee_id;
+    var daEn = _audEmpName(ctx, daEid) || '(staff)';
+    var daDate = nv.date || ov.date;
+    var dStr = daDate ? _audFmtDateShort(daDate) : '';
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' assigned <strong>' + _audEsc(daEn) + '</strong> to Team ' + _audEsc(nv.team || '?');
+      if (dStr) summary += ' on ' + _audEsc(dStr);
+    } else if (at === 'deleted') {
+      summary = _audEsc(actor) + ' unassigned <strong>' + _audEsc(daEn) + '</strong> from Team ' + _audEsc(ov.team || '?');
+      if (dStr) summary += ' on ' + _audEsc(dStr);
+    } else if (at === 'updated' && ov.team && nv.team && ov.team !== nv.team) {
+      summary = _audEsc(actor) + ' moved <strong>' + _audEsc(daEn) + '</strong>: Team ' + _audEsc(ov.team) + ' → Team ' + _audEsc(nv.team);
+      if (dStr) summary += ' on ' + _audEsc(dStr);
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' assignment for ' + _audEsc(daEn);
+    }
+    if (daEid) drill = { type: 'employee', id: daEid };
+  }
+  // ─── employee ──────────────────────────────────────────────────
+  else if (et === 'employee') {
+    var en2 = _audEmpName(ctx, row.entity_id) || ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim() || 'Employee';
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' added staff member <strong>' + _audEsc(en2) + '</strong>';
+    } else if (at === 'deleted') {
+      summary = _audEsc(actor) + ' removed staff member <strong>' + _audEsc(en2) + '</strong>';
+    } else if (at === 'updated') {
+      var eDiffs = _audDiffFields(ov, nv).slice(0, 3);
+      summary = _audEsc(actor) + ' updated <strong>' + _audEsc(en2) + '</strong>';
+      if (eDiffs.length) {
+        summary += ' — ' + eDiffs.map(function(dd){
+          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(dd.from, 20)) + ' → ' + _audEsc(_audTrunc(dd.to, 20));
+        }).join(', ');
+      }
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' staff member <strong>' + _audEsc(en2) + '</strong>';
+    }
+    drill = { type: 'employee', id: row.entity_id };
+  }
+  // ─── payment ───────────────────────────────────────────────────
+  else if (et === 'payment') {
+    var pCid = nv.client_id || ov.client_id;
+    var pcn = _audClientName(ctx, pCid) || nv.client_name || '(unknown client)';
+    var amt = nv.amount || nv.amt;
+    if (at === 'created' || at === 'received') {
+      summary = _audEsc(actor) + ' recorded';
+      if (amt) summary += ' $' + _audEsc(String(amt)) + ' payment';
+      else     summary += ' payment';
+      if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
+      if (nv.method) summary += ' · ' + _audEsc(nv.method);
+      if (nv.check_number) summary += ' #' + _audEsc(nv.check_number);
+    } else if (at === 'refunded') {
+      summary = _audEsc(actor) + ' refunded payment from ' + _audEsc(pcn);
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' payment';
+    }
+    if (pCid) drill = { type: 'client', id: pCid };
+  }
+  // ─── system (manual_note + sync approvals) ─────────────────────
+  else if (et === 'system') {
+    if (at === 'manual_note') {
+      summary = _audEsc(actor) + ': &lsquo;' + _audEsc(_audTrunc(nv.action || nv.details || 'note', 90)) + '&rsquo;';
+    } else if (at === 'approved' && nv.sync_report_date) {
+      summary = _audEsc(actor) + ' marked Maids Sync synced for ' + _audEsc(nv.sync_report_date);
+      if (nv.notes) summary += ' — ' + _audEsc(_audTrunc(nv.notes, 60));
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' (system)';
+    }
+  }
+  // ─── unknown entity (fallback) ─────────────────────────────────
+  else {
+    var verb = (_auditActionLabels[at] && _auditActionLabels[at].en) || at;
+    summary = _audEsc(actor) + ' ' + _audEsc(verb.toLowerCase()) + ' ' + _audEsc(et);
+  }
+
+  return { summary: summary, chips: chips, drill: drill };
+}
+
+// Build the resolver context in one pass. user names hit the DB once;
+// clients/jobs/employees come from in-memory facade caches (sync, no
+// network).
+async function _buildAuditContext(rows, sb) {
+  var ctx = { users: {}, clients: {}, jobs: {}, employees: {} };
+  var userIds = {}, clientIds = {}, jobIds = {}, employeeIds = {};
+  (rows || []).forEach(function(r){
+    if (r.user_id) userIds[r.user_id] = 1;
+    var nv = r.new_values || {}, ov = r.old_values || {};
+    if (nv.client_id) clientIds[nv.client_id] = 1;
+    if (ov.client_id) clientIds[ov.client_id] = 1;
+    if (r.entity_type === 'client' && r.entity_id) clientIds[r.entity_id] = 1;
+    if (nv.job_id) jobIds[nv.job_id] = 1;
+    if (ov.job_id) jobIds[ov.job_id] = 1;
+    if (r.entity_type === 'job' && r.entity_id) jobIds[r.entity_id] = 1;
+    if (nv.employee_id) employeeIds[nv.employee_id] = 1;
+    if (ov.employee_id) employeeIds[ov.employee_id] = 1;
+    if (r.entity_type === 'employee' && r.entity_id) employeeIds[r.entity_id] = 1;
+  });
+  var uidList = Object.keys(userIds);
+  if (uidList.length > 0 && sb) {
+    try {
+      var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', uidList);
+      (ures.data || []).forEach(function(u){
+        ctx.users[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+      });
+    } catch (e) {}
+  }
+  Object.keys(clientIds).forEach(function(cid){
+    try {
+      if (window.PentaClients && window.PentaClients.getClient) {
+        var c = window.PentaClients.getClient(cid);
+        if (c) ctx.clients[cid] = c;
+      }
+    } catch (e) {}
+  });
+  Object.keys(jobIds).forEach(function(jid){
+    try {
+      if (window.PentaJobs && window.PentaJobs.getById) {
+        var j = window.PentaJobs.getById(jid);
+        if (j) ctx.jobs[jid] = j;
+      }
+    } catch (e) {}
+  });
+  Object.keys(employeeIds).forEach(function(eid){
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.getById) {
+        var e = window.PentaEmployees.getById(eid);
+        if (e) ctx.employees[eid] = e;
+      }
+    } catch (e) {}
+  });
+  return ctx;
+}
+
+// Build the HTML for a single audit-log row using the new renderer.
+// Used by both renderActivityLog (Updates tab) + openClientActivityLog
+// (client card overlay). Renders summary + chips + click-to-drill data
+// attributes. Time-on-the-left layout matches the prior compact rows.
+function _renderAuditRowHtml(row, ctx, opts) {
+  opts = opts || {};
+  var info = _renderAuditRowSummary(row, ctx);
+  var timeLabel = opts.fullTime
+    ? new Date(row.created_at).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' })
+    : _audRelativeTime(row.created_at);
+  var actorLabel = row.user_id ? (ctx.users[row.user_id] || 'User') : 'System';
+  var chipsHtml = info.chips.map(function(c){
+    return '<span style="display:inline-block;background:' + c.bg + ';color:' + c.color
+      + ';font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em;margin-right:4px;margin-top:2px">'
+      + _audEsc(c.label) + '</span>';
+  }).join('');
+  var drillAttr = '';
+  var cursorStyle = '';
+  if (info.drill) {
+    drillAttr = ' data-audit-drill-type="' + _audEsc(info.drill.type) + '"'
+              + ' data-audit-drill-id="' + _audEsc(info.drill.id) + '"';
+    cursorStyle = 'cursor:pointer;';
+  }
+  return '<div class="audit-log-row" style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;' + cursorStyle + '"' + drillAttr + '>'
+    + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:' + (opts.fullTime ? '160px' : '90px') + ';font-size:11px">' + _audEsc(timeLabel) + '</div>'
+    + '<div style="flex:1;min-width:0">'
+    +   '<div style="color:var(--text);line-height:1.4">' + info.summary + '</div>'
+    +   (chipsHtml ? '<div style="margin-top:3px">' + chipsHtml + '</div>' : '')
+    + '</div>'
+    + '</div>';
+}
+
+// Delegated click handler — opens the drill target. Attached once per
+// list container by renderActivityLog / openClientActivityLog.
+function _wireAuditDrill(containerEl) {
+  if (!containerEl || containerEl.__auditDrillWired) return;
+  containerEl.__auditDrillWired = true;
+  containerEl.addEventListener('click', function(e){
+    var row = e.target.closest && e.target.closest('[data-audit-drill-type]');
+    if (!row) return;
+    var t = row.getAttribute('data-audit-drill-type');
+    var id = row.getAttribute('data-audit-drill-id');
+    if (!t || !id) return;
+    try {
+      if (t === 'client' && typeof openClientEdit === 'function') openClientEdit(id);
+      else if (t === 'job' && typeof openJobModal === 'function') openJobModal(id);
+      else if (t === 'employee' && typeof openStaffMember === 'function') openStaffMember(id);
+      else { console.log('[auditDrill] no handler for', t, id); }
+    } catch (err) { console.warn('[auditDrill] handler threw', err); }
+  });
 }
 
 async function renderActivityLog() {
@@ -14841,8 +15391,10 @@ async function renderActivityLog() {
     return;
   }
   try {
+    // v11.0.14 (Build 1): pull old_values too so the diff path on
+    // 'updated' rows can compare both sides.
     var res = await sb.from('audit_log')
-      .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+      .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
       .eq('business_id', bid)
       .order('created_at', { ascending: false })
       .limit(250);
@@ -14855,18 +15407,10 @@ async function renderActivityLog() {
       el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
       return;
     }
-    // Resolve user_id → display name once per render. We pull all
-    // distinct user_ids in one query and build a lookup map.
-    var distinctUids = Array.from(new Set(rows.map(function(r){ return r.user_id; }).filter(Boolean)));
-    var actorByUid = {};
-    if (distinctUids.length > 0) {
-      try {
-        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', distinctUids);
-        (ures.data || []).forEach(function(u){
-          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
-        });
-      } catch (e) {}
-    }
+    // Build the resolver context (users + clients + jobs + employees)
+    // once for the whole render. Clients/jobs/employees come from the
+    // already-hydrated facade caches; only users hits the DB.
+    var ctx = await _buildAuditContext(rows, sb);
     var grouped = {};
     rows.forEach(function(row){
       var d = new Date(row.created_at);
@@ -14879,20 +15423,11 @@ async function renderActivityLog() {
       if (di > 7) return;
       html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
       grouped[dateLabel].forEach(function(row) {
-        var timeOnly = new Date(row.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-        var actorLabel = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
-        var actorColor = actorLabel === 'System' ? 'var(--muted)' : 'var(--teal)';
-        var desc = _auditDescribe(row);
-        html += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
-          + '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:65px">' + timeOnly + '</div>'
-          + '<div style="flex:1;min-width:0">'
-          + '<div style="font-weight:500;color:var(--text)">' + _adminEsc(desc.action) + '</div>'
-          + (desc.details ? '<div style="color:var(--muted);font-size:11px;margin-top:1px">' + _adminEsc(desc.details) + '</div>' : '')
-          + '<div style="font-size:10px;font-weight:600;color:'+actorColor+';margin-top:2px;text-transform:uppercase;letter-spacing:.04em">by '+_adminEsc(actorLabel)+'</div>'
-          + '</div></div>';
+        html += _renderAuditRowHtml(row, ctx, { fullTime: false });
       });
     });
     el.innerHTML = html;
+    _wireAuditDrill(el);
   } catch (e) {
     console.warn('[activity log] render failed', e);
     el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable</div>';
@@ -25572,9 +26107,10 @@ async function openClientActivityLog(clientId) {
   var log = [];
   if (sb && bid) {
     try {
-      // Direct events on this client row (entity_type='client', entity_id=clientId).
+      // v11.0.14 (Build 1): pull old_values too so the diff path on
+      // 'updated' rows can compare both sides.
       var directRes = await sb.from('audit_log')
-        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
         .eq('business_id', bid)
         .eq('entity_type', 'client')
         .eq('entity_id', clientId)
@@ -25584,7 +26120,7 @@ async function openClientActivityLog(clientId) {
       // Related events: jobs/payments/applications/manual_notes where
       // new_values.client_id matches. Server-side JSONB filter.
       var relRes = await sb.from('audit_log')
-        .select('id, user_id, action_type, entity_type, entity_id, new_values, created_at')
+        .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
         .eq('business_id', bid)
         .filter('new_values->>client_id', 'eq', clientId)
         .order('created_at', { ascending: false })
@@ -25599,19 +26135,9 @@ async function openClientActivityLog(clientId) {
     }
   }
 
-  // Resolve actor names in one batch.
-  var actorByUid = {};
-  if (sb && bid) {
-    var uids = Array.from(new Set(log.map(function(r){ return r.user_id; }).filter(Boolean)));
-    if (uids.length > 0) {
-      try {
-        var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', uids);
-        (ures.data || []).forEach(function(u){
-          actorByUid[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
-        });
-      } catch (e) {}
-    }
-  }
+  // v11.0.14 (Build 1): use the shared resolver context — users +
+  // clients + jobs + employees.
+  var ctx = sb ? await _buildAuditContext(log, sb) : { users:{}, clients:{}, jobs:{}, employees:{} };
 
   var old = document.getElementById('client-activity-overlay');
   if (old) old.remove();
@@ -25638,21 +26164,9 @@ async function openClientActivityLog(clientId) {
   if (log.length === 0) {
     bodyHtml = '<div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:14px">No activity recorded for this client yet.</div>';
   } else {
-    bodyHtml = '<div style="padding:8px 20px 20px">';
+    bodyHtml = '<div id="client-activity-body" style="padding:8px 20px 20px">';
     log.forEach(function(row) {
-      var timeStr = new Date(row.created_at).toLocaleString('en-US', { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
-      var desc = (typeof _auditDescribe === 'function') ? _auditDescribe(row) : { action: row.action_type + ' ' + row.entity_type, details: '' };
-      var actorStr = row.user_id ? (actorByUid[row.user_id] || 'User') : 'System';
-
-      bodyHtml += ''
-        + '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
-        +   '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;gap:12px">'
-        +     '<div style="font-size:13px;font-weight:600;color:var(--text);flex:1">' + desc.action.replace(/</g,'&lt;') + '</div>'
-        +     '<div style="font-size:11px;color:var(--muted);white-space:nowrap">' + timeStr + '</div>'
-        +   '</div>'
-        +   (desc.details ? '<div style="font-size:12px;color:var(--muted);line-height:1.4">' + desc.details.replace(/</g,'&lt;') + '</div>' : '')
-        +   '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-style:italic">by ' + actorStr.replace(/</g,'&lt;') + '</div>'
-        + '</div>';
+      bodyHtml += _renderAuditRowHtml(row, ctx, { fullTime: true });
     });
     bodyHtml += '</div>';
   }
@@ -25663,6 +26177,9 @@ async function openClientActivityLog(clientId) {
 
   document.getElementById('client-activity-close').onclick = function(){ overlay.remove(); };
   overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
+  // Wire click-to-drill on the body container.
+  var bodyEl = document.getElementById('client-activity-body');
+  if (bodyEl) _wireAuditDrill(bodyEl);
 }
 
 function openClientEdit(clientId) {
