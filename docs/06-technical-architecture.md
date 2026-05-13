@@ -223,6 +223,31 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8c. Activity Log renderer (v11.0.14 — Build 1)
+
+The Activity Log surfaces in two places: the global Updates tab (`renderActivityLog`) and the per-client overlay (`openClientActivityLog`). Both read from `public.audit_log` and now share one rendering pipeline.
+
+**Contract: `_renderAuditRowSummary(row, ctx) → { summary, chips, drill }`**
+
+- `row` is a raw audit_log row including `old_values` + `new_values` (full row snapshots from the capture trigger)
+- `ctx = { users, clients, jobs, employees }` is built once per render by `_buildAuditContext(rows, sb)`. Users hit the DB once (batched `.in('id', uids)`). Clients/jobs/employees come from in-memory facade caches (`PentaClients.getClient`, `PentaJobs.getById`, `PentaEmployees.getById`) — sync, no extra network round trips.
+- Returns:
+  - `summary` — HTML-escaped one-line story with `<strong>` highlights
+  - `chips` — array of `{ label, color, bg }` for inline status pills (issue type, incident type, status, ding target, photo indicator)
+  - `drill` — `{ type, id }` for click-to-drill (`type` ∈ `client | job | employee`), or `null` when no natural target
+
+**Renderer dispatch:** big switch on `entity_type` × `action_type`. Covered combinations: `job_issue` (created/resolved/updated), `incident` (created/resolved/updated → reads status transitions out of the diff), `client` (created/updated/deleted/restored), `job` (created/cancelled/updated/started/ended/deleted/restored — `updated` specializes time-only / team-only / date-only diffs to read like "moved 10:00 AM → 9:00 AM"), `application` (submitted), `time_entry` (created/updated, reads clock_in_at / clock_out_at humanly), `lunch_break` (started/ended), `daily_assignment` (assignment changes), `employee` (CRUD with diff), `payment` (created/refunded), `system` (manual_note + Maids Sync `approved` events). Unknown combinations fall back to a generic verb + entity_type label.
+
+**Diff detection on `updated`:** `_audDiffFields(old, new)` walks both jsonb objects, skips noise fields (`updated_at`, `created_at`, `last_seen_at`, version/audit columns, signed photo URLs), and returns the top 3 changed fields with friendly labels via `_AUDIT_FIELD_LABEL` (e.g. `fc → 'frequency'`, `pkg → 'package'`).
+
+**Click-to-drill:** rows render with `data-audit-drill-type` + `data-audit-drill-id` attributes. `_wireAuditDrill(container)` attaches one delegated click listener that dispatches to `openClientEdit`, `openJobModal`, or `openStaffMember`. Idempotent — guarded by `container.__auditDrillWired`.
+
+**Empty-value handling:** `(deleted client)`, `(former staff)`, `(unknown)` appear when a referenced id no longer resolves in the local cache. Drill is suppressed when the resolved target is missing.
+
+**Backward compat:** the pre-Build-1 `_auditDescribe(row)` helper still exists as a shim that text-strips the new renderer's HTML output. Any legacy caller that hadn't migrated keeps working.
+
+---
+
 ## 8b. Incidents (v11.0.12 — Phase B)
 
 `incidents` is the liability-track event stream — distinct from `job_issues` (Phase A) by severity, photo support, and a four-step status workflow. Replaces the legacy localStorage `cleanco_pending` write that the employee Report Incident form used.
