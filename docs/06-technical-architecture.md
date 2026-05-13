@@ -223,6 +223,32 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8e. Payment Receive system (v11.0.16 — Phase C)
+
+`public.payments` pre-existed as an empty stub; this phase aligned it with the Phase A/B architectural pattern. Migration 052 renamed three legacy columns (`applied_to_job_id → job_id`, `created_by_user_id → recorded_by`, `vision_extracted_data → ocr_results`), added the missing columns, replaced the legacy method CHECK with the new six-value one, added indexes + RLS policies + a 90-day photo retention default. Migration 053 special-cased the existing audit trigger so payment INSERTs emit `action_type='received'` (not `'created'`) and the `voided` false→true transition emits `'refunded'`. Migration 054 added storage.objects policies for the `payment-photos` bucket.
+
+**Six payment methods** (CHECK-constrained): `cash`, `check`, `venmo`, `zelle`, `credit_card`, `other`. `'other'` carries a free-text label in `payment_method_other`; `'check'` carries the check number in `check_number`.
+
+**Void flow:** payments are append-only. The `voided` boolean + `voided_at`/`voided_by`/`void_reason` mark a payment as voided rather than deleting it. No DELETE policy on the table. Audit trigger emits `action_type='refunded'` on the transition.
+
+**Storage bucket:** `payment-photos`, private, 10MB, image-only MIMEs. Path convention `<business_id>/<payment_id>/photo.<ext>`. RLS via `storage.objects` policies (same tenant for SELECT/INSERT; manager-tier for UPDATE/DELETE). **Tom must create the bucket in Supabase Dashboard before testing photo upload** — text-only payments work immediately.
+
+**Photo required for checks** — `submitJobPayment` enforces this client-side. Other methods can attach a photo optionally.
+
+**OCR future-proofing (Phase D, deferred):** `ocr_results` (jsonb), `ocr_status` (CHECK: pending/verified/mismatch/skipped), `ocr_confidence`, `ocr_processed_at` are reserved for a future Edge Function that reads check photos via Claude vision. No app code references them yet.
+
+**`PentaPayments` facade** (near `PentaIncidents`): `record({jobId, clientId, paymentMethod, paymentMethodOther, amount, checkNumber, memo, photoFile, receivedAt})` → uploads photo first, inserts row; `listForClient(clientId, {includeVoided})`; `listForJob(jobId)`; `listRecent(daysBack)`; `void(paymentId, reason)`; `getSignedPhotoUrl(photoPath)` (fresh 90s signed URL).
+
+**Surfaces:**
+- **Job card (manager, expanded)** gains a Payments section painted by `_mgrPaintJobPayments` — live payments at top, voided dimmed with strikethrough below. Manager can void from this row (button + reason prompt).
+- **Client profile History** (Build 2 §8d) now also includes payment rows via the synthetic-audit-row adapter (`entity_type='payment'`).
+- **Activity Log** — `_renderAuditRowSummary` payment branch renders "Viviana V recorded $185 check payment from Stephanie Weiss · check #4811" with `[📎 PHOTO]` chip when photo_path is set, and "Tom voided $185 cash payment from Stephanie Weiss — reason: '…'" + `[VOIDED]` chip on refund.
+- **Maids Sync Report** automatically picks up payment events through audit_log (no surface-specific code change needed — the report consumes audit_log entity_type='payment' filtered by date).
+
+Payments do NOT appear on the Open Items home tile — they're transactions, not open items.
+
+---
+
 ## 8d. Surfacing incidents + job_issues across the manager UI (v11.0.15 — Build 2)
 
 Phase A/B captured the data; Build 2 surfaces it where managers actually look. Three new surfaces, all share the Build 1 renderer pipeline via a small adapter:
