@@ -223,6 +223,27 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8g. Hours Report data source (v11.0.19)
+
+Previously, the Hours Report rendered exclusively from the MyGeotab Trip API. When Geotab auth failed (rotating credentials, network outage, single-tenant hardcoded session), the manager view showed empty team headers with "No GPS data this week" beneath each, even though Penta's own `time_entries` table held real clock-in/out data.
+
+**New flow** — `loadWeekHours()` reads `time_entries` from Supabase first; Geotab is supplementary.
+
+1. **Primary**: query `public.time_entries WHERE business_id = current AND clock_in_at IN [week_start, week_end] AND deleted_at IS NULL`. Group rows by `employees.team_id` → `teams.name`. Build:
+   - `weekHours[team] = { days[5], starts[5], ends[5], lunch[5], total, source: 'time_entries' }` — per-team aggregate, used by export + edit modal for backward compat.
+   - `window._empHoursMap[empId][YYYY-MM-DD] = { hours, start, end, openShift }` — per-employee cell map, primary source for the renderer's per-row cells.
+2. **Supplementary**: best-effort `gpsAuthenticate()` + `geotabCall('Get', {typeName:'Trip'})`. If auth fails, silently skip — the time_entries data still renders. If trips arrive:
+   - `window._hoursGeotabAvailable = true` → renderer shows a 📍 **GPS** badge on team headers sourced from Geotab.
+   - Existing lunch-detection logic runs (stop between 10am–4pm, not at depot, not a scheduled client) and writes into `weekHours[team].lunch[i]`.
+   - Geotab does **not** overwrite time_entries data for teams already populated from clock-ins. Teams without clock-in rows fall back to Geotab-derived hours (source: `'geotab'`).
+3. **Open shifts**: rows with `clock_out_at IS NULL` are computed as `now - clock_in_at`, marked `openShift: true`. Renderer paints a `● live` indicator in green on that cell. A 60s `setInterval` re-runs `loadWeekHours` while the GPS view stays active and the user is on the current week.
+
+The Hours Worked block now lives as a sibling of `#gps-main-section` (not inside it) so it renders even when MyGeotab is not connected. `gpsInit()` unconditionally calls `loadWeekHours()`.
+
+**Geotab cleanup still deferred** — credentials are hardcoded to Manna Maids (`tommanna28@gmail.com`/`Maids2022!`) and shared across tenants. A per-tenant `business_geotab_integrations` table modeled after Phase B-2's `business_phone_integrations` is required before the GPS map surface works for non-Manna tenants. Not in scope for v11.0.19.
+
+---
+
 ## 8f. Client Requests (v11.0.17 — Phase B.5)
 
 Lightweight operational capture distinct from incidents and job_issues. Employee relays a request from the client (skip next clean, reschedule, change frequency, etc.); manager acknowledges. No photos, no status workflow — single `acknowledged_at` NULL→NOT NULL transition.

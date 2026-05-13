@@ -5024,16 +5024,17 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div class="gps-summary-bar" id="gps-summary"></div>
     <div id="gps-vehicles"></div>
-    <!-- Hours Tracking — shown below vehicles -->
-    <div style="margin:16px 12px 0">
-      <div class="week-nav" style="padding:0 0 10px">
-        <button class="week-nav-btn" onclick="hoursWeekMove(-1)">&#8249;</button>
-        <span class="week-nav-label" id="hours-week-label">This Week's Hours</span>
-        <button class="week-nav-btn" onclick="hoursWeekMove(1)">&#8250;</button>
-      </div>
-      <div class="hours-title">Hours Worked</div>
-      <div id="hours-table"><div class="hours-loading">Loading hours...</div></div>
+  </div>
+  <!-- v11.0.19: Hours Worked is sibling of gps-main-section so it renders
+       even when MyGeotab is not connected. Data source is time_entries. -->
+  <div id="hours-section" style="margin:16px 12px 0">
+    <div class="week-nav" style="padding:0 0 10px">
+      <button class="week-nav-btn" onclick="hoursWeekMove(-1)">&#8249;</button>
+      <span class="week-nav-label" id="hours-week-label">This Week's Hours</span>
+      <button class="week-nav-btn" onclick="hoursWeekMove(1)">&#8250;</button>
     </div>
+    <div class="hours-title">Hours Worked</div>
+    <div id="hours-table"><div class="hours-loading">Loading hours...</div></div>
   </div>
   <div class="bottom-pad"></div>
 </div>
@@ -24826,47 +24827,141 @@ async function loadWeekHours() {
 
   document.getElementById('hours-table').innerHTML = '<div class="hours-loading">Loading hours...</div>';
 
+  // v11.0.19 — primary source is `time_entries` (employee clock-in/out).
+  // Geotab Trip API is now a supplementary GPS-verification layer; if
+  // auth fails, we still show clock-in data instead of a broken table.
+  weekHours = {};
+  window._empHoursMap = {};          // { empId: { 'YYYY-MM-DD': { hours, start, end, openShift } } }
+  window._hoursGeotabAvailable = false;
+
   try {
-    if (!gpsSession) await gpsAuthenticate();
+    // ── PRIMARY: time_entries from Supabase ──
+    try {
+      var _sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      var _bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+      if (_sb && _bid) {
+        var _weekStart = new Date(days[0].getFullYear(), days[0].getMonth(), days[0].getDate(), 0, 0, 0);
+        var _weekEnd   = new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59, 999);
+        var _teRes = await _sb.from('time_entries')
+          .select('id, employee_id, clock_in_at, clock_out_at')
+          .eq('business_id', _bid)
+          .gte('clock_in_at', _weekStart.toISOString())
+          .lte('clock_in_at', _weekEnd.toISOString())
+          .is('deleted_at', null);
+        if (_teRes.error) {
+          console.warn('[hours] time_entries query error:', _teRes.error);
+        } else if (Array.isArray(_teRes.data)) {
+          var _empList = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+          var _empIdx = {};
+          _empList.forEach(function(e){ _empIdx[e.id] = e; });
 
-    // Get all devices
-    const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
-    const teamOrder = _pentaTeamNames();
-    const teamDevices = devices.filter(d =>
-      teamOrder.some(t => d.name && d.name.toUpperCase().includes(t))
-    ).map(d => ({
-      ...d,
-      team: teamOrder.find(t => d.name.toUpperCase().includes(t))
-    }));
+          var _now = new Date();
+          _teRes.data.forEach(function(row) {
+            var emp = _empIdx[row.employee_id];
+            if (!emp) return;
+            var team = emp.team || emp.team_text;
+            if (!team) return;
 
-    // Get trips for entire week in one call
-    const trips = await geotabCall('Get', {
-      typeName: 'Trip',
-      search: {
-        fromDate: days[0].toISOString(),
-        toDate: new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59).toISOString(),
-        includeOverlappedTrips: true
-      },
-      resultsLimit: 2000
-    });
+            var inAt = new Date(row.clock_in_at);
+            var dayIdx = -1;
+            for (var di = 0; di < days.length; di++) {
+              if (days[di].getFullYear() === inAt.getFullYear() &&
+                  days[di].getMonth()   === inAt.getMonth() &&
+                  days[di].getDate()    === inAt.getDate()) {
+                dayIdx = di; break;
+              }
+            }
+            if (dayIdx === -1) return;
 
-    // Reverse geocode trip addresses if not already present
-    await reverseGeocodeTrips(trips);
+            var openShift = !row.clock_out_at;
+            var outAt = openShift ? _now : new Date(row.clock_out_at);
+            var hrs = Math.max(0, (outAt - inAt) / 3600000);
 
-    // Group trips by device
-    const tripsByDevice = {};
-    trips.forEach(t => {
-      const did = t.device.id;
-      if (!tripsByDevice[did]) tripsByDevice[did] = [];
-      tripsByDevice[did].push(t);
-    });
+            // Per-team aggregate (keeps existing renderer + export shape).
+            if (!weekHours[team]) {
+              weekHours[team] = {
+                days:   [0,0,0,0,0],
+                starts: [null,null,null,null,null],
+                ends:   [null,null,null,null,null],
+                lunch:  [null,null,null,null,null],
+                total:  0,
+                color:  _pentaTeamColor(team, '#6b7280'),
+                source: 'time_entries'
+              };
+            }
+            weekHours[team].days[dayIdx] += hrs;
+            if (!weekHours[team].starts[dayIdx] || inAt < weekHours[team].starts[dayIdx]) weekHours[team].starts[dayIdx] = inAt;
+            if (!openShift && (!weekHours[team].ends[dayIdx] || outAt > weekHours[team].ends[dayIdx])) weekHours[team].ends[dayIdx] = outAt;
+            weekHours[team].total += hrs;
 
-    // Calculate hours per team per day
-    weekHours = {};
+            // Per-employee map (primary source for cell rendering).
+            if (!window._empHoursMap[emp.id]) window._empHoursMap[emp.id] = {};
+            var _dk = dateKey(days[dayIdx]);
+            var cell = window._empHoursMap[emp.id][_dk];
+            if (!cell) {
+              cell = { hours: 0, start: null, end: null, openShift: false, source: 'time_entries' };
+              window._empHoursMap[emp.id][_dk] = cell;
+            }
+            cell.hours += hrs;
+            if (!cell.start || inAt < cell.start) cell.start = inAt;
+            if (!openShift && (!cell.end || outAt > cell.end)) cell.end = outAt;
+            if (openShift) cell.openShift = true;
+          });
+        }
+      }
+    } catch (_teErr) {
+      console.warn('[hours] time_entries fetch threw:', _teErr);
+    }
+
+    // ── SUPPLEMENTARY: best-effort Geotab. ──
+    // If auth fails (rotating credentials, network), we keep the
+    // time_entries-derived weekHours and skip the GPS-verified badge.
+    var trips = [];
+    var tripsByDevice = {};
+    var teamDevices = [];
+    try {
+      if (!gpsSession) await gpsAuthenticate();
+      const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+      const teamOrder = _pentaTeamNames();
+      teamDevices = devices.filter(d =>
+        teamOrder.some(t => d.name && d.name.toUpperCase().includes(t))
+      ).map(d => ({
+        ...d,
+        team: teamOrder.find(t => d.name.toUpperCase().includes(t))
+      }));
+      trips = await geotabCall('Get', {
+        typeName: 'Trip',
+        search: {
+          fromDate: days[0].toISOString(),
+          toDate: new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59).toISOString(),
+          includeOverlappedTrips: true
+        },
+        resultsLimit: 2000
+      });
+      await reverseGeocodeTrips(trips);
+      trips.forEach(t => {
+        const did = t.device.id;
+        if (!tripsByDevice[did]) tripsByDevice[did] = [];
+        tripsByDevice[did].push(t);
+      });
+      window._hoursGeotabAvailable = true;
+    } catch (_gpsErr) {
+      console.warn('[hours] Geotab unavailable, using time_entries only:', _gpsErr && _gpsErr.message);
+    }
+
+    // ── Geotab supplementary pass — adds lunch detection + back-fills
+    // hours for teams without time_entries (e.g. teams using Geotab only). ──
     teamDevices.forEach(dev => {
       const team = dev.team;
       if (!team) return;
-      weekHours[team] = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], total: 0, color: _pentaTeamColor(team, '#6b7280') };
+      // v11.0.19: only initialize from Geotab if time_entries didn't already
+      // populate this team. Otherwise we'd clobber the primary data source.
+      var _teHadData = !!weekHours[team];
+      if (!weekHours[team]) {
+        weekHours[team] = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], total: 0, color: _pentaTeamColor(team, '#6b7280'), source: 'geotab' };
+      } else {
+        weekHours[team].lunch = weekHours[team].lunch || [null,null,null,null,null];
+      }
 
       const devTrips = tripsByDevice[dev.id] || [];
 
@@ -24959,10 +25054,14 @@ async function loadWeekHours() {
 
         // Sanity check: between 2 and 15 hours
         if (totalHrs >= 2 && totalHrs <= 15) {
-          weekHours[team].days[dayIdx] = totalHrs;
-          weekHours[team].starts[dayIdx] = trueStart;
-          weekHours[team].ends[dayIdx] = trueEnd;
-          weekHours[team].total += totalHrs;
+          // v11.0.19: only overwrite days/starts/ends/total when this team
+          // has no time_entries data; otherwise time_entries is authoritative.
+          if (!_teHadData) {
+            weekHours[team].days[dayIdx] = totalHrs;
+            weekHours[team].starts[dayIdx] = trueStart;
+            weekHours[team].ends[dayIdx] = trueEnd;
+            weekHours[team].total += totalHrs;
+          }
 
           // Detect likely lunch break
           // Criteria: stop is NOT at office, NOT a scheduled client,
@@ -25537,6 +25636,10 @@ function fmt12(date) {
 function renderHoursTable(days, dayNames) {
   const teams = _pentaTeamNames();
   const today = new Date(); today.setHours(0,0,0,0);
+  // v11.0.19 — per-employee map sourced from time_entries (primary data source).
+  const empHoursMap = window._empHoursMap || {};
+  const gpsVerified = !!window._hoursGeotabAvailable;
+  let hasOpenShift = false;
 
   let html = `<table class="hours-table">
     <thead><tr>
@@ -25564,15 +25667,23 @@ function renderHoursTable(days, dayNames) {
 
     if (!data && teamEmployees.length === 0) return;
 
+    // v11.0.19: GPS-verified badge when Geotab succeeded for this team.
+    const gpsBadge = (gpsVerified && data && data.source !== 'time_entries')
+      ? ' <span style="font-size:9px;color:#7ee787;font-weight:600;margin-left:8px">📍 GPS</span>'
+      : '';
+
     // Team header row
     html += `<tr style="background:rgba(${color.replace('#','').match(/.{2}/g).map(x=>parseInt(x,16)).join(',')},0.08)">
       <td colspan="${days.length + 2}" style="font-size:11px;font-weight:700;color:${color};padding:6px 10px;text-transform:uppercase;letter-spacing:.06em">
-        <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;margin-right:6px"></span>${team}
+        <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;margin-right:6px"></span>${team}${gpsBadge}
       </td>
     </tr>`;
 
-    if (!data) {
-      html += `<tr><td colspan="${days.length + 2}" style="color:var(--muted);font-size:12px;padding:6px 10px">No GPS data this week</td></tr>`;
+    // v11.0.19: render employees regardless of weekHours[team] state. The
+    // per-employee map handles cell-level data; an empty team still shows
+    // its roster with zero rows.
+    if (teamEmployees.length === 0) {
+      html += `<tr><td colspan="${days.length + 2}" style="color:var(--muted);font-size:12px;padding:6px 10px">No clock-in data this week</td></tr>`;
       return;
     }
 
@@ -25582,29 +25693,45 @@ function renderHoursTable(days, dayNames) {
       const roleStr = emp.role.length ? ' <span style="font-size:12px">' + roleIcons + '</span>' : '';
       const floatBadge = emp.floater ? '<span style="font-size:9px;color:var(--amber);margin-left:4px">FLOAT</span>' : '';
       let empWeekTotal = 0;
-      const dayCells = data.days.map(function(h,i) {
-        const dk = dateKey(days[i]);
+      const empMap = empHoursMap[emp.id] || {};
+      const dayCells = days.map(function(d, i) {
+        const dk = dateKey(d);
         const override = getEmpHours(emp.id, dk);
-        const empH = override ? override.hours : h;
+        // v11.0.19: prefer time_entries cell, then per-employee override,
+        // then team-level Geotab baseline (only present when time_entries
+        // didn't cover this team).
+        const teCell = empMap[dk] || null;
+        const teamH = (data && Array.isArray(data.days)) ? (data.days[i] || 0) : 0;
+        const teamSrc = data && data.source;
+        const empH = override
+          ? override.hours
+          : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH));
         depotTotals[i] += empH;
         empWeekTotal += empH;
-        if (!empH) return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+days[i].getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))"><span style="color:var(--border2)">&#8212;</span></td>';
+        const openShift = !!(teCell && teCell.openShift) && !override;
+        if (openShift) hasOpenShift = true;
+        if (!empH && !openShift) return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))"><span style="color:var(--border2)">&#8212;</span></td>';
         var sStr = '', eStr = '';
         if (override) {
           if (override.start) { var sp=override.start.split(':'),sh=parseInt(sp[0]),sm=parseInt(sp[1]),sap=sh>=12?'PM':'AM'; if(sh>12)sh-=12; if(sh===0)sh=12; sStr=sh+':'+String(sm).padStart(2,'0')+' '+sap; }
           if (override.end) { var ep=override.end.split(':'),eh=parseInt(ep[0]),em2=parseInt(ep[1]),eap=eh>=12?'PM':'AM'; if(eh>12)eh-=12; if(eh===0)eh=12; eStr=eh+':'+String(em2).padStart(2,'0')+' '+eap; }
-        } else {
-          sStr = data.starts[i] ? fmt12(data.starts[i]) : '';
-          eStr = data.ends[i] ? fmt12(data.ends[i]) : '';
+        } else if (teCell) {
+          sStr = teCell.start ? fmt12(teCell.start) : '';
+          eStr = teCell.end ? fmt12(teCell.end) : '';
+        } else if (teamSrc !== 'time_entries') {
+          sStr = data && data.starts && data.starts[i] ? fmt12(data.starts[i]) : '';
+          eStr = data && data.ends && data.ends[i] ? fmt12(data.ends[i]) : '';
         }
-        const lunch = override ? (override.lunch || 0) : (data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
+        const lunch = override ? (override.lunch || 0) : (data && data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
         const lunchStr = lunch ? '<div style="font-size:10px;color:var(--amber)">&#127828; ' + lunch + 'm</div>' : '';
         const editBadge = override ? '<div style="font-size:8px;color:var(--accent)">edited</div>' : '';
-        return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+days[i].getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))">'
+        // v11.0.19: live "in progress" indicator on open shifts.
+        const liveBadge = openShift ? '<div style="font-size:9px;color:var(--green);font-weight:600">● live</div>' : '';
+        return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))">'
           +'<div style="font-weight:600">' + formatHrs(empH) + '</div>'
           +'<div style="font-size:10px;color:var(--green)">' + sStr + '</div>'
-          +'<div style="font-size:10px;color:var(--red)">' + eStr + '</div>'
-          + lunchStr + editBadge + '</td>';
+          +'<div style="font-size:10px;color:var(--red)">' + (openShift ? '—' : eStr) + '</div>'
+          + lunchStr + editBadge + liveBadge + '</td>';
       }).join('');
       html += '<tr>' +
         '<td style="padding-left:20px">' + emp.name + roleStr + floatBadge + '</td>' +
@@ -25645,6 +25772,21 @@ function renderHoursTable(days, dayNames) {
   html += `<button onclick="showHoursReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(108,143,255,0.14);border:1px solid rgba(108,143,255,0.38);border-radius:10px;color:#cbd6ff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">📊 Hours Report</button>`;
 
   document.getElementById('hours-table').innerHTML = html;
+
+  // v11.0.19 — refresh open shifts every 60s while the GPS view is active.
+  // Calls loadWeekHours which re-queries time_entries and re-renders.
+  if (window._hoursLiveInterval) { clearInterval(window._hoursLiveInterval); window._hoursLiveInterval = null; }
+  if (hasOpenShift && hoursWeekOffset === 0) {
+    window._hoursLiveInterval = setInterval(function() {
+      var gv = document.getElementById('gps-view');
+      if (!gv || !gv.classList.contains('active')) {
+        clearInterval(window._hoursLiveInterval);
+        window._hoursLiveInterval = null;
+        return;
+      }
+      loadWeekHours();
+    }, 60000);
+  }
 }
 
 
@@ -26266,12 +26408,14 @@ function gpsInit() {
       document.getElementById('gps-main-section').style.display = 'block';
       document.getElementById('gps-status').textContent = 'Connected to MyGeotab ✓';
       loadGPSData();
-      loadWeekHours();
       setTimeout(function(){ initMap(); updateMapMarkers(); }, 500);
     } catch(e) {
       gpsSession = null;
     }
   }
+  // v11.0.19: Hours Worked is sourced from time_entries (not Geotab), so
+  // load it regardless of whether MyGeotab is connected.
+  try { loadWeekHours(); } catch (e) { console.warn('[hours] gpsInit loadWeekHours threw', e); }
 }
 
 async function loadGPSData() {
