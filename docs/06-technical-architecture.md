@@ -223,6 +223,31 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8d. Surfacing incidents + job_issues across the manager UI (v11.0.15 — Build 2)
+
+Phase A/B captured the data; Build 2 surfaces it where managers actually look. Three new surfaces, all share the Build 1 renderer pipeline via a small adapter:
+
+**`_buildSyntheticAuditRow(entityType, row)`** — maps a native `job_issue` or `incident` row into the `audit_log` shape (`{ user_id, action_type, entity_type, entity_id, new_values, old_values, created_at }`) so `_renderAuditRowSummary` renders the row identically to the corresponding audit_log entry. For records that are already resolved/closed, the synthetic row emits `action_type='resolved'` so the chip reads "RESOLVED" not "OPEN" (and the time reflects when it was resolved, not reported).
+
+**Surface 1 — Client profile `openClientEdit`** gains a "History" section painted by `_renderClientHistorySection(clientId, hostId)`. Reads `PentaIncidents.listForClient(clientId)` + new `PentaJobIssues.listForClient(clientId)` (added in this build), unions them, sorts newest-first, renders via the synthetic-audit pipeline. Inline status dropdown for incidents + Resolve button for unresolved issues — wired to the existing `_mgrChangeIncidentStatus` / `_mgrResolveIssue` handlers.
+
+**Surface 2 — Employee profile `renderStaffView`** gains an "Activity" section painted by `_renderStaffActivitySection(emp, hostId)`. Reads new `PentaIncidents.listForReporter(userId)` + `PentaJobIssues.listForReporter(userId)`. The employee→user_id mapping uses `employees.auth_user_id` (Supabase convention: `users.id === auth_user_id` for accounts created via the auth provider). Read-only — staff Activity intentionally doesn't surface resolve/status controls; managers go to the parent job card.
+
+**Surface 3 — `#open-items-view`** is a new fullscreen overlay (same shape as `#sync-report-view`) with All / Issues / Incidents filter tabs. Sorted **oldest-first** so the rows being ignored longest float to the top. Painted by `_refreshOpenItems()` which is also exposed as `window._refreshOpenItems` so cross-surface refreshes (from `_mgrResolveIssue` / `_mgrChangeIncidentStatus`) can repaint it.
+
+**New home tile: "Open Items"** with `LUCIDE['alert-triangle']` icon + amber gradient. Reuses the combined badge cache `_pentaSchedBadgeCount` so the Schedule dock and the Open Items tile show the same number.
+
+**Cross-surface refresh** — `_refreshAllAuditSurfaces(jobId, clientId)` runs after every `_mgrResolveIssue` and `_mgrChangeIncidentStatus` success. Each branch is guarded so unmounted surfaces no-op cleanly. Together with the existing `renderCal()` + `_refreshSchedTileBadge()` calls, this guarantees a single resolve cascades into:
+  1. The collapsed timeline block badge on `#cal-view`
+  2. The expanded job card's Incidents section (modal + inline)
+  3. The Schedule home tile + dock badge
+  4. The Open Items home tile badge
+  5. The Open Items view's row list, if open
+  6. The client edit modal's History section, if open
+  7. The staff profile's Activity section, if open
+
+---
+
 ## 8c. Activity Log renderer (v11.0.14 — Build 1)
 
 The Activity Log surfaces in two places: the global Updates tab (`renderActivityLog`) and the per-client overlay (`openClientActivityLog`). Both read from `public.audit_log` and now share one rendering pipeline.
