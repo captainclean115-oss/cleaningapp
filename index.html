@@ -3022,6 +3022,32 @@ html.pre-auth #filter-row { display: none !important; }
 #sync-report-view.active { display: flex; }
 #sync-report-view .mr-title { font-size: 17px; font-weight: 700; }
 #sync-report-view .mr-subtitle { font-size: 12px; color: var(--muted); }
+
+/* v11.0.15 (Build 2): Open Items overlay — same shape as
+   #sync-report-view. Three tabs (All/Issues/Incidents) + scrollable
+   body. */
+#open-items-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: var(--bg-gradient);
+  flex-direction: column; overflow: hidden;
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+}
+#open-items-view.active { display: flex; }
+#open-items-view .mr-title { font-size: 17px; font-weight: 700; }
+#open-items-view .mr-subtitle { font-size: 12px; color: var(--muted); }
+.oi-tabs {
+  display: flex; gap: 4px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.oi-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 8px 16px calc(var(--safe-bottom) + 24px);
+}
 .sync-body {
   flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 16px 16px calc(var(--safe-bottom) + 24px);
@@ -10168,11 +10194,61 @@ window.PentaJobIssues = (function() {
   return {
     report: report,
     listForJob: listForJob,
+    listForClient: listForClient,
+    listForReporter: listForReporter,
     listUnresolved: listUnresolved,
     countUnresolved: countUnresolved,
     resolve: resolve,
     _computeDingTarget: _computeDingTarget
   };
+
+  // v11.0.15 (Build 2) — query helpers reused by the new surfaces.
+  async function listForClient(clientId) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var clientUuid = _toUuidOrNull(clientId);
+    // job_issues.client_id may be null (the trigger writes NEW row jsonb,
+    // and many issue rows have client_id=null because Phase A didn't
+    // require it). So we ALSO union via job_id: look up all jobs that
+    // reference this client, then fetch issues for those job_ids.
+    var jobIds = [];
+    try {
+      if (window.PentaJobs && window.PentaJobs.listSync) {
+        var clientLegacy = clientId, clientUuidStr = clientUuid;
+        window.PentaJobs.listSync().forEach(function(j){
+          if (j.clientId === clientLegacy || j.client_id === clientLegacy ||
+              (clientUuidStr && (j.clientId === clientUuidStr || j.client_id === clientUuidStr))) {
+            if (j.id) jobIds.push(j.id);
+          }
+        });
+      }
+    } catch (e) {}
+    var rows = [];
+    if (clientUuid) {
+      var res1 = await sb.from('job_issues').select('*')
+        .eq('business_id', bid).eq('client_id', clientUuid);
+      if (!res1.error && res1.data) rows = rows.concat(res1.data);
+    }
+    if (jobIds.length > 0) {
+      var res2 = await sb.from('job_issues').select('*')
+        .eq('business_id', bid).in('job_id', jobIds);
+      if (!res2.error && res2.data) rows = rows.concat(res2.data);
+    }
+    // De-dupe by id
+    var seen = {}; var out = [];
+    rows.forEach(function(r){ if (r && r.id && !seen[r.id]) { seen[r.id] = 1; out.push(r); } });
+    out.sort(function(a, b){ return new Date(b.reported_at) - new Date(a.reported_at); });
+    return out;
+  }
+  async function listForReporter(userId) {
+    var sb = _sb(); if (!sb || !userId) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('job_issues').select('*')
+      .eq('business_id', bid).eq('reported_by', userId)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaJobIssues] listForReporter error', res.error); return []; }
+    return res.data || [];
+  }
 })();
 
 
@@ -10347,10 +10423,21 @@ window.PentaIncidents = (function() {
     if (res.error) { console.warn('[PentaIncidents] getSignedPhotoUrl error', res.error); return null; }
     return (res.data && res.data.signedUrl) || null;
   }
+  // v11.0.15 (Build 2) — incidents reported by a specific user.
+  async function listForReporter(userId) {
+    var sb = _sb(); if (!sb || !userId) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('incidents').select('*')
+      .eq('business_id', bid).eq('reported_by', userId)
+      .order('reported_at', { ascending: false });
+    if (res.error) { console.warn('[PentaIncidents] listForReporter error', res.error); return []; }
+    return res.data || [];
+  }
   return {
     report: report,
     listForJob: listForJob,
     listForClient: listForClient,
+    listForReporter: listForReporter,
     listOpen: listOpen,
     countOpen: countOpen,
     changeStatus: changeStatus,
@@ -15379,6 +15466,303 @@ function _wireAuditDrill(containerEl) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// v11.0.15 — Build 2: Surface incidents + job_issues on client profile,
+// employee profile, and a new Open Items admin view.
+//
+// The Activity Log already renders human-readable rows from audit_log
+// (Build 1). This build re-uses the same renderer for native job_issue
+// / incident rows by mapping them through _buildSyntheticAuditRow.
+// Three new surfaces:
+//   1. openClientEdit gains a "History" section
+//   2. renderStaffView gains an "Activity" section
+//   3. New full-screen #open-items-view with All / Issues / Incidents tabs
+// Plus a new "Open Items" home tile with the combined badge count.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Convert a native job_issue or incident row into an audit_log shape
+// so _renderAuditRowSummary can render it without a code branch. For
+// resolved/closed records we emit the latest action (resolved) so the
+// chip reads "RESOLVED" not "OPEN".
+function _buildSyntheticAuditRow(entityType, row) {
+  if (!row) return null;
+  var actionType, createdAt, userId;
+  if (entityType === 'job_issue') {
+    if (row.resolved_at) {
+      actionType = 'resolved';
+      createdAt = row.resolved_at;
+      userId = row.resolved_by || row.reported_by;
+    } else {
+      actionType = 'created';
+      createdAt = row.reported_at || row.created_at;
+      userId = row.reported_by;
+    }
+  } else if (entityType === 'incident') {
+    if (row.status === 'resolved' || row.status === 'closed') {
+      actionType = 'resolved';
+      createdAt = row.status_changed_at || row.updated_at || row.reported_at;
+      userId = row.status_changed_by || row.reported_by;
+    } else {
+      actionType = 'created';
+      createdAt = row.reported_at || row.created_at;
+      userId = row.reported_by;
+    }
+  } else {
+    actionType = 'created';
+    createdAt = row.created_at || row.reported_at;
+    userId = row.reported_by;
+  }
+  return {
+    id: 'synth-' + (row.id || ''),
+    user_id: userId || null,
+    action_type: actionType,
+    entity_type: entityType,
+    entity_id: row.id,
+    new_values: row,
+    old_values: null,
+    created_at: createdAt
+  };
+}
+
+// Resolve an employees row to its public.users.id. The two tables
+// share `auth_user_id`; pre-Phase-A the convention was that
+// users.id === auth_user_id. Returns null when no link exists (an
+// employee who hasn't accepted an auth invite).
+async function _empUserId(emp, sb) {
+  if (!emp) return null;
+  // Fast paths from the in-memory emp record.
+  if (emp.user_id) return emp.user_id;
+  if (emp.auth_user_id) return emp.auth_user_id;
+  // DB fallback by name within the tenant.
+  if (!sb) return null;
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!bid) return null;
+  try {
+    var res = await sb.from('employees').select('auth_user_id').eq('id', emp.id).maybeSingle();
+    if (res && res.data && res.data.auth_user_id) return res.data.auth_user_id;
+  } catch (e) {}
+  return null;
+}
+
+// Inline action row painter — reusable across the three new surfaces.
+// Given a synthetic row + raw entity, returns the inline action HTML
+// (status dropdown for incidents, Resolve button for unresolved issues).
+function _renderInlineAuditAction(entityType, row, j) {
+  if (entityType === 'job_issue' && !row.resolved_at) {
+    return '<button onclick="event.stopPropagation();_mgrResolveIssue(\'' + _audEsc(row.id) + '\',\'' + _audEsc(row.job_id || '') + '\')" '
+      + 'style="background:var(--accent);border:none;color:#fff;border-radius:8px;padding:5px 12px;font:600 11px DM Sans,sans-serif;cursor:pointer">Resolve</button>';
+  }
+  if (entityType === 'incident' && (row.status === 'open' || row.status === 'in_review')) {
+    var statusOpts = ['open','in_review','resolved','closed'];
+    var statusLabels = { open: 'Open', in_review: 'In Review', resolved: 'Resolved', closed: 'Closed' };
+    return '<select onclick="event.stopPropagation()" onchange="_mgrChangeIncidentStatus(\''
+      + _audEsc(row.id) + '\',\'' + _audEsc(row.job_id || '') + '\',this.value)" '
+      + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:4px 8px;font:600 11px DM Sans,sans-serif;cursor:pointer">'
+      + statusOpts.map(function(s){
+          return '<option value="' + s + '"' + (s === row.status ? ' selected' : '') + '>' + statusLabels[s] + '</option>';
+        }).join('')
+      + '</select>';
+  }
+  return '';
+}
+
+// Render a stack of synthetic rows (mixed incidents + job_issues) with
+// inline actions. Used by client profile History + Open Items list.
+async function _renderSyntheticAuditList(items, sb, opts) {
+  opts = opts || {};
+  if (!items || items.length === 0) {
+    return '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">'
+      + _audEsc(opts.empty || 'No items to show.') + '</div>';
+  }
+  // Pull user names for actors in one batch.
+  var ctx = await _buildAuditContext(items.map(function(it){ return it.row; }), sb);
+  // Also pull users for the synthetic rows' actor (might not be on the
+  // ctx since _buildAuditContext walks new_values not the row itself).
+  var extraUids = items.map(function(it){
+    var r = it.row;
+    return r.reported_by || r.resolved_by || r.status_changed_by;
+  }).filter(Boolean).filter(function(id){ return !ctx.users[id]; });
+  if (extraUids.length > 0 && sb) {
+    try {
+      var ures = await sb.from('users').select('id, first_name, last_name, email').in('id', extraUids);
+      (ures.data || []).forEach(function(u){
+        ctx.users[u.id] = ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User';
+      });
+    } catch (e) {}
+  }
+  // Render each.
+  var html = '';
+  items.forEach(function(it){
+    var syn = _buildSyntheticAuditRow(it.entityType, it.row);
+    if (!syn) return;
+    var info = _renderAuditRowSummary(syn, ctx);
+    var actionHtml = _renderInlineAuditAction(it.entityType, it.row, null);
+    var when = _audRelativeTime(syn.created_at);
+    var drillAttr = '';
+    if (info.drill) {
+      drillAttr = ' data-audit-drill-type="' + _audEsc(info.drill.type) + '" data-audit-drill-id="' + _audEsc(info.drill.id) + '"';
+    }
+    var chipsHtml = info.chips.map(function(c){
+      return '<span style="display:inline-block;background:' + c.bg + ';color:' + c.color
+        + ';font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em;margin-right:4px;margin-top:2px">'
+        + _audEsc(c.label) + '</span>';
+    }).join('');
+    html += '<div class="audit-log-row" style="display:flex;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer"' + drillAttr + '>'
+      +   '<div style="color:var(--muted);white-space:nowrap;flex-shrink:0;min-width:90px;font-size:11px">' + _audEsc(when) + '</div>'
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="color:var(--text);font-size:13px;line-height:1.4">' + info.summary + '</div>'
+      +     (chipsHtml ? '<div style="margin-top:3px">' + chipsHtml + '</div>' : '')
+      +   '</div>'
+      +   (actionHtml ? '<div style="flex-shrink:0;margin-left:8px">' + actionHtml + '</div>' : '')
+      + '</div>';
+  });
+  return html;
+}
+
+// ─── Surface 1: Client History section in openClientEdit ──────────
+async function _renderClientHistorySection(clientId, hostId) {
+  var host = document.getElementById(hostId || ('ce-history-' + clientId));
+  if (!host) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>'; return; }
+  var incidents = [], issues = [];
+  try {
+    if (window.PentaIncidents && window.PentaIncidents.listForClient) {
+      incidents = await window.PentaIncidents.listForClient(clientId);
+    }
+  } catch (e) { console.warn('[clientHistory] incidents failed', e); }
+  try {
+    if (window.PentaJobIssues && window.PentaJobIssues.listForClient) {
+      issues = await window.PentaJobIssues.listForClient(clientId);
+    }
+  } catch (e) { console.warn('[clientHistory] issues failed', e); }
+  var items = []
+    .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
+    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }));
+  items.sort(function(a, b){
+    var at = a.row.reported_at || a.row.created_at;
+    var bt = b.row.reported_at || b.row.created_at;
+    return new Date(bt) - new Date(at);
+  });
+  var html = await _renderSyntheticAuditList(items, sb, { empty: 'No issues or incidents recorded for this client.' });
+  host.innerHTML = html;
+  _wireAuditDrill(host);
+}
+
+// ─── Surface 2: Employee Activity section in renderStaffView ──────
+async function _renderStaffActivitySection(emp, hostId) {
+  var host = document.getElementById(hostId || 'staff-view-activity-host');
+  if (!host) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>'; return; }
+  var uid = await _empUserId(emp, sb);
+  if (!uid) {
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;text-align:center">No recorded activity for this employee yet.</div>';
+    return;
+  }
+  var incidents = [], issues = [];
+  try {
+    if (window.PentaIncidents && window.PentaIncidents.listForReporter) {
+      incidents = await window.PentaIncidents.listForReporter(uid);
+    }
+  } catch (e) { console.warn('[staffActivity] incidents failed', e); }
+  try {
+    if (window.PentaJobIssues && window.PentaJobIssues.listForReporter) {
+      issues = await window.PentaJobIssues.listForReporter(uid);
+    }
+  } catch (e) { console.warn('[staffActivity] issues failed', e); }
+  var items = []
+    .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
+    .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }));
+  items.sort(function(a, b){
+    var at = a.row.reported_at || a.row.created_at;
+    var bt = b.row.reported_at || b.row.created_at;
+    return new Date(bt) - new Date(at);
+  });
+  if (items.length === 0) {
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;text-align:center">No recorded activity for this employee yet.</div>';
+    return;
+  }
+  // Highlight ding=staff issues with a yellow border on the row (anchors
+  // future Team Health Score). _renderSyntheticAuditList drops the
+  // inline action on the staff side because Build 2 says read-only.
+  var html = await _renderSyntheticAuditList(items, sb, {});
+  // Strip action buttons (staff Activity is read-only).
+  html = html.replace(/<div style="flex-shrink:0;margin-left:8px">[\s\S]*?<\/div><\/div>/g, '</div>');
+  host.innerHTML = html;
+  _wireAuditDrill(host);
+}
+
+// ─── Surface 3: Open Items admin view ─────────────────────────────
+var _openItemsTab = 'all'; // 'all' | 'issues' | 'incidents'
+async function openOpenItemsView() {
+  var v = document.getElementById('open-items-view');
+  if (!v) return;
+  v.classList.add('active'); v.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  await _refreshOpenItems();
+}
+function closeOpenItemsView() {
+  var v = document.getElementById('open-items-view');
+  if (!v) return;
+  v.classList.remove('active'); v.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+}
+function _setOpenItemsTab(tab) {
+  _openItemsTab = tab;
+  ['all','issues','incidents'].forEach(function(t){
+    var btn = document.getElementById('oi-tab-' + t);
+    if (btn) {
+      btn.style.borderBottomColor = (t === tab) ? 'var(--accent)' : 'transparent';
+      btn.style.color = (t === tab) ? 'var(--text)' : 'var(--muted)';
+    }
+  });
+  _refreshOpenItems();
+}
+async function _refreshOpenItems() {
+  var body = document.getElementById('open-items-body');
+  if (!body) return;
+  body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">Loading…</div>';
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">No connection</div>'; return; }
+  var issues = [], incidents = [];
+  try {
+    if (window.PentaJobIssues && window.PentaJobIssues.listUnresolved) issues = await window.PentaJobIssues.listUnresolved();
+  } catch (e) {}
+  try {
+    if (window.PentaIncidents && window.PentaIncidents.listOpen) incidents = await window.PentaIncidents.listOpen();
+  } catch (e) {}
+  var items = [];
+  if (_openItemsTab === 'all' || _openItemsTab === 'issues') {
+    items = items.concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }));
+  }
+  if (_openItemsTab === 'all' || _openItemsTab === 'incidents') {
+    items = items.concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }));
+  }
+  // Sort OLDEST first — the rows that have been ignored longest float
+  // to the top. Per the spec.
+  items.sort(function(a, b){
+    var at = a.row.reported_at || a.row.created_at;
+    var bt = b.row.reported_at || b.row.created_at;
+    return new Date(at) - new Date(bt);
+  });
+  if (items.length === 0) {
+    body.innerHTML = '<div style="padding:40px 16px;text-align:center;color:var(--muted);font-size:14px">🎉 No open items — everything&rsquo;s handled.</div>';
+    return;
+  }
+  body.innerHTML = await _renderSyntheticAuditList(items, sb, {});
+  _wireAuditDrill(body);
+  // Update the count chip in the topbar.
+  var countEl = document.getElementById('oi-count');
+  if (countEl) countEl.textContent = items.length + ' ' + (items.length === 1 ? 'item' : 'items');
+}
+// Make global so the inline status-change + resolve handlers in
+// _mgrChangeIncidentStatus / _mgrResolveIssue can refresh us.
+window.openOpenItemsView = openOpenItemsView;
+window.closeOpenItemsView = closeOpenItemsView;
+window._refreshOpenItems = _refreshOpenItems;
+window._setOpenItemsTab = _setOpenItemsTab;
+
 async function renderActivityLog() {
   var btn = document.getElementById('actor-name-btn');
   if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
@@ -18448,6 +18832,13 @@ var HOME_APPS = [
   { id: 'sync',       permKey: 'sync_icon', label: 'Maids Sync', grad: 'linear-gradient(135deg,#06b6d4 0%,#0284c7 100%)',
     iconHtml: LUCIDE['clipboard-list'],
     go: function(){ if (typeof openSyncReport === 'function') openSyncReport(); } },
+  // v11.0.15 (Build 2): Open Items — combined view of unresolved
+  // job_issues + open/in_review incidents. Same combined count as
+  // the Schedule dock badge.
+  { id: 'open_items', permKey: 'open_items_icon', label: 'Open Items', grad: 'linear-gradient(135deg,#f59e0b 0%,#d97706 100%)',
+    iconHtml: LUCIDE['alert-triangle'],
+    badge: function(){ return _pentaSchedBadgeCount || 0; },
+    go: function(){ if (typeof openOpenItemsView === 'function') openOpenItemsView(); } },
   { id: 'approval',   permKey: 'approval_icon', label: 'Approval',   grad: 'linear-gradient(135deg,#34C759 0%,#30A14A 100%)',
     iconHtml: LUCIDE['badge-check'], go: function(){ _launcherComingSoon('Approval'); } },
   // Grid row 4
@@ -26503,6 +26894,17 @@ function openClientEdit(clientId) {
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Notes</div>
     <textarea id="ce-notes" class="field-input" rows="3" style="width:100%;resize:none;margin-bottom:24px" placeholder="Special instructions, access notes, preferences…">${c.notes||''}</textarea>
 
+    <!-- v11.0.15 (Build 2): client History section.
+         Lists every job_issue + incident for this client. Painted
+         async by _renderClientHistorySection after the modal opens.
+         Rows use the shared _renderAuditRowSummary path through
+         synthetic audit_log shapes; manager can resolve issues +
+         change incident status inline. -->
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">History</div>
+    <div id="ce-history-${c.id}" style="margin-bottom:24px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:4px 14px">
+      <div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>
+    </div>
+
     <button onclick="saveClientEdit('${c.id}')" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:16px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;margin-bottom:10px">Save Changes</button>
     <button onclick="closeClientEdit()" style="width:100%;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:14px;padding:8px;cursor:pointer">Cancel</button>
   `;
@@ -26510,6 +26912,8 @@ function openClientEdit(clientId) {
   document.getElementById('client-edit-modal').style.display = 'flex';
   // Initialize the dynamic phones list — must happen after innerHTML render
   cePhonesInit(c, ov);
+  // v11.0.15 (Build 2): paint the History section async.
+  try { _renderClientHistorySection(c.id, 'ce-history-' + c.id); } catch (e) {}
 
   // Preferred-day chips: populate from c.pref_day, wire toggle behavior
   var _savedDays = prefDayParse(c.pref_day);
@@ -30743,7 +31147,18 @@ function renderStaffView() {
         <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
       </div>`
     ])}
+
+    <!-- v11.0.15 (Build 2): Employee Activity section.
+         Read-only list of every incident + job_issue this employee
+         reported. Painted async by _renderStaffActivitySection. Rows
+         tap-through to the parent job card. -->
+    <div style="background:var(--surface2);border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Activity</div>
+      <div id="staff-view-activity-host"><div style="color:var(--muted);font-size:12px;padding:4px 0">Loading…</div></div>
+    </div>
   `;
+  // v11.0.15 (Build 2): paint the Activity section async.
+  try { _renderStaffActivitySection(emp, 'staff-view-activity-host'); } catch (e) {}
 
   // Wire up the Penta Login section (Sprint 4 Phase 4B).
   try {
@@ -37432,11 +37847,48 @@ async function _mgrResolveIssue(issueId, jobId) {
     try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
     // Refresh the home tile badge.
     try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+    // v11.0.15 (Build 2): re-paint all Build-2 surfaces that may be open.
+    _refreshAllAuditSurfaces(jobId, null);
     console.log('[mgrResolve] done');
   } catch (e) {
     console.error('[mgrResolve] failed', e);
     alert('Could not resolve: ' + ((e && e.message) || e));
   }
+}
+
+// v11.0.15 (Build 2) — Refresh every visible surface that lists
+// incidents / job_issues. Safe to call from anywhere; each branch
+// no-ops when its container isn't mounted.
+function _refreshAllAuditSurfaces(jobId, clientId) {
+  // Open Items view, if open.
+  try {
+    var oiBody = document.getElementById('open-items-body');
+    if (oiBody && document.getElementById('open-items-view').classList.contains('active')) {
+      _refreshOpenItems();
+    }
+  } catch (e) {}
+  // Client edit modal History section — re-paint if the modal is open.
+  try {
+    var modal = document.getElementById('client-edit-modal');
+    if (modal && modal.style.display !== 'none') {
+      var hostMatch = modal.querySelector('[id^="ce-history-"]');
+      if (hostMatch) {
+        var hostId = hostMatch.id;
+        var cid = hostId.replace(/^ce-history-/, '');
+        _renderClientHistorySection(cid, hostId);
+      }
+    }
+  } catch (e) {}
+  // Staff profile Activity section.
+  try {
+    var staffHost = document.getElementById('staff-view-activity-host');
+    if (staffHost) {
+      var idxEl = document.getElementById('staff-edit-idx');
+      var idx = idxEl ? parseInt(idxEl.value) : -1;
+      var list = (typeof getStaffList === 'function') ? getStaffList() : [];
+      if (list && list[idx]) _renderStaffActivitySection(list[idx], 'staff-view-activity-host');
+    }
+  } catch (e) {}
 }
 
 // v11.0.12 (Phase B) — incident_type → display label/icon lookup +
@@ -37584,6 +38036,8 @@ async function _mgrChangeIncidentStatus(incidentId, jobId, newStatus) {
     }
     try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
     try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+    // v11.0.15 (Build 2): cascade into the new surfaces too.
+    _refreshAllAuditSurfaces(jobId, null);
   } catch (e) {
     console.error('[mgrIncidentStatus] failed', e);
     alert('Could not update status: ' + ((e && e.message) || e));
@@ -41896,6 +42350,26 @@ function _p3dPage(dir) {
     </div>
   </div>
   <div class="sync-body" id="sync-body"></div>
+</div>
+
+<!-- v11.0.15 (Build 2): Open Items — combined surface for unresolved
+     job_issues + open/in_review incidents across the tenant. Same
+     full-screen overlay shape as Maids Sync; reuses the .mr-topbar
+     styling for consistency. -->
+<div id="open-items-view" data-permission-role="manager" aria-hidden="true">
+  <div class="mr-topbar">
+    <button class="mr-back-btn" onclick="closeOpenItemsView()" aria-label="Back">‹</button>
+    <div class="mr-title-wrap">
+      <div class="mr-title">Open Items</div>
+      <div class="mr-subtitle" id="oi-count">…</div>
+    </div>
+  </div>
+  <div class="oi-tabs">
+    <button id="oi-tab-all" onclick="_setOpenItemsTab('all')" type="button" style="flex:1;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid var(--accent)">All</button>
+    <button id="oi-tab-issues" onclick="_setOpenItemsTab('issues')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Issues</button>
+    <button id="oi-tab-incidents" onclick="_setOpenItemsTab('incidents')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Incidents</button>
+  </div>
+  <div class="oi-body" id="open-items-body"></div>
 </div>
 
 <!-- Employee Supplies sub-page -->
