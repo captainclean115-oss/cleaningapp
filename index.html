@@ -23048,9 +23048,23 @@ async function _executeClaireToolCallInner(toolCall, message) {
         _claireLastToolResult = JSON.stringify({ error:'not_signed_in', message:'User must be signed in to send SMS.' });
         return;
       }
+      var stApiKey = (stSb.supabaseKey)
+                  || (stSb.rest && stSb.rest.headers && stSb.rest.headers.apikey)
+                  || (stSb.headers && stSb.headers.apikey)
+                  || '';
+      console.log('[Claire send_text] apikey resolved length:', stApiKey ? stApiKey.length : 0); // DEBUG: remove after audit
+      if (!stApiKey) {
+        console.error('[Claire send_text] missing apikey from supabase client');
+        _claireLastToolResult = JSON.stringify({ error:'config_error', message:'Configuration error — apikey missing from supabase client.' });
+        return;
+      }
       var stResp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stTok },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + stTok,
+          'apikey': stApiKey,
+        },
         body: JSON.stringify({ to_phone: stE164, message: stMsg }),
       });
       var stData = null;
@@ -29375,9 +29389,19 @@ async function sendQuoteViaRC() {
     const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
     console.log('[sendQuoteViaRC] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
     if (!tok) { alert('Please sign in to send via RingCentral.'); return; }
+    const apikey = (sb.supabaseKey)
+                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
+                || (sb.headers && sb.headers.apikey)
+                || '';
+    console.log('[sendQuoteViaRC] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
+    if (!apikey) { console.error('[sendQuoteViaRC] missing apikey from supabase client'); alert('Configuration error — please reload'); return; }
     const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + tok,
+        'apikey': apikey,
+      },
       // Quotes routinely go to prospects who aren't yet clients — bypass
       // the Edge Function's contact-list check for this path only.
       body: JSON.stringify({ to_phone: e164, message: msg, allow_unknown_recipient: true }),
@@ -29718,6 +29742,7 @@ async function sendAllBalanceFollowups() {
   // Resolve Supabase session token once for the whole batch (it doesn't
   // change between iterations — and avoids N redundant getSession calls).
   let edgeTok = null;
+  let edgeApiKey = '';
   try {
     const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
     console.log('[sendAllBalanceFollowups] sb exists:', !!sb); // DEBUG: remove after audit
@@ -29725,9 +29750,19 @@ async function sendAllBalanceFollowups() {
       const ses = await sb.auth.getSession();
       console.log('[sendAllBalanceFollowups] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
       edgeTok = ses && ses.data && ses.data.session && ses.data.session.access_token || null;
+      edgeApiKey = (sb.supabaseKey)
+                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
+                || (sb.headers && sb.headers.apikey)
+                || '';
     }
   } catch (e) { /* edgeTok stays null — every SMS row will skip below */ }
   console.log('[sendAllBalanceFollowups] access_token length:', edgeTok ? edgeTok.length : 0, 'batch size:', selected.length); // DEBUG: remove after audit
+  console.log('[sendAllBalanceFollowups] apikey resolved length:', edgeApiKey ? edgeApiKey.length : 0); // DEBUG: remove after audit
+  if (edgeTok && !edgeApiKey) {
+    console.error('[sendAllBalanceFollowups] missing apikey from supabase client — aborting batch');
+    alert('Configuration error — please reload');
+    return;
+  }
 
   for (let i = 0; i < selected.length; i++) {
     const c = selected[i];
@@ -29755,7 +29790,11 @@ async function sendAllBalanceFollowups() {
       try {
         const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + edgeTok },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + edgeTok,
+            'apikey': edgeApiKey,
+          },
           body: JSON.stringify({ to_phone: e164, message: msg }),
         });
         let detail = null;
@@ -30871,10 +30910,24 @@ async function sendReply() {
       alert('Please sign in to send.');
       sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
     }
+    const apikey = (sb.supabaseKey)
+                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
+                || (sb.headers && sb.headers.apikey)
+                || '';
+    console.log('[sendReply] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
+    if (!apikey) {
+      console.error('[sendReply] missing apikey from supabase client');
+      alert('Configuration error — please reload');
+      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
+    }
 
     const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + tok,
+        'apikey': apikey,
+      },
       // Replies go to whoever just texted us — they may not be a known
       // client/employee yet. Bypass the Edge Function's contact-list
       // check for this path only.
@@ -35005,9 +35058,19 @@ async function sendOnMyWay(jobId, phone, firstName) {
     var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
     console.log('[sendOnMyWay] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
     if (!tok) { _toastSimple('Please sign in', 'error'); return; }
+    var apikey = (sb.supabaseKey)
+              || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
+              || (sb.headers && sb.headers.apikey)
+              || '';
+    console.log('[sendOnMyWay] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
+    if (!apikey) { console.error('[sendOnMyWay] missing apikey from supabase client'); _toastSimple('Configuration error — please reload', 'error'); return; }
     var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + tok,
+        'apikey': apikey,
+      },
       body: JSON.stringify({ to_phone: phone, message: msg }),
     });
     var data = null;
