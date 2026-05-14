@@ -23034,47 +23034,23 @@ async function _executeClaireToolCallInner(toolCall, message) {
       // direct RC API. Browser no longer needs an rcToken to send.
       // Edge Function picks the from-number from
       // business_phone_integrations.phone_number_e164.
-      var stSb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-      console.log('[Claire send_text] sb exists:', !!stSb); // DEBUG: remove after audit
-      if (!stSb) {
+      var sb = window.PentaAuth?.client || window.supabaseClient;
+      console.log('[Claire send_text] sb exists:', !!sb); // DEBUG: remove after audit
+      if (!sb) {
         _claireLastToolResult = JSON.stringify({ error:'no_session', message:'Supabase client unavailable.' });
         return;
       }
-      var stSes = await stSb.auth.getSession();
-      console.log('[Claire send_text] session present:', !!(stSes && stSes.data && stSes.data.session)); // DEBUG: remove after audit
-      var stTok = stSes && stSes.data && stSes.data.session && stSes.data.session.access_token;
-      console.log('[Claire send_text] access_token length:', stTok ? stTok.length : 0); // DEBUG: remove after audit
-      if (!stTok) {
-        _claireLastToolResult = JSON.stringify({ error:'not_signed_in', message:'User must be signed in to send SMS.' });
-        return;
-      }
-      var stApiKey = (stSb.supabaseKey)
-                  || (stSb.rest && stSb.rest.headers && stSb.rest.headers.apikey)
-                  || (stSb.headers && stSb.headers.apikey)
-                  || '';
-      console.log('[Claire send_text] apikey resolved length:', stApiKey ? stApiKey.length : 0); // DEBUG: remove after audit
-      if (!stApiKey) {
-        console.error('[Claire send_text] missing apikey from supabase client');
-        _claireLastToolResult = JSON.stringify({ error:'config_error', message:'Configuration error — apikey missing from supabase client.' });
-        return;
-      }
-      var stResp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + stTok,
-          'apikey': stApiKey,
-        },
-        body: JSON.stringify({ to_phone: stE164, message: stMsg }),
+      // v11.0.x — use supabaseClient.functions.invoke() so the SDK
+      // handles JWT + apikey internally under the new key system.
+      var invocation = await sb.functions.invoke('send-sms', {
+        body: { to_phone: stE164, message: stMsg }
       });
-      var stData = null;
-      try { stData = await stResp.json(); } catch (_e) {}
-      console.log('[Claire send_text] response status:', stResp.status, 'error:', stData && stData.error, 'hint:', stData && stData.hint); // DEBUG: remove after audit
-      if (stResp.ok && stData && stData.ok) {
-        try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
-        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.msg_id });
+      console.log('[Claire send_text] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
+      if (invocation.error) {
+        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', message: invocation.error.message, detail: invocation.data });
       } else {
-        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', status: stResp.status, detail: stData });
+        try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
+        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id: invocation.data && invocation.data.msg_id });
       }
     } catch(stE) {
       _claireLastToolResult = JSON.stringify({ error:'rc_exception', message: stE.message || String(stE) });
@@ -29381,44 +29357,26 @@ async function sendQuoteViaRC() {
     // v11.0.x — send via the send-sms Edge Function. No more browser-side
     // rcToken / getMyRCNumber dependency; the Edge Function resolves the
     // tenant's outbound number from business_phone_integrations.
-    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    const sb = window.PentaAuth?.client || window.supabaseClient;
     console.log('[sendQuoteViaRC] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) { alert('No connection — please sign in and try again.'); return; }
-    const ses = await sb.auth.getSession();
-    console.log('[sendQuoteViaRC] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
-    const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
-    console.log('[sendQuoteViaRC] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
-    if (!tok) { alert('Please sign in to send via RingCentral.'); return; }
-    const apikey = (sb.supabaseKey)
-                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
-                || (sb.headers && sb.headers.apikey)
-                || '';
-    console.log('[sendQuoteViaRC] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
-    if (!apikey) { console.error('[sendQuoteViaRC] missing apikey from supabase client'); alert('Configuration error — please reload'); return; }
-    const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + tok,
-        'apikey': apikey,
-      },
-      // Quotes routinely go to prospects who aren't yet clients — bypass
-      // the Edge Function's contact-list check for this path only.
-      body: JSON.stringify({ to_phone: e164, message: msg, allow_unknown_recipient: true }),
+    // v11.0.x — use supabaseClient.functions.invoke(). Quotes routinely
+    // go to prospects who aren't yet clients, so we keep
+    // allow_unknown_recipient: true to bypass the Edge Function's
+    // contact-list check on this path.
+    const invocation = await sb.functions.invoke('send-sms', {
+      body: { to_phone: e164, message: msg, allow_unknown_recipient: true }
     });
-    let data = null;
-    try { data = await resp.json(); } catch (e) {}
-    console.log('[sendQuoteViaRC] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
-    if (resp.ok && data && data.ok) {
-      document.getElementById('qt-compose-modal').style.display = 'none';
-      closeQuoteTool();
-      showTab('messages');
-      setTimeout(() => loadInbox(), 800);
-      alert('Quote sent via RingCentral ✓');
-    } else {
-      const detail = (data && (data.error || data.hint)) || ('HTTP ' + resp.status);
-      alert('RC send failed: ' + detail);
+    console.log('[sendQuoteViaRC] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
+    if (invocation.error) {
+      alert('RC send failed: ' + (invocation.error.message || 'unknown'));
+      return;
     }
+    document.getElementById('qt-compose-modal').style.display = 'none';
+    closeQuoteTool();
+    showTab('messages');
+    setTimeout(() => loadInbox(), 800);
+    alert('Quote sent via RingCentral ✓');
   } catch(e) { alert('Error: ' + e.message); }
 }
 
@@ -29739,28 +29697,13 @@ async function sendAllBalanceFollowups() {
   // that surfaces what would previously have been silently lost on errors.
   let sent = 0, skipped = 0, failed = 0;
 
-  // Resolve Supabase session token once for the whole batch (it doesn't
-  // change between iterations — and avoids N redundant getSession calls).
-  let edgeTok = null;
-  let edgeApiKey = '';
-  try {
-    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-    console.log('[sendAllBalanceFollowups] sb exists:', !!sb); // DEBUG: remove after audit
-    if (sb) {
-      const ses = await sb.auth.getSession();
-      console.log('[sendAllBalanceFollowups] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
-      edgeTok = ses && ses.data && ses.data.session && ses.data.session.access_token || null;
-      edgeApiKey = (sb.supabaseKey)
-                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
-                || (sb.headers && sb.headers.apikey)
-                || '';
-    }
-  } catch (e) { /* edgeTok stays null — every SMS row will skip below */ }
-  console.log('[sendAllBalanceFollowups] access_token length:', edgeTok ? edgeTok.length : 0, 'batch size:', selected.length); // DEBUG: remove after audit
-  console.log('[sendAllBalanceFollowups] apikey resolved length:', edgeApiKey ? edgeApiKey.length : 0); // DEBUG: remove after audit
-  if (edgeTok && !edgeApiKey) {
-    console.error('[sendAllBalanceFollowups] missing apikey from supabase client — aborting batch');
-    alert('Configuration error — please reload');
+  // v11.0.x — resolve Supabase client once for the whole batch. The SDK
+  // handles JWT + apikey internally via .functions.invoke(); no need to
+  // pre-resolve a session token or apikey here.
+  const sb = window.PentaAuth?.client || window.supabaseClient;
+  console.log('[sendAllBalanceFollowups] sb exists:', !!sb, 'batch size:', selected.length); // DEBUG: remove after audit
+  if (!sb) {
+    alert('No connection — please sign in and try again.');
     return;
   }
 
@@ -29780,31 +29723,18 @@ async function sendAllBalanceFollowups() {
     if (!channel) channel = hasPhone ? 'sms' : (hasEmail ? 'email' : null);
 
     if (channel === 'sms' && hasPhone) {
-      if (!edgeTok) {
-        // No session — preserved pre-rewrite "skip silently" branch.
-        skipped++;
-        continue;
-      }
       const phoneDigits = c.ph.replace(/[^0-9]/g,'');
       const e164 = phoneDigits.length === 10 ? '+1' + phoneDigits : '+' + phoneDigits;
       try {
-        const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + edgeTok,
-            'apikey': edgeApiKey,
-          },
-          body: JSON.stringify({ to_phone: e164, message: msg }),
+        const invocation = await sb.functions.invoke('send-sms', {
+          body: { to_phone: e164, message: msg }
         });
-        let detail = null;
-        try { detail = await resp.json(); } catch (_e) {}
-        console.log('[sendAllBalanceFollowups] recipient:', c.fn + ' ' + c.ln, '(' + e164 + ')', 'status:', resp.status, 'error:', detail && detail.error, 'hint:', detail && detail.hint); // DEBUG: remove after audit
-        if (resp.ok) {
-          sent++;
-        } else {
-          console.warn('[balance bulk] send failed for', c.fn + ' ' + c.ln, resp.status, detail);
+        console.log('[sendAllBalanceFollowups] recipient:', c.fn + ' ' + c.ln, '(' + e164 + ')', 'error:', invocation.error && invocation.error.message); // DEBUG: remove after audit
+        if (invocation.error) {
+          console.warn('[balance bulk] send failed for', c.fn + ' ' + c.ln, invocation.error.message);
           failed++;
+        } else {
+          sent++;
         }
       } catch (e) {
         console.warn('[balance bulk] send threw for', c.fn + ' ' + c.ln, e);
@@ -30896,48 +30826,23 @@ async function sendReply() {
     // v11.0.x — route through send-sms Edge Function (was direct rcFetch).
     // Browser no longer needs rcToken or a picked from-number; the Edge
     // Function resolves both from business_phone_integrations.
-    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    const sb = window.PentaAuth?.client || window.supabaseClient;
     console.log('[sendReply] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) {
       alert('No connection — please sign in and try again.');
       sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
     }
-    const ses = await sb.auth.getSession();
-    console.log('[sendReply] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
-    const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
-    console.log('[sendReply] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
-    if (!tok) {
-      alert('Please sign in to send.');
-      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
-    }
-    const apikey = (sb.supabaseKey)
-                || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
-                || (sb.headers && sb.headers.apikey)
-                || '';
-    console.log('[sendReply] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
-    if (!apikey) {
-      console.error('[sendReply] missing apikey from supabase client');
-      alert('Configuration error — please reload');
-      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
-    }
-
-    const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + tok,
-        'apikey': apikey,
-      },
-      // Replies go to whoever just texted us — they may not be a known
-      // client/employee yet. Bypass the Edge Function's contact-list
-      // check for this path only.
-      body: JSON.stringify({ to_phone: currentConv.phone, message: text, allow_unknown_recipient: true }),
+    // v11.0.x — use supabaseClient.functions.invoke(). Replies go to
+    // whoever just texted us; they may not be a known client/employee
+    // yet, so we keep allow_unknown_recipient: true.
+    const invocation = await sb.functions.invoke('send-sms', {
+      body: { to_phone: currentConv.phone, message: text, allow_unknown_recipient: true }
     });
-    let data = null;
-    try { data = await resp.json(); } catch (e) {}
-    console.log('[sendReply] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
+    console.log('[sendReply] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
 
-    if (resp.ok && data && data.ok) {
+    if (invocation.error) {
+      alert('Send failed: ' + (invocation.error.message || 'unknown'));
+    } else {
       // Append bubble directly without full re-render
       const convEl = document.getElementById('conv-messages');
       const bubble = document.createElement('div');
@@ -30948,13 +30853,10 @@ async function sendReply() {
       document.getElementById('draft-text').value = '';
       // Store in conversation
       currentConv.messages.push({
-        id: data.msg_id, direction: 'Outbound',
+        id: invocation.data && invocation.data.msg_id, direction: 'Outbound',
         subject: text, body: text,
         creationTime: new Date().toISOString()
       });
-    } else {
-      const errMsg = (data && (data.error || data.hint)) || ('HTTP ' + resp.status);
-      alert('Send failed: ' + errMsg);
     }
   } catch(e) {
     alert('Send error: ' + e.message);
@@ -35050,35 +34952,19 @@ async function sendOnMyWay(jobId, phone, firstName) {
   var msg = "Hi " + name + ", " + _omwWho + " is on the way! See you soon.";
   if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
   try {
-    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var sb = window.PentaAuth?.client || window.supabaseClient;
     console.log('[sendOnMyWay] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) { _toastSimple('No connection', 'error'); return; }
-    var ses = await sb.auth.getSession();
-    console.log('[sendOnMyWay] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
-    var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
-    console.log('[sendOnMyWay] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
-    if (!tok) { _toastSimple('Please sign in', 'error'); return; }
-    var apikey = (sb.supabaseKey)
-              || (sb.rest && sb.rest.headers && sb.rest.headers.apikey)
-              || (sb.headers && sb.headers.apikey)
-              || '';
-    console.log('[sendOnMyWay] apikey resolved length:', apikey ? apikey.length : 0); // DEBUG: remove after audit
-    if (!apikey) { console.error('[sendOnMyWay] missing apikey from supabase client'); _toastSimple('Configuration error — please reload', 'error'); return; }
-    var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + tok,
-        'apikey': apikey,
-      },
-      body: JSON.stringify({ to_phone: phone, message: msg }),
+    // v11.0.x — use supabaseClient.functions.invoke() so the SDK handles
+    // JWT + apikey headers internally (matches the new publishable-key
+    // system; hand-rolled fetch broke under that migration).
+    var invocation = await sb.functions.invoke('send-sms', {
+      body: { to_phone: phone, message: msg }
     });
-    var data = null;
-    try { data = await resp.json(); } catch (e) {}
-    console.log('[sendOnMyWay] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
-    if (!resp.ok) {
-      _toastSimple('Send failed: ' + (data && (data.error || data.detail) || resp.status), 'error');
-      console.warn('[onMyWay] send-sms response', data);
+    console.log('[sendOnMyWay] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
+    if (invocation.error) {
+      _toastSimple('Send failed: ' + (invocation.error.message || 'unknown'), 'error');
+      console.warn('[onMyWay] invoke error', invocation.error);
       return;
     }
     _toastSimple('Text sent to ' + name, 'success');
