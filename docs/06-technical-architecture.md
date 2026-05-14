@@ -265,7 +265,11 @@ The chat_messages table is the 5th entity in the master data log architecture, j
 
 ---
 
-## 8g. Hours Report data source (v11.0.19, v11.0.21)
+## 8g. Hours Report data source (v11.0.19, v11.0.21, v11.0.22)
+
+**v11.0.22 — UI rewrite.** The dense `<table class="hours-table">` is replaced with iOS-style team cards + collapsible employee rows that match Penta's overall design language. Each team gets a card with a colored header strip, employees stacked inside, and tap-to-expand 5-day breakdowns per employee. Day pills show hours + start/end + lunch + live indicator. Off-team days render with a tooltip showing where the employee actually was. CSS class set: `.hrs-team-card`, `.hrs-team-head`, `.hrs-emp-row-wrap`, `.hrs-emp-row`, `.hrs-emp-avatar`, `.hrs-days`, `.hrs-day`, `.hrs-totals-bar`, `.hrs-export-btn`. Expanded state persisted in `window._hrsExpandedEmps` so the 60s live refresh doesn't collapse open rows. The CSV export logic is unchanged.
+
+
 
 **v11.0.21 — strict per-day team membership.** The Hours Worked table on the Live tab now reflects exactly who was on each team per day (via `daily_assignments`), not who that team's permanent members are.
 

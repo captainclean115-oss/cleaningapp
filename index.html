@@ -770,6 +770,110 @@ body {
   border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .week-nav-label { font-size: 14px; font-weight: 600; }
 
+/* v11.0.22 — Hours Worked card UI. Replaces the dense .hours-table grid
+   with iOS-style team cards + collapsible employee rows. */
+.hrs-team-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.hrs-team-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.hrs-team-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(0,0,0,0.04); }
+.hrs-team-name { font-size: 14px; font-weight: 700; flex: 1; letter-spacing: -0.01em; }
+.hrs-team-total { font-size: 14px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.hrs-team-gps { font-size: 9px; color: #16a34a; font-weight: 700; margin-left: 6px; letter-spacing: .04em; padding: 2px 6px; background: rgba(34,197,94,0.10); border-radius: 6px; }
+.hrs-team-empty { padding: 12px 14px; font-size: 12px; color: var(--muted); text-align: center; }
+
+.hrs-emp-row-wrap + .hrs-emp-row-wrap { border-top: 1px solid var(--border); }
+.hrs-emp-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; cursor: pointer;
+  transition: background .12s;
+  user-select: none;
+}
+.hrs-emp-row:active { background: rgba(108,143,255,0.06); }
+.hrs-emp-avatar {
+  width: 36px; height: 36px; border-radius: 50%; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; flex-shrink: 0; letter-spacing: -0.02em;
+}
+.hrs-emp-info { flex: 1; min-width: 0; }
+.hrs-emp-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hrs-emp-sub { font-size: 11px; color: var(--muted); margin-top: 1px; display: flex; align-items: center; gap: 6px; }
+.hrs-emp-role-chip { font-size: 11px; }
+.hrs-emp-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.hrs-emp-total { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.hrs-emp-total.is-zero { color: var(--muted); font-weight: 600; }
+.hrs-emp-total.is-live { color: #16a34a; }
+.hrs-emp-chev { color: var(--muted); transition: transform .18s ease; font-size: 11px; }
+.hrs-emp-row-wrap.is-expanded .hrs-emp-chev { transform: rotate(90deg); color: var(--accent); }
+.hrs-emp-live-pill { font-size: 9px; font-weight: 700; color: #16a34a; background: rgba(34,197,94,0.12); padding: 2px 7px; border-radius: 10px; display: inline-flex; align-items: center; gap: 4px; letter-spacing: .04em; }
+.hrs-emp-live-pill::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #16a34a; animation: hrs-pulse 1.4s ease-in-out infinite; }
+@keyframes hrs-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+
+.hrs-days {
+  display: none;
+  padding: 10px 12px 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(108,143,255,0.04);
+}
+.hrs-emp-row-wrap.is-expanded .hrs-days { display: block; }
+.hrs-days-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px;
+}
+.hrs-day {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 7px 4px;
+  text-align: center; cursor: pointer;
+  transition: transform .1s, border-color .12s;
+  min-height: 70px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+}
+.hrs-day:active { transform: scale(0.97); }
+.hrs-day.is-today { border-color: var(--accent); background: rgba(108,143,255,0.06); }
+.hrs-day.is-off { opacity: 0.55; }
+.hrs-day-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }
+.hrs-day-num { font-size: 9px; color: var(--muted); margin-bottom: 4px; }
+.hrs-day-hrs { font-size: 15px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.hrs-day-hrs.is-dash { color: var(--border2); font-weight: 600; }
+.hrs-day-time { font-size: 9px; color: var(--muted); line-height: 1.25; margin-top: 1px; }
+.hrs-day-time-start { color: #16a34a; }
+.hrs-day-time-end { color: #dc2626; }
+.hrs-day-edited { font-size: 8px; color: var(--accent); font-weight: 700; letter-spacing: .04em; margin-top: 1px; }
+.hrs-day-live { font-size: 9px; color: #16a34a; font-weight: 800; margin-top: 1px; display: inline-flex; align-items: center; gap: 3px; }
+.hrs-day-live::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #16a34a; animation: hrs-pulse 1.4s ease-in-out infinite; }
+
+.hrs-totals-bar {
+  background: linear-gradient(135deg, rgba(108,143,255,0.10), rgba(108,143,255,0.05));
+  border: 1px solid rgba(108,143,255,0.25);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 12px 0 10px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.hrs-totals-label { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+.hrs-totals-val { font-size: 22px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.hrs-export-btn {
+  width: 100%; padding: 12px;
+  background: rgba(108,143,255,0.10);
+  border: 1px solid rgba(108,143,255,0.30);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px; font-weight: 700; letter-spacing: -0.01em;
+  cursor: pointer;
+  margin-top: 2px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.hrs-export-btn:active { opacity: .88; }
+.hrs-depot-note { margin-top: 8px; font-size: 11px; color: var(--muted); padding: 0 4px; text-align: center; line-height: 1.5; }
+
 
 /* ── PAYMENT RECORDING ── */
 .payment-modal { }
@@ -26083,74 +26187,70 @@ function fmt12(date) {
   return date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
 }
 
+// v11.0.22 — track which employees have their day breakdown expanded.
+// Survives re-renders so realtime updates don't collapse the user's view.
+if (typeof window._hrsExpandedEmps !== 'object' || window._hrsExpandedEmps === null) {
+  window._hrsExpandedEmps = {};
+}
+function _hrsToggleEmp(empId) {
+  var wrap = document.getElementById('hrs-emp-wrap-' + empId);
+  if (!wrap) return;
+  var nowExpanded = !wrap.classList.contains('is-expanded');
+  wrap.classList.toggle('is-expanded', nowExpanded);
+  window._hrsExpandedEmps[empId] = nowExpanded;
+}
+
+function _hrsFmtHrs(h) {
+  if (!h || h <= 0) return '0';
+  if (h < 1) return h.toFixed(1).replace(/\.0$/, '');
+  return h.toFixed(1).replace(/\.0$/, '');
+}
+
+function _hrsFmt12(date) {
+  if (!date) return '';
+  if (typeof date === 'string' && /^\d{1,2}:\d{2}$/.test(date)) {
+    var p = date.split(':'); var h = parseInt(p[0]), m = parseInt(p[1]);
+    var ap = h >= 12 ? 'PM' : 'AM'; if (h > 12) h -= 12; if (h === 0) h = 12;
+    return h + ':' + String(m).padStart(2,'0') + ' ' + ap;
+  }
+  if (!(date instanceof Date)) date = new Date(date);
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
 function renderHoursTable(days, dayNames) {
   const teams = _pentaTeamNames();
   const today = new Date(); today.setHours(0,0,0,0);
-  // v11.0.19 — per-employee map sourced from time_entries (primary data source).
   const empHoursMap = window._empHoursMap || {};
   const gpsVerified = !!window._hoursGeotabAvailable;
   let hasOpenShift = false;
-
-  let html = `<table class="hours-table">
-    <thead><tr>
-      <th>Employee</th>
-      ${days.map((d,i) => {
-        const isToday = d.toDateString() === today.toDateString();
-        return `<th style="${isToday?'color:var(--accent)':''}">${dayNames[i]}<br><span style="font-size:10px;font-weight:400">${d.getDate()}</span></th>`;
-      }).join('')}
-      <th>Total</th>
-    </tr></thead>
-    <tbody>`;
-
-  let depotTotals = [0,0,0,0,0];
   let grandTotal = 0;
+  const expanded = window._hrsExpandedEmps || {};
+
+  let html = '';
 
   teams.forEach(team => {
     const data = weekHours[team];
     const color = _pentaTeamColor(team, '#6b7280');
 
-    // v11.0.21: STRICT per-day membership. An employee appears under this
-    // team only if getEmployeeTeam(empId, dateKey(d)) === team on at least
-    // one day this week. The previous `|| e.defaultTeam === team` fallback
-    // pulled employees back into their default team even after Tom moved
-    // them, double-rendering hours under both their daily-assigned team
-    // and their permanent team.
+    // v11.0.21 strict per-day membership.
     const teamEmployees = getUnifiedRoster().filter(e => {
       return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team);
     });
-
     if (!data && teamEmployees.length === 0) return;
 
-    // v11.0.19: GPS-verified badge when Geotab succeeded for this team.
-    const gpsBadge = (gpsVerified && data && data.source !== 'time_entries')
-      ? ' <span style="font-size:9px;color:#7ee787;font-weight:600;margin-left:8px">📍 GPS</span>'
-      : '';
+    // Sum the team's week total (cells gated by per-day membership below).
+    let teamTotal = 0;
+    let teamHasOpenShift = false;
 
-    // Team header row
-    html += `<tr style="background:rgba(${color.replace('#','').match(/.{2}/g).map(x=>parseInt(x,16)).join(',')},0.08)">
-      <td colspan="${days.length + 2}" style="font-size:11px;font-weight:700;color:${color};padding:6px 10px;text-transform:uppercase;letter-spacing:.06em">
-        <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;margin-right:6px"></span>${team}${gpsBadge}
-      </td>
-    </tr>`;
-
-    if (teamEmployees.length === 0) {
-      html += `<tr><td colspan="${days.length + 2}" style="color:var(--muted);font-size:12px;padding:6px 10px">No clock-in data this week</td></tr>`;
-      return;
-    }
-
-    // One row per employee on this team
-    teamEmployees.forEach(emp => {
-      const roleIcons = emp.role.map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : r).join(' ');
-      const roleStr = emp.role.length ? ' <span style="font-size:12px">' + roleIcons + '</span>' : '';
-      const floatBadge = emp.floater ? '<span style="font-size:9px;color:var(--amber);margin-left:4px">FLOAT</span>' : '';
-      let empWeekTotal = 0;
+    const empRowsHtml = teamEmployees.map(emp => {
       const empMap = empHoursMap[emp.id] || {};
+      let empWeekTotal = 0;
+      let empHasOpenShift = false;
+
+      // Build the 5-day breakdown for this employee.
       const dayCells = days.map(function(d, i) {
         const dk = dateKey(d);
-        // v11.0.21: gate cell rendering on per-day team membership. The
-        // employee may belong to a DIFFERENT team this day (e.g. moved from
-        // B1 to S1 for Tuesday only). Cells outside their assigned team for
-        // a given day render as em-dash so hours never double-count.
         const onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
         const override = getEmpHours(emp.id, dk);
         const teCell = empMap[dk] || null;
@@ -26159,73 +26259,129 @@ function renderHoursTable(days, dayNames) {
         const empH = !onThisTeamToday ? 0
           : (override ? override.hours
               : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH)));
-        depotTotals[i] += empH;
         empWeekTotal += empH;
-        const openShift = onThisTeamToday && !!(teCell && teCell.openShift) && !override;
-        if (openShift) hasOpenShift = true;
-        if (!empH && !openShift) {
-          // Distinguish "OFF this team today" from "no data": tooltip on the dash.
-          const dashTitle = onThisTeamToday ? '' : ' title="' + _audEsc(getEmployeeTeam(emp.id, dk) || 'OFF') + ' this day"';
-          return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'"' + dashTitle + ' style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))"><span style="color:var(--border2)">&#8212;</span></td>';
+        const isOpen = onThisTeamToday && !!(teCell && teCell.openShift) && !override;
+        if (isOpen) empHasOpenShift = true;
+        const isToday = d.toDateString() === today.toDateString();
+
+        // Day pill content
+        let inner = '';
+        if (!onThisTeamToday) {
+          // Off this team that day. Try to show where they were.
+          const whereTeam = getEmployeeTeam(emp.id, dk);
+          const whereLabel = whereTeam || 'OFF';
+          inner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+            + '<div class="hrs-day-num">' + d.getDate() + '</div>'
+            + '<div class="hrs-day-hrs is-dash">&#8212;</div>'
+            + '<div class="hrs-day-time" style="color:var(--muted)">' + _audEsc(whereLabel) + '</div>';
+          return '<div class="hrs-day is-off' + (isToday ? ' is-today' : '') + '">' + inner + '</div>';
         }
-        var sStr = '', eStr = '';
+
+        let sStr = '', eStr = '';
         if (override) {
-          if (override.start) { var sp=override.start.split(':'),sh=parseInt(sp[0]),sm=parseInt(sp[1]),sap=sh>=12?'PM':'AM'; if(sh>12)sh-=12; if(sh===0)sh=12; sStr=sh+':'+String(sm).padStart(2,'0')+' '+sap; }
-          if (override.end) { var ep=override.end.split(':'),eh=parseInt(ep[0]),em2=parseInt(ep[1]),eap=eh>=12?'PM':'AM'; if(eh>12)eh-=12; if(eh===0)eh=12; eStr=eh+':'+String(em2).padStart(2,'0')+' '+eap; }
+          if (override.start) sStr = _hrsFmt12(override.start);
+          if (override.end) eStr = _hrsFmt12(override.end);
         } else if (teCell) {
-          sStr = teCell.start ? fmt12(teCell.start) : '';
-          eStr = teCell.end ? fmt12(teCell.end) : '';
+          if (teCell.start) sStr = _hrsFmt12(teCell.start);
+          if (teCell.end) eStr = _hrsFmt12(teCell.end);
         } else if (teamSrc !== 'time_entries') {
-          sStr = data && data.starts && data.starts[i] ? fmt12(data.starts[i]) : '';
-          eStr = data && data.ends && data.ends[i] ? fmt12(data.ends[i]) : '';
+          if (data && data.starts && data.starts[i]) sStr = _hrsFmt12(data.starts[i]);
+          if (data && data.ends && data.ends[i]) eStr = _hrsFmt12(data.ends[i]);
         }
-        const lunch = override ? (override.lunch || 0) : (data && data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
-        const lunchStr = lunch ? '<div style="font-size:10px;color:var(--amber)">&#127828; ' + lunch + 'm</div>' : '';
-        const editBadge = override ? '<div style="font-size:8px;color:var(--accent)">edited</div>' : '';
-        const liveBadge = openShift ? '<div style="font-size:9px;color:var(--green);font-weight:600">● live</div>' : '';
-        return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))">'
-          +'<div style="font-weight:600">' + formatHrs(empH) + '</div>'
-          +'<div style="font-size:10px;color:var(--green)">' + sStr + '</div>'
-          +'<div style="font-size:10px;color:var(--red)">' + (openShift ? '—' : eStr) + '</div>'
-          + lunchStr + editBadge + liveBadge + '</td>';
+        const lunchMin = override ? (override.lunch || 0)
+          : (data && data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
+
+        const hrsHtml = empH > 0
+          ? '<div class="hrs-day-hrs">' + _hrsFmtHrs(empH) + '<span style="font-size:9px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
+          : '<div class="hrs-day-hrs is-dash">&#8212;</div>';
+        const timeHtml =
+            (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
+          + ((!isOpen && eStr) ? '<div class="hrs-day-time hrs-day-time-end">' + _audEsc(eStr) + '</div>' : '')
+          + (lunchMin ? '<div class="hrs-day-time" style="color:#f59e0b">&#127828; ' + lunchMin + 'm</div>' : '')
+          + (override ? '<div class="hrs-day-edited">EDITED</div>' : '')
+          + (isOpen ? '<div class="hrs-day-live">live</div>' : '');
+
+        const onclick = 'showEmpDayDetail(\'' + emp.id + '\',\'' + _audEsc(emp.name).replace(/'/g,"\\'") + '\',\'' + team + '\',' + d.getTime() + ')';
+        return '<div class="hrs-day' + (isToday ? ' is-today' : '') + '" onclick="' + onclick + '">'
+          + '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+          + '<div class="hrs-day-num">' + d.getDate() + '</div>'
+          + hrsHtml + timeHtml + '</div>';
       }).join('');
-      html += '<tr>' +
-        '<td style="padding-left:20px">' + emp.name + roleStr + floatBadge + '</td>' +
-        dayCells +
-        '<td class="total-col">' + formatHrs(empWeekTotal) + '</td>' +
-        '</tr>';
+
+      if (empHasOpenShift) hasOpenShift = true;
+      if (empHasOpenShift) teamHasOpenShift = true;
+      teamTotal += empWeekTotal;
       grandTotal += empWeekTotal;
-    });
+
+      // Avatar + role chips
+      const initial = (emp.name || '?').trim().charAt(0).toUpperCase();
+      const avatarBg = _pentaTeamColor(team, '#6c8fff');
+      const roleIcons = (emp.role || []).map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : '').join(' ').trim();
+      const floatBadge = emp.floater ? '<span class="hrs-emp-role-chip" style="color:var(--amber)">FLOAT</span>' : '';
+      const isExpanded = !!expanded[emp.id];
+
+      const totalClass = empHasOpenShift ? 'hrs-emp-total is-live'
+        : (empWeekTotal > 0 ? 'hrs-emp-total' : 'hrs-emp-total is-zero');
+      const totalLabel = empHasOpenShift
+        ? '<span class="hrs-emp-live-pill">LIVE</span>'
+        : '';
+
+      return '<div class="hrs-emp-row-wrap' + (isExpanded ? ' is-expanded' : '') + '" id="hrs-emp-wrap-' + emp.id + '">'
+        + '<div class="hrs-emp-row" onclick="_hrsToggleEmp(\'' + emp.id + '\')">'
+        + '<div class="hrs-emp-avatar" style="background:' + avatarBg + '">' + _audEsc(initial) + '</div>'
+        + '<div class="hrs-emp-info">'
+        + '<div class="hrs-emp-name">' + _audEsc(emp.name) + (roleIcons ? ' <span class="hrs-emp-role-chip">' + roleIcons + '</span>' : '') + floatBadge + '</div>'
+        + '<div class="hrs-emp-sub">' + _hrsFmtHrs(empWeekTotal) + 'h this week</div>'
+        + '</div>'
+        + '<div class="hrs-emp-right">' + totalLabel
+        + '<div class="' + totalClass + '">' + _hrsFmtHrs(empWeekTotal) + '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
+        + '<div class="hrs-emp-chev">&#9656;</div>'
+        + '</div></div>'
+        + '<div class="hrs-days"><div class="hrs-days-grid">' + dayCells + '</div></div>'
+        + '</div>';
+    }).join('');
+
+    const colorRGB = color.replace('#','').match(/.{2}/g).map(x=>parseInt(x,16)).join(',');
+    const gpsBadge = (gpsVerified && data && data.source !== 'time_entries')
+      ? '<span class="hrs-team-gps">&#128205; GPS</span>' : '';
+
+    html += '<div class="hrs-team-card">'
+      + '<div class="hrs-team-head" style="background:rgba(' + colorRGB + ',0.06)">'
+      + '<span class="hrs-team-dot" style="background:' + color + '"></span>'
+      + '<span class="hrs-team-name" style="color:' + color + '">' + _audEsc(team) + gpsBadge + '</span>'
+      + '<span class="hrs-team-total">' + _hrsFmtHrs(teamTotal) + '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:1px">h</span></span>'
+      + '</div>';
+    if (teamEmployees.length === 0) {
+      html += '<div class="hrs-team-empty">No clock-in data this week</div>';
+    } else {
+      html += empRowsHtml;
+    }
+    html += '</div>';
   }); // end teams.forEach
 
-  // Totals row
-  html += `<tr style="background:rgba(255,255,255,0.03)">
-    <td style="font-weight:700;color:var(--muted)">All Teams</td>
-    ${depotTotals.map(h => `<td style="font-weight:600">${formatHrs(h)}</td>`).join('')}
-    <td class="total-col" style="font-size:15px">${formatHrs(grandTotal)}</td>
-  </tr>`;
+  // All Teams summary
+  html += '<div class="hrs-totals-bar">'
+    + '<div class="hrs-totals-label">All Teams</div>'
+    + '<div class="hrs-totals-val">' + _hrsFmtHrs(grandTotal) + '<span style="font-size:13px;font-weight:700;margin-left:2px">h</span></div>'
+    + '</div>';
 
-  html += '</tbody></table>';
-
-  // v11.0.4 (Issue A): build depot breakdown line dynamically from
-  // PentaOffices instead of hardcoded Manna addresses.
+  // Depot note (per-team office breakdown line).
   var _depotNote = (function(){
     try {
       var rows = window.PentaOffices ? window.PentaOffices.listSync() : [];
       if (!rows.length) return '';
-      return '📍 ' + rows.map(function(r){
+      return '&#128205; ' + rows.map(function(r){
         var teamsStr = (r.teams || []).join('/');
-        var label = teamsStr ? teamsStr + ' hours from ' + (r.addr || r.name) : (r.name + ' (no teams assigned)');
+        var label = teamsStr ? teamsStr + ' from ' + (r.addr || r.name) : (r.name + ' (no teams assigned)');
         return label;
-      }).join(' · ');
+      }).join(' &middot; ');
     } catch (e) { return ''; }
   })();
   if (_depotNote) {
-    html += `<div style="margin-top:8px;font-size:11px;color:var(--muted);padding:0 2px">${_depotNote}</div>`;
+    html += '<div class="hrs-depot-note">' + _depotNote + '</div>';
   }
 
-  // Hours report export (replaces the ratings button — ratings now lives as its own home-screen icon)
-  html += `<button onclick="showHoursReport()" style="margin-top:12px;width:100%;padding:12px;background:rgba(108,143,255,0.14);border:1px solid rgba(108,143,255,0.38);border-radius:10px;color:#cbd6ff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">📊 Hours Report</button>`;
+  html += '<button class="hrs-export-btn" onclick="showHoursReport()">&#128202; Export Hours Report</button>';
 
   document.getElementById('hours-table').innerHTML = html;
 
