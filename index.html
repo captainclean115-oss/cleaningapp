@@ -10608,6 +10608,410 @@ window.PentaClientRequests = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaChatMessages — v11.0.20 — Phase D.
+//
+// Manager ↔ employee chat persistence. Replaces the localStorage-only
+// `cleanco_staff_chats` key (which only worked when both parties used
+// the same physical browser).
+//
+// Wire-up:
+//   - sendStaffReplyAdmin / sendStaffReplyEmp call PentaChatMessages.send
+//   - renderStaffInbox / openStaffChat / renderEmpChat read via the
+//     facade (DB-backed); legacy localStorage is read-only fallback
+//     for AI messages only (which stay client-local).
+//   - Realtime: subscribeToTenantUpdates (manager) + subscribeToThread
+//     (employee) deliver INSERT/UPDATE events across devices.
+// ═══════════════════════════════════════════════════════════════════════
+window.PentaChatMessages = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _toUuidOrNull(v) {
+    if (!v) return null;
+    var s = String(v);
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) ? s : null;
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+
+  // Translate `text` into all four langs in one Edge Function call. Returns
+  // { tx: {en, es, pt, cv}, detected: 'xx' }. On failure, returns the
+  // original text under every key so the row still inserts cleanly.
+  async function _translateAll(text, sourceLang) {
+    var sb = _sb(); if (!sb || !text) {
+      var fallback = {}; ['en','es','pt','cv'].forEach(function(l){ fallback[l] = text; });
+      return { tx: fallback, detected: sourceLang || 'en' };
+    }
+    try {
+      var ses = await sb.auth.getSession();
+      var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+      if (!tok) throw new Error('no session token');
+      var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/translate-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+        body: JSON.stringify({ text: text, sourceLang: sourceLang || 'auto', targetLangs: ['en','es','pt','cv'] })
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      var data = await resp.json();
+      var tx = (data && data.tx) || {};
+      // Belt-and-suspenders: backfill any missing keys with the original text.
+      ['en','es','pt','cv'].forEach(function(l){ if (!tx[l]) tx[l] = text; });
+      return { tx: tx, detected: (data && data.detected) || sourceLang || 'en' };
+    } catch (e) {
+      console.warn('[PentaChatMessages] _translateAll failed, sending without translations', e);
+      var fallback2 = {}; ['en','es','pt','cv'].forEach(function(l){ fallback2[l] = text; });
+      return { tx: fallback2, detected: sourceLang || 'en' };
+    }
+  }
+
+  // INSERT a chat message. senderRole inferred from PentaAuth.session.role
+  // if not provided; thread_employee_id required.
+  async function send(input) {
+    var sb = _sb(); if (!sb) throw new Error('PentaChatMessages.send: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaChatMessages.send: no tenant');
+    if (!input || !input.threadEmployeeId) throw new Error('PentaChatMessages.send: threadEmployeeId required');
+    var threadEmpId = _toUuidOrNull(input.threadEmployeeId);
+    if (!threadEmpId) throw new Error('PentaChatMessages.send: threadEmployeeId must be a uuid');
+    var text = (input.text || '').toString().trim();
+    if (!text) throw new Error('PentaChatMessages.send: text required');
+    var lang = (input.lang || 'en').toString();
+    if (['en','es','pt','cv'].indexOf(lang) === -1) lang = 'en';
+    var senderRole = input.senderRole;
+    if (senderRole !== 'manager' && senderRole !== 'employee') {
+      throw new Error('PentaChatMessages.send: senderRole must be manager|employee');
+    }
+    var senderUserId = await _resolveCallerUserId();
+    if (!senderUserId) throw new Error('PentaChatMessages.send: could not resolve caller users.id');
+
+    var translated = await _translateAll(text, lang);
+    var row = {
+      business_id: bid,
+      thread_employee_id: threadEmpId,
+      sender_user_id: senderUserId,
+      sender_role: senderRole,
+      text: text,
+      lang: lang,
+      tx: translated.tx,
+      urgent: !!input.urgent
+    };
+    var res = await sb.from('chat_messages').insert(row).select().single();
+    if (res.error) throw res.error;
+    return res.data;
+  }
+
+  async function listThread(employeeId, limit) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var empUuid = _toUuidOrNull(employeeId);
+    if (!empUuid) return [];
+    var q = sb.from('chat_messages').select('*')
+      .eq('business_id', bid).eq('thread_employee_id', empUuid)
+      .order('created_at', { ascending: true });
+    if (limit) q = q.limit(limit);
+    var res = await q;
+    if (res.error) { console.warn('[PentaChatMessages] listThread error', res.error); return []; }
+    return res.data || [];
+  }
+
+  // Manager-side: list of {employee_id, last_message, unread_count}.
+  // One round-trip — fetch all messages in tenant then group client-side.
+  // For Manna-sized tenants (≲ 100 messages / week) this is fine; if it
+  // grows we can swap for an RPC.
+  async function listMyThreads() {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.from('chat_messages').select('*')
+      .eq('business_id', bid)
+      .order('created_at', { ascending: false })
+      .limit(2000);
+    if (res.error) { console.warn('[PentaChatMessages] listMyThreads error', res.error); return []; }
+    var rows = res.data || [];
+    var byEmp = {};
+    rows.forEach(function(m) {
+      var k = m.thread_employee_id;
+      if (!byEmp[k]) byEmp[k] = { thread_employee_id: k, last: m, unread: 0, urgent_unread: false, msgs: [] };
+      byEmp[k].msgs.push(m);
+      if (m.sender_role === 'employee' && !m.read_at_admin) {
+        byEmp[k].unread++;
+        if (m.urgent) byEmp[k].urgent_unread = true;
+      }
+    });
+    return Object.keys(byEmp).map(function(k){ return byEmp[k]; });
+  }
+
+  async function markThreadRead(employeeId, role) {
+    var sb = _sb(); if (!sb) return;
+    var bid = _bid(); if (!bid) return;
+    var empUuid = _toUuidOrNull(employeeId);
+    if (!empUuid) return;
+    var now = new Date().toISOString();
+    var col = role === 'manager' ? 'read_at_admin' : 'read_at_emp';
+    // Mark the OTHER side's messages as read (manager reads employee msgs).
+    var otherRole = role === 'manager' ? 'employee' : 'manager';
+    var patch = {}; patch[col] = now;
+    var res = await sb.from('chat_messages').update(patch)
+      .eq('business_id', bid)
+      .eq('thread_employee_id', empUuid)
+      .eq('sender_role', otherRole)
+      .is(col, null);
+    if (res.error) console.warn('[PentaChatMessages] markThreadRead error', res.error);
+  }
+
+  // Build 2: list messages sent by a given users.id (last `daysBack` days
+  // by default 14). Used by the employee profile Activity section.
+  async function listForReporter(userId, daysBack) {
+    var sb = _sb(); if (!sb || !userId) return [];
+    var bid = _bid(); if (!bid) return [];
+    var cutoff = new Date(Date.now() - (daysBack || 14) * 86400000).toISOString();
+    var res = await sb.from('chat_messages').select('*')
+      .eq('business_id', bid).eq('sender_user_id', userId)
+      .gte('created_at', cutoff)
+      .order('created_at', { ascending: false });
+    if (res.error) { console.warn('[PentaChatMessages] listForReporter error', res.error); return []; }
+    return res.data || [];
+  }
+
+  async function countUnreadForManager() {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var res = await sb.from('chat_messages').select('id', { count: 'exact', head: true })
+      .eq('business_id', bid).eq('sender_role', 'employee').is('read_at_admin', null);
+    if (res.error) { console.warn('[PentaChatMessages] countUnreadForManager error', res.error); return 0; }
+    return res.count || 0;
+  }
+
+  async function countUnreadForEmployee(employeeId) {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var empUuid = _toUuidOrNull(employeeId);
+    if (!empUuid) return 0;
+    var res = await sb.from('chat_messages').select('id', { count: 'exact', head: true })
+      .eq('business_id', bid).eq('thread_employee_id', empUuid).eq('sender_role', 'manager').is('read_at_emp', null);
+    if (res.error) { console.warn('[PentaChatMessages] countUnreadForEmployee error', res.error); return 0; }
+    return res.count || 0;
+  }
+
+  // Realtime: tenant-wide subscription. Manager dashboards call this once.
+  var _tenantChannel = null;
+  function subscribeToTenantUpdates(cb) {
+    var sb = _sb(); if (!sb) return null;
+    var bid = _bid(); if (!bid) return null;
+    if (_tenantChannel) return _tenantChannel;
+    try {
+      _tenantChannel = sb.channel('penta-chat-tenant-' + bid)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'chat_messages', filter: 'business_id=eq.' + bid },
+          function(payload) { try { cb && cb(payload); } catch (e) { console.warn('[PentaChatMessages tenant cb threw]', e); } }
+        )
+        .subscribe(function(status){ console.log('[PentaChatMessages tenant] status=' + status); });
+    } catch (e) {
+      console.warn('[PentaChatMessages] subscribeToTenantUpdates failed', e);
+    }
+    return _tenantChannel;
+  }
+
+  // Realtime: one-thread subscription. Employee portal uses this for own thread.
+  var _threadChannels = {};
+  function subscribeToThread(employeeId, cb) {
+    var sb = _sb(); if (!sb) return null;
+    var bid = _bid(); if (!bid) return null;
+    var empUuid = _toUuidOrNull(employeeId);
+    if (!empUuid) return null;
+    if (_threadChannels[empUuid]) return _threadChannels[empUuid];
+    try {
+      _threadChannels[empUuid] = sb.channel('penta-chat-thread-' + bid + '-' + empUuid)
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'chat_messages',
+            filter: 'thread_employee_id=eq.' + empUuid },
+          function(payload) { try { cb && cb(payload); } catch (e) { console.warn('[PentaChatMessages thread cb threw]', e); } }
+        )
+        .subscribe(function(status){ console.log('[PentaChatMessages thread ' + empUuid.slice(0,8) + '] status=' + status); });
+    } catch (e) {
+      console.warn('[PentaChatMessages] subscribeToThread failed', e);
+    }
+    return _threadChannels[empUuid];
+  }
+
+  // One-time localStorage backfill — invoked from boot.
+  async function backfillFromLocalStorage() {
+    var FLAG = 'chat_localstorage_backfilled_v1';
+    if (localStorage.getItem(FLAG)) return { skipped: true, reason: 'already backfilled' };
+    var raw = localStorage.getItem('cleanco_staff_chats');
+    if (!raw || raw === '{}') { localStorage.setItem(FLAG, new Date().toISOString()); return { skipped: true, reason: 'no legacy data' }; }
+    // Set flag UP FRONT so a partial failure doesn't trigger re-runs.
+    localStorage.setItem(FLAG, new Date().toISOString());
+    var legacy;
+    try { legacy = JSON.parse(raw); } catch (e) { return { skipped: true, reason: 'parse error', error: e.message }; }
+    var sb = _sb(); if (!sb) return { skipped: true, reason: 'no client' };
+    var bid = _bid(); if (!bid) return { skipped: true, reason: 'no tenant' };
+    var senderUserId = await _resolveCallerUserId();
+    if (!senderUserId) return { skipped: true, reason: 'no caller users.id' };
+
+    var inserted = 0, skipped = 0, errors = 0;
+    var threadKeys = Object.keys(legacy);
+    for (var ti = 0; ti < threadKeys.length; ti++) {
+      var threadKey = threadKeys[ti];
+      var threadEmpId = _toUuidOrNull(threadKey);
+      if (!threadEmpId) {
+        // Try to resolve by name via PentaEmployees
+        try {
+          var match = (window.PentaEmployees && window.PentaEmployees.find) ? window.PentaEmployees.find(function(e){ return e.id === threadKey || e.legacy_roster_id === threadKey; }) : null;
+          if (match && match.id) threadEmpId = match.id;
+        } catch (e) {}
+      }
+      if (!threadEmpId) { console.warn('[backfill] could not resolve employee for thread', threadKey); skipped++; continue; }
+      var thread = legacy[threadKey];
+      if (!thread || !Array.isArray(thread.msgs)) continue;
+      for (var mi = 0; mi < thread.msgs.length; mi++) {
+        var m = thread.msgs[mi];
+        // Skip AI messages — they stay client-local.
+        if (m.from === 'ai' || m.askedAi) { skipped++; continue; }
+        var role = m.from === 'admin' ? 'manager' : 'employee';
+        var lang = m.lang || 'en';
+        if (['en','es','pt','cv'].indexOf(lang) === -1) lang = 'en';
+        var row = {
+          business_id: bid,
+          thread_employee_id: threadEmpId,
+          sender_user_id: senderUserId,
+          sender_role: role,
+          text: (m.text || '').toString(),
+          lang: lang,
+          tx: (m.tx && typeof m.tx === 'object') ? m.tx : {},
+          urgent: !!m.urgent,
+          created_at: m.ts ? new Date(m.ts).toISOString() : new Date().toISOString()
+        };
+        try {
+          var res = await sb.from('chat_messages').insert(row);
+          if (res.error) { errors++; console.warn('[backfill] insert error', res.error); }
+          else inserted++;
+        } catch (e) { errors++; console.warn('[backfill] insert threw', e); }
+      }
+    }
+    // Clear legacy localStorage only if zero errors.
+    if (errors === 0) {
+      try { localStorage.removeItem('cleanco_staff_chats'); } catch (e) {}
+    }
+    console.log('[PentaChatMessages] backfill done — inserted=' + inserted + ' skipped=' + skipped + ' errors=' + errors);
+    return { inserted: inserted, skipped: skipped, errors: errors };
+  }
+
+  return {
+    send: send,
+    listThread: listThread,
+    listMyThreads: listMyThreads,
+    listForReporter: listForReporter,
+    markThreadRead: markThreadRead,
+    countUnreadForManager: countUnreadForManager,
+    countUnreadForEmployee: countUnreadForEmployee,
+    subscribeToTenantUpdates: subscribeToTenantUpdates,
+    subscribeToThread: subscribeToThread,
+    backfillFromLocalStorage: backfillFromLocalStorage
+  };
+})();
+
+// v11.0.20 Phase D — chat unread badge cache (sync read from home grid).
+window._pentaManagerChatUnread = 0;
+
+// Refresh the manager-side unread count cache + paint home/header badges.
+async function refreshManagerChatBadge() {
+  try {
+    var n = await window.PentaChatMessages.countUnreadForManager();
+    window._pentaManagerChatUnread = n;
+    // Header pill (visible when on Messages > Staff sub-tab)
+    var pill = document.getElementById('staff-unread-pill');
+    if (pill) {
+      if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+    }
+    // Home tile badge re-paint — renderHomeScreen reads the cache var.
+    if (document.getElementById('home-view') && document.getElementById('home-view').classList.contains('active')) {
+      try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
+    }
+  } catch (e) { /* swallow */ }
+}
+
+(function pentaPrimeChat() {
+  if (!window.PentaChatMessages) return;
+  function whenAuth(cb) {
+    var sess = (window.PentaAuth && window.PentaAuth.session) || null;
+    if (sess && sess.user && sess.user.id) return cb();
+    var tries = 0;
+    var iv = setInterval(function() {
+      var s = (window.PentaAuth && window.PentaAuth.session) || null;
+      if ((s && s.user && s.user.id) || ++tries > 100) {
+        clearInterval(iv);
+        if (s && s.user && s.user.id) cb();
+      }
+    }, 100);
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (sb && sb.auth && sb.auth.onAuthStateChange) {
+        sb.auth.onAuthStateChange(function(evt) {
+          if (evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
+            clearInterval(iv); cb();
+          }
+        });
+      }
+    } catch (e) {}
+  }
+  whenAuth(function() {
+    // Realtime: tenant-wide subscription. INSERT updates badge + refreshes
+    // the open inbox / thread. UPDATE refreshes badge only (read receipts).
+    window.PentaChatMessages.subscribeToTenantUpdates(function(payload) {
+      if (payload.eventType === 'INSERT' && payload.new) {
+        var newMsg = payload.new;
+        // If the manager's staff inbox is visible, re-render.
+        var inbox = document.getElementById('staff-inbox-section');
+        if (inbox && inbox.style.display !== 'none') {
+          try { renderStaffInbox(); } catch (e) {}
+        }
+        // If the manager has a thread open for this employee, append + mark read.
+        if (_currentStaffChatId && newMsg.thread_employee_id === _currentStaffChatId) {
+          var cache = _pentaChatThreads[_currentStaffChatId];
+          if (cache) {
+            cache.rows = cache.rows || [];
+            if (!cache.rows.find(function(r){ return r.id === newMsg.id; })) cache.rows.push(newMsg);
+            try { renderStaffChatMessages(); } catch (e) {}
+          }
+          // Auto-mark read since the thread is open in front of the user.
+          try { window.PentaChatMessages.markThreadRead(_currentStaffChatId, 'manager'); } catch (e) {}
+        }
+        // If the EMPLOYEE has the chat tab open, repaint their view too.
+        if (typeof currentEmployee !== 'undefined' && currentEmployee &&
+            newMsg.thread_employee_id === currentEmployee.id) {
+          try { renderEmpChat(); } catch (e) {}
+        }
+      }
+      refreshManagerChatBadge();
+      if (typeof currentEmployee !== 'undefined' && currentEmployee) {
+        try { updateEmpChatBadge(); } catch (e) {}
+      }
+    });
+    // Initial badge populate.
+    refreshManagerChatBadge();
+    // One-time localStorage → DB migration. Runs once per browser per flag.
+    try {
+      window.PentaChatMessages.backfillFromLocalStorage().then(function(report) {
+        if (report && report.inserted > 0) console.log('[chat] backfilled ' + report.inserted + ' messages from localStorage');
+        refreshManagerChatBadge();
+        var inbox = document.getElementById('staff-inbox-section');
+        if (inbox && inbox.style.display !== 'none') { try { renderStaffInbox(); } catch (e) {} }
+      });
+    } catch (e) {}
+  });
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // PentaPayments — v11.0.16 — Phase C.
 //
 // Payment Receive system. Replaces the localStorage cleanco_pending
@@ -14326,12 +14730,12 @@ function showTab(tab) {
         });
       }
     }
-    // Initialize staff sub-tab state and badge
-    seedStaffChatsIfEmpty();
+    // Initialize staff sub-tab state and badge (v11.0.20: async DB-backed)
     var pill = document.getElementById('staff-unread-pill');
     if (pill) {
-      var n = totalAdminUnread();
-      if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+      totalAdminUnread().then(function(n){
+        if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+      });
     }
   }
   var routeBtn = document.getElementById('route-optimizer-btn');
@@ -15630,6 +16034,28 @@ function _renderAuditRowSummary(row, ctx) {
     }
     drill = crJid ? { type: 'job', id: crJid } : (crCid ? { type: 'client', id: crCid } : null);
   }
+  // ─── chat_message (v11.0.20 Phase D) ───────────────────────────
+  else if (et === 'chat_message') {
+    var chTxt = nv.text || ov.text || '';
+    var chEmpId = nv.thread_employee_id || ov.thread_employee_id;
+    var chEmpName = _audEmpName(ctx, chEmpId) || '';
+    var chSenderRole = nv.sender_role || ov.sender_role;
+    var chUrgent = !!(nv.urgent || ov.urgent);
+    if (at === 'created') {
+      if (chSenderRole === 'employee') {
+        summary = _audEsc(actor) + ' messaged the manager';
+        if (chTxt) summary += ': &lsquo;' + _audEsc(_audTrunc(chTxt, 80)) + '&rsquo;';
+      } else {
+        summary = _audEsc(actor) + ' messaged ' + _audEsc(chEmpName || 'employee');
+        if (chTxt) summary += ': &lsquo;' + _audEsc(_audTrunc(chTxt, 80)) + '&rsquo;';
+      }
+      chips.push({ label: 'CHAT', color: '#7c3aed', bg: 'rgba(124,58,237,0.14)' });
+      if (chUrgent) chips.push({ label: 'URGENT', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+    } else {
+      summary = _audEsc(actor) + ' updated chat message';
+    }
+    drill = chEmpId ? { type: 'employee', id: chEmpId } : null;
+  }
   // ─── application ───────────────────────────────────────────────
   else if (et === 'application') {
     var applicant = nv.applicant_name || ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim() || 'unknown';
@@ -15939,6 +16365,12 @@ function _buildSyntheticAuditRow(entityType, row) {
       createdAt = row.reported_at || row.created_at;
       userId = row.reported_by;
     }
+  } else if (entityType === 'chat_message') {
+    // v11.0.20 (Phase D): chat is immutable, always 'created'. user_id is
+    // the sender; thread context is in thread_employee_id.
+    actionType = 'created';
+    createdAt = row.created_at;
+    userId = row.sender_user_id;
   } else if (entityType === 'payment') {
     // v11.0.16 (Phase C): voided payments emit 'refunded' so the chip
     // reads "VOIDED" and the time reflects the void event, not the
@@ -16143,7 +16575,7 @@ async function _renderStaffActivitySection(emp, hostId) {
     host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;text-align:center">No recorded activity for this employee yet.</div>';
     return;
   }
-  var incidents = [], issues = [], requests = [];
+  var incidents = [], issues = [], requests = [], chats = [];
   try {
     if (window.PentaIncidents && window.PentaIncidents.listForReporter) {
       incidents = await window.PentaIncidents.listForReporter(uid);
@@ -16160,10 +16592,17 @@ async function _renderStaffActivitySection(emp, hostId) {
       requests = await window.PentaClientRequests.listForReporter(uid);
     }
   } catch (e) { console.warn('[staffActivity] requests failed', e); }
+  // v11.0.20 (Phase D): include chat_messages this user sent (last 14 days).
+  try {
+    if (window.PentaChatMessages && window.PentaChatMessages.listForReporter) {
+      chats = await window.PentaChatMessages.listForReporter(uid, 14);
+    }
+  } catch (e) { console.warn('[staffActivity] chats failed', e); }
   var items = []
     .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
     .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }))
-    .concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }));
+    .concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }))
+    .concat(chats.map(function(r){ return { entityType: 'chat_message', row: r }; }));
   items.sort(function(a, b){
     var at = a.row.reported_at || a.row.created_at;
     var bt = b.row.reported_at || b.row.created_at;
@@ -16597,55 +17036,70 @@ function hasUrgentUnread(thread) {
   return thread.msgs.some(function(m){ return m.urgent && m.from === 'staff' && m.ts > lastRead; });
 }
 
-function totalAdminUnread() {
-  var chats = loadStaffChats();
-  var n = 0;
-  Object.keys(chats).forEach(function(id){ n += staffUnreadForAdmin(chats[id]); });
-  return n;
+// v11.0.20 Phase D — module-level cache of threads keyed by employee uuid.
+// Populated by renderStaffInbox / openStaffChat; refreshed by realtime.
+var _pentaChatThreads = {};  // empId → { rows: [chat_messages...], last: row }
+var _pentaChatLastEmpLang = {};  // empId → 'en'|'es'|'pt'|'cv' (derived from latest employee msg)
+
+// v11.0.20 Phase D — async DB-backed unread count for the home/header badges.
+async function totalAdminUnread() {
+  try { return await window.PentaChatMessages.countUnreadForManager(); }
+  catch (e) { return 0; }
 }
 
-function renderStaffInbox() {
+async function renderStaffInbox() {
   var list = document.getElementById('staff-inbox-list');
   if (!list) return;
-  var chats = loadStaffChats();
-  var ids = Object.keys(chats);
-  ids.sort(function(a,b){
-    var ma = chats[a].msgs[chats[a].msgs.length-1];
-    var mb = chats[b].msgs[chats[b].msgs.length-1];
-    return (mb ? mb.ts : 0) - (ma ? ma.ts : 0);
+  list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">Loading…</div>';
+  var threads;
+  try { threads = await window.PentaChatMessages.listMyThreads(); }
+  catch (e) { console.warn('[renderStaffInbox] listMyThreads failed', e); threads = []; }
+
+  // Cache thread rows for instant openStaffChat (no second round-trip).
+  threads.forEach(function(t) {
+    _pentaChatThreads[t.thread_employee_id] = { rows: (t.msgs || []).slice().reverse(), last: t.last };
+    // Find the latest employee message to derive their UI lang.
+    for (var i = (t.msgs || []).length - 1; i >= 0; i--) {
+      if (t.msgs[i].sender_role === 'employee') { _pentaChatLastEmpLang[t.thread_employee_id] = t.msgs[i].lang || 'en'; break; }
+    }
   });
-  if (!ids.length) {
+
+  if (!threads.length) {
     list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">No staff messages yet.</div>';
+    var pillEmpty = document.getElementById('staff-unread-pill');
+    if (pillEmpty) pillEmpty.style.display = 'none';
     return;
   }
   var adminLang = getAdminChatLang();
-  // Sort: urgent first, then by recency
-  ids.sort(function(a,b){
-    var ua = hasUrgentUnread(chats[a]) ? 1 : 0;
-    var ub = hasUrgentUnread(chats[b]) ? 1 : 0;
+  // Sort: urgent unread first, then by recency.
+  threads.sort(function(a,b){
+    var ua = a.urgent_unread ? 1 : 0;
+    var ub = b.urgent_unread ? 1 : 0;
     if (ua !== ub) return ub - ua;
-    var ma = chats[a].msgs[chats[a].msgs.length-1];
-    var mb = chats[b].msgs[chats[b].msgs.length-1];
-    return (mb ? mb.ts : 0) - (ma ? ma.ts : 0);
+    var ta = a.last ? new Date(a.last.created_at).getTime() : 0;
+    var tb = b.last ? new Date(b.last.created_at).getTime() : 0;
+    return tb - ta;
   });
-  var html = ids.map(function(id){
+  var html = threads.map(function(t){
+    var id = t.thread_employee_id;
     var emp = getEmployeeById(id);
     var name = emp ? emp.name : id;
-    var team = emp ? (emp.defaultTeam || '—') : '—';
-    var thread = chats[id];
-    var last = thread.msgs[thread.msgs.length-1];
-    var unread = staffUnreadForAdmin(thread);
-    var urgent = hasUrgentUnread(thread);
-    var preview = last ? (last.from === 'staff' ? translatedText(last, adminLang) : 'You: ' + last.text) : '';
-    var when = last ? formatRelativeTime(last.ts) : '';
+    var team = emp ? (emp.defaultTeam || emp.team || '—') : '—';
+    var last = t.last;
+    var unread = t.unread || 0;
+    var urgent = !!t.urgent_unread;
+    var lastLang = (last && last.lang) || 'en';
+    var preview = last ? (last.sender_role === 'employee' ? translatedText({ text: last.text, lang: lastLang, tx: last.tx }, adminLang) : 'You: ' + last.text) : '';
+    var when = last ? formatRelativeTime(new Date(last.created_at).getTime()) : '';
     var initial = (name||'?').trim().charAt(0).toUpperCase();
     var color = teamColorFor(team);
     var borderColor = urgent ? 'var(--red)' : (unread>0 ? 'var(--accent)' : 'var(--border)');
     var bgColor = urgent ? 'rgba(248,113,113,0.06)' : 'var(--surface)';
+    var empLang = _pentaChatLastEmpLang[id] || 'en';
     return '<div onclick="openStaffChat(\''+id+'\')" style="display:flex;gap:12px;padding:12px;background:'+bgColor+';border:1px solid '+borderColor+';border-radius:12px;margin-bottom:8px;cursor:pointer;'+(urgent?'box-shadow:0 0 0 1px rgba(248,113,113,0.3)':'')+'">'
       + '<div style="width:40px;height:40px;border-radius:50%;background:'+color+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0">'+initial+'</div>'
       + '<div style="flex:1;min-width:0">'
-      + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div style="font-size:14px;font-weight:600;color:var(--text)">'+name+' <span style="font-size:11px;color:var(--muted);font-weight:500">· '+team+(thread.empLang&&thread.empLang!=='en'?' · '+(LANG_CODE_LABEL[thread.empLang]||thread.empLang):'')+'</span>'+(urgent?' <span style="font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:6px;margin-left:4px;font-weight:700;letter-spacing:.04em">URGENT</span>':'')+'</div><div style="font-size:11px;color:var(--muted);white-space:nowrap">'+when+'</div></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div style="font-size:14px;font-weight:600;color:var(--text)">'+name+' <span style="font-size:11px;color:var(--muted);font-weight:500">· '+team+(empLang&&empLang!=='en'?' · '+(LANG_CODE_LABEL[empLang]||empLang):'')+'</span>'+(urgent?' <span style="font-size:9px;background:var(--red);color:#fff;padding:1px 6px;border-radius:6px;margin-left:4px;font-weight:700;letter-spacing:.04em">URGENT</span>':'')+'</div><div style="font-size:11px;color:var(--muted);white-space:nowrap">'+when+'</div></div>'
       + '<div style="font-size:13px;color:'+(unread>0?'var(--text)':'var(--muted)')+';margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(unread>0?'font-weight:600':'')+'">'+escapeHtml(preview)+'</div>'
       + '</div>'
       + (unread>0 ? '<div style="background:'+(urgent?'var(--red)':'var(--accent)')+';color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;align-self:center">'+unread+'</div>' : '')
@@ -16655,8 +17109,8 @@ function renderStaffInbox() {
   // Update header pill
   var pill = document.getElementById('staff-unread-pill');
   if (pill) {
-    var n = totalAdminUnread();
-    if (n > 0) { pill.textContent = n; pill.style.display = ''; } else { pill.style.display = 'none'; }
+    var totalUnread = threads.reduce(function(sum, t){ return sum + (t.unread || 0); }, 0);
+    if (totalUnread > 0) { pill.textContent = totalUnread; pill.style.display = ''; } else { pill.style.display = 'none'; }
   }
 }
 
@@ -16688,40 +17142,47 @@ function translatedText(msg, targetLang) {
 
 var _currentStaffChatId = null;
 
-function openStaffChat(empId) {
+async function openStaffChat(empId) {
   _currentStaffChatId = empId;
   var emp = getEmployeeById(empId);
-  var chats = loadStaffChats();
-  var thread = chats[empId];
-  if (!thread) return;
   document.getElementById('staff-conv-name').textContent = emp ? emp.name : empId;
-  document.getElementById('staff-conv-meta').textContent = (emp ? (emp.defaultTeam||'—') : '') + ' · speaks ' + (LANG_NAMES[thread.empLang] || thread.empLang);
+  // v11.0.20 Phase D — read from DB.
+  var rows;
+  try { rows = await window.PentaChatMessages.listThread(empId); }
+  catch (e) { console.warn('[openStaffChat] listThread failed', e); rows = []; }
+  _pentaChatThreads[empId] = { rows: rows, last: rows.length ? rows[rows.length-1] : null };
+  // Derive employee's lang from their most recent message.
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].sender_role === 'employee') { _pentaChatLastEmpLang[empId] = rows[i].lang || 'en'; break; }
+  }
+  var empLang = _pentaChatLastEmpLang[empId] || 'en';
+  document.getElementById('staff-conv-meta').textContent = (emp ? (emp.defaultTeam || emp.team || '—') : '') + ' · speaks ' + (LANG_NAMES[empLang] || empLang);
   refreshAdminLangLabel();
   renderStaffChatMessages();
-  // Mark all staff messages read by admin
-  thread.lastReadAdmin = Date.now();
-  saveStaffChats(chats);
+  // Mark all employee messages in this thread as read by the manager.
+  try { await window.PentaChatMessages.markThreadRead(empId, 'manager'); }
+  catch (e) { console.warn('[openStaffChat] markThreadRead failed', e); }
   document.getElementById('staff-conv-section').style.display = 'flex';
   setTimeout(function(){
     var c = document.getElementById('staff-conv-messages');
     if (c) { c.scrollTop = c.scrollHeight; }
   }, 50);
+  // Refresh badges + inbox preview now that the unread state has changed.
+  if (typeof refreshManagerChatBadge === 'function') refreshManagerChatBadge();
 }
 
 function renderStaffChatMessages() {
-  var chats = loadStaffChats();
-  var thread = chats[_currentStaffChatId];
-  if (!thread) return;
+  var cache = _pentaChatThreads[_currentStaffChatId];
+  if (!cache) return;
+  var rows = cache.rows || [];
   var adminLang = getAdminChatLang();
   var c = document.getElementById('staff-conv-messages');
   if (!c) return;
-  c.innerHTML = thread.msgs.map(function(m){
-    var mine = m.from === 'admin';
-    var displayText = translatedText(m, mine ? m.lang : adminLang);
-    // Show the original under the translated bubble whenever we actually had to translate
-    // (i.e., the displayed text differs from the stored original).
+  c.innerHTML = rows.map(function(m){
+    var mine = m.sender_role === 'manager';
+    var displayText = translatedText({ text: m.text, lang: m.lang, tx: m.tx }, mine ? m.lang : adminLang);
     var showOriginal = !mine && displayText !== m.text;
-    var time = new Date(m.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    var time = new Date(m.created_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     return '<div class="conv-bubble-wrap '+(mine?'mine':'theirs')+'">'
       + '<div class="conv-bubble '+(mine?'mine':'theirs')+'" onclick="this.querySelector(\'.orig\').style.display=this.querySelector(\'.orig\').style.display===\'none\'?\'block\':\'none\'">'
       + escapeHtml(displayText)
@@ -16731,28 +17192,9 @@ function renderStaffChatMessages() {
       + '</div>';
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
-  // Fill in missing translations for ANY message (staff OR admin) that
-  // doesn't have a translation into the admin's currently-selected chat
-  // language. Handles history written before the two-way-translate fix
-  // landed, plus admins who switch chat-lang mid-conversation.
-  (async function(){
-    var dirty = false;
-    for (var i = 0; i < thread.msgs.length; i++) {
-      var m = thread.msgs[i];
-      if (!m.tx) m.tx = {};
-      if (m.lang === adminLang) continue; // already in the right lang
-      if (m.tx[adminLang]) continue;       // already translated
-      var translated = await translateChatMessage(m.text, m.lang || 'en', adminLang);
-      if (translated && translated !== m.text) {
-        m.tx[adminLang] = translated;
-        dirty = true;
-      }
-    }
-    if (dirty) {
-      var c2 = loadStaffChats(); c2[_currentStaffChatId] = thread; saveStaffChats(c2);
-      renderStaffChatMessages();
-    }
-  })();
+  // Phase D removes the render-time backfill loop — translations now ship
+  // with the row from PentaChatMessages.send. Historic rows backfilled
+  // from localStorage carry their original tx{}.
 }
 
 function closeStaffChat() {
@@ -16768,23 +17210,24 @@ async function sendStaffReplyAdmin() {
   if (!text) return;
   input.value = '';
   var adminLang = getAdminChatLang();
-  var chats = loadStaffChats();
-  var thread = chats[_currentStaffChatId];
-  if (!thread) return;
-  var msg = { id: 'a' + Date.now(), from: 'admin', lang: adminLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Auto-detect source via English pivot — adminLang is the UI preference, not
-  // necessarily what was actually typed. translateToEnglish uses Claude
-  // auto-detect so the pivot is faithful no matter what got typed.
-  var enText = await translateToEnglish(text);
-  msg.tx.en = enText;
-  var targets = ['es', 'pt', 'cv'].filter(function(l){ return l !== adminLang; });
-  await Promise.all(targets.map(async function(lang) {
-    msg.tx[lang] = await translateChatMessage(enText, 'en', lang);
-  }));
-  thread.msgs.push(msg);
-  thread.lastReadAdmin = Date.now();
-  saveStaffChats(chats);
-  renderStaffChatMessages();
+  // v11.0.20 Phase D — DB-backed send. Translation pivots + fan-out happen
+  // server-side in one Edge Function call. On error, restore the draft so
+  // the user can retry.
+  try {
+    await window.PentaChatMessages.send({
+      threadEmployeeId: _currentStaffChatId,
+      text: text,
+      lang: adminLang,
+      urgent: false,
+      senderRole: 'manager'
+    });
+    // Realtime INSERT will repaint; force an immediate re-render too.
+    if (typeof renderStaffChatMessages === 'function') renderStaffChatMessages();
+  } catch (e) {
+    console.warn('[sendStaffReplyAdmin] failed', e);
+    input.value = text;  // restore draft
+    try { if (typeof showToast === 'function') showToast('Message failed: ' + (e && e.message ? e.message : 'unknown'), 'error'); } catch (_e) {}
+  }
 }
 
 async function translateChatMessage(text, fromLang, toLang) {
@@ -16821,14 +17264,12 @@ async function translateChatMessage(text, fromLang, toLang) {
 }
 
 // ── EMPLOYEE-SIDE CHAT ──
+// v11.0.20 Phase D — getEmpChatThread now returns the LOCAL-ONLY AI thread
+// (questions + answers from the AI assistant). Manager↔employee messages
+// live in the DB; renderEmpChat merges both streams at render time.
 function getEmpChatThread() {
   if (!currentEmployee) return null;
   var chats = loadStaffChats();
-  // Always follow the employee's LIVE UI language. The thread used to sticky-
-  // cache empLang at first-open, so if an employee later switched from English
-  // to Spanish, admin messages kept rendering in English (msg.tx.en wins when
-  // targetLang === 'en'). Syncing on every fetch means translations always
-  // target whatever lang the employee is reading in right now.
   var liveLang = currentLang || currentEmployee.lang || 'en';
   if (!chats[currentEmployee.id]) {
     chats[currentEmployee.id] = { empLang: liveLang, msgs: [], lastReadAdmin: 0 };
@@ -16840,29 +17281,57 @@ function getEmpChatThread() {
   return chats[currentEmployee.id];
 }
 
-function renderEmpChat() {
+// v11.0.20 Phase D — DB-backed read. AI messages stay client-local; we merge
+// them with DB rows by timestamp at render time.
+var _empChatDbRows = [];
+async function renderEmpChat() {
+  if (!currentEmployee) return;
   var thread = getEmpChatThread();
-  if (!thread) return;
-  var empLang = thread.empLang || 'en';
+  var empLang = (currentLang || (thread && thread.empLang) || 'en');
   var c = document.getElementById('emp-chat-messages');
   if (!c) return;
-  if (!thread.msgs.length) {
+  // Fetch DB-backed messages for this thread; AI messages from local thread.
+  try { _empChatDbRows = await window.PentaChatMessages.listThread(currentEmployee.id); }
+  catch (e) { console.warn('[renderEmpChat] listThread failed', e); _empChatDbRows = []; }
+  var aiMsgs = (thread && Array.isArray(thread.msgs))
+    ? thread.msgs.filter(function(m){ return m.from === 'ai' || m.askedAi; })
+    : [];
+  // Unified item shape for render: { ts, isAi, isMine, text, lang, tx, action }.
+  var items = [];
+  _empChatDbRows.forEach(function(m) {
+    items.push({
+      ts: new Date(m.created_at).getTime(),
+      isAi: false,
+      isMine: m.sender_role === 'employee',
+      text: m.text, lang: m.lang, tx: m.tx, action: null
+    });
+  });
+  aiMsgs.forEach(function(m) {
+    items.push({
+      ts: m.ts || Date.now(),
+      isAi: m.from === 'ai',
+      isMine: m.from === 'staff',
+      text: m.text, lang: m.lang || empLang, tx: m.tx || {}, action: m.action || null
+    });
+  });
+  items.sort(function(a,b){ return a.ts - b.ts; });
+
+  if (!items.length) {
     c.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">No messages yet. Send a message to your manager, or tap Ask AI for an instant answer.</div>';
+    updateEmpChatBadge();
     return;
   }
-  c.innerHTML = thread.msgs.map(function(m){
-    var mine = m.from === 'staff';
-    var isAi = m.from === 'ai';
-    var display = isAi ? m.text : translatedText(m, mine ? m.lang : empLang);
-    var time = new Date(m.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  c.innerHTML = items.map(function(it){
+    var display = it.isAi ? it.text : translatedText(it, it.isMine ? it.lang : empLang);
+    var time = new Date(it.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     var actionHtml = '';
-    if (isAi && m.action && m.action.openForm) {
-      var formId = m.action.openForm;
-      actionHtml = '<button onclick="openForm(\''+formId+'\')" style="margin-top:8px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;width:100%">'+(m.action.buttonLabel||'Open form')+' →</button>';
+    if (it.isAi && it.action && it.action.openForm) {
+      var formId = it.action.openForm;
+      actionHtml = '<button onclick="openForm(\''+formId+'\')" style="margin-top:8px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;width:100%">'+(it.action.buttonLabel||'Open form')+' →</button>';
     }
-    var bubbleClass = isAi ? 'theirs' : (mine ? 'mine' : 'theirs');
-    var bubbleStyle = isAi ? 'background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.3);color:var(--text)' : '';
-    var label = isAi ? '<div style="font-size:10px;font-weight:700;color:var(--accent2);margin-bottom:4px;letter-spacing:.04em">AI ASSISTANT</div>' : '';
+    var bubbleClass = it.isAi ? 'theirs' : (it.isMine ? 'mine' : 'theirs');
+    var bubbleStyle = it.isAi ? 'background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.3);color:var(--text)' : '';
+    var label = it.isAi ? '<div style="font-size:10px;font-weight:700;color:var(--accent2);margin-bottom:4px;letter-spacing:.04em">AI ASSISTANT</div>' : '';
     return '<div class="conv-bubble-wrap '+bubbleClass+'">'
       + '<div class="conv-bubble '+bubbleClass+'" style="'+bubbleStyle+'">'
       + label
@@ -16873,30 +17342,9 @@ function renderEmpChat() {
       + '</div>';
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
+  // Mark manager → employee messages as read.
+  try { await window.PentaChatMessages.markThreadRead(currentEmployee.id, 'employee'); } catch (e) {}
   updateEmpChatBadge();
-  // Backfill: any admin (or legacy) message that isn't yet translated into
-  // this employee's language gets translated here and saved. Covers history
-  // written before the two-way-translate fix.
-  (async function(){
-    var dirty = false;
-    for (var i = 0; i < thread.msgs.length; i++) {
-      var m = thread.msgs[i];
-      if (m.from === 'ai') continue;              // AI already replies in empLang
-      if (!m.tx) m.tx = {};
-      if (m.lang === empLang) continue;
-      if (m.tx[empLang]) continue;
-      var translated = await translateChatMessage(m.text, m.lang || 'en', empLang);
-      if (translated && translated !== m.text) {
-        m.tx[empLang] = translated;
-        dirty = true;
-      }
-    }
-    if (dirty) {
-      var all = loadStaffChats();
-      if (currentEmployee) { all[currentEmployee.id] = thread; saveStaffChats(all); }
-      renderEmpChat();
-    }
-  })();
 }
 
 // ── AI ASSISTANT (employee side) ──
@@ -17306,18 +17754,16 @@ function cannedAiAnswer(q, lang, ctx) {
   return { reply: dict.fallback };
 }
 
-function updateEmpChatBadge() {
+// v11.0.20 Phase D — DB-backed unread badge for the employee's chat tab.
+async function updateEmpChatBadge() {
   if (!currentEmployee) return;
-  var chats = loadStaffChats();
-  var t = chats[currentEmployee.id];
-  if (!t) return;
-  var lastRead = parseInt(localStorage.getItem('emp_chat_lastread_'+currentEmployee.id) || '0');
-  var unread = t.msgs.filter(function(m){ return m.from === 'admin' && m.ts > lastRead; }).length;
   var badge = document.getElementById('ptab-chat-badge');
-  if (badge) {
+  if (!badge) return;
+  try {
+    var unread = await window.PentaChatMessages.countUnreadForEmployee(currentEmployee.id);
     if (unread > 0) { badge.textContent = unread; badge.style.display = ''; }
     else { badge.style.display = 'none'; }
-  }
+  } catch (e) { badge.style.display = 'none'; }
 }
 
 async function sendStaffReplyEmp() {
@@ -17326,27 +17772,26 @@ async function sendStaffReplyEmp() {
   var text = (input.value || '').trim();
   if (!text) return;
   input.value = '';
-  var thread = getEmpChatThread();
-  if (!thread) return;
-  var empLang = thread.empLang || 'en';
-  var msg = { id: 's' + Date.now(), from: 'staff', lang: empLang, text: text, tx: {}, ts: Date.now(), read: false };
-  // Auto-detect the real source language by pivoting through English. The
-  // employee's UI-language setting can drift from what they actually type
-  // (e.g. thread empLang defaulted to 'en' but they typed "Hola"), so trusting
-  // empLang as the translation source dropped messages. translateToEnglish
-  // uses Claude auto-detect, so it returns faithful English regardless of
-  // what language was typed. We then fan out from English to every other lang.
-  var enText = await translateToEnglish(text);
-  msg.tx.en = enText;
-  var targets = ['es', 'pt', 'cv'].filter(function(l){ return l !== empLang; });
-  await Promise.all(targets.map(async function(lang) {
-    msg.tx[lang] = await translateChatMessage(enText, 'en', lang);
-  }));
-  thread.msgs.push(msg);
-  var allChats = loadStaffChats();
-  allChats[currentEmployee.id] = thread;
-  saveStaffChats(allChats);
-  renderEmpChat();
+  var empLang = (currentLang || currentEmployee.lang || 'en');
+  // v11.0.20 Phase D — DB-backed send via PentaChatMessages. Translation
+  // (English pivot + fan-out to all 4 langs) happens server-side in one
+  // Edge Function call. Auto-detect handles the case where empLang doesn't
+  // match what was actually typed.
+  try {
+    await window.PentaChatMessages.send({
+      threadEmployeeId: currentEmployee.id,
+      text: text,
+      lang: empLang,
+      urgent: false,
+      senderRole: 'employee'
+    });
+    // Realtime INSERT will refresh; render now too for instant feedback.
+    renderEmpChat();
+  } catch (e) {
+    console.warn('[sendStaffReplyEmp] failed', e);
+    input.value = text;
+    try { _toastSimple('Message failed', 'error'); } catch (_e) {}
+  }
 }
 
 // Lightweight helper: translate to English with auto-detected source language.
@@ -19345,7 +19790,12 @@ var HOME_APPS = [
   { id: 'gps',      permKey: 'gps_icon', label: 'Live',     grad: 'linear-gradient(135deg,#5AC8FA 0%,#0A84FF 100%)',
     iconHtml: LUCIDE['map-pin'], go: function(){ showTab('gps'); } },
   { id: 'messages', permKey: 'inbox_icon', label: 'Messages', grad: 'linear-gradient(135deg,#4CD964 0%,#30B350 100%)',
-    iconHtml: LUCIDE['message-circle'], go: function(){ showTab('messages'); } },
+    iconHtml: LUCIDE['message-circle'],
+    // v11.0.20 Phase D — manager home-tile unread badge fed by an async cache
+    // refreshed on home render + realtime INSERT. Synchronous read of the
+    // cached value here keeps the home-grid render path non-blocking.
+    badge: function(){ return window._pentaManagerChatUnread || 0; },
+    go: function(){ showTab('messages'); } },
   // Grid row 1
   { id: 'clients',  permKey: 'clients_icon', label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },

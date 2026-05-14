@@ -223,6 +223,48 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8h. Chat persistence (v11.0.20 — Phase D)
+
+Manager ↔ employee chat moved off `localStorage.cleanco_staff_chats` (which only worked when both parties used the same physical browser) onto a real `public.chat_messages` table with multi-tenant RLS, realtime cross-device delivery, and an audit_log trigger.
+
+**Schema** (mig 057):
+- `id`, `business_id`, `thread_employee_id` (FK employees), `sender_user_id` (FK users), `sender_role` ('manager'|'employee')
+- `text`, `lang` ('en'|'es'|'pt'|'cv'), `tx jsonb` (pre-computed translations for all four langs)
+- `urgent boolean`, `read_at_admin`, `read_at_emp` (independent read receipts per side)
+- Indexes: thread+timestamp, partial-index on unread-admin, partial-index on unread-emp
+- In `supabase_realtime` publication for cross-device delivery
+
+**RLS** (mig 057):
+- Two SELECT policies (OR'd): manager-tier (owner/admin/manager/dispatcher) sees all tenant threads; employee sees only their own thread via `employees.auth_user_id = auth.uid()`
+- INSERT: same-tenant + `sender_user_id = caller's users.id`
+- UPDATE: same-tenant (only used to mark read_at_*)
+- No DELETE — chat is immutable
+
+**Audit trigger** (mig 058) extends `audit_log_capture()`:
+- INSERT → `action_type='created'`, `entity_type='chat_message'`
+- UPDATE where ONLY `read_at_admin` / `read_at_emp` changed → skipped (no audit log noise from read receipts)
+- Other UPDATE → `'updated'`
+
+**Edge Function** `translate-message`: one server call returns translations into all four langs. Caller passes `{text, sourceLang: 'auto'|'en'|…, targetLangs: ['en','es','pt','cv']}`; server detects source if `auto`, returns `{tx: {en, es, pt, cv}, detected}`. Replaces the previous two-step path (browser→Anthropic-direct for English pivot, then per-lang Edge Function call), which was broken whenever the browser lacked an `anthropic_api_key` in localStorage. Server-held `ANTHROPIC_API_KEY` keeps keys out of every device.
+
+**`PentaChatMessages` facade** (near PentaPayments): `send({threadEmployeeId, text, lang, urgent, senderRole})` (calls translate-message, then INSERTs row); `listThread(employeeId)`; `listMyThreads()` (manager); `listForReporter(userId, daysBack=14)` (for employee profile activity surface); `markThreadRead(employeeId, role)`; `countUnreadForManager()`; `countUnreadForEmployee(employeeId)`; `subscribeToTenantUpdates(cb)` + `subscribeToThread(employeeId, cb)` (realtime); `backfillFromLocalStorage()` (one-time legacy migration).
+
+**Realtime delivery**: `pentaPrimeChat` IIFE subscribes once on auth-ready. Manager receives all tenant INSERTs; employees automatically receive only their thread's events (RLS filters realtime payloads server-side). Callback refreshes home tile badge + repaints inbox if visible + appends to open conversation.
+
+**Surfaces touched**:
+- **Manager Messages tab** (Staff sub-tab): `renderStaffInbox` reads `listMyThreads`; row preview uses `translatedText(last, adminLang)`. Opening a thread calls `markThreadRead('manager')`.
+- **Employee Chat tab** (portal): `renderEmpChat` reads `listThread(currentEmployee.id)` and merges with local AI thread (AI Q&A remains localStorage-only, distinct UX from manager chat). Opening marks `read_at_emp`.
+- **Manager home tile** (Messages): synchronous badge reads `window._pentaManagerChatUnread`, populated by `refreshManagerChatBadge` on boot + realtime + visibility.
+- **Employee chat-tab badge** (`#ptab-chat-badge`): `countUnreadForEmployee`.
+- **Activity Log renderer** (`_renderAuditRowSummary`): new `chat_message` branch — "Viviana V messaged the manager: '…'" / "Tom messaged Viviana V: '…'", with `[CHAT]` chip (purple) + `[URGENT]` chip (red) when applicable.
+- **Employee profile Activity section** (`_renderStaffActivitySection`): now also lists chats sent by this employee in the last 14 days (via `_buildSyntheticAuditRow('chat_message', row)`).
+
+**One-time localStorage backfill**: `pentaPrimeChat` calls `backfillFromLocalStorage()` once per browser. For each thread keyed by employee id (or resolvable legacy_roster_id), each message gets re-inserted with `sender_role` inferred from `m.from`, `lang`/`tx` preserved, `created_at` set from the original `ts`. AI messages skipped. On success, `cleanco_staff_chats` is cleared. Flag `chat_localstorage_backfilled_v1` prevents re-runs. **Cross-browser duplicates are possible** if the same legacy thread exists in multiple browsers' localStorage — acceptable given the small surface (manager logs in from one device typically).
+
+The chat_messages table is the 5th entity in the master data log architecture, joining job_issues (mig 047), incidents (mig 049), payments (mig 052), and client_requests (mig 055) — all of which share the same `audit_log_capture` trigger, the same `_buildSyntheticAuditRow` adapter, and the same renderer fanout via `_renderAuditRowSummary` / `_renderStaffActivitySection`.
+
+---
+
 ## 8g. Hours Report data source (v11.0.19)
 
 Previously, the Hours Report rendered exclusively from the MyGeotab Trip API. When Geotab auth failed (rotating credentials, network outage, single-tenant hardcoded session), the manager view showed empty team headers with "No GPS data this week" beneath each, even though Penta's own `time_entries` table held real clock-in/out data.
