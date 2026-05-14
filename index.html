@@ -25544,62 +25544,81 @@ async function loadWeekHours() {
         let trueStart = null;
         let trueEnd = null;
 
-        // Find last trip that starts near depot after 7am
-        // (ignore quick loops - trips where start AND end point are both near depot)
-        // Filter trips after 7am only
         const validTrips = dayTrips.filter(t => new Date(t.start) >= sevenAM);
         if (validTrips.length === 0) return;
 
-        // TRUE START: last trip that departs FROM depot address before noon
-        // MyGeotab stores start/stop addresses in trip.startAddress / trip.stopAddress
-        // TRUE START = first trip departure after 7am
-        // Simple and accurate - the first time they move after 7am IS when their day starts
-        // They may leave depot, do a gas stop, return briefly - but the clock starts
-        // from first movement after 7am since that's when they're on the clock
-        const firstTrip = validTrips[0]; // already sorted by start time, filtered after 7am
-        if (firstTrip) {
-          trueStart = new Date(firstTrip.start);
-        }
+        // v11.0.23 — TRUE START redefinition.
+        //
+        // Spec from Tom: "the last time they left the office before
+        // starting their day." Teams often make quick depot bounces in
+        // the morning (gas, forgot supplies) — those don't count as the
+        // start. The real day-start is the LAST depot-departure before a
+        // sustained away-from-depot stretch.
+        //
+        // Algorithm: walk depot-departures in chronological order; the
+        // first one whose next return-to-depot is ≥ SUSTAINED_AWAY min
+        // (or never returns) is the start.
+        //
+        // Quick-bounce filter: depot → gas → depot → first job.
+        //   depot-departures: 7:15 (gas), 8:00 (first job)
+        //   7:15 → next return 7:45 (30 min) — too short, skip
+        //   8:00 → next return 4:30pm — sustained, pick this  ✓
+        //
+        // Mid-day re-launch filter: depot → first job (long away) →
+        // depot (forgot supplies) → second job.
+        //   depot-departures: 8:00 (first job), 11:30 (resupply)
+        //   8:00 → next return 11:00 (3 hrs) — sustained, pick this  ✓
+        const SUSTAINED_AWAY_MIN_MIN = 90;
+        const _isDepotStart = function(t) {
+          var sa = t.startAddress || t.startLocation || '';
+          return isDepotAddress(sa, team) || isDepotPoint(t.startPoint, team);
+        };
+        const _isDepotStop = function(t) {
+          var sa = t.stopAddress || t.stopLocation || '';
+          return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+        };
+        const depotDepartures = validTrips.filter(_isDepotStart);
+        const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
+          .sort((a,b) => new Date(a.stop) - new Date(b.stop));
 
+        let trueStartTrip = null;
+        for (const dep of depotDepartures) {
+          const depTs = new Date(dep.start);
+          const nextReturn = depotArrivalsAsc.find(a => new Date(a.stop) > depTs);
+          if (!nextReturn) { trueStartTrip = dep; break; } // never returned
+          const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
+          if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = dep; break; }
+        }
+        if (trueStartTrip) {
+          trueStart = new Date(trueStartTrip.start);
+        } else {
+          // Fallback: legacy first-trip-after-7am behavior (depot detection
+          // missed the addresses — common when offices table is incomplete).
+          const firstTrip = validTrips[0];
+          if (firstTrip) trueStart = new Date(firstTrip.start);
+        }
         if (!trueStart) return;
 
-        // TRUE END = last arrival AT depot after 11am
-        // stopAddress = where they arrived AT
-        const allTripsWithStop = validTrips.filter(t => t.stop)
-          .sort((a,b) => new Date(b.stop) - new Date(a.stop)); // newest first
-
-        let foundReturn = false;
-        for (const t of allTripsWithStop) {
-          const stopTime = new Date(t.stop);
-          if (stopTime < new Date(day.getFullYear(), day.getMonth(), day.getDate(), 11,0,0)) continue;
-          const stopAddr = t.stopAddress || t.stopLocation || '';
-          if (isDepotAddress(stopAddr, team) || isDepotPoint(t.stopPoint, team)) {
-            trueEnd = stopTime;
-            foundReturn = true;
-            break;
-          }
-          // Also check if NEXT trip starts from depot (means this trip ended at depot)
-          const idx = allTripsWithStop.indexOf(t);
-          if (idx < allTripsWithStop.length - 1) {
-            const next = allTripsWithStop[idx + 1];
-            const nextStart = next.startAddress || next.startLocation || '';
-            if (isDepotAddress(nextStart, team) || isDepotPoint(next.startPoint, team)) {
-              trueEnd = stopTime;
-              foundReturn = true;
-              break;
-            }
-          }
+        // v11.0.23 — TRUE END = LAST arrival at depot after trueStart.
+        // If they went out again mid-day and came back, the latest depot
+        // return is the real end — even if a later non-depot trip exists
+        // (van went home with the driver and they ran personal errands).
+        const lateDepotArrivals = depotArrivalsAsc.filter(a => new Date(a.stop) > trueStart);
+        if (lateDepotArrivals.length > 0) {
+          trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
         }
-
-        if (!foundReturn) {
-          const lastTrip = allTripsWithStop[0];
-          if (lastTrip) {
-            trueEnd = new Date(lastTrip.stop);
+        if (!trueEnd) {
+          // Fallback: no depot return today (worked off-site, drove straight
+          // home, or depot detection failed). Use the latest trip stop
+          // anywhere — and if today is in-progress, "now" for current shifts.
+          const allStops = validTrips.filter(t => t.stop)
+            .sort((a,b) => new Date(b.stop) - new Date(a.stop));
+          if (allStops.length > 0) {
+            trueEnd = new Date(allStops[0].stop);
           } else if (day.toDateString() === new Date().toDateString()) {
             trueEnd = new Date();
           }
         }
-
         if (!trueEnd) return;
 
         // Total hours = true start to true end

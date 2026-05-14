@@ -265,7 +265,21 @@ The chat_messages table is the 5th entity in the master data log architecture, j
 
 ---
 
-## 8g. Hours Report data source (v11.0.19, v11.0.21, v11.0.22)
+## 8g. Hours Report data source (v11.0.19, v11.0.21, v11.0.22, v11.0.23)
+
+**v11.0.23 — Geotab boundary detection.** Day-start was naively "first trip after 7am," so a quick depot-bounce (gas run, forgot supplies) before the real day-start landed the timer too early. Day-end was already the latest depot arrival, but the algorithm was rewritten alongside the start for clarity.
+
+New rules (Tom's spec):
+- **Day start** = the LAST depot-departure trip whose next return-to-depot is sustained (≥ 90 minutes away, or never returns). Walk depot-departures in chronological order; the first one that begins a sustained-away stretch is the start. A quick gas run (depot → gas → depot in 30 min) gets skipped; the subsequent legit work-start departure is picked. A legit mid-day resupply (depot → first job 3 hrs → depot → second job 3 hrs) still picks the first 8am departure because its away-stretch is already sustained.
+- **Day end** = the LAST depot arrival after day-start. If the team goes back to the office at 4:30, leaves for a final errand, and returns at 5:00, the day ends at 5:00. If they never returned to depot today, fall back to the latest trip stop (worked off-site / drove straight home).
+
+Fallback chain when depot detection fails (offices table incomplete or address mismatch): legacy "first trip after 7am" for start, "latest trip stop" for end.
+
+The sanity check (`2 ≤ totalHrs ≤ 15`) is retained so Geotab garbage rows are silently dropped.
+
+This is the Geotab pathway only — used for teams without time_entries data or as the supplementary lunch-detection layer on top of time_entries. `time_entries` clock-in/out remains authoritative for teams using the employee portal.
+
+
 
 **v11.0.22 — UI rewrite.** The dense `<table class="hours-table">` is replaced with iOS-style team cards + collapsible employee rows that match Penta's overall design language. Each team gets a card with a colored header strip, employees stacked inside, and tap-to-expand 5-day breakdowns per employee. Day pills show hours + start/end + lunch + live indicator. Off-team days render with a tooltip showing where the employee actually was. CSS class set: `.hrs-team-card`, `.hrs-team-head`, `.hrs-emp-row-wrap`, `.hrs-emp-row`, `.hrs-emp-avatar`, `.hrs-days`, `.hrs-day`, `.hrs-totals-bar`, `.hrs-export-btn`. Expanded state persisted in `window._hrsExpandedEmps` so the 60s live refresh doesn't collapse open rows. The CSV export logic is unchanged.
 
