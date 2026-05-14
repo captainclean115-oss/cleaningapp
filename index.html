@@ -26109,10 +26109,14 @@ function renderHoursTable(days, dayNames) {
     const data = weekHours[team];
     const color = _pentaTeamColor(team, '#6b7280');
 
-    // Get employees for this team for each day
+    // v11.0.21: STRICT per-day membership. An employee appears under this
+    // team only if getEmployeeTeam(empId, dateKey(d)) === team on at least
+    // one day this week. The previous `|| e.defaultTeam === team` fallback
+    // pulled employees back into their default team even after Tom moved
+    // them, double-rendering hours under both their daily-assigned team
+    // and their permanent team.
     const teamEmployees = getUnifiedRoster().filter(e => {
-      // Check if employee was on this team for any day this week
-      return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team) || e.defaultTeam === team;
+      return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team);
     });
 
     if (!data && teamEmployees.length === 0) return;
@@ -26129,9 +26133,6 @@ function renderHoursTable(days, dayNames) {
       </td>
     </tr>`;
 
-    // v11.0.19: render employees regardless of weekHours[team] state. The
-    // per-employee map handles cell-level data; an empty team still shows
-    // its roster with zero rows.
     if (teamEmployees.length === 0) {
       html += `<tr><td colspan="${days.length + 2}" style="color:var(--muted);font-size:12px;padding:6px 10px">No clock-in data this week</td></tr>`;
       return;
@@ -26146,21 +26147,27 @@ function renderHoursTable(days, dayNames) {
       const empMap = empHoursMap[emp.id] || {};
       const dayCells = days.map(function(d, i) {
         const dk = dateKey(d);
+        // v11.0.21: gate cell rendering on per-day team membership. The
+        // employee may belong to a DIFFERENT team this day (e.g. moved from
+        // B1 to S1 for Tuesday only). Cells outside their assigned team for
+        // a given day render as em-dash so hours never double-count.
+        const onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
         const override = getEmpHours(emp.id, dk);
-        // v11.0.19: prefer time_entries cell, then per-employee override,
-        // then team-level Geotab baseline (only present when time_entries
-        // didn't cover this team).
         const teCell = empMap[dk] || null;
         const teamH = (data && Array.isArray(data.days)) ? (data.days[i] || 0) : 0;
         const teamSrc = data && data.source;
-        const empH = override
-          ? override.hours
-          : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH));
+        const empH = !onThisTeamToday ? 0
+          : (override ? override.hours
+              : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH)));
         depotTotals[i] += empH;
         empWeekTotal += empH;
-        const openShift = !!(teCell && teCell.openShift) && !override;
+        const openShift = onThisTeamToday && !!(teCell && teCell.openShift) && !override;
         if (openShift) hasOpenShift = true;
-        if (!empH && !openShift) return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))"><span style="color:var(--border2)">&#8212;</span></td>';
+        if (!empH && !openShift) {
+          // Distinguish "OFF this team today" from "no data": tooltip on the dash.
+          const dashTitle = onThisTeamToday ? '' : ' title="' + _audEsc(getEmployeeTeam(emp.id, dk) || 'OFF') + ' this day"';
+          return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'"' + dashTitle + ' style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))"><span style="color:var(--border2)">&#8212;</span></td>';
+        }
         var sStr = '', eStr = '';
         if (override) {
           if (override.start) { var sp=override.start.split(':'),sh=parseInt(sp[0]),sm=parseInt(sp[1]),sap=sh>=12?'PM':'AM'; if(sh>12)sh-=12; if(sh===0)sh=12; sStr=sh+':'+String(sm).padStart(2,'0')+' '+sap; }
@@ -26175,7 +26182,6 @@ function renderHoursTable(days, dayNames) {
         const lunch = override ? (override.lunch || 0) : (data && data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
         const lunchStr = lunch ? '<div style="font-size:10px;color:var(--amber)">&#127828; ' + lunch + 'm</div>' : '';
         const editBadge = override ? '<div style="font-size:8px;color:var(--accent)">edited</div>' : '';
-        // v11.0.19: live "in progress" indicator on open shifts.
         const liveBadge = openShift ? '<div style="font-size:9px;color:var(--green);font-weight:600">● live</div>' : '';
         return '<td data-emp="'+emp.id+'" data-ename="'+emp.name+'" data-team="'+team+'" data-ms="'+d.getTime()+'" style="padding:6px 4px;cursor:pointer" onclick="showEmpDayDetail(this.dataset.emp,this.dataset.ename,this.dataset.team,parseInt(this.dataset.ms))">'
           +'<div style="font-weight:600">' + formatHrs(empH) + '</div>'
@@ -26340,13 +26346,14 @@ function _buildHoursReport(offset) {
   var grandHours = 0;
   var empsSeen = 0;
 
-  // Mirror renderHoursTable exactly: team-major, filter roster by getEmployeeTeam
-  // or defaultTeam, apply overrides, fall back to team data Mon-Fri only.
+  // v11.0.21: STRICT per-day team membership — mirrors renderHoursTable.
+  // No defaultTeam fallback in the filter; per-cell rendering gates on
+  // getEmployeeTeam(emp.id, dk) === team so an employee moved off this
+  // team for the day records zero hours under it.
   teams.forEach(function(team) {
     var data = (typeof weekHours !== 'undefined' && weekHours[team]) ? weekHours[team] : null;
     var teamEmployees = getUnifiedRoster().filter(function(e) {
-      return days.some(function(d){ return getEmployeeTeam(e.id, dateKey(d)) === team; })
-          || e.defaultTeam === team;
+      return days.some(function(d){ return getEmployeeTeam(e.id, dateKey(d)) === team; });
     });
     if (!data && teamEmployees.length === 0) return;
 
@@ -26359,6 +26366,7 @@ function _buildHoursReport(offset) {
         var dk = dateKey(d);
         var dayIdx = i; // 0=Mon..6=Sun
         var override = getEmpHours(emp.id, dk);
+        var onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
 
         // Only Mon-Fri (0..4) have team GPS baseline data.
         var inMonFri = dayIdx <= 4;
@@ -26367,10 +26375,10 @@ function _buildHoursReport(offset) {
         var teamEnd = (data && inMonFri) ? data.ends[dayIdx] : null;
         var teamLunchMin = (data && inMonFri && data.lunch && data.lunch[dayIdx]) ? (data.lunch[dayIdx].duration || 0) : 0;
 
-        var empH = override ? (override.hours || 0) : teamH;
-        var startStr = override ? (override.start || '') : _hrTo24hr(teamStart);
-        var endStr = override ? (override.end || '') : _hrTo24hr(teamEnd);
-        var lunchMin = override ? (override.lunch || 0) : teamLunchMin;
+        var empH = !onThisTeamToday ? 0 : (override ? (override.hours || 0) : teamH);
+        var startStr = !onThisTeamToday ? '' : (override ? (override.start || '') : _hrTo24hr(teamStart));
+        var endStr = !onThisTeamToday ? '' : (override ? (override.end || '') : _hrTo24hr(teamEnd));
+        var lunchMin = !onThisTeamToday ? 0 : (override ? (override.lunch || 0) : teamLunchMin);
 
         // Day quality: negative/zero duration but with both timestamps → log a warning
         if ((startStr && endStr) && empH <= 0) {
