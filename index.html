@@ -4685,7 +4685,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div style="font-size:13px;color:var(--muted)">Changes made on your phone that need to be updated in TMConnect</div>
   </div>
   <div id="pending-list"></div>
-  <div style="margin:0 12px 4px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:8px;border-top:1px solid var(--border)">Manual Tasks</div>
+  <!-- v11.0.25 — Incoming Forms inbox (DB-backed, cross-device). -->
+  <div id="forms-inbox-section" style="margin:14px 12px 4px;padding-top:8px;border-top:1px solid var(--border)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Incoming Forms <span id="forms-inbox-pill" style="display:none;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;letter-spacing:0"></span></div>
+    </div>
+    <div id="forms-inbox-list"></div>
+  </div>
+  <div style="margin:14px 12px 4px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:8px;border-top:1px solid var(--border)">Manual Tasks</div>
   <button class="add-task-btn" onclick="openAddTask()">+ Add reminder</button>
   <div id="manual-tasks-list"></div>
   <button class="clear-done-btn" onclick="clearDoneTasks()">Clear completed tasks</button>
@@ -12703,6 +12710,13 @@ if (window.PentaForms && window.PentaForms.onChange) {
   window.PentaForms.onChange(function() {
     try { if (typeof renderStaffForms === 'function') renderStaffForms(); } catch (e) {}
     try { if (typeof renderPortalSubmittedForms === 'function') renderPortalSubmittedForms(); } catch (e) {}
+    // v11.0.25: keep the Updates-tab inbox + dock badge in sync with realtime
+    // form inserts/updates. PentaForms already has a postgres_changes channel
+    // (mig 057-style); onChange fires when that channel delivers events too.
+    try { if (typeof renderFormsInbox === 'function') renderFormsInbox(); } catch (e) {}
+    try { if (typeof updateTaskBadge === 'function') updateTaskBadge(); } catch (e) {}
+    // Top-level employee profile "Recent Forms" card stays in sync too.
+    try { if (typeof renderStaffViewFormsPreview === 'function') renderStaffViewFormsPreview(); } catch (e) {}
   });
 }
 
@@ -15625,7 +15639,18 @@ function savePending() { localStorage.setItem('cleanco_pending', JSON.stringify(
 function saveManualTasks() { localStorage.setItem('cleanco_tasks', JSON.stringify(manualTasks)); updateTaskBadge(); }
 
 function updateTaskBadge() {
-  const count = pendingUpdates.filter(p => !p.done).length + manualTasks.filter(t => !t.done).length;
+  // v11.0.25: include pending form-submission count (DB-backed, cross-device).
+  var formsCount = 0;
+  try {
+    if (window.PentaForms && window.PentaForms.listSync) {
+      formsCount = window.PentaForms.listSync().filter(function(f){
+        return f && (f.status || 'pending') === 'pending';
+      }).length;
+    }
+  } catch (e) {}
+  const count = pendingUpdates.filter(p => !p.done).length
+    + manualTasks.filter(t => !t.done).length
+    + formsCount;
   const label = document.getElementById('nav-tasks-label');
   if (label) label.innerHTML = count > 0 ? 'Updates <span class="task-badge">' + count + '</span>' : 'Updates';
 }
@@ -16138,6 +16163,40 @@ function _renderAuditRowSummary(row, ctx) {
     }
     drill = crJid ? { type: 'job', id: crJid } : (crCid ? { type: 'client', id: crCid } : null);
   }
+  // ─── form_submission (v11.0.25) ────────────────────────────────
+  else if (et === 'form_submission') {
+    var fsType = nv.type || ov.type || 'form';
+    var fsTypeLabels = {
+      timeoff: 'Time Off Request', callout: 'Call Out',
+      supplies: 'Supply Request', incident: 'Incident Report',
+      equipment: 'Equipment Issue', vehicle: 'Vehicle Issue'
+    };
+    var fsLabel = fsTypeLabels[fsType] || (String(fsType).charAt(0).toUpperCase() + String(fsType).slice(1));
+    // Resolve submitter name from employee_id when present.
+    var fsEmpId = nv.employee_id || ov.employee_id;
+    var fsEmpName = _audEmpName(ctx, fsEmpId) || actor || 'employee';
+    if (at === 'submitted' || at === 'created') {
+      summary = _audEsc(fsEmpName) + ' submitted <strong>' + _audEsc(fsLabel) + '</strong> form';
+      var pay = nv.payload || ov.payload;
+      if (pay && typeof pay === 'object') {
+        var reason = pay['f-reason'] || pay['f-what'] || pay['f-notes'] || pay['f-items'];
+        if (reason && typeof reason === 'string') summary += ' — &lsquo;' + _audEsc(_audTrunc(reason, 60)) + '&rsquo;';
+      }
+      chips.push({ label: 'FORM: ' + fsLabel.toUpperCase(), color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
+      if (nv.impact_severity === 'high') chips.push({ label: 'HIGH IMPACT', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+    } else if (at === 'approved') {
+      summary = _audEsc(actor) + ' approved ' + _audEsc(fsEmpName) + '&rsquo;s <strong>' + _audEsc(fsLabel) + '</strong>';
+      if (nv.manager_note) summary += ' — note: &lsquo;' + _audEsc(_audTrunc(nv.manager_note, 60)) + '&rsquo;';
+      chips.push({ label: 'APPROVED', color: '#15803d', bg: 'rgba(34,197,94,0.14)' });
+    } else if (at === 'rejected') {
+      summary = _audEsc(actor) + ' denied ' + _audEsc(fsEmpName) + '&rsquo;s <strong>' + _audEsc(fsLabel) + '</strong>';
+      if (nv.manager_note) summary += ' — reason: &lsquo;' + _audEsc(_audTrunc(nv.manager_note, 60)) + '&rsquo;';
+      chips.push({ label: 'DENIED', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+    } else {
+      summary = _audEsc(actor) + ' updated ' + _audEsc(fsEmpName) + '&rsquo;s ' + _audEsc(fsLabel);
+    }
+    drill = fsEmpId ? { type: 'employee', id: fsEmpId } : null;
+  }
   // ─── chat_message (v11.0.20 Phase D) ───────────────────────────
   else if (et === 'chat_message') {
     var chTxt = nv.text || ov.text || '';
@@ -16469,6 +16528,22 @@ function _buildSyntheticAuditRow(entityType, row) {
       createdAt = row.reported_at || row.created_at;
       userId = row.reported_by;
     }
+  } else if (entityType === 'form_submission') {
+    // v11.0.25 — pending = INSERT not yet reviewed; approved/rejected
+    // resolved by manager. Use status to pick action_type.
+    if (row.status === 'approved') {
+      actionType = 'approved';
+      createdAt = row.resolved_at || row.updated_at || row.created_at;
+      userId = row.reviewed_by || null;
+    } else if (row.status === 'denied' || row.status === 'rejected') {
+      actionType = 'rejected';
+      createdAt = row.resolved_at || row.updated_at || row.created_at;
+      userId = row.reviewed_by || null;
+    } else {
+      actionType = 'submitted';
+      createdAt = row.created_at;
+      userId = null; // employee is the implicit submitter; resolved by renderer
+    }
   } else if (entityType === 'chat_message') {
     // v11.0.20 (Phase D): chat is immutable, always 'created'. user_id is
     // the sender; thread context is in thread_employee_id.
@@ -16679,7 +16754,7 @@ async function _renderStaffActivitySection(emp, hostId) {
     host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 0;text-align:center">No recorded activity for this employee yet.</div>';
     return;
   }
-  var incidents = [], issues = [], requests = [], chats = [];
+  var incidents = [], issues = [], requests = [], chats = [], forms = [];
   try {
     if (window.PentaIncidents && window.PentaIncidents.listForReporter) {
       incidents = await window.PentaIncidents.listForReporter(uid);
@@ -16702,11 +16777,20 @@ async function _renderStaffActivitySection(emp, hostId) {
       chats = await window.PentaChatMessages.listForReporter(uid, 14);
     }
   } catch (e) { console.warn('[staffActivity] chats failed', e); }
+  // v11.0.25: include forms this employee submitted (all-time, capped via PentaForms cache).
+  try {
+    if (window.PentaForms && window.PentaForms.listSync) {
+      forms = window.PentaForms.listSync().filter(function(f){
+        return f && (f.employee_id === emp.id || f.employeeId === emp.id);
+      });
+    }
+  } catch (e) { console.warn('[staffActivity] forms failed', e); }
   var items = []
     .concat(incidents.map(function(r){ return { entityType: 'incident', row: r }; }))
     .concat(issues.map(function(r){ return { entityType: 'job_issue', row: r }; }))
     .concat(requests.map(function(r){ return { entityType: 'client_request', row: r }; }))
-    .concat(chats.map(function(r){ return { entityType: 'chat_message', row: r }; }));
+    .concat(chats.map(function(r){ return { entityType: 'chat_message', row: r }; }))
+    .concat(forms.map(function(r){ return { entityType: 'form_submission', row: r }; }));
   items.sort(function(a, b){
     var at = a.row.reported_at || a.row.created_at;
     var bt = b.row.reported_at || b.row.created_at;
@@ -17954,8 +18038,156 @@ function deleteManualTask(id) {
   saveManualTasks(); renderTasks();
 }
 
+// v11.0.25 — Incoming Forms inbox.
+// Maps form `type` → display icon + label. Update keys here when new form
+// types are added on the employee side (renderPortalFormCards).
+var _FORMS_INBOX_META = {
+  timeoff:   { icon: '🏖️', label: 'Time Off Request' },
+  callout:   { icon: '🤒', label: 'Call Out' },
+  supplies:  { icon: '📦', label: 'Supply Request' },
+  incident:  { icon: '⚠️', label: 'Incident Report' },
+  equipment: { icon: '🔧', label: 'Equipment Issue' },
+  vehicle:   { icon: '🚗', label: 'Vehicle Issue' }
+};
+
+function _formsInboxEmployeeName(form) {
+  try {
+    var emps = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+    var hit = emps.find(function(e){ return e.id === form.employee_id; });
+    if (hit) return { name: hit.name, team: (hit.team || hit.team_text || '—'), idx: emps.indexOf(hit) };
+  } catch (e) {}
+  return { name: '(unknown employee)', team: '—', idx: -1 };
+}
+
+function _formsInboxBriefDetails(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  var keys = ['f-start','f-end','f-date','f-reason','f-notes','f-items','f-urgency','f-what','f-injured'];
+  var bits = [];
+  for (var i = 0; i < keys.length && bits.length < 2; i++) {
+    var v = payload[keys[i]];
+    if (v && typeof v === 'string' && v.trim()) bits.push(v.trim().slice(0, 40));
+  }
+  return bits.join(' · ');
+}
+
+function _formsInboxReviewClick(formId, employeeId) {
+  try {
+    var emps = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+    var idx = emps.findIndex(function(e){ return e.id === employeeId; });
+    if (idx < 0) { try { showToast('Employee not found', 'error'); } catch (_e) {} return; }
+    // openEditStaff exists; pass startTab so the overlay opens directly to Forms.
+    if (typeof openEditStaff === 'function') {
+      openEditStaff(idx);
+      setTimeout(function() {
+        try { showStaffTab('forms'); } catch (_e) {}
+      }, 50);
+    }
+  } catch (e) { console.warn('[forms-inbox] review click failed', e); }
+}
+
+function renderFormsInbox() {
+  var listEl = document.getElementById('forms-inbox-list');
+  var pillEl = document.getElementById('forms-inbox-pill');
+  if (!listEl) return;
+  var forms = [];
+  try {
+    if (window.PentaForms && window.PentaForms.listSync) forms = window.PentaForms.listSync();
+  } catch (e) {}
+  var pending = forms
+    .filter(function(f){ return f && (f.status || 'pending') === 'pending'; })
+    .sort(function(a,b){ return new Date(b.created_at || 0) - new Date(a.created_at || 0); });
+
+  if (pillEl) {
+    if (pending.length > 0) { pillEl.textContent = pending.length; pillEl.style.display = ''; }
+    else { pillEl.style.display = 'none'; }
+  }
+  if (pending.length === 0) {
+    listEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 4px">No pending forms.</div>';
+    return;
+  }
+  listEl.innerHTML = pending.map(function(f) {
+    var meta = _FORMS_INBOX_META[f.type] || { icon: '📋', label: f.type || 'Form' };
+    var emp = _formsInboxEmployeeName(f);
+    var when = f.created_at ? new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+    var brief = _formsInboxBriefDetails(f.payload);
+    var sev = f.impact_severity || '';
+    var sevPill = sev ? '<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;margin-left:6px;letter-spacing:.04em;'
+      + (sev === 'high'   ? 'color:#dc2626;background:rgba(220,38,38,0.12)'
+       : sev === 'medium' ? 'color:#c2410c;background:rgba(249,115,22,0.12)'
+       :                    'color:#15803d;background:rgba(34,197,94,0.12)')
+      + '">' + sev.toUpperCase() + '</span>' : '';
+    var safeFid = String(f.id || '').replace(/'/g, "\\'");
+    var safeEid = String(f.employee_id || '').replace(/'/g, "\\'");
+    return '<div class="task-card" style="margin:6px 0">'
+      + '<div class="task-main" style="align-items:flex-start">'
+      +   '<div style="width:36px;height:36px;border-radius:9px;background:rgba(108,143,255,0.10);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">' + meta.icon + '</div>'
+      +   '<div class="task-body" style="margin-left:10px">'
+      +     '<div class="task-title">' + escapeHtml(meta.label) + sevPill + '</div>'
+      +     '<div class="task-sub">' + escapeHtml(emp.name) + ' · ' + escapeHtml(emp.team) + (brief ? ' — ' + escapeHtml(brief) : '') + '</div>'
+      +     '<div class="task-time">' + escapeHtml(when) + '</div>'
+      +   '</div>'
+      +   '<button onclick="_formsInboxReviewClick(\'' + safeFid + '\',\'' + safeEid + '\')" '
+      +           'style="background:var(--accent);border:none;color:#fff;border-radius:8px;padding:6px 12px;font:600 12px DM Sans,sans-serif;cursor:pointer;flex-shrink:0">Review</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+// v11.0.25 — Recent Forms preview painted on the top-level Staff View tab.
+// Last 5 forms for the currently-open employee, status pill per row.
+// Tap row → opens the Forms sub-tab.
+function renderStaffViewFormsPreview(emp) {
+  var host = document.getElementById('staff-view-forms-host');
+  if (!host) return;
+  // If no emp arg, resolve from the open staff edit overlay.
+  if (!emp) {
+    try {
+      var idx = parseInt((document.getElementById('staff-edit-idx') || {}).value);
+      var list = (typeof getStaffList === 'function') ? getStaffList() : [];
+      emp = list[idx];
+    } catch (e) {}
+    if (!emp) return;
+  }
+  var all = (window.PentaForms && window.PentaForms.listSync) ? window.PentaForms.listSync() : [];
+  var forms = all.filter(function(f) {
+    if (!f) return false;
+    if (f.employee_id && emp.id && f.employee_id === emp.id) return true;
+    if (f.employeeId && emp.id && f.employeeId === emp.id) return true;
+    return false;
+  }).sort(function(a,b){ return new Date(b.created_at || b.timestamp || 0) - new Date(a.created_at || a.timestamp || 0); });
+  var recent = forms.slice(0, 5);
+  if (recent.length === 0) {
+    host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:4px 0">No forms submitted yet.</div>';
+    return;
+  }
+  function statusPill(s) {
+    s = s || 'pending';
+    var c = s === 'approved' ? 'color:#15803d;background:rgba(34,197,94,0.12)'
+          : (s === 'denied' || s === 'rejected') ? 'color:#dc2626;background:rgba(220,38,38,0.12)'
+          : 'color:#c2410c;background:rgba(249,115,22,0.12)';
+    return '<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;letter-spacing:.04em;' + c + '">' + s.toUpperCase() + '</span>';
+  }
+  host.innerHTML = recent.map(function(f) {
+    var meta = _FORMS_INBOX_META[f.type] || { icon: '📋', label: f.type || 'Form' };
+    var when = f.created_at ? new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+    return '<div onclick="showStaffTab(\'forms\')" style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--border);cursor:pointer">'
+      + '<div style="width:30px;height:30px;border-radius:8px;background:rgba(108,143,255,0.10);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">' + meta.icon + '</div>'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:13px;font-weight:600;color:var(--text)">' + escapeHtml(meta.label) + ' ' + statusPill(f.status) + '</div>'
+      +   '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(when) + '</div>'
+      + '</div>'
+      + '<div style="color:var(--muted);font-size:11px">›</div>'
+      + '</div>';
+  }).join('');
+  if (forms.length > 5) {
+    host.innerHTML += '<div style="text-align:center;font-size:11px;color:var(--muted);padding:6px 0">+ ' + (forms.length - 5) + ' more in Forms tab</div>';
+  }
+}
+
 function renderTasks() {
   updateTaskBadge();
+  // v11.0.25: paint the forms inbox alongside the pending list.
+  try { renderFormsInbox(); } catch (e) { console.warn('[renderTasks] forms inbox threw', e); }
 
   // Pending updates section
   const pendingEl = document.getElementById('pending-list');
@@ -32549,6 +32781,18 @@ function renderStaffView() {
       </div>`
     ])}
 
+    <!-- v11.0.25: Recent Forms preview — last 5 forms with status pills.
+         Tapping a row opens the Forms sub-tab. Hoists the buried Forms
+         sub-tab into the top-level view so managers see submissions
+         without having to drill into the sub-nav. -->
+    <div style="background:var(--surface2);border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)">Recent Forms</div>
+        <button type="button" onclick="showStaffTab('forms')" style="background:none;border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;cursor:pointer">View all</button>
+      </div>
+      <div id="staff-view-forms-host"><div style="color:var(--muted);font-size:12px;padding:4px 0">Loading…</div></div>
+    </div>
+
     <!-- v11.0.15 (Build 2): Employee Activity section.
          Read-only list of every incident + job_issue this employee
          reported. Painted async by _renderStaffActivitySection. Rows
@@ -32560,6 +32804,8 @@ function renderStaffView() {
   `;
   // v11.0.15 (Build 2): paint the Activity section async.
   try { _renderStaffActivitySection(emp, 'staff-view-activity-host'); } catch (e) {}
+  // v11.0.25: paint the Recent Forms preview.
+  try { renderStaffViewFormsPreview(emp); } catch (e) {}
 
   // Wire up the Penta Login section (Sprint 4 Phase 4B).
   try {
