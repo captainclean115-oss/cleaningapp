@@ -27714,57 +27714,100 @@ async function rcFetch(path, opts={}) {
 // manager unlock + line ~6644 PentaSettings prime). Without dedup, both
 // rcInits call rcRefreshToken concurrently — RC rotates the refresh token
 // on the first POST, returning 400 invalid_grant on the second.
+//
+// v11.0.24: DB-first refresh token read + one retry on invalid_grant.
+// Closes the cross-device race where laptop refreshes (rotating the
+// token to v2) and phone later tries to refresh with its stale v1 from
+// localStorage → invalid_grant → unexpected rcLogout. The DB has the
+// latest value because every successful refresh writes there too.
 let _rcRefreshPromise = null;
+async function _rcDoRefresh(opts) {
+  opts = opts || {};
+  // Read refresh_token from DB first, fall back to localStorage. DB
+  // mirrors are written atomically with every successful refresh, so a
+  // newer DB value reflects another device's recent rotation.
+  var refresh = null;
+  if (window.PentaSettings && window.PentaSettings.get) {
+    try {
+      var dbVal = window.PentaSettings.get('rc_refresh');
+      if (dbVal && typeof dbVal === 'string') refresh = dbVal;
+    } catch (e) {}
+  }
+  if (!refresh) {
+    try { refresh = localStorage.getItem('rc_refresh') || null; } catch (e) {}
+  } else {
+    // Mirror DB → localStorage so subsequent local reads agree.
+    try { localStorage.setItem('rc_refresh', refresh); } catch (e) {}
+  }
+  if (!refresh) return { ok: false, reason: 'no_refresh_token' };
+
+  var resp;
+  try {
+    resp = await fetch('https://platform.ringcentral.com/restapi/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refresh,
+        client_id: RC_CLIENT_ID
+      })
+    });
+  } catch (e) {
+    console.warn('[RC] refresh network error', e && e.message);
+    return { ok: false, reason: 'network', networkError: true };
+  }
+  if (!resp.ok) {
+    var errBody = '';
+    try { errBody = await resp.text(); } catch (e) {}
+    var attemptLabel = opts.attempt || 1;
+    console.warn('[RC] refresh failed (attempt ' + attemptLabel + ')', resp.status, errBody.slice(0, 300));
+    var invalidGrant = resp.status === 400 && errBody.indexOf('invalid_grant') >= 0;
+    return { ok: false, reason: invalidGrant ? 'invalid_grant' : ('http_' + resp.status), invalidGrant: invalidGrant };
+  }
+  var data;
+  try { data = await resp.json(); } catch (e) { return { ok: false, reason: 'parse_error' }; }
+  if (!data.access_token) return { ok: false, reason: 'no_access_token' };
+
+  rcToken = data.access_token;
+  try { localStorage.setItem('rc_token', rcToken); } catch (e) {}
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
+  if (data.refresh_token) {
+    try { localStorage.setItem('rc_refresh', data.refresh_token); } catch (e) {}
+    try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {}
+  }
+  var expiry = Date.now() + (data.expires_in || 3600) * 1000;
+  try { localStorage.setItem('rc_token_expiry', expiry.toString()); } catch (e) {}
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
+  return { ok: true };
+}
+
 async function rcRefreshToken() {
   if (_rcRefreshPromise) return _rcRefreshPromise;
   _rcRefreshPromise = (async function() {
     try {
-      // v9.5.6: localStorage → PentaSettings fallback. iOS PWA localStorage
-      // can be empty on fresh install or after rcLogout, but the DB-backed
-      // copy survives. Closes the boot-timing race where PentaSettings.load
-      // hasn't mirrored DB → localStorage yet.
-      var refresh = localStorage.getItem('rc_refresh');
-      if (!refresh && window.PentaSettings && window.PentaSettings.get) {
-        refresh = window.PentaSettings.get('rc_refresh') || '';
-        if (refresh) {
-          // Mirror back to localStorage now that we have it.
-          try { localStorage.setItem('rc_refresh', refresh); } catch (e) {}
-        }
+      var first = await _rcDoRefresh({ attempt: 1 });
+      if (first.ok) return true;
+      // v11.0.24: on invalid_grant, another device may have just rotated
+      // the token. Force-reload PentaSettings (fresh DB read, bypassing
+      // the in-memory cache) and try once more.
+      if (first.invalidGrant) {
+        console.warn('[RC] refresh invalid_grant — reloading PentaSettings + retrying once');
+        try {
+          if (window.PentaSettings && window.PentaSettings.load) {
+            await window.PentaSettings.load();
+          }
+        } catch (e) { console.warn('[RC] PentaSettings reload threw', e && e.message); }
+        // Pause briefly so the other device's DB write has time to land.
+        await new Promise(function(r){ setTimeout(r, 800); });
+        var second = await _rcDoRefresh({ attempt: 2 });
+        if (second.ok) return true;
+        console.warn('[RC] refresh retry also failed —', second.reason);
       }
-      if (!refresh) return false;
-      const resp = await fetch('https://platform.ringcentral.com/restapi/oauth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token: refresh,
-          client_id: RC_CLIENT_ID
-        })
-      });
-      // v9.5.6: log actual 400 body. Was silently swallowed before, leaving
-      // us guessing whether it's invalid_grant (stale), invalid_request
-      // (malformed), or invalid_client (RC config issue).
-      if (!resp.ok) {
-        var errBody = '';
-        try { errBody = await resp.text(); } catch (e) {}
-        console.warn('[RC] refresh failed', resp.status, errBody.slice(0, 300));
-        return false;
-      }
-      const data = await resp.json();
-      if (data.access_token) {
-        rcToken = data.access_token;
-        localStorage.setItem('rc_token', rcToken);
-        try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token', rcToken); } catch (e) {}
-        if (data.refresh_token) { localStorage.setItem('rc_refresh', data.refresh_token); try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_refresh', data.refresh_token); } catch (e) {} }
-        const expiry = Date.now() + (data.expires_in || 3600) * 1000;
-        localStorage.setItem('rc_token_expiry', expiry.toString());
-        try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('rc_token_expiry', expiry.toString()); } catch (e) {}
-        return true;
-      }
-    } catch(e) {
+      return false;
+    } catch (e) {
       console.warn('[RC] refresh threw', e && e.message);
+      return false;
     }
-    return false;
   })();
   try { return await _rcRefreshPromise; }
   finally { _rcRefreshPromise = null; }
@@ -30167,9 +30210,22 @@ async function loadInbox() {
     return;
   }
 
-  if (!records || records.length === 0) {
-    updateRCStatus('Could not load messages. Tap to reconnect.');
-    document.getElementById('rc-auth-section').style.display = 'block';
+  // v11.0.24: distinguish auth-failure (records === null) from genuinely
+  // empty inbox (records.length === 0). The previous logic bounced both
+  // to the Connect button, which looked like a logout for tenants with no
+  // SMS in the last 6 months. Only true auth failure should show Connect;
+  // an empty inbox keeps the Connected state and renders an empty list.
+  if (!records) {
+    // rcFetch/rcRefreshToken already called rcLogout() which painted the
+    // Connect button — no further action needed here.
+    return;
+  }
+  if (records.length === 0) {
+    updateRCStatus('Connected to RingCentral ✓ — no messages yet');
+    var inboxEmpty = document.getElementById('inbox-list');
+    if (inboxEmpty) {
+      inboxEmpty.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px 20px;font-size:13px">No SMS messages in the last 6 months.</div>';
+    }
     return;
   }
 

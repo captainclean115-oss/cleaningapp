@@ -223,6 +223,20 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8i. RingCentral cross-device token rotation (v11.0.24)
+
+RingCentral rotates the OAuth refresh token on every successful refresh. Each device caches a copy in `localStorage`; PentaSettings mirrors it to `users.settings.rc_refresh` so all of a user's devices share the latest value at boot. But after the initial mirror, each device's local copy drifts independently — and when the laptop refreshes while the phone is open, the phone keeps using the stale token and gets `invalid_grant` next time it refreshes → unexpected `rcLogout`.
+
+**v11.0.24 fix** in `rcRefreshToken`:
+
+1. **DB-first read** in a new `_rcDoRefresh()` helper. The refresh_token is read from `PentaSettings.get('rc_refresh')` first, falling back to `localStorage` only when the cache is empty. The DB copy is mirrored back to `localStorage` so subsequent reads agree.
+2. **Single retry on `invalid_grant`**. When RC returns 400 with `error=invalid_grant` (the canonical "another device just rotated this token" signal), we call `PentaSettings.load()` — which fires a fresh DB read and refreshes the in-memory cache — wait 800ms for any in-flight rotation from another device to land, and try the refresh once more. If the retry succeeds, the user stays signed in. If it fails again (genuine expiry / revocation), `rcLogout()` fires as before.
+3. **Empty inbox no longer bounces to Connect** in `loadInbox`. Previously `records.length === 0` painted the Connect button as if auth had failed; now an empty inbox renders an empty-list state and the connection status stays "Connected ✓".
+
+Race window between attempt 1 and attempt 2 is bounded by the 800ms wait + the DB roundtrip latency. The `_rcRefreshPromise` in-flight cache (v9.5.6) still dedups parallel refreshes inside one browser; v11.0.24 closes the same race across devices.
+
+---
+
 ## 8h. Chat persistence (v11.0.20 — Phase D)
 
 Manager ↔ employee chat moved off `localStorage.cleanco_staff_chats` (which only worked when both parties used the same physical browser) onto a real `public.chat_messages` table with multi-tenant RLS, realtime cross-device delivery, and an audit_log trigger.
