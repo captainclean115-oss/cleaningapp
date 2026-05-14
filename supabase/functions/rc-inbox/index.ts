@@ -40,7 +40,16 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const ANON_KEY     = Deno.env.get("SUPABASE_ANON_KEY")!;
+// Read the project's "public" client key. Supabase migrated this project
+// from the legacy anon-key JWT format to the new publishable-key format.
+// Try the new env var first, fall back to the legacy one, fail loudly
+// if neither is set.
+const ANON_KEY =
+  Deno.env.get("SUPABASE_PUBLISHABLE_KEYS") ||
+  Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ||
+  Deno.env.get("SUPABASE_ANON_KEY") ||
+  "";
+if (!ANON_KEY) throw new Error("Missing SUPABASE_PUBLISHABLE_KEYS / SUPABASE_PUBLISHABLE_KEY / SUPABASE_ANON_KEY env var");
 // Service-role key for the privileged client used to look up integration
 // rows. Mirrors send-sms's pattern exactly.
 const SERVICE_KEY  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -56,7 +65,7 @@ const RC_BASE = "https://platform.ringcentral.com/restapi/v1.0";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
 };
 
 function json(status: number, body: unknown) {
