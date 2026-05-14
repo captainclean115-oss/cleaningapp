@@ -141,11 +141,20 @@ serve(async (req) => {
   // Step 1: caller auth + tenant resolution. Mirrors send-sms.
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) return json(401, { error: "Missing Authorization header" });
-  const caller = createClient(SUPABASE_URL, ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-  });
-  const { data: callerData, error: callerErr } = await caller.auth.getUser();
-  if (callerErr || !callerData.user) return json(401, { error: "Invalid JWT" });
+
+  // Extract the bearer token. Use the explicit form of auth.getUser(jwt)
+  // because the global-headers form interacts poorly with the new
+  // publishable-key system.
+  const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!jwt) return json(401, { error: "Empty bearer token" });
+
+  const caller = createClient(SUPABASE_URL, ANON_KEY);
+  const { data: callerData, error: callerErr } = await caller.auth.getUser(jwt);
+  if (callerErr) {
+    console.error("[auth] getUser failed:", callerErr.message, callerErr);
+    return json(401, { error: "Invalid JWT", detail: callerErr.message });
+  }
+  if (!callerData.user) return json(401, { error: "Invalid JWT (no user)" });
   const callerAuthId = callerData.user.id;
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
