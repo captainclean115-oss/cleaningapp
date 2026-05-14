@@ -265,7 +265,22 @@ The chat_messages table is the 5th entity in the master data log architecture, j
 
 ---
 
-## 8g. Hours Report data source (v11.0.19)
+## 8g. Hours Report data source (v11.0.19, v11.0.21)
+
+**v11.0.21 — strict per-day team membership.** The Hours Worked table on the Live tab now reflects exactly who was on each team per day (via `daily_assignments`), not who that team's permanent members are.
+
+Previously two bugs caused hours to double-count and to render under the wrong team:
+
+1. The team-row filter included `|| e.defaultTeam === team`, pulling employees into their permanent team's row regardless of daily moves. An employee moved from B1 → S1 for the whole week still appeared under B1 and S1.
+2. Each row's per-day cells rendered hours regardless of which team that employee was actually on for that day, so the same hours appeared in two rows.
+
+The fix drops the default-team fallback from the filter and gates per-cell rendering on `getEmployeeTeam(empId, dateKey(d)) === team`. On days an employee is not on this team, the cell is em-dash (with a tooltip showing where they were). Hours never double-count. Per-team week totals and per-day totals (`depotTotals`) sum only the cells where the employee was on that team.
+
+`getEmployeeTeam` still falls back to `defaultTeam` when there's no daily_assignments override for the date — so unchanged employees stay on their permanent team naturally. Only explicit moves (or 'OFF' rows) shift the cell location.
+
+The same change applies to the `showHoursReport` export so on-screen + exported numbers match cell-for-cell.
+
+
 
 Previously, the Hours Report rendered exclusively from the MyGeotab Trip API. When Geotab auth failed (rotating credentials, network outage, single-tenant hardcoded session), the manager view showed empty team headers with "No GPS data this week" beneath each, even though Penta's own `time_entries` table held real clock-in/out data.
 
