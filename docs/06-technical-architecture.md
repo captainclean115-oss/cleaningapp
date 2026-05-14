@@ -223,6 +223,29 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8j. Forms surfaces (v11.0.25)
+
+Employee form submissions (`public.forms`, Sprint 8) were already saving to DB but had no manager-side cross-device surface. The Sprint 8 `submitForm` path wrote a row to `forms` AND a localStorage entry to `cleanco_pending` — but the localStorage entry lived on the employee's phone, so managers on different browsers never saw the form arrive in their Updates tab. v11.0.25 adds three DB-backed surfaces + audit log integration so forms are visible the same way every other entity in the master data log is.
+
+**Audit integration** (mig 059):
+- Adds `'form_submission'` to `entity_type` CHECK.
+- Extends `audit_log_capture()`: INSERT → `action_type='submitted'`, status `pending→approved` → `'approved'`, status `pending→denied|rejected` → `'rejected'`. `'submitted'`, `'approved'`, `'rejected'` were already in the action_type CHECK from mig 042.
+- Trigger attached to `public.forms`.
+
+**Updates tab — Incoming Forms inbox**: new section between the existing pending list and Manual Tasks. Reads `PentaForms.listSync()` filtered to `status='pending'`, sorted newest-first. Each row shows the form-type icon, employee name + team, brief details (Reason / What / Notes truncated), submission time, and a `[Review]` button that opens the existing staff edit overlay with `showStaffTab('forms')` queued. Pill in the section header shows the pending count.
+
+**Dock Updates badge** (`updateTaskBadge`): now includes the pending-forms count alongside `pendingUpdates` + `manualTasks`. Sourced from `PentaForms.listSync()` (DB-backed via PentaForms's existing realtime channel), so a form submitted from an employee's phone increments the manager's badge live without refresh.
+
+**Employee profile Recent Forms preview**: new card on the top-level staff View tab (not buried in the Forms sub-tab). Shows the last 5 forms for that employee with status pills (PENDING amber / APPROVED green / DENIED red). Tap any row → opens the Forms sub-tab. Full forms list still lives inside the sub-tab.
+
+**Realtime**: `PentaForms.onChange` callback (existing) now also calls `renderFormsInbox()`, `updateTaskBadge()`, and `renderStaffViewFormsPreview()`. The PentaForms realtime channel was already wired in Sprint 8; this just hooks the new surfaces in.
+
+**Activity Log + Employee Activity section**: `_buildSyntheticAuditRow` handles `entity_type='form_submission'` so the existing `_renderAuditRowSummary` + `_renderStaffActivitySection` pipelines paint form rows with `[FORM: TIME OFF REQUEST]` / `[APPROVED]` / `[DENIED]` chips. `_renderStaffActivitySection` now also queries `PentaForms.listSync()` filtered by `employee_id`.
+
+This brings forms in line with the other 5 master-data-log entities: job_issues (mig 047), incidents (mig 049), payments (mig 052), client_requests (mig 055), chat_messages (mig 057). All share `audit_log_capture`, `_buildSyntheticAuditRow`, `_renderAuditRowSummary`, and the synthetic-audit-row render pipeline.
+
+---
+
 ## 8i. RingCentral cross-device token rotation (v11.0.24)
 
 RingCentral rotates the OAuth refresh token on every successful refresh. Each device caches a copy in `localStorage`; PentaSettings mirrors it to `users.settings.rc_refresh` so all of a user's devices share the latest value at boot. But after the initial mirror, each device's local copy drifts independently — and when the laptop refreshes while the phone is open, the phone keeps using the stale token and gets `invalid_grant` next time it refreshes → unexpected `rcLogout`.
