@@ -23035,12 +23035,15 @@ async function _executeClaireToolCallInner(toolCall, message) {
       // Edge Function picks the from-number from
       // business_phone_integrations.phone_number_e164.
       var stSb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      console.log('[Claire send_text] sb exists:', !!stSb); // DEBUG: remove after audit
       if (!stSb) {
         _claireLastToolResult = JSON.stringify({ error:'no_session', message:'Supabase client unavailable.' });
         return;
       }
       var stSes = await stSb.auth.getSession();
+      console.log('[Claire send_text] session present:', !!(stSes && stSes.data && stSes.data.session)); // DEBUG: remove after audit
       var stTok = stSes && stSes.data && stSes.data.session && stSes.data.session.access_token;
+      console.log('[Claire send_text] access_token length:', stTok ? stTok.length : 0); // DEBUG: remove after audit
       if (!stTok) {
         _claireLastToolResult = JSON.stringify({ error:'not_signed_in', message:'User must be signed in to send SMS.' });
         return;
@@ -23052,6 +23055,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
       });
       var stData = null;
       try { stData = await stResp.json(); } catch (_e) {}
+      console.log('[Claire send_text] response status:', stResp.status, 'error:', stData && stData.error, 'hint:', stData && stData.hint); // DEBUG: remove after audit
       if (stResp.ok && stData && stData.ok) {
         try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
         _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.msg_id });
@@ -29364,9 +29368,12 @@ async function sendQuoteViaRC() {
     // rcToken / getMyRCNumber dependency; the Edge Function resolves the
     // tenant's outbound number from business_phone_integrations.
     const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    console.log('[sendQuoteViaRC] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) { alert('No connection — please sign in and try again.'); return; }
     const ses = await sb.auth.getSession();
+    console.log('[sendQuoteViaRC] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
     const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    console.log('[sendQuoteViaRC] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
     if (!tok) { alert('Please sign in to send via RingCentral.'); return; }
     const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
@@ -29377,6 +29384,7 @@ async function sendQuoteViaRC() {
     });
     let data = null;
     try { data = await resp.json(); } catch (e) {}
+    console.log('[sendQuoteViaRC] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
     if (resp.ok && data && data.ok) {
       document.getElementById('qt-compose-modal').style.display = 'none';
       closeQuoteTool();
@@ -29712,11 +29720,14 @@ async function sendAllBalanceFollowups() {
   let edgeTok = null;
   try {
     const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    console.log('[sendAllBalanceFollowups] sb exists:', !!sb); // DEBUG: remove after audit
     if (sb) {
       const ses = await sb.auth.getSession();
+      console.log('[sendAllBalanceFollowups] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
       edgeTok = ses && ses.data && ses.data.session && ses.data.session.access_token || null;
     }
   } catch (e) { /* edgeTok stays null — every SMS row will skip below */ }
+  console.log('[sendAllBalanceFollowups] access_token length:', edgeTok ? edgeTok.length : 0, 'batch size:', selected.length); // DEBUG: remove after audit
 
   for (let i = 0; i < selected.length; i++) {
     const c = selected[i];
@@ -29747,11 +29758,12 @@ async function sendAllBalanceFollowups() {
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + edgeTok },
           body: JSON.stringify({ to_phone: e164, message: msg }),
         });
+        let detail = null;
+        try { detail = await resp.json(); } catch (_e) {}
+        console.log('[sendAllBalanceFollowups] recipient:', c.fn + ' ' + c.ln, '(' + e164 + ')', 'status:', resp.status, 'error:', detail && detail.error, 'hint:', detail && detail.hint); // DEBUG: remove after audit
         if (resp.ok) {
           sent++;
         } else {
-          let detail = null;
-          try { detail = await resp.json(); } catch (_e) {}
           console.warn('[balance bulk] send failed for', c.fn + ' ' + c.ln, resp.status, detail);
           failed++;
         }
@@ -30846,12 +30858,15 @@ async function sendReply() {
     // Browser no longer needs rcToken or a picked from-number; the Edge
     // Function resolves both from business_phone_integrations.
     const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    console.log('[sendReply] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) {
       alert('No connection — please sign in and try again.');
       sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
     }
     const ses = await sb.auth.getSession();
+    console.log('[sendReply] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
     const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    console.log('[sendReply] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
     if (!tok) {
       alert('Please sign in to send.');
       sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
@@ -30867,6 +30882,7 @@ async function sendReply() {
     });
     let data = null;
     try { data = await resp.json(); } catch (e) {}
+    console.log('[sendReply] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
 
     if (resp.ok && data && data.ok) {
       // Append bubble directly without full re-render
@@ -34982,9 +34998,12 @@ async function sendOnMyWay(jobId, phone, firstName) {
   if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
   try {
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    console.log('[sendOnMyWay] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) { _toastSimple('No connection', 'error'); return; }
     var ses = await sb.auth.getSession();
+    console.log('[sendOnMyWay] session present:', !!(ses && ses.data && ses.data.session)); // DEBUG: remove after audit
     var tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    console.log('[sendOnMyWay] access_token length:', tok ? tok.length : 0); // DEBUG: remove after audit
     if (!tok) { _toastSimple('Please sign in', 'error'); return; }
     var resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
@@ -34993,6 +35012,7 @@ async function sendOnMyWay(jobId, phone, firstName) {
     });
     var data = null;
     try { data = await resp.json(); } catch (e) {}
+    console.log('[sendOnMyWay] response status:', resp.status, 'error:', data && data.error, 'hint:', data && data.hint); // DEBUG: remove after audit
     if (!resp.ok) {
       _toastSimple('Send failed: ' + (data && (data.error || data.detail) || resp.status), 'error');
       console.warn('[onMyWay] send-sms response', data);
