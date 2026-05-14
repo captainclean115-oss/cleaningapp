@@ -33,12 +33,13 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 // from the legacy anon-key JWT format to the new publishable-key format.
 // Try the new env var first, fall back to the legacy one, fail loudly
 // if neither is set.
-const ANON_KEY =
-  Deno.env.get("SUPABASE_PUBLISHABLE_KEYS") ||
-  Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ||
-  Deno.env.get("SUPABASE_ANON_KEY") ||
-  "";
-if (!ANON_KEY) throw new Error("Missing SUPABASE_PUBLISHABLE_KEYS / SUPABASE_PUBLISHABLE_KEY / SUPABASE_ANON_KEY env var");
+// SUPABASE_ANON_KEY is set by Supabase to the project's current
+// browser-facing key (sb_publishable_* format in the new key system,
+// or the legacy JWT in older projects). Use it directly. The plural
+// SUPABASE_PUBLISHABLE_KEYS env var contains a JSON object of multiple
+// named keys and is NOT a direct drop-in for createClient.
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+if (!ANON_KEY) throw new Error("Missing SUPABASE_ANON_KEY env var");
 // Service-role key for the privileged client used to look up integration
 // rows. The lookup goes through SECURITY DEFINER RPC, but the client
 // invoking the RPC needs to be authenticated — service_role bypasses
