@@ -23016,8 +23016,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
       +'High — '+(arcHigh.map(_arcRow).join('; ')||'none')+'. '
       +'Medium — '+(arcMed.map(_arcRow).join('; ')||'none')+'.';
 
-  // ── SEND TEXT (routed through send-sms Edge Function) ──
+  // ── SEND TEXT (v7.4: direct RC SMS — used by quote flow) ──
   } else if (name === 'send_text') {
+    if (typeof rcToken === 'undefined' || !rcToken) {
+      _claireLastToolResult = JSON.stringify({ error:'rc_not_connected', message:'RingCentral is not connected. The user must connect RC in the Messages tab before texts can be sent.' });
+      return;
+    }
     var stDigits = (input.phone||'').replace(/\D/g,'');
     if (stDigits.length < 10) {
       _claireLastToolResult = JSON.stringify({ error:'bad_phone', phone:input.phone });
@@ -23030,27 +23034,20 @@ async function _executeClaireToolCallInner(toolCall, message) {
       return;
     }
     try {
-      // v11.0.x — route SMS through send-sms Edge Function instead of
-      // direct RC API. Browser no longer needs an rcToken to send.
-      // Edge Function picks the from-number from
-      // business_phone_integrations.phone_number_e164.
-      var sb = window.PentaAuth?.client || window.supabaseClient;
-      console.log('[Claire send_text] sb exists:', !!sb); // DEBUG: remove after audit
-      if (!sb) {
-        _claireLastToolResult = JSON.stringify({ error:'no_session', message:'Supabase client unavailable.' });
+      var stMyNum = await getMyRCNumber();
+      if (!stMyNum) {
+        _claireLastToolResult = JSON.stringify({ error:'no_rc_number', message:'Could not resolve sender RC number.' });
         return;
       }
-      // v11.0.x — use supabaseClient.functions.invoke() so the SDK
-      // handles JWT + apikey internally under the new key system.
-      var invocation = await sb.functions.invoke('send-sms', {
-        body: { to_phone: stE164, message: stMsg }
+      var stData = await rcFetch('/account/~/extension/~/sms', {
+        method: 'POST',
+        body: JSON.stringify({ from:{phoneNumber:stMyNum}, to:[{phoneNumber:stE164}], text: stMsg })
       });
-      console.log('[Claire send_text] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
-      if (invocation.error) {
-        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', message: invocation.error.message, detail: invocation.data });
-      } else {
+      if (stData && stData.id) {
         try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
-        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id: invocation.data && invocation.data.msg_id });
+        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.id });
+      } else {
+        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', detail: stData });
       }
     } catch(stE) {
       _claireLastToolResult = JSON.stringify({ error:'rc_exception', message: stE.message || String(stE) });
@@ -29351,32 +29348,25 @@ async function sendQuoteViaRC() {
   const phone = (document.getElementById('qt-compose-phone') || {}).value || '';
   const msg   = (document.getElementById('qt-compose-msg') || {}).value || '';
   if (!phone || !msg) return;
+  if (!rcToken) { alert('Not connected to RingCentral. Use iMessage instead.'); return; }
   try {
+    const myNum = await getMyRCNumber();
+    if (!myNum) return;
     const toPhone = phone.replace(/[^0-9]/g,'');
     const e164 = toPhone.length === 10 ? '+1' + toPhone : '+' + toPhone;
-    // v11.0.x — send via the send-sms Edge Function. No more browser-side
-    // rcToken / getMyRCNumber dependency; the Edge Function resolves the
-    // tenant's outbound number from business_phone_integrations.
-    const sb = window.PentaAuth?.client || window.supabaseClient;
-    console.log('[sendQuoteViaRC] sb exists:', !!sb); // DEBUG: remove after audit
-    if (!sb) { alert('No connection — please sign in and try again.'); return; }
-    // v11.0.x — use supabaseClient.functions.invoke(). Quotes routinely
-    // go to prospects who aren't yet clients, so we keep
-    // allow_unknown_recipient: true to bypass the Edge Function's
-    // contact-list check on this path.
-    const invocation = await sb.functions.invoke('send-sms', {
-      body: { to_phone: e164, message: msg, allow_unknown_recipient: true }
+    const data = await rcFetch('/account/~/extension/~/sms', {
+      method: 'POST',
+      body: JSON.stringify({ from: { phoneNumber: myNum }, to: [{ phoneNumber: e164 }], text: msg })
     });
-    console.log('[sendQuoteViaRC] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
-    if (invocation.error) {
-      alert('RC send failed: ' + (invocation.error.message || 'unknown'));
-      return;
+    if (data && data.id) {
+      document.getElementById('qt-compose-modal').style.display = 'none';
+      closeQuoteTool();
+      showTab('messages');
+      setTimeout(() => loadInbox(), 800);
+      alert('Quote sent via RingCentral ✓');
+    } else {
+      alert('RC send failed: ' + (data ? (data.message || JSON.stringify(data)) : 'Unknown error'));
     }
-    document.getElementById('qt-compose-modal').style.display = 'none';
-    closeQuoteTool();
-    showTab('messages');
-    setTimeout(() => loadInbox(), 800);
-    alert('Quote sent via RingCentral ✓');
   } catch(e) { alert('Error: ' + e.message); }
 }
 
@@ -29677,7 +29667,7 @@ function updateBalSendBtn() {
   if (btn) btn.textContent = 'Send to ' + checked.length + ' Client' + (checked.length !== 1 ? 's' : '');
 }
 
-async function sendAllBalanceFollowups() {
+function sendAllBalanceFollowups() {
   const clients = PentaClients.filterClients(_balFilterActive);
   const template = (document.getElementById('bal-msg-template') || {}).value || '';
   const selected = clients.filter(c => {
@@ -29688,27 +29678,10 @@ async function sendAllBalanceFollowups() {
   if (!selected.length) { alert('No clients selected'); return; }
   if (!template) { alert('Enter a message template'); return; }
 
-  // v11.0.x — sequential async loop with a 250ms inter-send pause so the
-  // bulk batch doesn't hammer the send-sms Edge Function. The Edge Function
-  // rate-limits at 200/hour and 1000/day; on per-recipient 429 (or any
-  // other non-2xx) we log the failure and continue the loop rather than
-  // aborting the batch. Pre-rewrite, the loop was synchronous with
-  // non-awaited rcFetch fire-and-forget calls; `failed` is new tracking
-  // that surfaces what would previously have been silently lost on errors.
-  let sent = 0, skipped = 0, failed = 0;
+  let sent = 0, skipped = 0;
 
-  // v11.0.x — resolve Supabase client once for the whole batch. The SDK
-  // handles JWT + apikey internally via .functions.invoke(); no need to
-  // pre-resolve a session token or apikey here.
-  const sb = window.PentaAuth?.client || window.supabaseClient;
-  console.log('[sendAllBalanceFollowups] sb exists:', !!sb, 'batch size:', selected.length); // DEBUG: remove after audit
-  if (!sb) {
-    alert('No connection — please sign in and try again.');
-    return;
-  }
-
-  for (let i = 0; i < selected.length; i++) {
-    const c = selected[i];
+  selected.forEach(c => {
+    const name = c.fn + ' ' + c.ln;
     const bal = '$' + parseFloat(c.bal).toFixed(2);
     const dateEl = document.getElementById('bal-date-' + c.id);
     const rawDate = dateEl && dateEl.value.trim() ? dateEl.value.trim() : '';
@@ -29718,46 +29691,38 @@ async function sendAllBalanceFollowups() {
     const hasEmail = c.em && c.em.trim();
 
     // Bug #5: per-row channel override (defaults to phone-first, email-fallback)
-    const rowChannels = window._balRowChannels || {};
-    let channel = rowChannels[c.id];
+    var rowChannels = window._balRowChannels || {};
+    var channel = rowChannels[c.id];
     if (!channel) channel = hasPhone ? 'sms' : (hasEmail ? 'email' : null);
 
     if (channel === 'sms' && hasPhone) {
-      const phoneDigits = c.ph.replace(/[^0-9]/g,'');
-      const e164 = phoneDigits.length === 10 ? '+1' + phoneDigits : '+' + phoneDigits;
-      try {
-        const invocation = await sb.functions.invoke('send-sms', {
-          body: { to_phone: e164, message: msg }
+      // Try RC first, fall back to SMS
+      if (rcToken) {
+        getMyRCNumber().then(myNum => {
+          if (myNum) {
+            const phone = c.ph.replace(/[^0-9]/g,'');
+            const e164 = phone.length === 10 ? '+1' + phone : '+' + phone;
+            rcFetch('/account/~/extension/~/sms', {
+              method: 'POST',
+              body: JSON.stringify({ from: { phoneNumber: myNum }, to: [{ phoneNumber: e164 }], text: msg })
+            });
+          }
         });
-        console.log('[sendAllBalanceFollowups] recipient:', c.fn + ' ' + c.ln, '(' + e164 + ')', 'error:', invocation.error && invocation.error.message); // DEBUG: remove after audit
-        if (invocation.error) {
-          console.warn('[balance bulk] send failed for', c.fn + ' ' + c.ln, invocation.error.message);
-          failed++;
-        } else {
-          sent++;
-        }
-      } catch (e) {
-        console.warn('[balance bulk] send threw for', c.fn + ' ' + c.ln, e);
-        failed++;
+      } else {
+        // Queue for SMS - open one at a time
       }
-      // Courtesy pause between sends so we don't hammer the Edge Function.
-      if (i < selected.length - 1) {
-        await new Promise(r => setTimeout(r, 250));
-      }
+      sent++;
     } else if (channel === 'email' && hasEmail) {
       window.location.href = 'mailto:' + c.em + '?subject=Your%20Balance%20with%20The%20Maids&body=' + encodeURIComponent(msg);
       sent++;
     } else {
       skipped++;
     }
-  }
+  });
 
   const status = document.getElementById('bal-send-status');
   if (status) {
-    let txt = '✓ Sent to ' + sent + ' client' + (sent !== 1 ? 's' : '');
-    if (failed)  txt += ' · ' + failed + ' failed';
-    if (skipped) txt += ' · ' + skipped + ' skipped (no contact)';
-    status.textContent = txt;
+    status.textContent = '✓ Sent to ' + sent + ' client' + (sent !== 1 ? 's' : '') + (skipped ? ' · ' + skipped + ' skipped (no contact)' : '');
     setTimeout(() => closeBalanceModal(), 2500);
   }
 }
@@ -30814,7 +30779,7 @@ async function regenerateDraft() {
 }
 
 async function sendReply() {
-  if (!currentConv) return;
+  if (!currentConv || !rcToken) return;
   const text = document.getElementById('draft-text').value.trim();
   if (!text) { alert('Please type a message first.'); return; }
 
@@ -30823,26 +30788,27 @@ async function sendReply() {
   sendBtn.disabled = true;
 
   try {
-    // v11.0.x — route through send-sms Edge Function (was direct rcFetch).
-    // Browser no longer needs rcToken or a picked from-number; the Edge
-    // Function resolves both from business_phone_integrations.
-    const sb = window.PentaAuth?.client || window.supabaseClient;
-    console.log('[sendReply] sb exists:', !!sb); // DEBUG: remove after audit
-    if (!sb) {
-      alert('No connection — please sign in and try again.');
-      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
+    // Get my RC number
+    const myNum = await getMyRCNumber();
+    if (!myNum) {
+      alert('Could not find your RingCentral phone number. Please try reconnecting.');
+      sendBtn.textContent = 'Send ↗';
+      sendBtn.disabled = false;
+      return;
     }
-    // v11.0.x — use supabaseClient.functions.invoke(). Replies go to
-    // whoever just texted us; they may not be a known client/employee
-    // yet, so we keep allow_unknown_recipient: true.
-    const invocation = await sb.functions.invoke('send-sms', {
-      body: { to_phone: currentConv.phone, message: text, allow_unknown_recipient: true }
-    });
-    console.log('[sendReply] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
 
-    if (invocation.error) {
-      alert('Send failed: ' + (invocation.error.message || 'unknown'));
-    } else {
+    const payload = {
+      from: { phoneNumber: myNum },
+      to: [{ phoneNumber: currentConv.phone }],
+      text: text
+    };
+
+    const data = await rcFetch('/account/~/extension/~/sms', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    if (data && data.id) {
       // Append bubble directly without full re-render
       const convEl = document.getElementById('conv-messages');
       const bubble = document.createElement('div');
@@ -30853,10 +30819,14 @@ async function sendReply() {
       document.getElementById('draft-text').value = '';
       // Store in conversation
       currentConv.messages.push({
-        id: invocation.data && invocation.data.msg_id, direction: 'Outbound',
+        id: data.id, direction: 'Outbound',
         subject: text, body: text,
         creationTime: new Date().toISOString()
       });
+    } else {
+      // Show error details
+      const errMsg = data ? (data.message || data.errorCode || JSON.stringify(data)) : 'Unknown error';
+      alert('Send failed: ' + errMsg);
     }
   } catch(e) {
     alert('Send error: ' + e.message);
@@ -34953,7 +34923,6 @@ async function sendOnMyWay(jobId, phone, firstName) {
   if (!confirm("Send this text to " + name + " (" + phone + ")?\n\n" + msg)) return;
   try {
     var sb = window.PentaAuth?.client || window.supabaseClient;
-    console.log('[sendOnMyWay] sb exists:', !!sb); // DEBUG: remove after audit
     if (!sb) { _toastSimple('No connection', 'error'); return; }
     // v11.0.x — use supabaseClient.functions.invoke() so the SDK handles
     // JWT + apikey headers internally (matches the new publishable-key
@@ -34961,7 +34930,6 @@ async function sendOnMyWay(jobId, phone, firstName) {
     var invocation = await sb.functions.invoke('send-sms', {
       body: { to_phone: phone, message: msg }
     });
-    console.log('[sendOnMyWay] invocation error:', invocation.error && invocation.error.message, 'data:', invocation.data); // DEBUG: remove after audit
     if (invocation.error) {
       _toastSimple('Send failed: ' + (invocation.error.message || 'unknown'), 'error');
       console.warn('[onMyWay] invoke error', invocation.error);
