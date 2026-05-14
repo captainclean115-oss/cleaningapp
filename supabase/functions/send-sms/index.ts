@@ -54,7 +54,7 @@ const ENV_RC_FROM_NUMBER   = Deno.env.get("RC_FROM_NUMBER")   || "";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, x-client-info",
 };
 
 function json(status: number, body: unknown) {
