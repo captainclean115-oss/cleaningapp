@@ -23016,12 +23016,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
       +'High — '+(arcHigh.map(_arcRow).join('; ')||'none')+'. '
       +'Medium — '+(arcMed.map(_arcRow).join('; ')||'none')+'.';
 
-  // ── SEND TEXT (v7.4: direct RC SMS — used by quote flow) ──
+  // ── SEND TEXT (routed through send-sms Edge Function) ──
   } else if (name === 'send_text') {
-    if (typeof rcToken === 'undefined' || !rcToken) {
-      _claireLastToolResult = JSON.stringify({ error:'rc_not_connected', message:'RingCentral is not connected. The user must connect RC in the Messages tab before texts can be sent.' });
-      return;
-    }
     var stDigits = (input.phone||'').replace(/\D/g,'');
     if (stDigits.length < 10) {
       _claireLastToolResult = JSON.stringify({ error:'bad_phone', phone:input.phone });
@@ -23034,20 +23030,33 @@ async function _executeClaireToolCallInner(toolCall, message) {
       return;
     }
     try {
-      var stMyNum = await getMyRCNumber();
-      if (!stMyNum) {
-        _claireLastToolResult = JSON.stringify({ error:'no_rc_number', message:'Could not resolve sender RC number.' });
+      // v11.0.x — route SMS through send-sms Edge Function instead of
+      // direct RC API. Browser no longer needs an rcToken to send.
+      // Edge Function picks the from-number from
+      // business_phone_integrations.phone_number_e164.
+      var stSb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!stSb) {
+        _claireLastToolResult = JSON.stringify({ error:'no_session', message:'Supabase client unavailable.' });
         return;
       }
-      var stData = await rcFetch('/account/~/extension/~/sms', {
+      var stSes = await stSb.auth.getSession();
+      var stTok = stSes && stSes.data && stSes.data.session && stSes.data.session.access_token;
+      if (!stTok) {
+        _claireLastToolResult = JSON.stringify({ error:'not_signed_in', message:'User must be signed in to send SMS.' });
+        return;
+      }
+      var stResp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
         method: 'POST',
-        body: JSON.stringify({ from:{phoneNumber:stMyNum}, to:[{phoneNumber:stE164}], text: stMsg })
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + stTok },
+        body: JSON.stringify({ to_phone: stE164, message: stMsg }),
       });
-      if (stData && stData.id) {
+      var stData = null;
+      try { stData = await stResp.json(); } catch (_e) {}
+      if (stResp.ok && stData && stData.ok) {
         try { logPendingUpdate('SMS sent (Claire)', stMsg.slice(0,80) + (stMsg.length>80?'...':''), 'Claire'); } catch(_e){}
-        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.id });
+        _claireLastToolResult = JSON.stringify({ ok:true, sent_to:stE164, msg_id:stData.msg_id });
       } else {
-        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', detail: stData });
+        _claireLastToolResult = JSON.stringify({ error:'rc_send_failed', status: stResp.status, detail: stData });
       }
     } catch(stE) {
       _claireLastToolResult = JSON.stringify({ error:'rc_exception', message: stE.message || String(stE) });
@@ -29348,24 +29357,35 @@ async function sendQuoteViaRC() {
   const phone = (document.getElementById('qt-compose-phone') || {}).value || '';
   const msg   = (document.getElementById('qt-compose-msg') || {}).value || '';
   if (!phone || !msg) return;
-  if (!rcToken) { alert('Not connected to RingCentral. Use iMessage instead.'); return; }
   try {
-    const myNum = await getMyRCNumber();
-    if (!myNum) return;
     const toPhone = phone.replace(/[^0-9]/g,'');
     const e164 = toPhone.length === 10 ? '+1' + toPhone : '+' + toPhone;
-    const data = await rcFetch('/account/~/extension/~/sms', {
+    // v11.0.x — send via the send-sms Edge Function. No more browser-side
+    // rcToken / getMyRCNumber dependency; the Edge Function resolves the
+    // tenant's outbound number from business_phone_integrations.
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) { alert('No connection — please sign in and try again.'); return; }
+    const ses = await sb.auth.getSession();
+    const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    if (!tok) { alert('Please sign in to send via RingCentral.'); return; }
+    const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
-      body: JSON.stringify({ from: { phoneNumber: myNum }, to: [{ phoneNumber: e164 }], text: msg })
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      // Quotes routinely go to prospects who aren't yet clients — bypass
+      // the Edge Function's contact-list check for this path only.
+      body: JSON.stringify({ to_phone: e164, message: msg, allow_unknown_recipient: true }),
     });
-    if (data && data.id) {
+    let data = null;
+    try { data = await resp.json(); } catch (e) {}
+    if (resp.ok && data && data.ok) {
       document.getElementById('qt-compose-modal').style.display = 'none';
       closeQuoteTool();
       showTab('messages');
       setTimeout(() => loadInbox(), 800);
       alert('Quote sent via RingCentral ✓');
     } else {
-      alert('RC send failed: ' + (data ? (data.message || JSON.stringify(data)) : 'Unknown error'));
+      const detail = (data && (data.error || data.hint)) || ('HTTP ' + resp.status);
+      alert('RC send failed: ' + detail);
     }
   } catch(e) { alert('Error: ' + e.message); }
 }
@@ -29667,7 +29687,7 @@ function updateBalSendBtn() {
   if (btn) btn.textContent = 'Send to ' + checked.length + ' Client' + (checked.length !== 1 ? 's' : '');
 }
 
-function sendAllBalanceFollowups() {
+async function sendAllBalanceFollowups() {
   const clients = PentaClients.filterClients(_balFilterActive);
   const template = (document.getElementById('bal-msg-template') || {}).value || '';
   const selected = clients.filter(c => {
@@ -29678,10 +29698,28 @@ function sendAllBalanceFollowups() {
   if (!selected.length) { alert('No clients selected'); return; }
   if (!template) { alert('Enter a message template'); return; }
 
-  let sent = 0, skipped = 0;
+  // v11.0.x — sequential async loop with a 250ms inter-send pause so the
+  // bulk batch doesn't hammer the send-sms Edge Function. The Edge Function
+  // rate-limits at 200/hour and 1000/day; on per-recipient 429 (or any
+  // other non-2xx) we log the failure and continue the loop rather than
+  // aborting the batch. Pre-rewrite, the loop was synchronous with
+  // non-awaited rcFetch fire-and-forget calls; `failed` is new tracking
+  // that surfaces what would previously have been silently lost on errors.
+  let sent = 0, skipped = 0, failed = 0;
 
-  selected.forEach(c => {
-    const name = c.fn + ' ' + c.ln;
+  // Resolve Supabase session token once for the whole batch (it doesn't
+  // change between iterations — and avoids N redundant getSession calls).
+  let edgeTok = null;
+  try {
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      const ses = await sb.auth.getSession();
+      edgeTok = ses && ses.data && ses.data.session && ses.data.session.access_token || null;
+    }
+  } catch (e) { /* edgeTok stays null — every SMS row will skip below */ }
+
+  for (let i = 0; i < selected.length; i++) {
+    const c = selected[i];
     const bal = '$' + parseFloat(c.bal).toFixed(2);
     const dateEl = document.getElementById('bal-date-' + c.id);
     const rawDate = dateEl && dateEl.value.trim() ? dateEl.value.trim() : '';
@@ -29691,38 +29729,54 @@ function sendAllBalanceFollowups() {
     const hasEmail = c.em && c.em.trim();
 
     // Bug #5: per-row channel override (defaults to phone-first, email-fallback)
-    var rowChannels = window._balRowChannels || {};
-    var channel = rowChannels[c.id];
+    const rowChannels = window._balRowChannels || {};
+    let channel = rowChannels[c.id];
     if (!channel) channel = hasPhone ? 'sms' : (hasEmail ? 'email' : null);
 
     if (channel === 'sms' && hasPhone) {
-      // Try RC first, fall back to SMS
-      if (rcToken) {
-        getMyRCNumber().then(myNum => {
-          if (myNum) {
-            const phone = c.ph.replace(/[^0-9]/g,'');
-            const e164 = phone.length === 10 ? '+1' + phone : '+' + phone;
-            rcFetch('/account/~/extension/~/sms', {
-              method: 'POST',
-              body: JSON.stringify({ from: { phoneNumber: myNum }, to: [{ phoneNumber: e164 }], text: msg })
-            });
-          }
-        });
-      } else {
-        // Queue for SMS - open one at a time
+      if (!edgeTok) {
+        // No session — preserved pre-rewrite "skip silently" branch.
+        skipped++;
+        continue;
       }
-      sent++;
+      const phoneDigits = c.ph.replace(/[^0-9]/g,'');
+      const e164 = phoneDigits.length === 10 ? '+1' + phoneDigits : '+' + phoneDigits;
+      try {
+        const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + edgeTok },
+          body: JSON.stringify({ to_phone: e164, message: msg }),
+        });
+        if (resp.ok) {
+          sent++;
+        } else {
+          let detail = null;
+          try { detail = await resp.json(); } catch (_e) {}
+          console.warn('[balance bulk] send failed for', c.fn + ' ' + c.ln, resp.status, detail);
+          failed++;
+        }
+      } catch (e) {
+        console.warn('[balance bulk] send threw for', c.fn + ' ' + c.ln, e);
+        failed++;
+      }
+      // Courtesy pause between sends so we don't hammer the Edge Function.
+      if (i < selected.length - 1) {
+        await new Promise(r => setTimeout(r, 250));
+      }
     } else if (channel === 'email' && hasEmail) {
       window.location.href = 'mailto:' + c.em + '?subject=Your%20Balance%20with%20The%20Maids&body=' + encodeURIComponent(msg);
       sent++;
     } else {
       skipped++;
     }
-  });
+  }
 
   const status = document.getElementById('bal-send-status');
   if (status) {
-    status.textContent = '✓ Sent to ' + sent + ' client' + (sent !== 1 ? 's' : '') + (skipped ? ' · ' + skipped + ' skipped (no contact)' : '');
+    let txt = '✓ Sent to ' + sent + ' client' + (sent !== 1 ? 's' : '');
+    if (failed)  txt += ' · ' + failed + ' failed';
+    if (skipped) txt += ' · ' + skipped + ' skipped (no contact)';
+    status.textContent = txt;
     setTimeout(() => closeBalanceModal(), 2500);
   }
 }
@@ -30779,7 +30833,7 @@ async function regenerateDraft() {
 }
 
 async function sendReply() {
-  if (!currentConv || !rcToken) return;
+  if (!currentConv) return;
   const text = document.getElementById('draft-text').value.trim();
   if (!text) { alert('Please type a message first.'); return; }
 
@@ -30788,27 +30842,33 @@ async function sendReply() {
   sendBtn.disabled = true;
 
   try {
-    // Get my RC number
-    const myNum = await getMyRCNumber();
-    if (!myNum) {
-      alert('Could not find your RingCentral phone number. Please try reconnecting.');
-      sendBtn.textContent = 'Send ↗';
-      sendBtn.disabled = false;
-      return;
+    // v11.0.x — route through send-sms Edge Function (was direct rcFetch).
+    // Browser no longer needs rcToken or a picked from-number; the Edge
+    // Function resolves both from business_phone_integrations.
+    const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) {
+      alert('No connection — please sign in and try again.');
+      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
+    }
+    const ses = await sb.auth.getSession();
+    const tok = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    if (!tok) {
+      alert('Please sign in to send.');
+      sendBtn.textContent = 'Send ↗'; sendBtn.disabled = false; return;
     }
 
-    const payload = {
-      from: { phoneNumber: myNum },
-      to: [{ phoneNumber: currentConv.phone }],
-      text: text
-    };
-
-    const data = await rcFetch('/account/~/extension/~/sms', {
+    const resp = await fetch('https://wymoezilyjmyibmuqqmr.supabase.co/functions/v1/send-sms', {
       method: 'POST',
-      body: JSON.stringify(payload)
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+      // Replies go to whoever just texted us — they may not be a known
+      // client/employee yet. Bypass the Edge Function's contact-list
+      // check for this path only.
+      body: JSON.stringify({ to_phone: currentConv.phone, message: text, allow_unknown_recipient: true }),
     });
+    let data = null;
+    try { data = await resp.json(); } catch (e) {}
 
-    if (data && data.id) {
+    if (resp.ok && data && data.ok) {
       // Append bubble directly without full re-render
       const convEl = document.getElementById('conv-messages');
       const bubble = document.createElement('div');
@@ -30819,13 +30879,12 @@ async function sendReply() {
       document.getElementById('draft-text').value = '';
       // Store in conversation
       currentConv.messages.push({
-        id: data.id, direction: 'Outbound',
+        id: data.msg_id, direction: 'Outbound',
         subject: text, body: text,
         creationTime: new Date().toISOString()
       });
     } else {
-      // Show error details
-      const errMsg = data ? (data.message || data.errorCode || JSON.stringify(data)) : 'Unknown error';
+      const errMsg = (data && (data.error || data.hint)) || ('HTTP ' + resp.status);
       alert('Send failed: ' + errMsg);
     }
   } catch(e) {

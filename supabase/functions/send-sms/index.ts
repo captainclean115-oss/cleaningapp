@@ -110,8 +110,29 @@ serve(async (req) => {
   const businessId = userRow.data?.business_id;
   if (!businessId) return json(403, { error: "No tenant for caller" });
 
+  // Rate limit: 200/hour AND 1000/day per user. Each tenant brings
+  // their own RC credentials, so abuse cost is borne by that tenant;
+  // limits are sized well above legitimate manager use to avoid
+  // blocking real operations, while still catching runaway loops.
+  const rateKey = `send-sms:${callerAuthId}`;
+  const { data: rateOk, error: rateErr } = await admin.rpc("check_rate_limit_dual", {
+    p_key:         rateKey,
+    p_hourly_max:  200,
+    p_daily_max:   1000,
+  });
+  if (rateErr) {
+    console.error("[send-sms] rate limit RPC failed:", rateErr);
+    // Fail-open on RPC error — don't block real operations because
+    // of a transient DB issue. Logged so we can spot patterns.
+  } else if (rateOk === false) {
+    return json(429, {
+      error: "Rate limit exceeded",
+      hint:  "200/hour or 1000/day SMS limit reached. Wait before sending more.",
+    });
+  }
+
   // Step 2: parse payload.
-  let body: { to_phone?: string; message?: string };
+  let body: { to_phone?: string; message?: string; allow_unknown_recipient?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -119,10 +140,92 @@ serve(async (req) => {
   }
   const toRaw   = (body.to_phone || "").toString();
   const message = (body.message  || "").toString();
+  // Strict-equality boolean check: only the literal `true` enables the
+  // bypass. Truthy strings ("true", "1") or numbers don't qualify, so a
+  // confused caller can't accidentally widen the surface.
+  const allowUnknown = body.allow_unknown_recipient === true;
   if (!toRaw)   return json(400, { error: "Missing to_phone" });
   if (!message) return json(400, { error: "Missing message" });
   const to = toE164(toRaw);
   if (!to) return json(400, { error: "Could not parse to_phone to E.164" });
+
+  // 10-digit minimum is input sanitation (not a tenant-scoping check)
+  // and runs unconditionally — applies even when the contact-list
+  // bypass is on.
+  const toLast10 = to.replace(/\D/g, "").slice(-10);
+  if (toLast10.length !== 10) {
+    return json(400, { error: "Phone number must contain at least 10 digits" });
+  }
+
+  // Phone validation: only allow texting numbers that exist in this
+  // tenant's clients (primary OR additional_phones) or employees.
+  // Without this, an authenticated user could text any phone number
+  // worldwide using the tenant's RC. We match on the last 10 digits,
+  // the same pattern the app uses internally for client lookups
+  // (see getClientByPhone in index.html).
+  //
+  // additional_phones is text[]; PostgREST array operators (`cs`, `ov`)
+  // don't do suffix matching on elements, so we pull the candidate rows
+  // and filter in JS.
+  //
+  // `allow_unknown_recipient: true` in the request body skips this
+  // entire block. Callers should only set the flag when they have a
+  // legitimate reason to send to a number not in clients/employees:
+  //   - sendQuoteViaRC (quote sent to a prospect not yet a client)
+  //   - sendReply       (reply to an inbound SMS from an unknown number)
+  // All other dispatch paths (sendOnMyWay, sendAllBalanceFollowups,
+  // Claire's send_text, any future paths) leave the flag off and stay
+  // gated by the contact-list check.
+  if (!allowUnknown) {
+    // Primary phone match on clients + employees.
+    const [clientPrimary, employeeHit] = await Promise.all([
+      admin
+        .from("clients")
+        .select("id")
+        .eq("business_id", businessId)
+        .ilike("phone", `%${toLast10}`)
+        .limit(1),
+      admin
+        .from("employees")
+        .select("id")
+        .eq("business_id", businessId)
+        .ilike("phone", `%${toLast10}`)
+        .limit(1),
+    ]);
+
+    let allowed =
+      (clientPrimary.data && clientPrimary.data.length > 0) ||
+      (employeeHit.data && employeeHit.data.length > 0);
+
+    // additional_phones (text[]) match — only check if not already allowed.
+    // Scope is narrow: same business, additional_phones is non-empty.
+    if (!allowed) {
+      const { data: extras } = await admin
+        .from("clients")
+        .select("id, additional_phones")
+        .eq("business_id", businessId)
+        .not("additional_phones", "is", null);
+      if (extras && extras.length > 0) {
+        for (const row of extras) {
+          const phones = (row.additional_phones as string[] | null) || [];
+          for (const p of phones) {
+            if ((p || "").replace(/\D/g, "").slice(-10) === toLast10) {
+              allowed = true;
+              break;
+            }
+          }
+          if (allowed) break;
+        }
+      }
+    }
+
+    if (!allowed) {
+      return json(403, {
+        error: "Recipient phone number not found in this tenant's clients or employees",
+        hint:  "SMS can only be sent to numbers already in your contacts. Add the recipient as a client (primary or additional phone) or employee first.",
+      });
+    }
+  }
 
   // Step 3: resolve this tenant's RC integration.
   const integ = await admin.rpc("get_active_phone_integration", {
