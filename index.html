@@ -41590,16 +41590,29 @@ async function renderPhoneIntegrationStatus() {
       el.textContent = 'Not configured — applicants can\'t receive automated SMS until set up.';
       return;
     }
-    el.innerHTML = '<span style="color:#34d399">●</span> ' + (row.status === 'active' ? 'Active' : ('Status: ' + row.status))
-      + ' · sends from ' + (row.phone_number_e164 || '(no number)');
+    // Auth method lives inside credentials JSONB (mig 062). Default 'oauth'
+    // when missing so rows from before the migration display correctly.
+    var creds = (row.credentials || {});
+    var authMethod = creds.auth_method === 'jwt' ? 'jwt' : 'oauth';
+    var authLabel = authMethod === 'jwt' ? 'JWT bearer' : 'OAuth refresh';
+    var dotColor = row.status === 'active' ? '#34d399' : (row.status === 'error' ? '#f87171' : '#fbbf24');
+    el.innerHTML = '<span style="color:' + dotColor + '">●</span> '
+      + (row.status === 'active' ? 'Active' : ('Status: ' + _adminEsc(row.status)))
+      + ' · ' + _adminEsc(authLabel)
+      + ' · sends from ' + _adminEsc(row.phone_number_e164 || '(no number)');
   } catch (e) {
     el.textContent = '';
   }
 }
 
-// v11.0.2 (Item B): open the RingCentral integration settings modal.
-// Owners + admins only — the underlying table RLS blocks SELECT for
-// other roles. Manager-or-below sees a friendly notice.
+// v11.0.2 (Item B) + Phase 1 SMS strategy (mig 062): open the RingCentral
+// integration settings modal. Owners + admins only — the underlying table
+// RLS blocks SELECT for other roles. Manager-or-below sees a friendly notice.
+//
+// Supports both auth methods (oauth / jwt) via a dropdown that toggles
+// which credential field is visible. Includes a Test panel that sends a
+// real SMS via send-sms Edge Function so an admin can verify credentials
+// end-to-end without leaving the modal.
 async function openPhoneIntegrationSettings() {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
@@ -41624,11 +41637,13 @@ async function openPhoneIntegrationSettings() {
   }
   var creds = (existing && existing.credentials) || {};
   var isEnvSource = (creds.source === 'env');
+  var authMethod  = creds.auth_method === 'jwt' ? 'jwt' : 'oauth';
+  var esc = function(v) { return String(v == null ? '' : v).replace(/"/g, '&quot;'); };
   var overlay = document.createElement('div');
   overlay.id = 'phone-integ-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
   overlay.innerHTML = ''
-    + '<div style="background:var(--surface);width:100%;max-width:520px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    + '<div style="background:var(--surface);width:100%;max-width:560px;max-height:90vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
     +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
     +     '<div style="font-size:17px;font-weight:700">📞 RingCentral SMS Integration</div>'
     +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
@@ -41637,39 +41652,106 @@ async function openPhoneIntegrationSettings() {
         ? '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#fde68a">This tenant is using platform-level credentials (env-var fallback). To take ownership, fill in the fields below and save — the row will switch to credentials-in-DB.</div>'
         : '')
     +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Outbound phone number (E.164, e.g. +15555550100)</div>'
-    +   '<input type="text" id="pi-phone" value="' + ((existing && existing.phone_number_e164) || '').replace(/"/g,'&quot;') + '" placeholder="+15555550100" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<input type="text" id="pi-phone" value="' + esc((existing && existing.phone_number_e164) || '') + '" placeholder="+15555550100" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Authentication method</div>'
+    +   '<select id="pi-auth" onchange="_piToggleAuthFields()" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:6px;outline:none">'
+    +     '<option value="oauth"' + (authMethod === 'oauth' ? ' selected' : '') + '>OAuth (legacy — refresh-token flow)</option>'
+    +     '<option value="jwt"'   + (authMethod === 'jwt'   ? ' selected' : '') + '>JWT bearer (recommended — long-lived, no rotation)</option>'
+    +   '</select>'
+    +   '<div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.45" id="pi-auth-hint"></div>'
     +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client ID</div>'
-    +   '<input type="text" id="pi-cid" value="' + (isEnvSource ? '' : String(creds.client_id || '')).replace(/"/g,'&quot;') + '" placeholder="from developers.ringcentral.com → app → Credentials" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<input type="text" id="pi-cid" value="' + esc(isEnvSource ? '' : (creds.client_id || '')) + '" placeholder="from developers.ringcentral.com → app → Credentials" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
     +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Client Secret</div>'
-    +   '<input type="password" id="pi-csec" value="' + (isEnvSource ? '' : String(creds.client_secret || '')).replace(/"/g,'&quot;') + '" placeholder="•••" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
-    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Refresh Token</div>'
-    +   '<input type="password" id="pi-rt" value="' + (isEnvSource ? '' : String(creds.refresh_token || '')).replace(/"/g,'&quot;') + '" placeholder="paste the long-lived refresh token" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none">'
-    +   '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Capture via your RingCentral developer app\'s OAuth flow. Refresh tokens last ~60 days and rotate automatically when used.</div>'
+    +   '<input type="password" id="pi-csec" value="' + esc(isEnvSource ? '' : (creds.client_secret || '')) + '" placeholder="•••" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div id="pi-oauth-fields">'
+    +     '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral Refresh Token</div>'
+    +     '<input type="password" id="pi-rt" value="' + esc(isEnvSource ? '' : (creds.refresh_token || '')) + '" placeholder="paste the long-lived refresh token" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none">'
+    +     '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Capture via your RingCentral developer app\'s OAuth flow. Refresh tokens last ~60 days and <strong>rotate every time they\'re used</strong>, so concurrent refreshes from multiple devices will invalidate each other (OAU-213). Prefer JWT for new setups.</div>'
+    +   '</div>'
+    +   '<div id="pi-jwt-fields" style="display:none">'
+    +     '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">RingCentral JWT Credential</div>'
+    +     '<textarea id="pi-jwt" rows="4" placeholder="paste the JWT assertion string from RC developer console" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:12px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none;resize:vertical">' + _adminEsc(isEnvSource ? '' : (creds.jwt_credential || '')) + '</textarea>'
+    +     '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Generate at <strong>developers.ringcentral.com → your app → Credentials → JWT Credential</strong>. The JWT is a signed assertion tied to a specific RC user; it doesn\'t rotate, so concurrent server use is safe. Revoke from the same console page if compromised.</div>'
+    +   '</div>'
     +   (existing && existing.last_error ? '<div style="background:rgba(248,113,113,0.10);border:1px solid rgba(248,113,113,0.35);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5">Last error: ' + _adminEsc(existing.last_error) + '</div>' : '')
-    +   '<div style="display:flex;gap:8px">'
+    +   '<div style="display:flex;gap:8px;margin-bottom:18px">'
     +     '<button type="button" onclick="document.getElementById(\'phone-integ-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
     +     '<button type="button" onclick="savePhoneIntegrationSettings()" style="flex:2;background:#34d399;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
     +   '</div>'
+    +   '<div style="border-top:1px solid var(--border);padding-top:14px">'
+    +     '<div style="font-size:13px;font-weight:700;margin-bottom:6px">Send a test SMS</div>'
+    +     '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.45">Sends a real message using the <em>currently saved</em> credentials via the send-sms Edge Function. Save first if you changed anything above.</div>'
+    +     '<div style="display:flex;gap:8px;margin-bottom:8px">'
+    +       '<input type="tel" id="pi-test-phone" placeholder="+15555550100" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;outline:none">'
+    +       '<button type="button" onclick="testPhoneIntegration()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:10px 14px;border-radius:8px;cursor:pointer;white-space:nowrap">Send test</button>'
+    +     '</div>'
+    +     '<div id="pi-test-status" style="font-size:12px;color:var(--muted);min-height:18px"></div>'
+    +   '</div>'
     + '</div>';
   document.body.appendChild(overlay);
+  // Apply initial show/hide based on the loaded auth method.
+  _piToggleAuthFields();
+}
+
+// Toggle which credential field is visible based on the auth method
+// dropdown. Called by the dropdown onchange + once at modal open.
+function _piToggleAuthFields() {
+  var sel  = document.getElementById('pi-auth');
+  var oa   = document.getElementById('pi-oauth-fields');
+  var jw   = document.getElementById('pi-jwt-fields');
+  var hint = document.getElementById('pi-auth-hint');
+  if (!sel || !oa || !jw) return;
+  var method = sel.value === 'jwt' ? 'jwt' : 'oauth';
+  oa.style.display = method === 'oauth' ? 'block' : 'none';
+  jw.style.display = method === 'jwt'   ? 'block' : 'none';
+  if (hint) {
+    hint.innerHTML = method === 'jwt'
+      ? 'JWT credentials are long-lived (~years) and don\'t rotate — safe under concurrent server use.'
+      : 'OAuth refresh tokens rotate every use. If two clients refresh the same token concurrently, one will get OAU-213 “Token not found”.';
+  }
 }
 
 async function savePhoneIntegrationSettings() {
-  var phone = (document.getElementById('pi-phone') || {}).value || '';
-  var cid   = (document.getElementById('pi-cid')   || {}).value || '';
-  var csec  = (document.getElementById('pi-csec')  || {}).value || '';
-  var rt    = (document.getElementById('pi-rt')    || {}).value || '';
+  var phone  = (document.getElementById('pi-phone') || {}).value || '';
+  var cid    = (document.getElementById('pi-cid')   || {}).value || '';
+  var csec   = (document.getElementById('pi-csec')  || {}).value || '';
+  var rt     = (document.getElementById('pi-rt')    || {}).value || '';
+  var jwt    = (document.getElementById('pi-jwt')   || {}).value || '';
+  var method = (document.getElementById('pi-auth')  || {}).value || 'oauth';
+  if (method !== 'jwt' && method !== 'oauth') method = 'oauth';
   phone = phone.trim();
   if (!/^\+\d{8,15}$/.test(phone)) { alert('Phone number must be E.164 (e.g. +15555550100).'); return; }
-  if (!cid.trim() || !csec.trim() || !rt.trim()) { alert('All three RingCentral credential fields are required.'); return; }
+  if (!cid.trim() || !csec.trim()) { alert('Client ID and Client Secret are required for both auth methods.'); return; }
+  if (method === 'oauth' && !rt.trim())  { alert('OAuth refresh token is required when auth method is OAuth.'); return; }
+  if (method === 'jwt'   && !jwt.trim()) { alert('JWT credential is required when auth method is JWT.'); return; }
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
   if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  // Build credentials JSONB per auth method. Only persist fields that
+  // belong to the chosen flow — saving an OAuth row with a leftover
+  // jwt_credential string would be confusing and could leak the JWT in
+  // future SELECTs.
+  var credsJson;
+  if (method === 'jwt') {
+    credsJson = {
+      auth_method:    'jwt',
+      client_id:      cid.trim(),
+      client_secret:  csec.trim(),
+      jwt_credential: jwt.trim()
+    };
+  } else {
+    credsJson = {
+      auth_method:   'oauth',
+      client_id:     cid.trim(),
+      client_secret: csec.trim(),
+      refresh_token: rt.trim()
+    };
+  }
   var payload = {
     business_id: bid,
     provider: 'ringcentral',
     phone_number_e164: phone,
-    credentials: { client_id: cid.trim(), client_secret: csec.trim(), refresh_token: rt.trim() },
+    credentials: credsJson,
     status: 'active',
     last_error: null
   };
@@ -41689,10 +41771,79 @@ async function savePhoneIntegrationSettings() {
     alert('Save failed: ' + (res.error.message || 'unknown'));
     return;
   }
-  var ov = document.getElementById('phone-integ-overlay');
-  if (ov) ov.remove();
   renderPhoneIntegrationStatus();
-  alert('Saved. Test a send to confirm credentials.');
+  var st = document.getElementById('pi-test-status');
+  if (st) {
+    st.style.color = '#34d399';
+    st.textContent = 'Saved. You can now click “Send test”.';
+  } else {
+    alert('Saved. Test a send to confirm credentials.');
+  }
+}
+
+// Test panel: send a real SMS via send-sms Edge Function using the
+// currently SAVED credentials. allow_unknown_recipient: true bypasses the
+// clients/employees recipient gate so admins can send to any phone they
+// control for verification. Result + status pipe into #pi-test-status.
+async function testPhoneIntegration() {
+  var st = document.getElementById('pi-test-status');
+  var phoneEl = document.getElementById('pi-test-phone');
+  if (!st || !phoneEl) return;
+  var to = (phoneEl.value || '').trim();
+  if (!/^\+?\d{10,15}$/.test(to.replace(/\D/g,''))) {
+    st.style.color = '#f87171';
+    st.textContent = 'Enter a valid recipient phone (E.164 preferred, e.g. +15555550100).';
+    return;
+  }
+  // Normalize to E.164 if user typed a bare 10-digit number.
+  var digits = to.replace(/\D/g, '');
+  if (digits.length === 10) to = '+1' + digits;
+  else if (digits.length === 11 && digits[0] === '1') to = '+' + digits;
+  else if (!/^\+/.test(to)) to = '+' + digits;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) {
+    st.style.color = '#f87171';
+    st.textContent = 'Supabase client not ready.';
+    return;
+  }
+  st.style.color = 'var(--muted)';
+  st.textContent = 'Sending…';
+  try {
+    var res = await sb.functions.invoke('send-sms', {
+      body: {
+        to_phone: to,
+        message: 'Penta test SMS — ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+        allow_unknown_recipient: true
+      }
+    });
+    if (res.error) {
+      st.style.color = '#f87171';
+      // Edge Function returns 4xx/5xx in res.error; res.data may carry the JSON body.
+      var detail = '';
+      try {
+        if (res.data && res.data.error)  detail += res.data.error;
+        if (res.data && res.data.detail) detail += ' — ' + res.data.detail;
+        if (res.data && res.data.hint)   detail += ' (' + res.data.hint + ')';
+      } catch (e) {}
+      st.textContent = 'Test failed: ' + (detail || res.error.message || 'unknown error');
+      // Refresh the status badge so last_error displays in the admin row.
+      try { renderPhoneIntegrationStatus(); } catch (e) {}
+      return;
+    }
+    var data = res.data || {};
+    if (data.ok === false || data.error) {
+      st.style.color = '#f87171';
+      st.textContent = 'Test failed: ' + (data.error || 'send-sms reported failure');
+      try { renderPhoneIntegrationStatus(); } catch (e) {}
+      return;
+    }
+    st.style.color = '#34d399';
+    st.textContent = 'Sent. RC message id: ' + (data.msg_id || '(unknown)') + '. Check the recipient phone.';
+    try { renderPhoneIntegrationStatus(); } catch (e) {}
+  } catch (e) {
+    st.style.color = '#f87171';
+    st.textContent = 'Test failed: ' + (e.message || e);
+  }
 }
 function closeAdminScreen() {
   var v = document.getElementById('admin-view');

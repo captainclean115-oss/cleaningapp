@@ -11,7 +11,7 @@ Update this document whenever the foundational architecture changes (auth flow, 
 - **Frontend:** Single-page web app delivered as one large `index.html` (~38k lines, embedded `<script>`). Hosted on GitHub Pages today (`https://captainclean115-oss.github.io/cleaningapp/`). PWA in spirit, not yet packaged native.
 - **Database:** Supabase Postgres (project ref `wymoezilyjmyibmuqqmr`). Single shared schema (`public`).
 - **Auth:** Supabase Auth. JWTs in localStorage. `auth.uid()` is the integration point between the browser session and Postgres.
-- **Server-side compute:** Supabase Edge Functions (Deno). Four functions live today: `accept-invite`, `set-employee-password`, `translate-chat`, `send-sms`.
+- **Server-side compute:** Supabase Edge Functions (Deno). Functions live today: `accept-invite`, `set-employee-password`, `translate-chat`, `translate-message`, `send-sms`, `rc-inbox`, `rc-mark-read`.
 - **External integrations:** RingCentral (SMS via `send-sms` Edge Function), Anthropic (Claire prompts — currently direct browser, see §6), Nominatim (geocoding, throttled + neg-cached client-side).
 
 ---
@@ -132,7 +132,9 @@ Storage: doc uploads go to `applications/{business_id}/{appUuid}/{col}.{ext}` �
 | `accept-invite` | none (JWT verify off — uses signed invite token) | Bootstraps a new business + first user during signup |
 | `set-employee-password` | none (JWT verify off) | Sets initial password from an emailed/SMS'd token |
 | `translate-chat` | JWT required | Server-side Anthropic Haiku call for chat translation. Holds `ANTHROPIC_API_KEY` as a Supabase secret |
-| `send-sms` (v2, v11.0.2) | JWT required | Server-side SMS send. Resolves caller tenant from JWT, looks up `business_phone_integrations` row, branches on `credentials.source` to either env-source (Manna Maids transitional state) or in-DB credentials. Marks `mark_phone_integration_used` / `mark_phone_integration_error` after each attempt. Returns 424 with hint when no integration is configured for the tenant |
+| `send-sms` (v15, mig 062) | JWT required | Server-side SMS send. Resolves caller tenant from JWT, looks up `business_phone_integrations` row, branches on `credentials.auth_method` (`oauth` refresh-token flow vs `jwt` bearer-grant flow; missing → defaults to `oauth`). Env-source fallback always treated as `oauth`. In-memory access-token cache per `(businessId,authMethod)` for ~50min. Rate-limited 200/hr + 1000/day per caller via `check_rate_limit_dual`. Recipient gated to clients/employees of the tenant unless `allow_unknown_recipient: true` is set. Returns 424 when no integration configured |
+| `rc-inbox` (v8, mig 062) | JWT required | Server-side SMS inbox reader for RC. Same auth-method branching + token cache as `send-sms`. Paginated GET against `/message-store?messageType=SMS` (perPage 250, 20-page cap). Rate-limited 60/hr. Projects RC's wide message shape to a 7-field subset before returning to the browser |
+| `rc-mark-read` (v8, mig 062) | JWT required | Marks one RC message as Read via PUT to `/message-store/<id>`. Strict 1-32 digit regex on the message id blocks path injection. Same auth-method branching + token cache. Rate-limited 600/hr (a thread of 20 unread bursts on open) |
 
 Edge Functions verify the caller's JWT and resolve tenant via `users.business_id` server-side. They do not trust browser-supplied tenant ids.
 
@@ -149,7 +151,13 @@ RPCs (all SECURITY DEFINER):
 - `mark_phone_integration_used(business_id, provider)` — service-role write after successful send. Resets status to active.
 - `mark_phone_integration_error(business_id, provider, error_text)` — service-role write on failure. Sets status='error', stores last_error truncated to 500 chars.
 
-For RingCentral, the `credentials` JSONB carries `{client_id, client_secret, refresh_token}`. Transitional case: `{source: "env"}` tells the EF to read from `RC_CLIENT_ID` / `RC_CLIENT_SECRET` / `RC_REFRESH_TOKEN` env vars instead — that's how Manna Maids' existing setup migrated without a credential rotation. Future tenants paste their RC credentials via the Admin → Phone & SMS settings modal; the row switches to in-DB credentials and env vars are no longer consulted for that tenant.
+For RingCentral, the `credentials` JSONB carries one of two shapes, distinguished by `auth_method` (mig 062):
+
+- **OAuth (legacy):** `{auth_method: "oauth", client_id, client_secret, refresh_token}` — server posts to `/oauth/token` with `grant_type=refresh_token`. RC rotates the refresh token on every call, so concurrent refreshes from multiple clients invalidate each other (OAU-213). Safe only when all refreshes happen server-side from a single Edge Function pool.
+- **JWT bearer-grant (recommended):** `{auth_method: "jwt", client_id, client_secret, jwt_credential}` — server posts to `/oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=<jwt>`. The JWT credential is generated in the RC developer console and tied to a specific RC user; it's long-lived (no rotation), so concurrent server use is fully safe. Revoke from the same RC console page if compromised.
+- **Env-source (transitional):** `{source: "env"}` — EF reads `RC_CLIENT_ID` / `RC_CLIENT_SECRET` / `RC_REFRESH_TOKEN` env vars and always treats them as OAuth. Manna Maids' early state during the v11.0.2 migration.
+
+Missing or unknown `auth_method` defaults to `oauth` so every row that existed before mig 062 keeps working. Tenants flip from OAuth to JWT via the Admin → Phone & SMS settings modal — pick "JWT bearer" in the dropdown, paste the assertion, save. The same modal has a Test button that calls `send-sms` with `allow_unknown_recipient: true` so the admin can verify credentials end-to-end without leaving the screen.
 
 **Encryption at rest:** credentials live in plaintext within the JSONB today. RLS gates reads to owner+admin, and the EF reads via service_role which is the only path that touches the actual values. A future hardening step is to move credential values into Supabase Vault (pgsodium) and reference them by handle from the JSONB. Tracked as a follow-up; not blocking v11.0.x.
 
@@ -522,6 +530,9 @@ Tenant-relevant migrations (most recent first; full list under `/migrations`):
 - **044** — `submit_job_application` RPC supplement: writes a richer `'submitted'/'application'` audit_log row alongside the trigger's auto-fired `'created'` event
 - **043** — `audit_log_capture` trigger function attached AFTER INSERT/UPDATE/DELETE to 8 tenant-scoped tables: `jobs`, `clients`, `employees`, `payments`, `job_applications`, `time_entries`, `lunch_breaks`, `daily_assignments`. Filters noise (skips updates that only touch `updated_at`) and derives semantic action types (`cancelled`, `started`, `ended`, `restored`, `deleted` soft vs hard)
 - **042** — `audit_log` schema hardening: CHECK constraints on `action_type` (15 allowed) + `entity_type` (12 allowed); 3 indexes (`(business_id, created_at DESC)`, `(business_id, entity_type, entity_id, created_at DESC)`, BRIN on `created_at`); role-gated SELECT triple (manager-tier sees all, dispatcher sees scheduling-related, employee sees own); INSERT WITH CHECK requiring `user_id` NULL or = caller's `users.id`
+- **062** — `business_phone_integrations.credentials.auth_method` JSONB key + backfill existing OAuth rows. Adds JWT bearer-grant support without DDL changes. PR1 of SMS strategy split.
+- **061** — `rate_limits` table + `check_rate_limit` / `check_rate_limit_dual` / `cleanup_rate_limits` SECURITY DEFINER RPCs. Used by `send-sms` (200/hr + 1000/day), `rc-inbox` (60/hr), `rc-mark-read` (600/hr), `translate-chat` (300/hr)
+- **060** — Harden SECURITY DEFINER helpers with explicit `search_path = public, pg_temp`
 - **041** — `client_keys` UNIQUE INDEX on (business_id, client_id) + backfill of 59 rows from retired CLIENT_KEYS const
 - **040** — `business_offices` table + RLS (Issue A)
 - **039** — `business_phone_integrations` table + RLS + `get_active_phone_integration` / `mark_phone_integration_used` / `mark_phone_integration_error` RPCs

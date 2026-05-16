@@ -1,20 +1,32 @@
 // Edge Function: send-sms
 //
 // v11.0.2 (Item B) — per-tenant phone provider integrations.
+// Phase 1 SMS strategy (mig 062) — JWT bearer-grant auth alongside
+// the existing OAuth refresh-token flow. Branches on
+// credentials.auth_method ('oauth' | 'jwt'); missing/unknown defaults
+// to 'oauth' so every existing row keeps working.
 //
-// Server-side SMS sender. Was originally hardcoded to Manna Maids'
-// RingCentral credentials in Supabase secrets. Now resolves the
-// caller's tenant from JWT, looks up that tenant's
-// business_phone_integrations row, and uses its credentials +
-// outbound number.
+// Server-side SMS sender. Resolves the caller's tenant from JWT, looks
+// up that tenant's business_phone_integrations row, and uses its
+// credentials + outbound number.
+//
+// Auth flows:
+//   oauth: POST /oauth/token  grant_type=refresh_token
+//          (rotates refresh_token on every call — fragile if any other
+//           client is also refreshing the same row concurrently)
+//   jwt:   POST /oauth/token  grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+//          (long-lived signed JWT assertion, no rotation, safe under
+//           concurrent refreshes from multiple Edge Function instances)
+//
+// Access tokens are cached in-memory per (businessId,authMethod) for
+// 50min (RC tokens last ~60min). Cache is per-Edge-Function-instance,
+// not global; warms within a single instance's lifetime.
 //
 // Migration-safe fallback: when an integration row's credentials JSONB
 // has `{"source":"env"}` (Manna Maids' transitional state during the
 // v11.0.2 migration), the function reads from the existing
-// RC_CLIENT_ID / RC_CLIENT_SECRET / RC_REFRESH_TOKEN env vars. This
-// lets the existing tenant keep working while new tenants store actual
-// credentials in the table. Rotate Manna Maids out of env-source by
-// updating the credentials jsonb in-place.
+// RC_CLIENT_ID / RC_CLIENT_SECRET / RC_REFRESH_TOKEN env vars. Env-source
+// is always treated as OAuth (no env-side JWT path).
 //
 // Deploy:
 //   supabase functions deploy send-sms --project-ref wymoezilyjmyibmuqqmr
@@ -74,28 +86,57 @@ function toE164(raw: string): string | null {
   return null;
 }
 
+type RcAuthMethod = "oauth" | "jwt";
+
 interface RcCreds {
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
+  authMethod:    RcAuthMethod;
+  clientId:      string;
+  clientSecret:  string;
+  refreshToken?: string;   // required when authMethod === "oauth"
+  jwtCredential?: string;  // required when authMethod === "jwt"
 }
+
+// Module-level access-token cache. Keyed by `${businessId}:${authMethod}`
+// because rotating auth method on a row should invalidate any cached
+// token. Per-Edge-Function-instance scope — cold-start drops it. RC
+// access tokens last ~60min; we evict at 50min to leave headroom.
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 async function rcAccessToken(creds: RcCreds): Promise<string> {
   const basic = btoa(`${creds.clientId}:${creds.clientSecret}`);
+  let body: string;
+  if (creds.authMethod === "jwt") {
+    if (!creds.jwtCredential) throw new Error("JWT credential missing");
+    body = `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}`
+         + `&assertion=${encodeURIComponent(creds.jwtCredential)}`;
+  } else {
+    if (!creds.refreshToken) throw new Error("OAuth refresh_token missing");
+    body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(creds.refreshToken)}`;
+  }
   const resp = await fetch("https://platform.ringcentral.com/restapi/oauth/token", {
     method: "POST",
     headers: {
       Authorization: `Basic ${basic}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(creds.refreshToken)}`,
+    body,
   });
   if (!resp.ok) {
-    throw new Error(`RC OAuth refresh failed (${resp.status}): ${await resp.text()}`);
+    const flow = creds.authMethod === "jwt" ? "JWT bearer-grant" : "OAuth refresh";
+    throw new Error(`RC ${flow} failed (${resp.status}): ${await resp.text()}`);
   }
   const data = await resp.json();
-  if (!data.access_token) throw new Error("RC OAuth returned no access_token");
+  if (!data.access_token) throw new Error("RC returned no access_token");
   return data.access_token as string;
+}
+
+async function getCachedRcAccessToken(businessId: string, creds: RcCreds): Promise<string> {
+  const cacheKey = `${businessId}:${creds.authMethod}`;
+  const hit = tokenCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now() + 30_000) return hit.token; // 30s safety margin
+  const token = await rcAccessToken(creds);
+  tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 50 * 60 * 1000 });
+  return token;
 }
 
 serve(async (req) => {
@@ -260,39 +301,56 @@ serve(async (req) => {
   }
 
   // Step 4: resolve credentials. Env-source means "use the platform
-  // env vars" (Manna Maids' transitional state). Otherwise read the
-  // credentials directly from the JSONB.
+  // env vars" (Manna Maids' transitional state, always OAuth). Otherwise
+  // branch on credentials.auth_method: 'jwt' uses the JWT bearer-grant
+  // path, anything else (missing, 'oauth', or unknown) uses the legacy
+  // OAuth refresh-token path so existing rows keep working.
   const credsJson = (row.credentials || {}) as Record<string, unknown>;
   let creds: RcCreds;
   let fromNumber = row.phone_number_e164 || ENV_RC_FROM_NUMBER;
+  let requiredFields: ReadonlyArray<"clientId" | "clientSecret" | "refreshToken" | "jwtCredential">;
   if (credsJson.source === "env") {
     creds = {
+      authMethod:   "oauth",
       clientId:     ENV_RC_CLIENT_ID,
       clientSecret: ENV_RC_CLIENT_SECRET,
       refreshToken: ENV_RC_REFRESH_TOKEN,
     };
+    requiredFields = ["clientId", "clientSecret", "refreshToken"] as const;
+  } else if (credsJson.auth_method === "jwt") {
+    creds = {
+      authMethod:    "jwt",
+      clientId:      String(credsJson.client_id      || ""),
+      clientSecret:  String(credsJson.client_secret  || ""),
+      jwtCredential: String(credsJson.jwt_credential || ""),
+    };
+    requiredFields = ["clientId", "clientSecret", "jwtCredential"] as const;
   } else {
     creds = {
+      authMethod:   "oauth",
       clientId:     String(credsJson.client_id     || ""),
       clientSecret: String(credsJson.client_secret || ""),
       refreshToken: String(credsJson.refresh_token || ""),
     };
+    requiredFields = ["clientId", "clientSecret", "refreshToken"] as const;
   }
-  for (const k of ["clientId","clientSecret","refreshToken"] as const) {
+  for (const k of requiredFields) {
     if (!creds[k]) {
       await admin.rpc("mark_phone_integration_error", {
         p_business_id: businessId,
         p_provider:    "ringcentral",
-        p_error:       `Missing credential field: ${k}`,
+        p_error:       `Missing credential field: ${k} (auth_method=${creds.authMethod})`,
       });
-      return json(500, { error: `Integration credentials incomplete (missing ${k})` });
+      return json(500, {
+        error: `Integration credentials incomplete (missing ${k} for auth_method=${creds.authMethod})`,
+      });
     }
   }
   if (!fromNumber) return json(500, { error: "Integration phone_number_e164 not set" });
 
   // Step 5: refresh token + send.
   try {
-    const accessToken = await rcAccessToken(creds);
+    const accessToken = await getCachedRcAccessToken(businessId, creds);
     const sendResp = await fetch(
       "https://platform.ringcentral.com/restapi/v1.0/account/~/extension/~/sms",
       {

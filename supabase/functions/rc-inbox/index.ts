@@ -8,6 +8,11 @@
 // public.business_phone_integrations and the OAuth refresh dance
 // happens here, server-side, exactly like send-sms does for outbound.
 //
+// Phase 1 SMS strategy (mig 062) — JWT bearer-grant auth alongside
+// the existing OAuth refresh-token flow. Branches on
+// credentials.auth_method ('oauth' | 'jwt'); missing/unknown defaults
+// to 'oauth'. Identical pattern to send-sms.
+//
 // Per call: 1 RC OAuth refresh + up to 20 paginated GETs against
 // /account/~/extension/~/message-store?messageType=SMS&dateFrom=…
 // (perPage=250 → max 5000 records). The browser-side path was
@@ -76,28 +81,53 @@ function json(status: number, body: unknown) {
   });
 }
 
+type RcAuthMethod = "oauth" | "jwt";
+
 interface RcCreds {
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
+  authMethod:    RcAuthMethod;
+  clientId:      string;
+  clientSecret:  string;
+  refreshToken?: string;
+  jwtCredential?: string;
 }
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 async function rcAccessToken(creds: RcCreds): Promise<string> {
   const basic = btoa(`${creds.clientId}:${creds.clientSecret}`);
+  let body: string;
+  if (creds.authMethod === "jwt") {
+    if (!creds.jwtCredential) throw new Error("JWT credential missing");
+    body = `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}`
+         + `&assertion=${encodeURIComponent(creds.jwtCredential)}`;
+  } else {
+    if (!creds.refreshToken) throw new Error("OAuth refresh_token missing");
+    body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(creds.refreshToken)}`;
+  }
   const resp = await fetch("https://platform.ringcentral.com/restapi/oauth/token", {
     method: "POST",
     headers: {
       Authorization: `Basic ${basic}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(creds.refreshToken)}`,
+    body,
   });
   if (!resp.ok) {
-    throw new Error(`RC OAuth refresh failed (${resp.status}): ${await resp.text()}`);
+    const flow = creds.authMethod === "jwt" ? "JWT bearer-grant" : "OAuth refresh";
+    throw new Error(`RC ${flow} failed (${resp.status}): ${await resp.text()}`);
   }
   const data = await resp.json();
-  if (!data.access_token) throw new Error("RC OAuth returned no access_token");
+  if (!data.access_token) throw new Error("RC returned no access_token");
   return data.access_token as string;
+}
+
+async function getCachedRcAccessToken(businessId: string, creds: RcCreds): Promise<string> {
+  const cacheKey = `${businessId}:${creds.authMethod}`;
+  const hit = tokenCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now() + 30_000) return hit.token;
+  const token = await rcAccessToken(creds);
+  tokenCache.set(cacheKey, { token, expiresAt: Date.now() + 50 * 60 * 1000 });
+  return token;
 }
 
 // Projection: keep only the 7 fields the UI consumes (per the
@@ -213,41 +243,57 @@ serve(async (req) => {
   }
 
   // Step 4: resolve credentials. Env-source means "use the platform
-  // env vars" (Manna Maids' transitional state). Otherwise read
-  // straight from the JSONB. Same shape as send-sms.
+  // env vars" (always OAuth). Otherwise branch on credentials.auth_method:
+  // 'jwt' uses JWT bearer-grant, anything else (missing/oauth/unknown)
+  // uses the legacy OAuth refresh-token path. Same shape as send-sms.
   const credsJson = (integRow.credentials || {}) as Record<string, unknown>;
   let creds: RcCreds;
+  let requiredFields: ReadonlyArray<"clientId" | "clientSecret" | "refreshToken" | "jwtCredential">;
   if (credsJson.source === "env") {
     creds = {
+      authMethod:   "oauth",
       clientId:     ENV_RC_CLIENT_ID,
       clientSecret: ENV_RC_CLIENT_SECRET,
       refreshToken: ENV_RC_REFRESH_TOKEN,
     };
+    requiredFields = ["clientId", "clientSecret", "refreshToken"] as const;
+  } else if (credsJson.auth_method === "jwt") {
+    creds = {
+      authMethod:    "jwt",
+      clientId:      String(credsJson.client_id      || ""),
+      clientSecret:  String(credsJson.client_secret  || ""),
+      jwtCredential: String(credsJson.jwt_credential || ""),
+    };
+    requiredFields = ["clientId", "clientSecret", "jwtCredential"] as const;
   } else {
     creds = {
+      authMethod:   "oauth",
       clientId:     String(credsJson.client_id     || ""),
       clientSecret: String(credsJson.client_secret || ""),
       refreshToken: String(credsJson.refresh_token || ""),
     };
+    requiredFields = ["clientId", "clientSecret", "refreshToken"] as const;
   }
-  for (const k of ["clientId", "clientSecret", "refreshToken"] as const) {
+  for (const k of requiredFields) {
     if (!creds[k]) {
       await admin.rpc("mark_phone_integration_error", {
         p_business_id: businessId,
         p_provider:    "ringcentral",
-        p_error:       `Missing credential field: ${k}`,
+        p_error:       `Missing credential field: ${k} (auth_method=${creds.authMethod})`,
       });
-      return json(500, { error: `Integration credentials incomplete (missing ${k})` });
+      return json(500, {
+        error: `Integration credentials incomplete (missing ${k} for auth_method=${creds.authMethod})`,
+      });
     }
   }
 
   // Step 5: get RC access token. Refresh failure → 401 (the only
   // recoverable action for the user is for an admin to re-paste a
-  // fresh refresh_token; we can't recover client-side because there
-  // is no client-side token to clear).
+  // fresh refresh_token or JWT credential; we can't recover
+  // client-side because there is no client-side token to clear).
   let accessToken: string;
   try {
-    accessToken = await rcAccessToken(creds);
+    accessToken = await getCachedRcAccessToken(businessId, creds);
   } catch (e) {
     const msg = (e as Error).message || String(e);
     await admin.rpc("mark_phone_integration_error", {
@@ -256,8 +302,8 @@ serve(async (req) => {
       p_error:       msg,
     });
     return json(401, {
-      error: "RC OAuth refresh failed",
-      hint:  "Have an owner/admin re-paste a fresh refresh_token in Settings → Phone & SMS.",
+      error: "RC token acquisition failed",
+      hint:  "Have an owner/admin re-paste a fresh refresh_token or JWT credential in Settings → Phone & SMS.",
       detail: msg,
     });
   }
