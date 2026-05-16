@@ -41712,6 +41712,11 @@ function _piToggleAuthFields() {
 }
 
 async function savePhoneIntegrationSettings() {
+  // Diagnostic: log every entry + every bail so a suppressed alert
+  // still leaves a console trail. Without this, an unresolved tenant
+  // or empty field looks like "Save does nothing" from the user's
+  // perspective.
+  console.log('[savePhone] called');
   var phone  = (document.getElementById('pi-phone') || {}).value || '';
   var cid    = (document.getElementById('pi-cid')   || {}).value || '';
   var csec   = (document.getElementById('pi-csec')  || {}).value || '';
@@ -41720,13 +41725,16 @@ async function savePhoneIntegrationSettings() {
   var method = (document.getElementById('pi-auth')  || {}).value || 'oauth';
   if (method !== 'jwt' && method !== 'oauth') method = 'oauth';
   phone = phone.trim();
-  if (!/^\+\d{8,15}$/.test(phone)) { alert('Phone number must be E.164 (e.g. +15555550100).'); return; }
-  if (!cid.trim() || !csec.trim()) { alert('Client ID and Client Secret are required for both auth methods.'); return; }
-  if (method === 'oauth' && !rt.trim())  { alert('OAuth refresh token is required when auth method is OAuth.'); return; }
-  if (method === 'jwt'   && !jwt.trim()) { alert('JWT credential is required when auth method is JWT.'); return; }
+  console.log('[savePhone] method=' + method + ', phone len=' + phone.length + ', cid len=' + cid.length + ', csec len=' + csec.length + ', rt len=' + rt.length + ', jwt len=' + jwt.length);
+  function _bail(msg) { console.warn('[savePhone] bail:', msg); alert(msg); }
+  if (!/^\+\d{8,15}$/.test(phone)) { _bail('Phone number must be E.164 (e.g. +15555550100).'); return; }
+  if (!cid.trim() || !csec.trim()) { _bail('Client ID and Client Secret are required for both auth methods.'); return; }
+  if (method === 'oauth' && !rt.trim())  { _bail('OAuth refresh token is required when auth method is OAuth.'); return; }
+  if (method === 'jwt'   && !jwt.trim()) { _bail('JWT credential is required when auth method is JWT.'); return; }
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
-  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  console.log('[savePhone] sb=' + !!sb + ', bid=' + (bid ? bid.slice(0,8) + '…' : 'null'));
+  if (!sb || !bid) { _bail('Tenant not resolved — refresh and try again.'); return; }
   // Build credentials JSONB per auth method. Only persist fields that
   // belong to the chosen flow — saving an OAuth row with a leftover
   // jwt_credential string would be confusing and could leak the JWT in
@@ -41768,17 +41776,21 @@ async function savePhoneIntegrationSettings() {
     res = await sb.from('business_phone_integrations').insert(payload);
   }
   if (res.error) {
+    console.warn('[savePhone] upsert failed:', res.error);
     alert('Save failed: ' + (res.error.message || 'unknown'));
     return;
   }
-  renderPhoneIntegrationStatus();
-  var st = document.getElementById('pi-test-status');
-  if (st) {
-    st.style.color = '#34d399';
-    st.textContent = 'Saved. You can now click “Send test”.';
-  } else {
-    alert('Saved. Test a send to confirm credentials.');
-  }
+  console.log('[savePhone] saved OK (method=' + method + ')');
+  // Close the modal AND alert on success — matching the legacy v11.0.2
+  // behavior. The inline status in the Test panel below the Save button
+  // turned out to be too subtle (PR1 v11.0.26 bug: users thought Save
+  // was dead because no visible feedback fired at the Save area). To
+  // send a test SMS, re-open the modal from the admin index — the Test
+  // panel is still there, just behind a re-open.
+  var ov = document.getElementById('phone-integ-overlay');
+  if (ov) ov.remove();
+  try { renderPhoneIntegrationStatus(); } catch(e){}
+  alert('Saved. Re-open “Configure RingCentral integration” to send a test SMS.');
 }
 
 // Test panel: send a real SMS via send-sms Edge Function using the
