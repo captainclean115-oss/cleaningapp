@@ -157,7 +157,24 @@ For RingCentral, the `credentials` JSONB carries one of two shapes, distinguishe
 - **JWT bearer-grant (recommended):** `{auth_method: "jwt", client_id, client_secret, jwt_credential}` — server posts to `/oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=<jwt>`. The JWT credential is generated in the RC developer console and tied to a specific RC user; it's long-lived (no rotation), so concurrent server use is fully safe. Revoke from the same RC console page if compromised.
 - **Env-source (transitional):** `{source: "env"}` — EF reads `RC_CLIENT_ID` / `RC_CLIENT_SECRET` / `RC_REFRESH_TOKEN` env vars and always treats them as OAuth. Manna Maids' early state during the v11.0.2 migration.
 
-Missing or unknown `auth_method` defaults to `oauth` so every row that existed before mig 062 keeps working. Tenants flip from OAuth to JWT via the Admin → Phone & SMS settings modal — pick "JWT bearer" in the dropdown, paste the assertion, save. The same modal has a Test button that calls `send-sms` with `allow_unknown_recipient: true` so the admin can verify credentials end-to-end without leaving the screen.
+For **`provider: 'native_sms'`** (PR2 of SMS strategy, mig 063), the `credentials` JSONB is empty `{}`. Every dispatch site opens a `sms:NUMBER?body=ENCODED` URI to hand the message off to the user's native SMS app (iOS Messages / Android default). No Edge Function is invoked. The inbox is unavailable — replies come back to the user's phone, not into Penta. The Messages tab shows a "📱 Manual SMS mode" notice instead of the inbox list.
+
+Missing or unknown `auth_method` defaults to `oauth` so every row that existed before mig 062 keeps working. Tenants flip from OAuth → JWT, or RC → Native SMS, via the Admin → Phone & SMS settings modal — pick the provider + auth method in the dropdowns, fill the relevant credentials (if any), save. The same modal has a Test button that routes through `_sendSMS` (the canonical dispatch helper) so it exercises the actual path every other site uses.
+
+#### Provider × auth_method behavior matrix
+
+| provider     | auth_method | dispatch sites             | inbox                  | mark-read              | browser OAuth flow |
+|--------------|-------------|----------------------------|------------------------|------------------------|--------------------|
+| `ringcentral`| `oauth`     | `send-sms` EF (oauth)      | `rc-inbox` EF          | `rc-mark-read` EF      | gated alive (rcInit, rcConnect, _rcDoRefresh keep working for the legacy refresh-token flow) |
+| `ringcentral`| `jwt`       | `send-sms` EF (jwt)        | `rc-inbox` EF          | `rc-mark-read` EF      | dead — rcInit early-returns, Connect button hidden |
+| `native_sms` | (n/a)       | `sms:NUMBER?body=…` URI    | not available (notice) | not available          | dead — same as JWT |
+| (none)       | (n/a)       | 424 "no integration"       | "not configured" notice | n/a                    | dead — Connect hidden |
+
+Routing decisions are read once at boot via the new SECURITY DEFINER RPC `get_phone_provider_summary` (mig 064), which returns only `(provider, phone_number_e164, status, auth_method)` — never credentials. `authenticated` role can call it (not just owner/admin) because every user-facing dispatch site needs to know which mode to use. Cached in `window.PentaPhone` for synchronous reads from inside dispatch sites; refreshed when the admin modal saves new settings.
+
+`_sendSMS(phoneE164, body, opts)` is the single canonical dispatch helper — every send site in `index.html` routes through it, never inline. Branching:
+- `provider === 'native_sms'` → `window.location.href = 'sms:N?body=...'`
+- else → `supabaseClient.functions.invoke('send-sms', ...)` which handles oauth vs jwt server-side
 
 **Encryption at rest:** credentials live in plaintext within the JSONB today. RLS gates reads to owner+admin, and the EF reads via service_role which is the only path that touches the actual values. A future hardening step is to move credential values into Supabase Vault (pgsodium) and reference them by handle from the JSONB. Tracked as a follow-up; not blocking v11.0.x.
 
@@ -530,6 +547,8 @@ Tenant-relevant migrations (most recent first; full list under `/migrations`):
 - **044** — `submit_job_application` RPC supplement: writes a richer `'submitted'/'application'` audit_log row alongside the trigger's auto-fired `'created'` event
 - **043** — `audit_log_capture` trigger function attached AFTER INSERT/UPDATE/DELETE to 8 tenant-scoped tables: `jobs`, `clients`, `employees`, `payments`, `job_applications`, `time_entries`, `lunch_breaks`, `daily_assignments`. Filters noise (skips updates that only touch `updated_at`) and derives semantic action types (`cancelled`, `started`, `ended`, `restored`, `deleted` soft vs hard)
 - **042** — `audit_log` schema hardening: CHECK constraints on `action_type` (15 allowed) + `entity_type` (12 allowed); 3 indexes (`(business_id, created_at DESC)`, `(business_id, entity_type, entity_id, created_at DESC)`, BRIN on `created_at`); role-gated SELECT triple (manager-tier sees all, dispatcher sees scheduling-related, employee sees own); INSERT WITH CHECK requiring `user_id` NULL or = caller's `users.id`
+- **064** — `get_phone_provider_summary(business_id)` SECURITY DEFINER RPC. Returns `(provider, phone_number_e164, status, auth_method)` to any authenticated tenant member so browser can route `_sendSMS` without seeing credentials. PR2 of SMS strategy.
+- **063** — Extend `business_phone_integrations.provider` CHECK to include `'native_sms'`. Adds the manual-SMS fallback mode where dispatch sites open the user's native SMS app. PR2 of SMS strategy.
 - **062** — `business_phone_integrations.credentials.auth_method` JSONB key + backfill existing OAuth rows. Adds JWT bearer-grant support without DDL changes. PR1 of SMS strategy split.
 - **061** — `rate_limits` table + `check_rate_limit` / `check_rate_limit_dual` / `cleanup_rate_limits` SECURITY DEFINER RPCs. Used by `send-sms` (200/hr + 1000/day), `rc-inbox` (60/hr), `rc-mark-read` (600/hr), `translate-chat` (300/hr)
 - **060** — Harden SECURITY DEFINER helpers with explicit `search_path = public, pg_temp`
