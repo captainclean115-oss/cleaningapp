@@ -18460,20 +18460,54 @@ function getAnthropicKey() { return null; }
 async function _claireApi(body) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
-  var res = await sb.functions.invoke('claire-chat', { body: body });
-  if (res.error) {
-    var detail = '';
-    try {
-      if (res.data && res.data.error)  detail += res.data.error;
-      if (res.data && res.data.detail) detail += ' — ' + String(res.data.detail).slice(0, 200);
-      if (res.data && res.data.hint)   detail += ' (' + res.data.hint + ')';
-    } catch (e) {}
-    var err = new Error(detail || res.error.message || 'claire-chat invoke failed');
-    err.data = res.data;
+  // supabase-js's FunctionsHttpError ("Edge Function returned a non-2xx
+  // status code") swallows the response body on non-2xx, so we can't
+  // get to res.data.detail through the SDK. Use a raw fetch with the
+  // current session's bearer token attached so we can read the real
+  // upstream error verbatim — that's the only way to surface Anthropic's
+  // explanation when the EF returns 502.
+  var session;
+  try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
+  if (!session || !session.access_token) {
+    throw new Error('claire-chat: no active session (sign in again)');
+  }
+  // Resolve the project URL + anon key from the existing client config.
+  // supabaseClient.supabaseUrl is exposed in v2.x; fall back to
+  // window.SUPABASE_URL if a build redacts it.
+  var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
+  var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
+  var resp;
+  try {
+    resp = await fetch(supaUrl + '/functions/v1/claire-chat', {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey':        anonKey,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (netErr) {
+    throw new Error('claire-chat: network ' + (netErr.message || netErr));
+  }
+  var raw;
+  try { raw = await resp.text(); } catch (e) { raw = ''; }
+  var data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* not JSON */ }
+  if (!resp.ok) {
+    // Surface the most informative error string we can build.
+    var summary = (data && data.error) || ('HTTP ' + resp.status);
+    if (data && data.detail) summary += ' — ' + String(data.detail).slice(0, 400);
+    if (data && data.status) summary += ' (Anthropic status: ' + data.status + ')';
+    if (!data && raw) summary += ' — ' + raw.slice(0, 400);
+    console.error('[_claireApi] EF non-2xx:', resp.status, data || raw);
+    var err = new Error(summary);
+    err.status = resp.status;
+    err.data = data;
     throw err;
   }
-  if (!res.data) throw new Error('claire-chat: empty response');
-  return res.data;
+  if (!data) throw new Error('claire-chat: empty response body');
+  return data;
 }
 
 // ── VOICE/TEXT COMMANDS ──
