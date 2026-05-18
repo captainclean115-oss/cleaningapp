@@ -19776,12 +19776,10 @@ async function contentGenerateCaption() {
   var orig = btn.innerHTML;
   btn.innerHTML = 'Writing…'; btn.disabled = true;
   try {
-    var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
     var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
-    if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
-      return;
-    }
+    // Pre-rewire: bailed here when no localStorage API key. The EF
+    // handles the key now; catch block below provides the canned
+    // caption fallback when the EF fails.
     var businessName = await _getClaireBusinessName();
     // v11.0.1 (Item A): geo no longer hardcoded — pull metro/zip from
     // businesses.address jsonb if available, otherwise omit the locality
@@ -19984,12 +19982,9 @@ async function contentRegenCaption(id) {
   var orig = btn ? btn.innerHTML : '';
   if (btn) { btn.innerHTML = 'Writing…'; btn.disabled = true; }
   try {
-    var key = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
     var _hashtag = (window.PentaTenant && window.PentaTenant.nameSlugCompact && window.PentaTenant.nameSlugCompact()) || '';
-    if (!key) {
-      ta.value = 'Crew killing it today! 💪 #CleanHouseHappyHome' + (_hashtag ? ' #' + _hashtag : '');
-      return;
-    }
+    // Pre-rewire: bailed here when no localStorage API key. EF handles
+    // the key now; catch block below recovers when EF fails.
     var businessName = await _getClaireBusinessName();
     var _geo = await _getClaireGeoClause();
     var prompt = 'Write a short, authentic Instagram-style caption for a ' + businessName + ' social post. '
@@ -21810,10 +21805,12 @@ async function processVoiceCommand(text) {
     claireShowTyping();
   }
 
-  if (!_claireApiKey) {
-    setClaireApiKey();
-    if (!_claireApiKey) { var s=document.getElementById('voice-cmd-status'); s.style.display='block'; claireReply('I need an API key to work. Try your command again.'); return; }
-  }
+  // No browser-side API-key gate anymore — ANTHROPIC_API_KEY lives on
+  // the claire-chat Edge Function (Supabase secret). _claireApi() below
+  // throws on EF failure and the catch block falls back to
+  // processVoiceCommandLocal, so a missing/invalid secret degrades
+  // gracefully rather than rendering this stale "I need an API key"
+  // canned reply.
 
   var today = new Date();
   var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
