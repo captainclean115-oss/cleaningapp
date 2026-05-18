@@ -41394,6 +41394,11 @@ function _resolveWeatherCoords() {
   return null;
 }
 
+// fetchWeatherForecast returns a per-date weather map or null if the
+// call can't run yet (boot-order race) / upstream failed. Returning
+// null is treated by applyWeatherToScroller as "try again in a moment"
+// rather than "no weather forever". Diagnostic logs at every bail so
+// we can see what's happening when glyphs are missing.
 async function fetchWeatherForecast() {
   try {
     var cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
@@ -41404,20 +41409,19 @@ async function fetchWeatherForecast() {
 
   var coords = _resolveWeatherCoords();
   if (!coords) {
-    // No office configured for this tenant — skip the fetch rather
-    // than defaulting to a wrong-region forecast.
-    console.warn('[weather] no primary office configured — skipping forecast');
+    // No office configured (or PentaOffices hasn't hydrated yet — the
+    // retry loop in applyWeatherToScroller handles boot timing).
+    console.warn('[weather] coords not resolved (PentaOffices not ready or no primary office) — skipping fetch');
     return null;
   }
 
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-  if (!sb) return null;
+  if (!sb) {
+    console.warn('[weather] supabaseClient not ready — skipping fetch');
+    return null;
+  }
 
   try {
-    // Call the get-weather Edge Function instead of OpenWeatherMap
-    // directly — the API key lives server-side now. EF returns the raw
-    // OpenWeather forecast payload; the byDay transform below is
-    // unchanged.
     var res = await sb.functions.invoke('get-weather', {
       body: { lat: coords.lat, lon: coords.lon, units: WEATHER_UNITS }
     });
@@ -41426,6 +41430,8 @@ async function fetchWeatherForecast() {
       return null;
     }
     var json = res.data;
+    var listLen = (json.list || []).length;
+    console.log('[weather] get-weather ok: list len=' + listLen + ', city=' + (json.city && json.city.name));
 
     var byDay = {};
     (json.list || []).forEach(function(entry) {
@@ -41441,6 +41447,7 @@ async function fetchWeatherForecast() {
         };
       }
     });
+    console.log('[weather] byDay keys: ' + Object.keys(byDay).join(','));
 
     try {
       localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: byDay }));
@@ -41448,7 +41455,7 @@ async function fetchWeatherForecast() {
 
     return byDay;
   } catch (e) {
-    console.warn('Weather fetch failed:', e);
+    console.warn('[weather] fetch threw:', e);
     return null;
   }
 }
@@ -41476,12 +41483,42 @@ function weatherGlyph(condition) {
   }
 }
 
+// Retry-aware paint. The OLD direct-fetch version of fetchWeatherForecast
+// only depended on coords (PentaOffices). The Edge Function rewire
+// added a second async dependency (supabaseClient must be initialized).
+// Either dependency missing at the first renderCal tick produces a
+// null forecast and an unpainted strip \u2014 Tom's symptom: glyphs only
+// appear once he clicks a day cell (which re-fires renderCal after
+// the boot dust has settled).
+//
+// Fix: when forecast is null, schedule up to 3 retries 1500ms apart so
+// the eventual hydration of PentaOffices + supabaseClient self-heals
+// the first render. Same renderCal still calls us; we just don't give
+// up after one shot. _wxRetryToken serializes so overlapping renderCal
+// calls don't pile up retries.
+var _wxRetryToken = 0;
 async function applyWeatherToScroller() {
-  var forecast;
-  try { forecast = await fetchWeatherForecast(); } catch (e) { return; }
-  if (!forecast) return;
+  var myToken = ++_wxRetryToken;
+  for (var attempt = 0; attempt < 4; attempt++) {
+    if (myToken !== _wxRetryToken) return; // a newer renderCal superseded us
+    var forecast = null;
+    try { forecast = await fetchWeatherForecast(); } catch (e) { /* swallow */ }
+    if (forecast) {
+      _wxPaintCells(forecast);
+      return;
+    }
+    if (attempt < 3) {
+      console.log('[weather] forecast null (attempt ' + (attempt + 1) + '/4) \u2014 retrying in 1.5s');
+      await new Promise(function(r) { setTimeout(r, 1500); });
+    }
+  }
+  console.warn('[weather] all retries returned null \u2014 strip stays glyph-less. Check earlier [weather] logs for bail reason.');
+}
+
+function _wxPaintCells(forecast) {
   var cells = document.querySelectorAll('[data-scroller-date]');
   if (!cells.length) return;
+  var painted = 0;
   cells.forEach(function(cell) {
     var dateStr = cell.getAttribute('data-scroller-date');
     if (!dateStr) return;
@@ -41494,7 +41531,9 @@ async function applyWeatherToScroller() {
     wxEl.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:3px;margin-top:2px;font-size:10px;font-weight:500;color:rgba(255,255,255,0.7);';
     wxEl.innerHTML = weatherGlyph(wx.condition) + '<span>' + wx.temp + '\u00B0</span>';
     cell.appendChild(wxEl);
+    painted++;
   });
+  console.log('[weather] painted ' + painted + ' cells of ' + cells.length + ' on strip');
 }
 
 
