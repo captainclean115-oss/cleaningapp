@@ -7236,8 +7236,10 @@ window.PentaSettings = (function() {
   function SB() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
 
   // Keys mirrored between localStorage and users.settings jsonb.
+  // claire_api_key / anthropic_api_key retired in feat/claire-edge-function:
+  // ANTHROPIC_API_KEY now lives as a Supabase Edge Function secret and is
+  // attached server-side by claire-chat. No browser-side key.
   var SYNC_KEYS = [
-    'claire_api_key', 'anthropic_api_key',
     'claire_photo', 'claire_did_image_url', 'claire_did_proxy', 'claire_did_key',
     'rc_token', 'rc_refresh', 'rc_token_expiry',
     'gps_session', 'gps_server',
@@ -7571,13 +7573,9 @@ async function _markReadViaEdge(messageId) {
   if (!window.PentaSettings) return;
 
   function reHydrateConsumers() {
-    // Claire API key — re-read into in-memory _claireApiKey.
-    try {
-      if (typeof _claireApiKey !== 'undefined') {
-        var k = localStorage.getItem('claire_api_key') || localStorage.getItem('anthropic_api_key') || '';
-        if (k && _claireApiKey !== k) _claireApiKey = k;
-      }
-    } catch (e) {}
+    // Claire API key — retired in feat/claire-edge-function. ANTHROPIC_API_KEY
+    // lives server-side on the claire-chat Edge Function; no browser-side
+    // key to re-hydrate.
     // Claire photo — re-apply across all .claire-* avatar elements.
     try { if (typeof applyClairePhoto === 'function') applyClairePhoto(); } catch (e) {}
     // RingCentral — re-init from localStorage.
@@ -18023,12 +18021,6 @@ async function getAiAnswer(question, empLang) {
     }).length;
   } catch(e) {}
 
-  var apiKey = localStorage.getItem('anthropic_api_key');
-  if (!apiKey) {
-    // Demo fallback — keyword-based responses
-    return cannedAiAnswer(question, empLang, { name: emp.name, team: assignedTeam, dow: dow, jobs: teamJobsToday });
-  }
-
   var systemPrompt =
     'You are an AI assistant for a cleaning company employee chat. Reply in '+(LANG_NAMES[empLang]||'English')+'.\n' +
     'Employee: '+emp.name+'\n' +
@@ -18046,17 +18038,11 @@ async function getAiAnswer(question, empLang) {
     '{"reply": "<your short helpful reply in '+(LANG_NAMES[empLang]||'English')+'>", "action": null OR {"openForm":"<formId>","buttonLabel":"<button text in '+(LANG_NAMES[empLang]||'English')+'>"}}';
 
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001', max_tokens: 350,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: question }]
-      })
+    var data = await _claireApi({
+      model: 'claude-haiku-4-5-20251001', max_tokens: 350,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: question }]
     });
-    if (!resp.ok) throw new Error('api '+resp.status);
-    var data = await resp.json();
     var raw = (data.content && data.content[0] && data.content[0].text || '').trim();
     var m = raw.match(/\{[\s\S]*\}/);
     if (!m) return { reply: raw || cannedAiAnswer(question, empLang, {name: emp.name, team: assignedTeam, dow: dow, jobs: teamJobsToday}).reply };
@@ -18196,19 +18182,11 @@ async function sendStaffReplyEmp() {
 // Lightweight helper: translate to English with auto-detected source language.
 async function translateToEnglish(text) {
   if (!text) return text;
-  var apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
-  if (!apiKey) return text;
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001', max_tokens: 300,
-        messages: [{ role: 'user', content: 'If this message is already in English, reply with ONLY the original text unchanged. Otherwise translate it to English. Reply with ONLY the result, no quotes, no explanation:\n\n'+text }]
-      })
+    var data = await _claireApi({
+      model: 'claude-haiku-4-5-20251001', max_tokens: 300,
+      messages: [{ role: 'user', content: 'If this message is already in English, reply with ONLY the original text unchanged. Otherwise translate it to English. Reply with ONLY the result, no quotes, no explanation:\n\n'+text }]
     });
-    if (!resp.ok) return text;
-    var data = await resp.json();
     return (data.content && data.content[0] && data.content[0].text || text).trim();
   } catch(e) { return text; }
 }
@@ -18460,26 +18438,42 @@ let rcToken = null;
 let rcConversations = [];
 let currentConv = null;
 
-// ── CLAIRE API KEY (stored in localStorage, never in code) ──
-var _claireApiKey = localStorage.getItem('claire_api_key') || localStorage.getItem('anthropic_api_key') || '';
+// ── CLAIRE API KEY (server-side only, feat/claire-edge-function) ──
+// ANTHROPIC_API_KEY lives as a Supabase secret on the claire-chat Edge
+// Function. The browser never sees it. _claireApiKey + getAnthropicKey
+// kept as inert stubs so any caller we missed gets a clean null path
+// rather than ReferenceError. setClaireApiKey is now a no-op with a
+// user-facing notice.
+var _claireApiKey = '';
 var _claireHistory = []; // conversation history for context
 function setClaireApiKey() {
-  var key = prompt('Enter your Anthropic API key (starts with sk-ant-):');
-  if (key && key.startsWith('sk-')) {
-    localStorage.setItem('claire_api_key', key);
-    _claireApiKey = key;
-    // v9.4: also push to users.settings so it survives iOS storage isolation.
-    try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_api_key', key); } catch (e) {}
-    claireReply('API key saved! I\'m ready to help.');
-  }
+  alert('API keys are server-side now — no per-browser setup needed. Claire just works once you sign in.');
 }
+function getAnthropicKey() { return null; }
 
-// Shared helper so SMS draft, note translation, and staff-chat AI all reuse Claire's key.
-function getAnthropicKey() {
-  if (_claireApiKey) return _claireApiKey;
-  var legacy = localStorage.getItem('anthropic_api_key');
-  if (legacy) { _claireApiKey = legacy; return legacy; }
-  return null;
+// Canonical browser → claire-chat Edge Function helper. Every site
+// that used to fetch api.anthropic.com/v1/messages directly now routes
+// through here. Pass-through body shape (model, max_tokens, system,
+// tools, messages, etc.); response is whatever Anthropic returned
+// unchanged. Throws on any failure so callers can fall back the same
+// way they used to when the direct fetch returned !resp.ok.
+async function _claireApi(body) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) throw new Error('Supabase client not ready');
+  var res = await sb.functions.invoke('claire-chat', { body: body });
+  if (res.error) {
+    var detail = '';
+    try {
+      if (res.data && res.data.error)  detail += res.data.error;
+      if (res.data && res.data.detail) detail += ' — ' + String(res.data.detail).slice(0, 200);
+      if (res.data && res.data.hint)   detail += ' (' + res.data.hint + ')';
+    } catch (e) {}
+    var err = new Error(detail || res.error.message || 'claire-chat invoke failed');
+    err.data = res.data;
+    throw err;
+  }
+  if (!res.data) throw new Error('claire-chat: empty response');
+  return res.data;
 }
 
 // ── VOICE/TEXT COMMANDS ──
@@ -19810,13 +19804,7 @@ async function contentGenerateCaption() {
       // Can't send video to vision API; use text-only prompt
       body.messages = [{ role: 'user', content: prompt + '\n\n(Note: this is a video from the field — write something lively.)' }];
     }
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) throw new Error('API '+resp.status);
-    var data = await resp.json();
+    var data = await _claireApi(body);
     var cap = '';
     (data.content||[]).forEach(function(b) { if (b.type === 'text') cap += b.text; });
     cap = cap.trim().replace(/^["']|["']$/g, '');
@@ -20020,13 +20008,7 @@ async function contentRegenCaption(id) {
     } else {
       body.messages = [{ role: 'user', content: prompt + '\n\n(Note: this is a video from the field.)' }];
     }
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) throw new Error('API '+resp.status);
-    var data = await resp.json();
+    var data = await _claireApi(body);
     var cap = '';
     (data.content||[]).forEach(function(b){ if (b.type === 'text') cap += b.text; });
     cap = cap.trim().replace(/^["']|["']$/g, '');
@@ -21943,10 +21925,9 @@ async function processVoiceCommand(text) {
   _claireSilent = true;
   try {
     for (var round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      var resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': _claireApiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({
+      var data;
+      try {
+        data = await _claireApi({
           model: 'claude-sonnet-4-6',
           // Voice mode keeps replies short; research mode needs room for
           // 4-8 paragraphs of structured analysis with citations.
@@ -21954,16 +21935,15 @@ async function processVoiceCommand(text) {
           system: systemPrompt,
           tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
           messages: _claireHistory
-        })
-      });
-      if (!resp.ok) {
+        });
+      } catch (claireErr) {
+        console.warn('[claire] tool-loop round', round, 'failed:', claireErr.message);
         _claireSilent = false;
         claireHideTyping();
         if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
         claireReply('I had trouble finishing that — want me to try again?');
         return;
       }
-      var data = await resp.json();
 
       var textReply = '';
       var toolUses = [];
@@ -31008,23 +30988,16 @@ Instructions:
 Reply only with the SMS text, nothing else.`;
 
   try {
-    const apiKey = getAnthropicKey();
-    if (!apiKey) { draftEl.placeholder = 'AI draft needs an API key.'; return; }
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': apiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 150,
-        messages: [{ role: 'user', content: prompt }]
-      })
+    const data = await _claireApi({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }]
     });
-    if (resp.status === 401) { localStorage.removeItem('anthropic_api_key'); draftEl.placeholder = 'API key invalid — try again.'; return; }
-    const data = await resp.json();
     const draft = data.content && data.content[0] ? data.content[0].text : '';
     draftEl.value = draft;
     draftEl.placeholder = 'AI will draft a reply...';
   } catch(e) {
+    console.warn('[generateAIDraft] claire-chat failed:', e.message);
     draftEl.placeholder = 'Could not generate draft. Type your reply.';
   }
 }
@@ -36187,26 +36160,16 @@ async function translateNote(text, lang, cacheKey) {
   // Try API translation
   const langNames = { es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole (Kriolu)' };
   try {
-    const apiKey = getAnthropicKey();
-    if (!apiKey) return text;
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': apiKey, 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 150,
-        messages: [{ role: 'user', content: 'Translate this short cleaning job note to ' + (langNames[lang]||lang) + '. Return ONLY the translation, nothing else:\n' + text }]
-      })
+    const data = await _claireApi({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: 'Translate this short cleaning job note to ' + (langNames[lang]||lang) + '. Return ONLY the translation, nothing else:\n' + text }]
     });
-    if (resp.status === 401) { localStorage.removeItem('anthropic_api_key'); return text; }
-    if (resp && resp.ok) {
-      const data = await resp.json();
-      const translated = data && data.content && data.content[0] && data.content[0].text
-        ? data.content[0].text.trim() : text;
-      _noteTranslCache[fullKey] = translated;
-      try { localStorage.setItem('note_transl_' + fullKey, translated); } catch(e) {}
-      return translated;
-    }
+    const translated = data && data.content && data.content[0] && data.content[0].text
+      ? data.content[0].text.trim() : text;
+    _noteTranslCache[fullKey] = translated;
+    try { localStorage.setItem('note_transl_' + fullKey, translated); } catch(e) {}
+    return translated;
   } catch(e) {
     // API unavailable - use original text
   }
@@ -38186,28 +38149,19 @@ async function submitApplication() {
   let emRelEn = emRelRaw;
   const submitLang = (typeof appLang !== 'undefined') ? appLang : 'en';
   if (submitLang !== 'en' && (expNotesRaw || emRelRaw)) {
-    const apiKey = (typeof getAnthropicKey === 'function') ? getAnthropicKey() : null;
-    if (apiKey) {
-      const fromLang = { es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole' }[submitLang] || submitLang;
-      async function tr(text) {
-        if (!text) return text;
-        try {
-          const resp = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-            body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001', max_tokens: 400,
-              messages: [{ role: 'user', content: 'Translate this job-application text from '+fromLang+' to English. Reply with ONLY the translation, no quotes:\n\n'+text }]
-            })
-          });
-          if (!resp.ok) return text;
-          const data = await resp.json();
-          return (data.content && data.content[0] && data.content[0].text || text).trim();
-        } catch(e) { return text; }
-      }
-      if (expNotesRaw) expNotesEn = await tr(expNotesRaw);
-      if (emRelRaw) emRelEn = await tr(emRelRaw);
+    const fromLang = { es: 'Spanish', pt: 'Portuguese', cv: 'Cape Verdean Creole' }[submitLang] || submitLang;
+    async function tr(text) {
+      if (!text) return text;
+      try {
+        const data = await _claireApi({
+          model: 'claude-haiku-4-5-20251001', max_tokens: 400,
+          messages: [{ role: 'user', content: 'Translate this job-application text from '+fromLang+' to English. Reply with ONLY the translation, no quotes:\n\n'+text }]
+        });
+        return (data.content && data.content[0] && data.content[0].text || text).trim();
+      } catch(e) { return text; }
     }
+    if (expNotesRaw) expNotesEn = await tr(expNotesRaw);
+    if (emRelRaw) emRelEn = await tr(emRelRaw);
   }
 
   const app = {
