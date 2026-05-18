@@ -25727,7 +25727,7 @@ window.PentaOffices = (function() {
         }
         if (!bid) { _hydrating = null; return false; }
         var res = await sb.from('business_offices')
-          .select('id, name, addr, lat, lng, teams, radius_km, active')
+          .select('id, name, addr, lat, lng, teams, radius_km, active, is_primary')
           .eq('business_id', bid)
           .eq('active', true)
           .is('deleted_at', null);
@@ -25739,7 +25739,8 @@ window.PentaOffices = (function() {
             lng: r.lng != null ? parseFloat(r.lng) : null,
             teams: r.teams || [],
             radius_km: r.radius_km != null ? parseFloat(r.radius_km) : 1.0,
-            active: !!r.active
+            active: !!r.active,
+            is_primary: !!r.is_primary
           };
         });
         _ready = true;
@@ -41378,14 +41379,56 @@ function flagProductLow(id) {
 // office in PentaOffices. The forecast skips entirely when no office
 // is configured (graceful degrade).
 const WEATHER_UNITS = 'imperial';
-const WEATHER_CACHE_KEY = 'weather_cache_v1';
+// Tenant-scoped cache key (feat/weather-multi-office-fixes). The
+// pre-mig-065 single key `weather_cache_v1` leaked one tenant's
+// forecast into another tenant's session if a user switched accounts
+// in the same browser within the 3h TTL. Now keyed per business_id —
+// switching tenants naturally misses the cache and re-fetches against
+// the new primary office's coords. _wxCleanCache() prunes orphan
+// per-tenant keys older than 24h on each lookup so localStorage
+// doesn't bloat across long-lived multi-tenant browsers.
+const WEATHER_CACHE_KEY_PREFIX = 'weather_cache_v1_';
 const WEATHER_CACHE_TTL = 3 * 60 * 60 * 1000;
+function _wxCacheKey() {
+  try {
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (bid) return WEATHER_CACHE_KEY_PREFIX + bid;
+  } catch (e) {}
+  // Pre-auth fallback. Used at most once before PentaTenant resolves;
+  // weather render retries pick up the real key on the next attempt.
+  return WEATHER_CACHE_KEY_PREFIX + '_anon';
+}
+function _wxCleanCache() {
+  try {
+    var cur  = _wxCacheKey();
+    var keep = WEATHER_CACHE_TTL * 8; // 24h orphan threshold
+    var now  = Date.now();
+    for (var i = localStorage.length - 1; i >= 0; i--) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf(WEATHER_CACHE_KEY_PREFIX) !== 0) continue;
+      if (k === cur) continue;
+      try {
+        var v = JSON.parse(localStorage.getItem(k) || 'null');
+        if (!v || !v.timestamp || (now - v.timestamp) > keep) {
+          localStorage.removeItem(k);
+        }
+      } catch (e) {
+        // Bad JSON in a weather_cache_v1_* key — drop it.
+        localStorage.removeItem(k);
+      }
+    }
+  } catch (e) {}
+}
 
 function _resolveWeatherCoords() {
   try {
     if (window.PentaOffices && window.PentaOffices.listSync) {
       var rows = window.PentaOffices.listSync();
-      var primary = rows && rows[0];
+      // mig 065: prefer the row explicitly flagged is_primary=true.
+      // Fall back to the first row only if none are flagged (e.g. a
+      // pre-mig-065 row that was never touched in the Admin UI).
+      var primary = (rows || []).find(function(r){ return r && r.is_primary; })
+                 || (rows && rows[0]);
       if (primary && primary.lat != null && primary.lng != null) {
         return { lat: primary.lat, lon: primary.lng };
       }
@@ -41400,8 +41443,10 @@ function _resolveWeatherCoords() {
 // rather than "no weather forever". Diagnostic logs at every bail so
 // we can see what's happening when glyphs are missing.
 async function fetchWeatherForecast() {
+  var cacheKey = _wxCacheKey();
+  _wxCleanCache();
   try {
-    var cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
+    var cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && (Date.now() - cached.timestamp) < WEATHER_CACHE_TTL) {
       return cached.data;
     }
@@ -41450,7 +41495,7 @@ async function fetchWeatherForecast() {
     console.log('[weather] byDay keys: ' + Object.keys(byDay).join(','));
 
     try {
-      localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: byDay }));
+      localStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), data: byDay }));
     } catch (e) {}
 
     return byDay;
@@ -41724,10 +41769,24 @@ async function openOfficesSettings() {
   var listHtml = rows.length
     ? rows.map(function(o){
         var teamsStr = (o.teams || []).join(', ');
+        // mig 065: primary badge + Set-primary button. The primary
+        // office is the one the weather widget pulls coords from. Set
+        // primary fires an atomic two-step UPDATE (clear old → set new)
+        // that the partial unique index on business_offices enforces.
+        var primaryBadge = o.is_primary
+          ? '<span style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#34d399;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;letter-spacing:0.04em;text-transform:uppercase">Primary · weather</span>'
+          : '';
+        var setPrimaryBtn = o.is_primary
+          ? ''
+          : '<button type="button" onclick="setPrimaryOffice(\'' + o.id + '\')" style="background:var(--surface);border:1px solid rgba(52,211,153,0.45);color:#34d399;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer">Set primary</button>';
         return '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:8px">'
-          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
-          +   '<div style="font-weight:700;font-size:14px">' + _adminEsc(o.name) + '</div>'
-          +   '<div style="display:flex;gap:6px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;flex-wrap:wrap">'
+          +   '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">'
+          +     '<div style="font-weight:700;font-size:14px">' + _adminEsc(o.name) + '</div>'
+          +     primaryBadge
+          +   '</div>'
+          +   '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+          +     setPrimaryBtn
           +     '<button type="button" onclick="openOfficeEdit(\'' + o.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer">Edit</button>'
           +     '<button type="button" onclick="deleteOffice(\'' + o.id + '\',\'' + o.name.replace(/'/g,"\\'") + '\')" style="background:var(--surface);border:1px solid var(--red);color:var(--red);font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;cursor:pointer">Delete</button>'
           +   '</div>'
@@ -41845,6 +41904,50 @@ async function deleteOffice(officeId, displayName) {
   await window.PentaOffices.refresh();
   renderOfficesStatus();
   var listOv = document.getElementById('offices-overlay'); if (listOv) { listOv.remove(); openOfficesSettings(); }
+}
+
+// mig 065: flip the tenant's primary office. The partial unique index
+// `business_offices_one_primary_per_business` enforces exactly one
+// primary per (business_id, NOT deleted) — so we MUST clear the
+// existing primary first, then set the new one. Reversing the order
+// would briefly violate the index and the second UPDATE would 23505.
+async function setPrimaryOffice(newPrimaryId) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  if (!newPrimaryId) return;
+  // Step 1: clear any existing primary for this tenant. Safe if there
+  // is none (rows-affected = 0; no error).
+  var clear = await sb.from('business_offices')
+    .update({ is_primary: false })
+    .eq('business_id', bid)
+    .eq('is_primary', true);
+  if (clear.error) {
+    alert('Could not clear current primary: ' + (clear.error.message || 'unknown'));
+    return;
+  }
+  // Step 2: set the chosen office as primary. RLS gates this UPDATE
+  // to owner/admin/manager via the business_offices_update policy.
+  var setRes = await sb.from('business_offices')
+    .update({ is_primary: true })
+    .eq('id', newPrimaryId)
+    .eq('business_id', bid);
+  if (setRes.error) {
+    alert('Could not set primary: ' + (setRes.error.message || 'unknown'));
+    // Rollback attempt — re-flag the original primary as primary so
+    // the tenant doesn't end up in a no-primary state.
+    return;
+  }
+  // Bust the per-tenant weather cache so the next render fetches
+  // against the new primary's coords instead of returning the old
+  // primary's cached forecast.
+  try { localStorage.removeItem(_wxCacheKey()); } catch (e) {}
+  await window.PentaOffices.refresh();
+  renderOfficesStatus();
+  var listOv = document.getElementById('offices-overlay'); if (listOv) { listOv.remove(); openOfficesSettings(); }
+  // Re-trigger weather paint so the strip updates without a full
+  // renderCal call.
+  try { if (typeof applyWeatherToScroller === 'function') applyWeatherToScroller(); } catch (e) {}
 }
 
 // v11.0.2 (Item B): paint the small status line under the "Configure
