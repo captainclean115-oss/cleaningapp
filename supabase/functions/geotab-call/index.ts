@@ -76,6 +76,15 @@ interface GeotabCreds {
 // after 50min and re-auth on session-expired errors regardless.
 const sessionCache = new Map<string, { session: GeotabSession; expiresAt: number }>();
 
+// Single-flight auth promise per business_id. When N concurrent
+// requests miss the cache (e.g. cold-start Edge Function instance,
+// or 10 _geotabCall fan-outs from a single page render), without this
+// each one would fire Authenticate against Geotab in parallel and trip
+// Geotab's "API calls quota exceeded. Maximum admitted 10 per 1m"
+// limit. The first request initiates auth; subsequent waiters share
+// the same Promise and get the same session.
+const authInFlight = new Map<string, Promise<GeotabSession>>();
+
 async function geotabAuthenticate(creds: GeotabCreds): Promise<GeotabSession> {
   const resp = await fetch(`https://${creds.server}/apiv1`, {
     method: "POST",
@@ -118,9 +127,22 @@ async function geotabAuthenticate(creds: GeotabCreds): Promise<GeotabSession> {
 async function getCachedSession(businessId: string, creds: GeotabCreds): Promise<GeotabSession> {
   const hit = sessionCache.get(businessId);
   if (hit && hit.expiresAt > Date.now() + 30_000) return hit.session;
-  const session = await geotabAuthenticate(creds);
-  sessionCache.set(businessId, { session, expiresAt: Date.now() + 50 * 60 * 1000 });
-  return session;
+  // Single-flight: if another request on this instance is already
+  // authing for the same business, await its promise instead of
+  // racing a second Authenticate call against Geotab's 10/min limit.
+  const inFlight = authInFlight.get(businessId);
+  if (inFlight) return inFlight;
+  const promise = (async () => {
+    try {
+      const session = await geotabAuthenticate(creds);
+      sessionCache.set(businessId, { session, expiresAt: Date.now() + 50 * 60 * 1000 });
+      return session;
+    } finally {
+      authInFlight.delete(businessId);
+    }
+  })();
+  authInFlight.set(businessId, promise);
+  return promise;
 }
 
 async function geotabApiCall(
