@@ -27404,7 +27404,7 @@ function setGPSDateToday() {
 // holds them server-side. The geotab-call Edge Function authenticates,
 // handles the my.geotab.com → myXX.geotab.com server pivot, caches
 // the session, and proxies every API call. Browser just invokes the
-// EF via __geotabCall(method, params) and gets the Geotab result back
+// EF via _geotabCall(method, params) and gets the Geotab result back
 // unchanged.
 //
 // gpsAuthenticate() + gpsConnect() are retired — no manual "Connect
@@ -42223,7 +42223,7 @@ function closeAdminScreen() {
 // retired in-browser geotabCall so the rewire was a simple find +
 // replace. Returns the unwrapped Geotab `result` (the EF wraps it as
 // `{result}` so we don't accidentally treat the wrapper as the data).
-async function __geotabCall(method, params) {
+async function _geotabCall(method, params) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
   var res = await sb.functions.invoke('geotab-call', {
@@ -42399,7 +42399,7 @@ async function testGeotabIntegration() {
   st.style.color = 'var(--muted)';
   st.textContent = 'Querying Geotab…';
   try {
-    var result = await __geotabCall('Get', { typeName: 'Device', resultsLimit: 1 });
+    var result = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 1 });
     var count = Array.isArray(result) ? result.length : 0;
     st.style.color = '#34d399';
     st.textContent = '✓ Connected. Geotab returned ' + count + ' device' + (count === 1 ? '' : 's') + ' (sample of 1 max).';
