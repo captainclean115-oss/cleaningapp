@@ -160,25 +160,22 @@ serve(async (req) => {
   const businessId = userRow.data?.business_id;
   if (!businessId) return json(403, { error: "No tenant for caller" });
 
-  // Rate limit: 600/hour per user (single window). Higher cap than
-  // rc-inbox because opening a busy thread can mark 20+ messages in
-  // one user action. 600/hr supports 30 thread-opens-of-20 per hour
-  // — well above legitimate use, still tight enough to catch a
-  // runaway loop within seconds. Fail-open on RPC error.
-  const rateKey = `rc-mark-read:${callerAuthId}`;
-  const { data: rateOk, error: rateErr } = await admin.rpc("check_rate_limit", {
-    p_key:            rateKey,
-    p_max_calls:      600,
-    p_window_seconds: 3600,
+  // Rate limit (security audit 3b): 300/hr per user, split check/inc.
+  // Tightened from 600/hr — still supports 15 thread-opens-of-20
+  // per hour which is well above legitimate use. Failed marks
+  // (caller-bug 404, RC 429 throttle) don't consume budget since
+  // increment is post-success.
+  const userRateKey = `user:${callerAuthId}:rc-mark-read`;
+  const USER_LIMIT  = 300;
+  const checkRes = await admin.rpc("rate_limit_check", {
+    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
   });
-  if (rateErr) {
-    console.error("[rc-mark-read] rate limit RPC failed:", rateErr);
-    // Fail-open — don't block legitimate mark-reads on a transient
-    // DB issue.
-  } else if (rateOk === false) {
+  if (checkRes.error) {
+    console.error("[rc-mark-read] rate_limit_check failed:", checkRes.error);
+  } else if (checkRes.data === false) {
     return json(429, {
-      error: "Rate limit exceeded",
-      hint:  "600/hour mark-read limit reached. Wait before retrying.",
+      error:  "rate_limit_exceeded",
+      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for rc-mark-read`,
     });
   }
 
@@ -325,5 +322,7 @@ serve(async (req) => {
     p_business_id: businessId,
     p_provider:    "ringcentral",
   });
+  // mig 066: increment rate-limit only on success.
+  await admin.rpc("rate_limit_increment", { p_key: userRateKey, p_window_seconds: 3600 });
   return json(200, { ok: true });
 });

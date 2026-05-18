@@ -170,24 +170,38 @@ serve(async (req) => {
   const businessId = userRow.data?.business_id;
   if (!businessId) return json(403, { error: "No tenant for caller" });
 
-  // Rate limit: 200/hour AND 1000/day per user. Each tenant brings
-  // their own RC credentials, so abuse cost is borne by that tenant;
-  // limits are sized well above legitimate manager use to avoid
-  // blocking real operations, while still catching runaway loops.
-  const rateKey = `send-sms:${callerAuthId}`;
-  const { data: rateOk, error: rateErr } = await admin.rpc("check_rate_limit_dual", {
-    p_key:         rateKey,
-    p_hourly_max:  200,
-    p_daily_max:   1000,
+  // Rate limit (security audit 3b): split check/increment pattern via
+  // mig 066 RPCs. Two keys checked up front, both incremented only on
+  // success. Failed sends (RC token expired, recipient gate rejection,
+  // etc.) don't consume budget.
+  //   user:<auth_uid>:send-sms     — 100/hr/user
+  //   tenant:<business_id>:sms_all — 500/hr/tenant
+  // Fail-open on RPC error so a transient DB issue doesn't block real
+  // operations.
+  const userRateKey   = `user:${callerAuthId}:send-sms`;
+  const tenantRateKey = `tenant:${businessId}:sms_all`;
+  const USER_LIMIT    = 100;
+  const TENANT_LIMIT  = 500;
+  const userCheck = await admin.rpc("rate_limit_check", {
+    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
   });
-  if (rateErr) {
-    console.error("[send-sms] rate limit RPC failed:", rateErr);
-    // Fail-open on RPC error — don't block real operations because
-    // of a transient DB issue. Logged so we can spot patterns.
-  } else if (rateOk === false) {
+  if (userCheck.error) {
+    console.error("[send-sms] rate_limit_check (user) failed:", userCheck.error);
+  } else if (userCheck.data === false) {
     return json(429, {
-      error: "Rate limit exceeded",
-      hint:  "200/hour or 1000/day SMS limit reached. Wait before sending more.",
+      error:  "rate_limit_exceeded",
+      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for send-sms`,
+    });
+  }
+  const tenantCheck = await admin.rpc("rate_limit_check", {
+    p_key: tenantRateKey, p_max: TENANT_LIMIT, p_window_seconds: 3600,
+  });
+  if (tenantCheck.error) {
+    console.error("[send-sms] rate_limit_check (tenant) failed:", tenantCheck.error);
+  } else if (tenantCheck.data === false) {
+    return json(429, {
+      error:  "rate_limit_exceeded",
+      detail: `Per-tenant SMS limit ${TENANT_LIMIT}/hr exceeded`,
     });
   }
 
@@ -380,6 +394,11 @@ serve(async (req) => {
       p_business_id: businessId,
       p_provider:    "ringcentral",
     });
+    // mig 066: increment both rate-limit keys ONLY on success. Failed
+    // sends above (RC non-ok, fetch throw) returned before reaching
+    // here, so they don't consume budget.
+    await admin.rpc("rate_limit_increment", { p_key: userRateKey,   p_window_seconds: 3600 });
+    await admin.rpc("rate_limit_increment", { p_key: tenantRateKey, p_window_seconds: 3600 });
     return json(200, { ok: true, msg_id: sent.id, to, from: fromNumber });
   } catch (e) {
     const msg = (e as Error).message || String(e);
