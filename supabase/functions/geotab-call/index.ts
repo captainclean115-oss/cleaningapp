@@ -20,11 +20,19 @@
 //   stores the post-pivot server alongside the sessionId so every
 //   subsequent geotab-call invocation hits the right host.
 //
-// Method allowlist: for PR1, only `Get` and `GetCountOf` (read methods)
-//   are accepted. Write methods (`Add`, `Set`, `Remove`) are deferred —
-//   no current surface needs them server-side, and the allowlist gives
-//   a defense-in-depth bound on what a compromised authenticated user
-//   could do with the tenant's Geotab credentials. PR2 can extend.
+// Method allowlist: `Get`, `GetCountOf`, `GetAddresses` (PR2 extended
+//   the allowlist to include GetAddresses for the live-map reverse-
+//   geocode path). Write methods (`Add`, `Set`, `Remove`) remain
+//   blocked — no current surface needs them server-side, and the
+//   allowlist gives a defense-in-depth bound on what a compromised
+//   authenticated user could do with the tenant's Geotab credentials.
+//
+// Rate limit (PR2): 600/hr/user via mig 066's split pattern. The hours
+//   rollup + live map + locate_team Claire tool each fan out 2-3
+//   geotab calls per render, so a manager actively using multiple
+//   surfaces could fire ~30/hr; 600/hr leaves 20x headroom and
+//   catches runaway loops within seconds. Increment fires only on
+//   success — Geotab 4xx / auth failures don't consume budget.
 
 import { serve }       from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
@@ -47,7 +55,7 @@ function json(status: number, body: unknown) {
   });
 }
 
-const ALLOWED_METHODS = new Set(["Get", "GetCountOf"]);
+const ALLOWED_METHODS = new Set(["Get", "GetCountOf", "GetAddresses"]);
 
 interface GeotabSession {
   server:    string;
@@ -178,6 +186,22 @@ serve(async (req) => {
   const businessId = userRow.data?.business_id as string | undefined;
   if (!businessId) return json(403, { error: "No tenant for caller" });
 
+  // Rate limit (security audit 3b pattern): 600/hr/user, split
+  // check/increment. Increment fires only on success below.
+  const userRateKey = `user:${callerAuthId}:geotab-call`;
+  const USER_LIMIT  = 600;
+  const checkRes = await admin.rpc("rate_limit_check", {
+    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
+  });
+  if (checkRes.error) {
+    console.error("[geotab-call] rate_limit_check failed:", checkRes.error);
+  } else if (checkRes.data === false) {
+    return json(429, {
+      error:  "rate_limit_exceeded",
+      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for geotab-call`,
+    });
+  }
+
   // Parse + validate body
   let body: { method?: unknown; params?: unknown };
   try {
@@ -253,5 +277,9 @@ serve(async (req) => {
   }
 
   await admin.rpc("mark_geotab_integration_used", { p_business_id: businessId });
+  // mig 066: increment rate-limit only on success. Geotab 4xx / auth
+  // failures returned above before reaching here, so they don't
+  // consume budget.
+  await admin.rpc("rate_limit_increment", { p_key: userRateKey, p_window_seconds: 3600 });
   return json(200, { result });
 });

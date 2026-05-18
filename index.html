@@ -5114,10 +5114,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div class="gps-title">Live Tracking</div>
     <div class="gps-sub" id="gps-status">Connect to see your teams in real time</div>
   </div>
-  <div id="gps-auth-section">
+  <!-- gps-auth-section retired in feat/geotab-per-tenant-pr2: Geotab
+       auth is server-side via the geotab-call Edge Function (PR #34).
+       Section kept (hidden) so any code that toggles its visibility
+       doesn't ReferenceError. -->
+  <div id="gps-auth-section" style="display:none">
     <button class="gps-connect-btn" onclick="gpsConnect()">🗺 Connect MyGeotab</button>
   </div>
-  <div id="gps-main-section" style="display:none">
+  <div id="gps-main-section">
     <div class="gps-refresh-row">
       <div style="display:flex;align-items:center;gap:8px">
         <input type="date" id="gps-date-picker" 
@@ -7242,7 +7246,9 @@ window.PentaSettings = (function() {
   var SYNC_KEYS = [
     'claire_photo', 'claire_did_image_url', 'claire_did_proxy', 'claire_did_key',
     'rc_token', 'rc_refresh', 'rc_token_expiry',
-    'gps_session', 'gps_server',
+    // gps_session + gps_server retired in feat/geotab-per-tenant-pr2 —
+    // Geotab credentials live on business_geotab_integrations (mig 067)
+    // and the geotab-call EF holds the session server-side.
   ];
 
   var _cache = {};        // last-known DB settings
@@ -14132,17 +14138,16 @@ async function toggleJobHistRow(jobId) {
 
 async function fetchTeamDayStops(team, dateStr) {
   // Inline Geotab fetch matching showDayHistory's API pattern but returning data.
-  if (typeof gpsAuthenticate === 'function' && typeof gpsSession !== 'undefined' && !gpsSession) {
-    await gpsAuthenticate();
-  }
-  if (typeof geotabCall !== 'function') throw new Error('GPS API unavailable');
+  // PR2 of Geotab strategy: auth + session are server-side via the
+  // geotab-call EF; the in-browser gpsAuthenticate path is retired.
+  if (typeof _geotabCall !== 'function') throw new Error('GPS API unavailable');
   var date = new Date(dateStr);
-  var devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+  var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
   var device = devices.find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
   if (!device) return [];
   var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
   var endOfDay   = new Date(date); endOfDay.setHours(23,59,59,999);
-  var trips = await geotabCall('Get', {
+  var trips = await _geotabCall('Get', {
     typeName: 'Trip',
     search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
     resultsLimit: 100
@@ -25457,10 +25462,9 @@ async function showDayHistory(team, dateMs) {
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
 
   try {
-    if (!gpsSession) await gpsAuthenticate();
 
     // Get device for this team
-    const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
     const device = devices.find(d => d.name && d.name.toUpperCase().includes(team));
     if (!device) {
       document.getElementById('history-content').innerHTML = '<div style="color:var(--red)">Vehicle not found for team ' + team + '</div>';
@@ -25471,7 +25475,7 @@ async function showDayHistory(team, dateMs) {
     const startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
     const endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
 
-    const trips = await geotabCall('Get', {
+    const trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: {
         deviceSearch: { id: device.id },
@@ -25957,8 +25961,7 @@ async function loadWeekHours() {
     var tripsByDevice = {};
     var teamDevices = [];
     try {
-      if (!gpsSession) await gpsAuthenticate();
-      const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+        const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
       const teamOrder = _pentaTeamNames();
       teamDevices = devices.filter(d =>
         teamOrder.some(t => d.name && d.name.toUpperCase().includes(t))
@@ -25966,7 +25969,7 @@ async function loadWeekHours() {
         ...d,
         team: teamOrder.find(t => d.name.toUpperCase().includes(t))
       }));
-      trips = await geotabCall('Get', {
+      trips = await _geotabCall('Get', {
         typeName: 'Trip',
         search: {
           fromDate: days[0].toISOString(),
@@ -26231,13 +26234,12 @@ async function loadWeekHours() {
 async function debugTrips() {
   // Show raw trip data for B1 today so we can see what fields MyGeotab returns
   try {
-    if (!gpsSession) await gpsAuthenticate();
-    const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
     const b1 = devices.find(d => d.name && d.name.toUpperCase().includes('B1'));
     if (!b1) { alert('B1 not found'); return; }
 
     const days = getWeekDates(-1); // last week
-    const trips = await geotabCall('Get', {
+    const trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: {
         deviceSearch: { id: b1.id },
@@ -26375,15 +26377,14 @@ async function showEmpStops(team, dateMs) {
   if (!area) return;
   area.innerHTML = '<div style="color:var(--muted);text-align:center;font-size:12px;padding:8px">Loading stops...</div>';
   try {
-    if (!gpsSession) await gpsAuthenticate();
     var date = new Date(dateMs);
-    var devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
     var device = devices.find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
     if (!device) { area.innerHTML = '<div style="color:var(--muted);font-size:12px">No vehicle found for '+team+'</div>'; return; }
 
     var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
     var endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
-    var trips = await geotabCall('Get', {
+    var trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
       resultsLimit: 100
@@ -27396,12 +27397,20 @@ function setGPSDateToday() {
 
 // ─────────────────────────────────────────
 // MYGEOTAB GPS INTEGRATION
+// PR2 of Geotab strategy split — credentials retired from the browser
+// bundle. The hardcoded GEOTAB_USER / GEOTAB_PASS / GEOTAB_DB /
+// GEOTAB_SERVER constants are gone; the per-tenant
+// business_geotab_integrations row (set up via Admin → Fleet Tracking)
+// holds them server-side. The geotab-call Edge Function authenticates,
+// handles the my.geotab.com → myXX.geotab.com server pivot, caches
+// the session, and proxies every API call. Browser just invokes the
+// EF via __geotabCall(method, params) and gets the Geotab result back
+// unchanged.
+//
+// gpsAuthenticate() + gpsConnect() are retired — no manual "Connect
+// MyGeotab" click; gpsInit() auto-loads on Schedule tab open and the
+// EF handles all auth.
 // ─────────────────────────────────────────
-
-let GEOTAB_SERVER = 'my.geotab.com';
-const GEOTAB_DB = 'the_maids_of_the_south_shore';
-const GEOTAB_USER = 'tommanna28@gmail.com';
-const GEOTAB_PASS = 'Maids2022!';
 
 // v11.0.4 (Issue A): hardcoded Manna Maids depots retired. Office data
 // now lives per-tenant in business_offices. Access via PentaOffices
@@ -27412,126 +27421,36 @@ const DEPOT_MARLBOROUGH = null;
 const DEPOT_ABINGTON    = null;
 const DEPOT_RADIUS_KM   = 1.0;
 
-let gpsSession = null;
 let gpsVehicles = [];
 let gpsExpanded = {};
 let weekHours = {}; // teamName -> { mon, tue, wed, thu, fri, total }
 
-async function geotabCall(method, params) {
-  const body = JSON.stringify({
-    method,
-    params: { ...params, credentials: gpsSession },
-    id: -1
-  });
-  const resp = await fetch('https://' + GEOTAB_SERVER + '/apiv1', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    body: body
-  });
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const data = await resp.json();
-  if (data.error) {
-    const msg = data.error.errors ? data.error.errors[0].message : (data.error.message || JSON.stringify(data.error));
-    // Session expired
-    if (msg.includes('session') || msg.includes('authenticate') || msg.includes('InvalidUserException')) {
-      localStorage.removeItem('gps_session');
-      gpsSession = null;
-      throw new Error('Session expired - please reconnect');
-    }
-    throw new Error(msg);
-  }
-  return data.result;
-}
-
-async function gpsAuthenticate() {
-  // MyGeotab JSON-RPC format
-  const body = JSON.stringify({
-    method: 'Authenticate',
-    params: {
-      userName: GEOTAB_USER,
-      password: GEOTAB_PASS,
-      database: GEOTAB_DB
-    },
-    id: -1
-  });
-
-  const resp = await fetch('https://' + GEOTAB_SERVER + '/apiv1', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    },
-    body: body
-  });
-
-  if (!resp.ok) throw new Error('HTTP ' + resp.status + ' ' + resp.statusText);
-  const data = await resp.json();
-
-  if (data.error) {
-    throw new Error(data.error.errors ? data.error.errors[0].message : (data.error.message || JSON.stringify(data.error)));
-  }
-
-  if (!data.result) throw new Error('No result from server');
-
-  const result = data.result;
-  // Handle server redirect
-  if (result.path && result.path !== 'ThisServer') {
-    GEOTAB_SERVER = result.path;
-  }
-
-  const creds = result.credentials;
-  gpsSession = {
-    userName: creds.userName,
-    sessionId: creds.sessionId,
-    database: creds.database,
-    server: GEOTAB_SERVER
-  };
-
-  localStorage.setItem('gps_session', JSON.stringify(gpsSession));
-  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('gps_session', JSON.stringify(gpsSession)); } catch (e) {}
-  localStorage.setItem('gps_server', GEOTAB_SERVER);
-  return gpsSession;
-}
-
-async function gpsConnect() {
-  const btn = document.querySelector('.gps-connect-btn');
-  btn.textContent = 'Connecting...';
-  btn.disabled = true;
-  try {
-    await gpsAuthenticate();
-    document.getElementById('gps-auth-section').style.display = 'none';
-    document.getElementById('gps-main-section').style.display = 'block';
-    document.getElementById('gps-status').textContent = 'Connected to MyGeotab ✓';
-    await loadGPSData();
-    loadWeekHours();
-  } catch(e) {
-    btn.textContent = '🗺 Connect MyGeotab';
-    btn.disabled = false;
-    const errMsg = e.message || 'Unknown error';
-    document.getElementById('gps-status').textContent = '❌ ' + errMsg;
-  }
-}
-
 function gpsInit() {
-  const stored = localStorage.getItem('gps_session');
-  const storedServer = localStorage.getItem('gps_server');
-  if (storedServer) GEOTAB_SERVER = storedServer;
-  if (stored) {
-    try {
-      gpsSession = JSON.parse(stored);
-      if (gpsSession.server) GEOTAB_SERVER = gpsSession.server;
-      document.getElementById('gps-auth-section').style.display = 'none';
-      document.getElementById('gps-main-section').style.display = 'block';
-      document.getElementById('gps-status').textContent = 'Connected to MyGeotab ✓';
-      loadGPSData();
-      setTimeout(function(){ initMap(); updateMapMarkers(); }, 500);
-    } catch(e) {
-      gpsSession = null;
-    }
-  }
+  // PR2: auth + session are server-side via the geotab-call EF. The
+  // browser doesn't hold a session; it just hides the (now-vestigial)
+  // Connect button and asks the EF for data. If the tenant has no
+  // integration configured, loadGPSData surfaces a "Set up in Admin →
+  // Fleet Tracking" message via gps-status.
+  var authSec = document.getElementById('gps-auth-section');
+  var mainSec = document.getElementById('gps-main-section');
+  if (authSec) authSec.style.display = 'none';
+  if (mainSec) mainSec.style.display = 'block';
+  var statusEl = document.getElementById('gps-status');
+  if (statusEl) statusEl.textContent = 'Loading fleet data…';
+  loadGPSData();
+  setTimeout(function(){
+    try { initMap(); updateMapMarkers(); } catch (e) { console.warn('[gps] map init threw', e); }
+  }, 500);
   // v11.0.19: Hours Worked is sourced from time_entries (not Geotab), so
-  // load it regardless of whether MyGeotab is connected.
+  // load it regardless of whether the Geotab integration is configured.
   try { loadWeekHours(); } catch (e) { console.warn('[hours] gpsInit loadWeekHours threw', e); }
+}
+
+// Kept as a no-op stub. The "Connect MyGeotab" button is hidden after
+// PR2, but any stale onclick handler that lands here just re-runs the
+// auto-load path rather than ReferenceError'ing.
+async function gpsConnect() {
+  try { gpsInit(); } catch (e) { console.warn('[gps] gpsConnect stub threw', e); }
 }
 
 async function loadGPSData() {
@@ -27539,13 +27458,12 @@ async function loadGPSData() {
   // Set date picker to today if not set
   setGPSDateToday();
   try {
-    if (!gpsSession) await gpsAuthenticate();
 
     // Get all devices
-    const devices = await geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
 
     // Get latest device status (location + speed) - always current
-    const statuses = await geotabCall('Get', {
+    const statuses = await _geotabCall('Get', {
       typeName: 'DeviceStatusInfo',
       resultsLimit: 100
     });
@@ -27560,7 +27478,7 @@ async function loadGPSData() {
     const startOfDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 0, 0, 0);
     const endOfDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59);
     const now = new Date();
-    const trips = await geotabCall('Get', {
+    const trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: {
         fromDate: startOfDay.toISOString(),
@@ -27638,16 +27556,18 @@ async function loadGPSData() {
       'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
 
   } catch(e) {
-    if (e.message && e.message.includes('session')) {
-      // Session expired - re-auth
-      localStorage.removeItem('gps_session');
-      gpsSession = null;
-      document.getElementById('gps-auth-section').style.display = 'block';
-      document.getElementById('gps-main-section').style.display = 'none';
-      document.getElementById('gps-status').textContent = 'Session expired. Please reconnect.';
+    // PR2: the EF handles session expiry server-side (re-auth + retry),
+    // so the browser only sees real errors here. Surface as a minor
+    // status line; if the integration is missing entirely the EF
+    // returns 424 which _geotabCall throws with a "not configured" hint.
+    var statusEl = document.getElementById('gps-status');
+    var lastUpd  = document.getElementById('gps-last-update');
+    if (e && e.message && /not configured|integration/i.test(e.message)) {
+      if (statusEl) statusEl.textContent = 'Geotab not configured for this tenant. Set up in Admin → Fleet Tracking.';
     } else {
-      document.getElementById('gps-last-update').textContent = 'Error: ' + e.message;
+      if (statusEl) statusEl.textContent = 'Could not load fleet data.';
     }
+    if (lastUpd) lastUpd.textContent = 'Error: ' + (e && e.message || 'unknown');
   }
 }
 
@@ -27660,7 +27580,7 @@ async function reverseGeocodeVehicles() {
   if (points.length === 0) return;
 
   try {
-    const addresses = await geotabCall('GetAddresses', { coordinates: points });
+    const addresses = await _geotabCall('GetAddresses', { coordinates: points });
     if (addresses && addresses.length) {
       let ai = 0;
       gpsVehicles.forEach(v => {
@@ -27700,7 +27620,7 @@ async function reverseGeocodeTrips(trips) {
   if (points.length === 0) return trips;
 
   try {
-    const addresses = await geotabCall('GetAddresses', { coordinates: points });
+    const addresses = await _geotabCall('GetAddresses', { coordinates: points });
     if (addresses && addresses.length) {
       addresses.forEach((addr, i) => {
         if (!addr || !tripRefs[i]) return;
@@ -42295,18 +42215,34 @@ function closeAdminScreen() {
 // those credentials. Manna's hardcoded GEOTAB_USER / GEOTAB_PASS /
 // GEOTAB_DB in index.html line ~27401 still drive production fleet
 // tracking — the Test button is the only caller of geotab-call today.
-// PR2 rewires the 8+ geotabCall() sites + retires the constants.
+// PR2 rewires the 8+ _geotabCall() sites + retires the constants.
 
-// Helper: invoke the geotab-call EF with (method, params). Used by the
-// Test button in PR1; PR2 will route every existing geotabCall() site
-// through this same helper.
-async function _geotabApi(method, params) {
+// Canonical helper: invoke the geotab-call Edge Function with
+// (method, params). PR2 routes every existing _geotabCall() site
+// through this — the function signature deliberately matches the
+// retired in-browser geotabCall so the rewire was a simple find +
+// replace. Returns the unwrapped Geotab `result` (the EF wraps it as
+// `{result}` so we don't accidentally treat the wrapper as the data).
+async function __geotabCall(method, params) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
   var res = await sb.functions.invoke('geotab-call', {
     body: { method: method, params: params || {} }
   });
   if (res.error) {
+    // Rate-limit detection — surface a friendly user-facing message +
+    // toast immediately so callers don't need their own handling.
+    // err.isRateLimit lets specific callers (e.g. live map) route to
+    // a quieter UI than a toast if they want.
+    var isRateLimit = (res.data && res.data.error === 'rate_limit_exceeded')
+                   || /rate.?limit|429/i.test(res.error.message || '');
+    if (isRateLimit) {
+      var rlErr = new Error('Rate limit reached — try again in a few minutes');
+      rlErr.isRateLimit = true;
+      rlErr.data = res.data;
+      try { if (typeof _toastSimple === 'function') _toastSimple(rlErr.message, 'error'); } catch (e) {}
+      throw rlErr;
+    }
     var detail = '';
     try {
       if (res.data && res.data.error)  detail += res.data.error;
@@ -42463,7 +42399,7 @@ async function testGeotabIntegration() {
   st.style.color = 'var(--muted)';
   st.textContent = 'Querying Geotab…';
   try {
-    var result = await _geotabApi('Get', { typeName: 'Device', resultsLimit: 1 });
+    var result = await __geotabCall('Get', { typeName: 'Device', resultsLimit: 1 });
     var count = Array.isArray(result) ? result.length : 0;
     st.style.color = '#34d399';
     st.textContent = '✓ Connected. Geotab returned ' + count + ' device' + (count === 1 ? '' : 's') + ' (sample of 1 max).';
