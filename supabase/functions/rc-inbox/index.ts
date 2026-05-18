@@ -195,26 +195,21 @@ serve(async (req) => {
   const businessId = userRow.data?.business_id;
   if (!businessId) return json(403, { error: "No tenant for caller" });
 
-  // Rate limit: 60/hour per user (single window). Inbox reads are
-  // cheap on RC's side but each call here does up to 20 paginated
-  // GETs + 1 OAuth refresh, so we cap higher than the SMS-send
-  // outbound limit isn't justified — 60/hr gives ~1/min headroom
-  // for a manager who keeps the Messages tab open (browser was 2-min
-  // polled = 30/hr) with burst budget for retries + tab re-opens.
-  // Fail-open on RPC error.
-  const rateKey = `rc-inbox:${callerAuthId}`;
-  const { data: rateOk, error: rateErr } = await admin.rpc("check_rate_limit", {
-    p_key:            rateKey,
-    p_max_calls:      60,
-    p_window_seconds: 3600,
+  // Rate limit (security audit 3b): 60/hr per user, split check/inc.
+  // Fail-open on RPC error so transient DB issues don't block legit
+  // refreshes. Increment moved to the success path so a failed RC
+  // pagination doesn't consume the user's hourly budget.
+  const userRateKey = `user:${callerAuthId}:rc-inbox`;
+  const USER_LIMIT  = 60;
+  const checkRes = await admin.rpc("rate_limit_check", {
+    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
   });
-  if (rateErr) {
-    console.error("[rc-inbox] rate limit RPC failed:", rateErr);
-    // Fail-open — don't block real refreshes on a transient DB issue.
-  } else if (rateOk === false) {
+  if (checkRes.error) {
+    console.error("[rc-inbox] rate_limit_check failed:", checkRes.error);
+  } else if (checkRes.data === false) {
     return json(429, {
-      error: "Rate limit exceeded",
-      hint:  "60/hour inbox refresh limit reached. Wait before retrying.",
+      error:  "rate_limit_exceeded",
+      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for rc-inbox`,
     });
   }
 
@@ -392,5 +387,9 @@ serve(async (req) => {
     p_business_id: businessId,
     p_provider:    "ringcentral",
   });
+  // mig 066: increment rate-limit only on success. Mid-pagination 429
+  // counts as partial-success and still increments — the user got
+  // some data back.
+  await admin.rpc("rate_limit_increment", { p_key: userRateKey, p_window_seconds: 3600 });
   return json(200, partial ? { messages, partial: true, retryAfter: retryAfterSec } : { messages });
 });

@@ -7499,6 +7499,21 @@ async function _sendSMS(phoneE164, body, opts) {
     }
   });
   if (res.error) {
+    // Detect 429 rate-limit and surface a friendly user-facing message.
+    // The EF returns {error: 'rate_limit_exceeded', detail: 'Per-... limit
+    // N/hr exceeded ...'}; we don't reveal the limit numbers to the user
+    // (just "try again in a few minutes") because it gives less info to
+    // anyone probing the surface. err.isRateLimit lets callers route to
+    // a specific toast.
+    var isRateLimit = (res.data && res.data.error === 'rate_limit_exceeded')
+                   || /rate.?limit|429/i.test(res.error.message || '');
+    if (isRateLimit) {
+      var rlErr = new Error('Rate limit reached — try again in a few minutes');
+      rlErr.isRateLimit = true;
+      rlErr.data = res.data;
+      try { if (typeof _toastSimple === 'function') _toastSimple(rlErr.message, 'error'); } catch (e) {}
+      throw rlErr;
+    }
     var detail = '';
     try {
       if (res.data && res.data.error)  detail += res.data.error;
@@ -18495,6 +18510,18 @@ async function _claireApi(body) {
   var data = null;
   try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* not JSON */ }
   if (!resp.ok) {
+    // 429 from the EF maps to the rate-limit user-facing message.
+    // Detection: HTTP 429 OR the EF's structured error body. Setting
+    // err.isRateLimit lets Claire's tool-loop catch render the
+    // specific "slow down" reply instead of the generic try-again.
+    if (resp.status === 429 || (data && data.error === 'rate_limit_exceeded')) {
+      console.warn('[_claireApi] rate limit hit:', data);
+      var rlErr = new Error('Hit rate limit, slow down');
+      rlErr.isRateLimit = true;
+      rlErr.status = 429;
+      rlErr.data = data;
+      throw rlErr;
+    }
     // Surface the most informative error string we can build.
     var summary = (data && data.error) || ('HTTP ' + resp.status);
     if (data && data.detail) summary += ' — ' + String(data.detail).slice(0, 400);
@@ -21971,6 +21998,12 @@ async function processVoiceCommand(text) {
         console.warn('[claire] tool-loop round', round, 'failed:', claireErr.message);
         _claireSilent = false;
         claireHideTyping();
+        // Rate-limit gets its own visible message so the user knows
+        // why Claire stopped (not a real failure, just throttle).
+        if (claireErr && claireErr.isRateLimit) {
+          claireReply('Hit rate limit, slow down — try again in a few minutes.');
+          return;
+        }
         if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
         claireReply('I had trouble finishing that — want me to try again?');
         return;

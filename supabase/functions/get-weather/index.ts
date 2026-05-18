@@ -39,6 +39,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY     = Deno.env.get("SUPABASE_ANON_KEY") || "";
 if (!ANON_KEY) throw new Error("Missing SUPABASE_ANON_KEY env var");
+const SERVICE_KEY  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OWM_KEY      = Deno.env.get("OPENWEATHER_API_KEY") || "";
 if (!OWM_KEY) console.warn("[get-weather] OPENWEATHER_API_KEY env var not set — every request will 502");
 
@@ -76,6 +77,29 @@ serve(async (req) => {
     return json(401, { error: "Invalid JWT", detail: callerErr.message });
   }
   if (!callerData.user) return json(401, { error: "Invalid JWT (no user)" });
+  const callerAuthId = callerData.user.id;
+
+  // Rate limit (security audit 3b): 60/hr per user, split check/inc.
+  // The 10min EF in-memory cache + 3h browser localStorage cache already
+  // absorb almost all traffic; this limit only catches abuse (e.g., a
+  // tight client-side loop). Cache hits skip the increment entirely so
+  // they don't consume budget.
+  const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const userRateKey = `user:${callerAuthId}:get-weather`;
+  const USER_LIMIT  = 60;
+  const checkRes = await admin.rpc("rate_limit_check", {
+    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
+  });
+  if (checkRes.error) {
+    console.error("[get-weather] rate_limit_check failed:", checkRes.error);
+  } else if (checkRes.data === false) {
+    return json(429, {
+      error:  "rate_limit_exceeded",
+      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for get-weather`,
+    });
+  }
 
   // Parse + validate body
   let body: { lat?: unknown; lon?: unknown; units?: unknown };
@@ -123,5 +147,9 @@ serve(async (req) => {
   }
 
   cache.set(cacheKey, { data, expiresAt: Date.now() + TTL_MS });
+  // mig 066: increment rate-limit only on a successful UPSTREAM call.
+  // Cache hits above return early without consuming budget, which is
+  // the right behavior — they're not making a real OpenWeather call.
+  await admin.rpc("rate_limit_increment", { p_key: userRateKey, p_window_seconds: 3600 });
   return json(200, data);
 });
