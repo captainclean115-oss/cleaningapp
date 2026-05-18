@@ -41364,10 +41364,15 @@ function flagProductLow(id) {
 
 // ═══════════════════════════════════════════════════════════════════════
 // WEATHER — tiny addition to the Schedule date scroller
-// Silent no-op when no API key is configured. Never throws. Never touches
-// DOM outside .week-strip cells. Runs only when renderCal fires.
+// Silent no-op when supabase client isn't ready. Never throws. Never
+// touches DOM outside .week-strip cells. Runs only when renderCal fires.
+//
+// API key rotation: as of feat/weather-edge-function, the OpenWeatherMap
+// API key lives in the get-weather Edge Function (Supabase secret
+// OPENWEATHER_API_KEY). The browser invokes that EF — no key in the
+// bundle. Browser-side localStorage cache (3h) still soaks up most
+// calls; the EF adds a 10min in-memory cache as a second layer.
 // ═══════════════════════════════════════════════════════════════════════
-const WEATHER_API_KEY = '80446455c847e3572db15d7cc16a40da';
 // v11.0.5 (Issue B-4): WEATHER_LOCATION used to be hardcoded to Manna's
 // Abington office coords. Now resolved per-tenant from the primary
 // office in PentaOffices. The forecast skips entirely when no office
@@ -41397,8 +41402,6 @@ async function fetchWeatherForecast() {
     }
   } catch (e) {}
 
-  if (!WEATHER_API_KEY || WEATHER_API_KEY === 'PASTE_KEY_HERE') return null;
-
   var coords = _resolveWeatherCoords();
   if (!coords) {
     // No office configured for this tenant — skip the fetch rather
@@ -41407,13 +41410,22 @@ async function fetchWeatherForecast() {
     return null;
   }
 
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) return null;
+
   try {
-    var url = 'https://api.openweathermap.org/data/2.5/forecast?lat=' + coords.lat
-            + '&lon=' + coords.lon + '&units=' + WEATHER_UNITS
-            + '&appid=' + WEATHER_API_KEY;
-    var res = await fetch(url);
-    if (!res.ok) return null;
-    var json = await res.json();
+    // Call the get-weather Edge Function instead of OpenWeatherMap
+    // directly — the API key lives server-side now. EF returns the raw
+    // OpenWeather forecast payload; the byDay transform below is
+    // unchanged.
+    var res = await sb.functions.invoke('get-weather', {
+      body: { lat: coords.lat, lon: coords.lon, units: WEATHER_UNITS }
+    });
+    if (res.error || !res.data) {
+      console.warn('[weather] get-weather invoke failed:', res.error, res.data);
+      return null;
+    }
+    var json = res.data;
 
     var byDay = {};
     (json.list || []).forEach(function(entry) {
