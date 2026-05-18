@@ -41755,6 +41755,7 @@ function openAdminScreen() {
   try { pentaBannerUpdateCount(); } catch(e){}
   try { pentaBannerRenderActive(); } catch(e){}
   try { renderPhoneIntegrationStatus(); } catch(e){}
+  try { renderGeotabIntegrationStatus(); } catch(e){}
   try { renderOfficesStatus(); } catch(e){}
 }
 
@@ -42286,6 +42287,192 @@ function closeAdminScreen() {
   // Re-apply on return so changes take effect without a reload.
   try { applyPermissions(); } catch(e){}
   try { _p3cDashStopAutoRefresh(); } catch(e){}
+}
+
+// ─── Fleet Tracking (Geotab) — PR1 of Geotab strategy ─────────────
+// Server-side capability only. Admin seeds the per-tenant integration
+// row here; the EF (geotab-call) authenticates against Geotab using
+// those credentials. Manna's hardcoded GEOTAB_USER / GEOTAB_PASS /
+// GEOTAB_DB in index.html line ~27401 still drive production fleet
+// tracking — the Test button is the only caller of geotab-call today.
+// PR2 rewires the 8+ geotabCall() sites + retires the constants.
+
+// Helper: invoke the geotab-call EF with (method, params). Used by the
+// Test button in PR1; PR2 will route every existing geotabCall() site
+// through this same helper.
+async function _geotabApi(method, params) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) throw new Error('Supabase client not ready');
+  var res = await sb.functions.invoke('geotab-call', {
+    body: { method: method, params: params || {} }
+  });
+  if (res.error) {
+    var detail = '';
+    try {
+      if (res.data && res.data.error)  detail += res.data.error;
+      if (res.data && res.data.detail) detail += ' — ' + String(res.data.detail).slice(0, 300);
+      if (res.data && res.data.hint)   detail += ' (' + res.data.hint + ')';
+    } catch (e) {}
+    var err = new Error(detail || res.error.message || 'geotab-call failed');
+    err.data = res.data;
+    throw err;
+  }
+  return res.data && res.data.result;
+}
+
+async function renderGeotabIntegrationStatus() {
+  var el = document.getElementById('admin-geotab-status');
+  if (!el) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) { el.textContent = ''; return; }
+    var res = await sb.rpc('get_geotab_summary', { p_business_id: bid });
+    var row = (res && res.data && res.data[0]) || null;
+    if (!row || !row.configured) {
+      el.textContent = 'Not configured — fleet tracking still uses the hardcoded fallback (Manna only).';
+      return;
+    }
+    var dotColor = row.status === 'active' ? '#34d399' : (row.status === 'error' ? '#f87171' : '#fbbf24');
+    el.innerHTML = '<span style="color:' + dotColor + '">●</span> '
+      + (row.status === 'active' ? 'Active' : ('Status: ' + _adminEsc(row.status)))
+      + ' · ' + _adminEsc(row.server || 'my.geotab.com')
+      + ' / ' + _adminEsc(row.database || '');
+  } catch (e) {
+    el.textContent = '';
+  }
+}
+
+async function openGeotabIntegrationSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  // Read the existing row directly. RLS gates to owner+admin so
+  // non-admin users get a friendly notice.
+  var existing = null;
+  try {
+    var er = await sb.from('business_geotab_integrations')
+      .select('id, server, database, username, password, status, last_used_at, last_error')
+      .eq('business_id', bid)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (er.error && (er.error.code === '42501' || /permission/i.test(er.error.message || ''))) {
+      alert('Only owners and admins can view or edit Geotab integration settings.');
+      return;
+    }
+    existing = er.data || null;
+  } catch (e) {
+    alert('Could not load Geotab integration: ' + (e.message || e));
+    return;
+  }
+  var esc = function(v) { return String(v == null ? '' : v).replace(/"/g, '&quot;'); };
+  var overlay = document.createElement('div');
+  overlay.id = 'geotab-integ-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:540px;max-height:90vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">🚗 Geotab Fleet Tracking</div>'
+    +     '<button type="button" onclick="document.getElementById(\'geotab-integ-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   '<div style="background:rgba(108,143,255,0.10);border:1px solid rgba(108,143,255,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#cbd6ff;line-height:1.5">'
+    +     '<strong>PR1 — server-side capability only.</strong><br>'
+    +     'Fleet tracking in the app still uses the hardcoded fallback for the in-place tenant. This modal lets you seed the per-tenant row + verify it works against your real Geotab account via the Test button. PR2 will rewire every <code>geotabCall</code> to use this server-side path.'
+    +   '</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Geotab server (default <code>my.geotab.com</code> — Geotab redirects to <code>myXX.geotab.com</code> on first auth and the EF caches that)</div>'
+    +   '<input type="text" id="gt-server" value="' + esc((existing && existing.server) || 'my.geotab.com') + '" placeholder="my.geotab.com" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Database (e.g. <code>the_maids_of_the_south_shore</code> for Manna)</div>'
+    +   '<input type="text" id="gt-database" value="' + esc((existing && existing.database) || '') + '" placeholder="your_geotab_database" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Username (Geotab login email)</div>'
+    +   '<input type="email" id="gt-username" value="' + esc((existing && existing.username) || '') + '" placeholder="you@example.com" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Password</div>'
+    +   '<input type="password" id="gt-password" value="' + esc((existing && existing.password) || '') + '" placeholder="•••" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:8px;outline:none">'
+    +   '<div style="font-size:11px;color:var(--muted);margin-bottom:18px;line-height:1.45">Rotate the password in mygeotab.com first, then paste the new value here. The old bundled password ("Maids2022!") is in git history and should be considered compromised.</div>'
+    +   (existing && existing.last_error ? '<div style="background:rgba(248,113,113,0.10);border:1px solid rgba(248,113,113,0.35);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#fca5a5">Last error: ' + _adminEsc(existing.last_error) + '</div>' : '')
+    +   '<div style="display:flex;gap:8px;margin-bottom:18px">'
+    +     '<button type="button" onclick="document.getElementById(\'geotab-integ-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button type="button" onclick="saveGeotabIntegrationSettings()" style="flex:2;background:#fbbf24;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    +   '</div>'
+    +   '<div style="border-top:1px solid var(--border);padding-top:14px">'
+    +     '<div style="font-size:13px;font-weight:700;margin-bottom:6px">Test connection</div>'
+    +     '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.45">Calls <code>geotab-call</code> with <code>Get(Device, resultsLimit=1)</code> using the <em>currently saved</em> credentials. Save first if you changed anything above.</div>'
+    +     '<button type="button" onclick="testGeotabIntegration()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:10px 14px;border-radius:8px;cursor:pointer">Send test query</button>'
+    +     '<div id="gt-test-status" style="font-size:12px;color:var(--muted);min-height:18px;margin-top:8px"></div>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveGeotabIntegrationSettings() {
+  console.log('[saveGeotab] called');
+  var server   = ((document.getElementById('gt-server')   || {}).value || '').trim() || 'my.geotab.com';
+  var database = ((document.getElementById('gt-database') || {}).value || '').trim();
+  var username = ((document.getElementById('gt-username') || {}).value || '').trim();
+  var password = ((document.getElementById('gt-password') || {}).value || '').trim();
+  function _bail(msg) { console.warn('[saveGeotab] bail:', msg); alert(msg); }
+  if (!database) { _bail('Database is required (e.g. "the_maids_of_the_south_shore").'); return; }
+  if (!username) { _bail('Username (Geotab email) is required.'); return; }
+  if (!password) { _bail('Password is required.'); return; }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { _bail('Tenant not resolved — refresh and try again.'); return; }
+  var payload = {
+    business_id: bid,
+    server:      server,
+    database:    database,
+    username:    username,
+    password:    password,
+    status:      'active',
+    last_error:  null,
+  };
+  // Upsert by business_id (one row per business). If switching from a
+  // previous credential set, this replaces it in place.
+  var existing = null;
+  try {
+    var er = await sb.from('business_geotab_integrations')
+      .select('id')
+      .eq('business_id', bid)
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle();
+    existing = er.data || null;
+  } catch (e) {}
+  var res;
+  if (existing && existing.id) {
+    res = await sb.from('business_geotab_integrations').update(payload).eq('id', existing.id);
+  } else {
+    res = await sb.from('business_geotab_integrations').insert(payload);
+  }
+  if (res.error) {
+    console.warn('[saveGeotab] upsert failed:', res.error);
+    alert('Save failed: ' + (res.error.message || 'unknown'));
+    return;
+  }
+  console.log('[saveGeotab] saved OK');
+  var ov = document.getElementById('geotab-integ-overlay');
+  if (ov) ov.remove();
+  try { renderGeotabIntegrationStatus(); } catch (e) {}
+  alert('Saved. Re-open Configure Geotab integration to run the Test query.');
+}
+
+async function testGeotabIntegration() {
+  var st = document.getElementById('gt-test-status');
+  if (!st) return;
+  st.style.color = 'var(--muted)';
+  st.textContent = 'Querying Geotab…';
+  try {
+    var result = await _geotabApi('Get', { typeName: 'Device', resultsLimit: 1 });
+    var count = Array.isArray(result) ? result.length : 0;
+    st.style.color = '#34d399';
+    st.textContent = '✓ Connected. Geotab returned ' + count + ' device' + (count === 1 ? '' : 's') + ' (sample of 1 max).';
+    try { renderGeotabIntegrationStatus(); } catch (e) {}
+  } catch (e) {
+    st.style.color = '#f87171';
+    st.textContent = 'Test failed: ' + (e.message || e);
+    try { renderGeotabIntegrationStatus(); } catch (e2) {}
+  }
 }
 function renderAdminRows() {
   var body = document.getElementById('admin-rows');
@@ -44880,6 +45067,19 @@ function _p3dPage(dir) {
         <button onclick="openPhoneIntegrationSettings()" style="flex:1;background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#a7f3d0;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📞 Configure RingCentral integration</button>
       </div>
       <div id="admin-phone-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- Fleet Tracking (Geotab). PR1 of Geotab strategy split — Owners
+         + admins seed the integration row here. Manna's hardcoded path
+         is still active in the browser today; PR2 rewires the 8+
+         geotabCall sites through the server-side EF and retires the
+         constants. -->
+    <div class="admin-sec" id="admin-geotab-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Fleet Tracking (Geotab)</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openGeotabIntegrationSettings()" style="flex:1;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🚗 Configure Geotab integration</button>
+      </div>
+      <div id="admin-geotab-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- v11.0.4 (Issue A): Offices / Depots. Manager-or-higher gated by
