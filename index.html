@@ -42226,9 +42226,41 @@ function closeAdminScreen() {
 async function _geotabCall(method, params) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
-  var res = await sb.functions.invoke('geotab-call', {
-    body: { method: method, params: params || {} }
-  });
+
+  async function _invoke() {
+    return await sb.functions.invoke('geotab-call', {
+      body: { method: method, params: params || {} }
+    });
+  }
+
+  var res = await _invoke();
+
+  // Stale-JWT recovery. gpsInit fires loadGPSData at boot (8+ parallel
+  // _geotabCall fan-out), and the cached access_token can be seconds
+  // from expiry — supabase-js attaches whatever's cached without
+  // auto-refreshing, so some calls in the burst land with a stale
+  // token and the EF returns 401 from auth.getUser(jwt). EFs invoked
+  // from user-action paths (sendSMS, claireApi) don't see this because
+  // by then some other path has already triggered a refresh.
+  //
+  // Detect 401, refresh the session once, retry the invoke once. If it
+  // still fails, fall through to the normal error path.
+  var looks401 = res.error && (
+       /401|Unauthorized|Invalid JWT|non-2xx/i.test(res.error.message || '')
+    || (res.data && (res.data.error === 'Invalid JWT' || /invalid jwt/i.test(res.data.error || '')))
+  );
+  if (looks401) {
+    try {
+      console.warn('[_geotabCall] EF non-2xx, attempting session refresh + retry', { error: res.error, data: res.data });
+      if (sb.auth && typeof sb.auth.refreshSession === 'function') {
+        await sb.auth.refreshSession();
+      }
+      res = await _invoke();
+    } catch (refreshErr) {
+      console.warn('[_geotabCall] refresh+retry threw:', refreshErr);
+    }
+  }
+
   if (res.error) {
     // Rate-limit detection — surface a friendly user-facing message +
     // toast immediately so callers don't need their own handling.
@@ -42243,6 +42275,13 @@ async function _geotabCall(method, params) {
       try { if (typeof _toastSimple === 'function') _toastSimple(rlErr.message, 'error'); } catch (e) {}
       throw rlErr;
     }
+    // Log the actual payload on every non-2xx — supabase-js's
+    // FunctionsHttpError swallows the body, but res.data is populated
+    // when Content-Type is application/json, so we can usually pull
+    // the EF's detail out. Without this console.warn, the only thing
+    // surfaces in DevTools is "Edge Function returned a non-2xx status
+    // code" — same dead end we hit on claire-chat PR #32.
+    console.warn('[_geotabCall] EF error after refresh attempt:', { error: res.error, data: res.data, method: method });
     var detail = '';
     try {
       if (res.data && res.data.error)  detail += res.data.error;
