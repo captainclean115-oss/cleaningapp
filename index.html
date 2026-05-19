@@ -42219,80 +42219,70 @@ function closeAdminScreen() {
 
 // Canonical helper: invoke the geotab-call Edge Function with
 // (method, params). PR2 routes every existing _geotabCall() site
-// through this — the function signature deliberately matches the
-// retired in-browser geotabCall so the rewire was a simple find +
-// replace. Returns the unwrapped Geotab `result` (the EF wraps it as
-// `{result}` so we don't accidentally treat the wrapper as the data).
+// through this. Returns the unwrapped Geotab `result` (the EF wraps
+// it as `{result}` so we don't accidentally treat the wrapper as the
+// data).
+//
+// Raw fetch (mirrors _claireApi): supabase-js v2.39's
+// `functions.invoke` swallows non-2xx response bodies into
+// `error.context.response`, returning `data: null` to the caller.
+// That dead-end is what led PR #38 to misdiagnose the boot 401
+// cascade as a stale JWT — the real EF body was "Geotab
+// authentication failed" all along (Geotab's 10-Authenticate/min
+// limit tripping across cold Edge Function isolates), but the
+// browser couldn't see it. Mig 069 + the EF's DB-backed session
+// cache is the actual fix; this helper switches to raw fetch so
+// future failures aren't a blackbox.
 async function _geotabCall(method, params) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
-
-  async function _invoke() {
-    return await sb.functions.invoke('geotab-call', {
-      body: { method: method, params: params || {} }
+  var session;
+  try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
+  if (!session || !session.access_token) {
+    throw new Error('geotab-call: no active session (sign in again)');
+  }
+  var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
+  var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
+  var resp;
+  try {
+    resp = await fetch(supaUrl + '/functions/v1/geotab-call', {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': 'Bearer ' + session.access_token,
+        'apikey':        anonKey,
+      },
+      body: JSON.stringify({ method: method, params: params || {} }),
     });
+  } catch (netErr) {
+    throw new Error('geotab-call: network ' + (netErr.message || netErr));
   }
-
-  var res = await _invoke();
-
-  // Stale-JWT recovery. gpsInit fires loadGPSData at boot (8+ parallel
-  // _geotabCall fan-out), and the cached access_token can be seconds
-  // from expiry — supabase-js attaches whatever's cached without
-  // auto-refreshing, so some calls in the burst land with a stale
-  // token and the EF returns 401 from auth.getUser(jwt). EFs invoked
-  // from user-action paths (sendSMS, claireApi) don't see this because
-  // by then some other path has already triggered a refresh.
-  //
-  // Detect 401, refresh the session once, retry the invoke once. If it
-  // still fails, fall through to the normal error path.
-  var looks401 = res.error && (
-       /401|Unauthorized|Invalid JWT|non-2xx/i.test(res.error.message || '')
-    || (res.data && (res.data.error === 'Invalid JWT' || /invalid jwt/i.test(res.data.error || '')))
-  );
-  if (looks401) {
-    try {
-      console.warn('[_geotabCall] EF non-2xx, attempting session refresh + retry', { error: res.error, data: res.data });
-      if (sb.auth && typeof sb.auth.refreshSession === 'function') {
-        await sb.auth.refreshSession();
-      }
-      res = await _invoke();
-    } catch (refreshErr) {
-      console.warn('[_geotabCall] refresh+retry threw:', refreshErr);
-    }
-  }
-
-  if (res.error) {
-    // Rate-limit detection — surface a friendly user-facing message +
-    // toast immediately so callers don't need their own handling.
-    // err.isRateLimit lets specific callers (e.g. live map) route to
-    // a quieter UI than a toast if they want.
-    var isRateLimit = (res.data && res.data.error === 'rate_limit_exceeded')
-                   || /rate.?limit|429/i.test(res.error.message || '');
-    if (isRateLimit) {
+  var raw;
+  try { raw = await resp.text(); } catch (e) { raw = ''; }
+  var data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* not JSON */ }
+  if (!resp.ok) {
+    if (resp.status === 429 || (data && data.error === 'rate_limit_exceeded')) {
+      console.warn('[_geotabCall] rate limit hit:', data);
       var rlErr = new Error('Rate limit reached — try again in a few minutes');
       rlErr.isRateLimit = true;
-      rlErr.data = res.data;
+      rlErr.status = 429;
+      rlErr.data = data;
       try { if (typeof _toastSimple === 'function') _toastSimple(rlErr.message, 'error'); } catch (e) {}
       throw rlErr;
     }
-    // Log the actual payload on every non-2xx — supabase-js's
-    // FunctionsHttpError swallows the body, but res.data is populated
-    // when Content-Type is application/json, so we can usually pull
-    // the EF's detail out. Without this console.warn, the only thing
-    // surfaces in DevTools is "Edge Function returned a non-2xx status
-    // code" — same dead end we hit on claire-chat PR #32.
-    console.warn('[_geotabCall] EF error after refresh attempt:', { error: res.error, data: res.data, method: method });
-    var detail = '';
-    try {
-      if (res.data && res.data.error)  detail += res.data.error;
-      if (res.data && res.data.detail) detail += ' — ' + String(res.data.detail).slice(0, 300);
-      if (res.data && res.data.hint)   detail += ' (' + res.data.hint + ')';
-    } catch (e) {}
-    var err = new Error(detail || res.error.message || 'geotab-call failed');
-    err.data = res.data;
+    var summary = (data && data.error) || ('HTTP ' + resp.status);
+    if (data && data.detail) summary += ' — ' + String(data.detail).slice(0, 400);
+    if (data && data.hint)   summary += ' (' + data.hint + ')';
+    if (!data && raw)        summary += ' — ' + raw.slice(0, 400);
+    console.warn('[_geotabCall] EF non-2xx:', resp.status, data || raw, { method: method });
+    var err = new Error(summary);
+    err.status = resp.status;
+    err.data = data;
     throw err;
   }
-  return res.data && res.data.result;
+  if (!data) throw new Error('geotab-call: empty response body');
+  return data.result;
 }
 
 async function renderGeotabIntegrationStatus() {
