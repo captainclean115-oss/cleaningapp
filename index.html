@@ -27389,9 +27389,84 @@ function getGPSDate() {
 function setGPSDateToday() {
   const picker = document.getElementById('gps-date-picker');
   if (picker && !picker.value) {
+    // v11.0.24: use LOCAL date components, not toISOString(). toISOString()
+    // returns UTC, so between local-midnight and ~4am EDT the picker would
+    // default to YESTERDAY's date (the UTC day hasn't rolled over yet).
     const today = new Date();
-    picker.value = today.toISOString().split('T')[0];
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    picker.value = y + '-' + m + '-' + d;
   }
+}
+
+// v11.0.24 — day-boundary window for Live GPS Tracking. Mirrors the
+// v11.0.23 algorithm in loadWeekHours (SUSTAINED_AWAY_MIN_MIN=90) so
+// the live timeline excludes overnight depot stays and pre-7am idle
+// bounces — both of which leaked in before this when Geotab's Trip
+// fetch ran with includeOverlappedTrips=true and no post-filter.
+//
+// Returns {trueStart, trueEnd} for the displayed `day`, or null when
+// the device has no real work that day (idle, weekend, missing data).
+// Callers should treat null as "show empty timeline."
+function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
+  if (!deviceTrips || deviceTrips.length === 0) return null;
+  const dayStart = new Date(day); dayStart.setHours(0,0,0,0);
+  const dayEnd   = new Date(day); dayEnd.setHours(23,59,59,999);
+  const dayTrips = deviceTrips.filter(function(t){
+    const ts = new Date(t.start);
+    return ts >= dayStart && ts <= dayEnd;
+  }).sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
+  if (dayTrips.length === 0) return null;
+
+  const sevenAM = new Date(day); sevenAM.setHours(7,0,0,0);
+  const SUSTAINED_AWAY_MIN_MIN = 90;
+
+  const _isDepotStart = function(t){
+    var sa = t.startAddress || t.startLocation || '';
+    return isDepotAddress(sa, team) || isDepotPoint(t.startPoint, team);
+  };
+  const _isDepotStop = function(t){
+    var sa = t.stopAddress || t.stopLocation || '';
+    return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+  };
+
+  const validTrips = dayTrips.filter(function(t){ return new Date(t.start) >= sevenAM; });
+  if (validTrips.length === 0) return null;
+
+  const depotDepartures = validTrips.filter(_isDepotStart);
+  const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
+    .sort(function(a,b){ return new Date(a.stop) - new Date(b.stop); });
+
+  let trueStartTrip = null;
+  for (const dep of depotDepartures) {
+    const depTs = new Date(dep.start);
+    const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > depTs; });
+    if (!nextReturn) { trueStartTrip = dep; break; }
+    const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
+    if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = dep; break; }
+  }
+  const trueStart = trueStartTrip
+    ? new Date(trueStartTrip.start)
+    : new Date(validTrips[0].start);
+
+  const lateDepotArrivals = depotArrivalsAsc.filter(function(a){ return new Date(a.stop) > trueStart; });
+  let trueEnd = null;
+  if (lateDepotArrivals.length > 0) {
+    trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+  } else {
+    const allStops = validTrips.filter(function(t){ return t.stop; })
+      .sort(function(a,b){ return new Date(b.stop) - new Date(a.stop); });
+    if (allStops.length > 0) {
+      trueEnd = new Date(allStops[0].stop);
+    } else if (isToday) {
+      // In-progress shift, no stops recorded yet — let everything up to
+      // "now" through.
+      trueEnd = new Date();
+    }
+  }
+  if (!trueEnd) return null;
+  return { trueStart: trueStart, trueEnd: trueEnd };
 }
 
 
@@ -27506,8 +27581,21 @@ async function loadGPSData() {
       .map(d => {
         const team = teamOrder.find(t => d.name && d.name.toUpperCase().includes(t)) || d.name;
         const status = statusMap[d.id] || {};
-        const deviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
+        const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
           new Date(b.start) - new Date(a.start));
+
+        // v11.0.24 — filter to the v11.0.23 day-boundary window so overnight
+        // depot stays and pre-7am idle bounces don't leak into the timeline.
+        // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
+        // what causes the leak; this is the post-filter that closes it.
+        // selectedDate + isToday are in scope from loadGPSData above.
+        const _window = _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday);
+        const deviceTrips = _window
+          ? allDeviceTrips.filter(function(t){
+              const ts = new Date(t.start);
+              return ts >= _window.trueStart && ts <= _window.trueEnd;
+            })
+          : [];
 
         // Calculate today's stats
         let totalDriveMin = 0;
