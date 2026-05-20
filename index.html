@@ -27663,7 +27663,7 @@ async function loadGPSData() {
     renderGPS();
     const now2 = new Date();
     document.getElementById('gps-last-update').textContent =
-      'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaUserTimezone()});
+      'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaBusinessTimezone()});
 
   } catch(e) {
     // PR2: the EF handles session expiry server-side (re-auth + retry),
@@ -27818,10 +27818,12 @@ function renderGPS() {
       // Use shared matchStopToClient function
 
       rows = stopList.map((s, si) => {
-        // v11.0.25: render in the viewing user's stored timezone (mig 070).
-        // undefined = browser-default fallback, so this degrades gracefully
-        // for users whose timezone hasn't resolved yet on first paint.
-        const _tz = _pentaUserTimezone();
+        // v11.0.27: render in the BUSINESS's timezone (where the work
+        // happens), not the viewer's. A CA-based owner viewing MA-based
+        // fleet wants times in Eastern to match MyGeotab + their mental
+        // model of "team starts at 9 AM" (9 AM EDT at the office, not
+        // 9 AM their local time).
+        const _tz = _pentaBusinessTimezone();
         const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : '—';
         const outStr = s.outTime ? s.outTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : (si === stopList.length-1 ? 'Now' : '—');
         const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
@@ -31496,6 +31498,67 @@ function _pentaUserTimezone() {
   });
 })();
 // === end timezone helpers ==============================================
+
+
+// === v11.0.27: business (tenant) timezone cache ========================
+// Fleet/operational data is anchored to where the WORK happens, not
+// where the VIEWER sits. Tom (CA-based owner) viewing Manna (MA-based
+// fleet) wants times in Eastern, matching MyGeotab and his mental
+// model of "the team starts at 9 AM" — meaning 9 AM at the office in
+// Massachusetts. PR #41's per-user TZ (_pentaUserTimezone) is the
+// wrong anchor for this surface; it gave him PDT because his browser
+// is PDT. We keep user.timezone (mig 070) for personal time
+// references, but ALL fleet renderers should call this instead.
+//
+// businesses.timezone column already existed in schema; Manna already
+// has 'America/New_York' set. No migration needed — just a helper +
+// poll-warm cache pattern mirroring the role/user-TZ helpers above.
+let _pentaCachedBusinessTimezone = null;
+let _pentaCachedBusinessTimezoneBid = null;
+
+async function _pentaResolveBusinessTimezone(bid) {
+  try {
+    const c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) return null;
+    const sel = await c.from('businesses').select('timezone').eq('id', bid).maybeSingle();
+    if (!sel || !sel.data || !sel.data.timezone) return null;
+    return sel.data.timezone;
+  } catch (e) {
+    console.warn('[business-tz] resolve failed:', e);
+    return null;
+  }
+}
+
+// Synchronous getter for renderers. Returns undefined until the cache
+// warms — toLocaleTimeString treats undefined as "browser default,"
+// so the first paint after login may briefly show browser TZ before
+// the cache lands. Same race the user-TZ helper has and the same
+// trade-off: acceptable for a dashboard, not for a one-shot UI flow.
+function _pentaBusinessTimezone() {
+  return _pentaCachedBusinessTimezone || undefined;
+}
+
+(function _pentaWireBusinessTimezone(){
+  function tick() {
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!bid) return false;
+    if (_pentaCachedBusinessTimezoneBid === bid && _pentaCachedBusinessTimezone) return true;
+    _pentaResolveBusinessTimezone(bid).then(function(tz){
+      if (tz) {
+        _pentaCachedBusinessTimezone = tz;
+        _pentaCachedBusinessTimezoneBid = bid;
+      }
+    });
+    return true;
+  }
+  if (tick()) return;
+  var tries = 0;
+  var iv = setInterval(function(){
+    tries++;
+    if (tick() || tries > 40) clearInterval(iv);
+  }, 250);
+})();
+// === end business timezone helpers =====================================
 
 
 
