@@ -27387,17 +27387,23 @@ function getGPSDate() {
 }
 
 function setGPSDateToday() {
+  // v11.0.25: ALWAYS reset to today on call (was: only when picker.value
+  // was empty). Browsers persist <input type=date> values across reloads,
+  // so a stale "May 15" stuck Tom on Friday's data thinking it was today.
+  // Called from gpsInit (tab activation) only — NOT loadGPSData — so the
+  // user can still pick a past date via the picker and keep it across
+  // refreshes within the same tab session.
+  //
+  // Uses LOCAL date components, not toISOString().split('T')[0], which
+  // returns UTC and would default to YESTERDAY between local-midnight
+  // and ~4am EDT (when the UTC day hasn't rolled over yet).
   const picker = document.getElementById('gps-date-picker');
-  if (picker && !picker.value) {
-    // v11.0.24: use LOCAL date components, not toISOString(). toISOString()
-    // returns UTC, so between local-midnight and ~4am EDT the picker would
-    // default to YESTERDAY's date (the UTC day hasn't rolled over yet).
-    const today = new Date();
-    const y = today.getFullYear();
-    const m = String(today.getMonth() + 1).padStart(2, '0');
-    const d = String(today.getDate()).padStart(2, '0');
-    picker.value = y + '-' + m + '-' + d;
-  }
+  if (!picker) return;
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, '0');
+  const d = String(today.getDate()).padStart(2, '0');
+  picker.value = y + '-' + m + '-' + d;
 }
 
 // v11.0.24 — day-boundary window for Live GPS Tracking. Mirrors the
@@ -27512,6 +27518,12 @@ function gpsInit() {
   if (mainSec) mainSec.style.display = 'block';
   var statusEl = document.getElementById('gps-status');
   if (statusEl) statusEl.textContent = 'Loading fleet data…';
+  // v11.0.25: snap the date picker to today on every tab activation. Was
+  // previously called from inside loadGPSData with a "only when empty"
+  // guard, which left stale dates from prior sessions stuck (Tom's May 15
+  // bug). Inside gpsInit instead so picker onchange / refresh-button
+  // paths still respect the user's chosen date.
+  setGPSDateToday();
   loadGPSData();
   setTimeout(function(){
     try { initMap(); updateMapMarkers(); } catch (e) { console.warn('[gps] map init threw', e); }
@@ -27530,8 +27542,10 @@ async function gpsConnect() {
 
 async function loadGPSData() {
   document.getElementById('gps-last-update').textContent = 'Loading...';
-  // Set date picker to today if not set
-  setGPSDateToday();
+  // v11.0.25: setGPSDateToday moved to gpsInit so the picker only resets
+  // on TAB ACTIVATION, not on every refresh / picker onchange. Keeps the
+  // user's date selection sticky within a session while still snapping
+  // to today when they re-open the tab.
   try {
 
     // Get all devices
@@ -27641,7 +27655,7 @@ async function loadGPSData() {
     renderGPS();
     const now2 = new Date();
     document.getElementById('gps-last-update').textContent =
-      'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaUserTimezone()});
 
   } catch(e) {
     // PR2: the EF handles session expiry server-side (re-auth + retry),
@@ -27796,8 +27810,12 @@ function renderGPS() {
       // Use shared matchStopToClient function
 
       rows = stopList.map((s, si) => {
-        const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '—';
-        const outStr = s.outTime ? s.outTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : (si === stopList.length-1 ? 'Now' : '—');
+        // v11.0.25: render in the viewing user's stored timezone (mig 070).
+        // undefined = browser-default fallback, so this degrades gracefully
+        // for users whose timezone hasn't resolved yet on first paint.
+        const _tz = _pentaUserTimezone();
+        const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : '—';
+        const outStr = s.outTime ? s.outTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : (si === stopList.length-1 ? 'Now' : '—');
         const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
@@ -31382,6 +31400,94 @@ function isManagerRole() {
   });
 })();
 // === end Phase 6.2a helper ===
+
+
+// === v11.0.25: per-user timezone cache + auto-detect ==================
+// Mig 070 added users.timezone (text, IANA name). Every user's first
+// session here populates it from the browser via Intl.DateTimeFormat.
+// Renderers that show timestamps pass it as toLocaleTimeString({ timeZone })
+// so a California-based viewer sees PDT while an MA-based viewer of the
+// same data sees EDT — the underlying timestamps stay UTC server-side,
+// the per-user TZ is only a render concern.
+//
+// Caching pattern mirrors the role cache above: warm on script load if
+// a session already exists, refresh on onAuthStateChange, clear on
+// sign-out. Synchronous accessor (_pentaUserTimezone) returns undefined
+// before resolve completes — toLocaleTimeString treats { timeZone:
+// undefined } as "browser default," so the first render after login may
+// momentarily show browser-TZ before the cache lands, then subsequent
+// renders pick up the resolved value. Acceptable for fleet/dashboard
+// surfaces; revisit if any user-visible flow can't tolerate that race.
+let _pentaCachedTimezone = null;
+let _pentaCachedTimezoneUserId = null;
+
+async function _pentaResolveTimezoneFromDB(authUserId) {
+  try {
+    const c = window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client);
+    if (!c) return null;
+    const sel = await c.from('users')
+      .select('id, timezone')
+      .eq('auth_user_id', authUserId)
+      .maybeSingle();
+    if (!sel || !sel.data) return null;
+    if (sel.data.timezone) return sel.data.timezone;
+    // First-time auto-detect: persist the browser's IANA TZ to the users
+    // row. Idempotent: subsequent loads short-circuit at the line above.
+    let detected = null;
+    try { detected = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+    if (!detected) return null;
+    const upd = await c.from('users').update({ timezone: detected }).eq('id', sel.data.id);
+    if (upd && upd.error) console.warn('[timezone] persist failed:', upd.error);
+    return detected;
+  } catch (e) {
+    console.warn('[timezone] resolve failed:', e);
+    return null;
+  }
+}
+
+// Synchronous getter. Pass to toLocaleTimeString({ timeZone }) — when
+// undefined, that option falls through to the browser's default TZ.
+function _pentaUserTimezone() {
+  return _pentaCachedTimezone || undefined;
+}
+
+(function _pentaWireTimezoneRefresh(){
+  function attach(c) {
+    if (!c || !c.auth || !c.auth.onAuthStateChange) return false;
+    c.auth.onAuthStateChange(function(_event, session){
+      if (!session || !session.user) {
+        _pentaCachedTimezone = null;
+        _pentaCachedTimezoneUserId = null;
+        return;
+      }
+      _pentaResolveTimezoneFromDB(session.user.id).then(function(tz){
+        if (tz) {
+          _pentaCachedTimezone = tz;
+          _pentaCachedTimezoneUserId = session.user.id;
+        }
+      });
+    });
+    return true;
+  }
+  if (attach(window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client))) return;
+  var tries = 0;
+  var iv = setInterval(function(){
+    tries++;
+    if (attach(window.supaClient || window.client || (window.PentaAuth && window.PentaAuth.client)) || tries > 40) clearInterval(iv);
+  }, 250);
+})();
+
+(function _pentaWarmTimezoneCache(){
+  var blob = _pentaParseAuthToken();
+  if (!blob || !blob.user) return;
+  _pentaResolveTimezoneFromDB(blob.user.id).then(function(tz){
+    if (tz) {
+      _pentaCachedTimezone = tz;
+      _pentaCachedTimezoneUserId = blob.user.id;
+    }
+  });
+})();
+// === end timezone helpers ==============================================
 
 
 
