@@ -26019,18 +26019,20 @@ async function loadWeekHours() {
 
         const depot = getDepotForTeam(team);
 
-        // Find TRUE start: last departure from depot after 7am
-        // before they head out for their full day
-        // A "real" departure = they leave depot and don't come back for at least 30 min
-        const sevenAM = new Date(day); sevenAM.setHours(7,0,0,0);
-        const noon = new Date(day); noon.setHours(12,0,0,0);
-        const fourPM = new Date(day); fourPM.setHours(16,0,0,0);
-        const elevenAM = new Date(day); elevenAM.setHours(11,0,0,0);
-
+        // v11.0.28: TRUE start = last depot departure before a sustained
+        // away-from-depot stretch (see SUSTAINED_AWAY logic below). TRUE
+        // end = last depot arrival. The previous `validTrips = filter(
+        // t.start >= 7am LOCAL)` pre-guard anchored 7 AM to the BROWSER's
+        // timezone — for a PDT-based viewer of an EDT business it shifted
+        // to 10 AM EDT and silently excluded the team's real 9 AM start
+        // (same bug PR #42 fixed in _computeGPSDayWindow for the Live
+        // tab). SUSTAINED_AWAY below is the real anti-blip filter; the
+        // 7 AM coarse pre-filter only had value when viewer TZ ==
+        // business TZ, which isn't a safe assumption.
         let trueStart = null;
         let trueEnd = null;
 
-        const validTrips = dayTrips.filter(t => new Date(t.start) >= sevenAM);
+        const validTrips = dayTrips;
         if (validTrips.length === 0) return;
 
         // v11.0.23 — TRUE START redefinition.
