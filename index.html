@@ -27736,7 +27736,14 @@ async function reverseGeocodeTrips(trips) {
         if (!addr || !tripRefs[i]) return;
         const { ti, field } = tripRefs[i];
         if (!trips[ti][field]) {
-          trips[ti][field] = [addr.street, addr.city].filter(Boolean).join(', ') || 'Unknown';
+          // v11.0.28: fall back to lat/lng when reverse-geocode returns
+          // no street/city (rural/private addresses, or GetAddresses misses).
+          // Better than the literal "Unknown" string — the user can still
+          // see WHERE the stop was, and downstream isDepotPoint check
+          // can still flag it as the office via the coords.
+          const joined = [addr.street, addr.city].filter(Boolean).join(', ');
+          const pt = points[i];
+          trips[ti][field] = joined || (pt ? pt.y.toFixed(4) + ', ' + pt.x.toFixed(4) : 'Unknown');
         }
       });
     }
@@ -27787,14 +27794,26 @@ function renderGPS() {
       // Each stop = arrived at address + departed from same address
       // Simpler view: address | in time | out time | duration
       let stopList = [];
+      const _depot = getDepotForTeam(v.team);
 
       // First location = start of first trip
       if (sortedTrips.length > 0) {
+        // v11.0.28: depot detection now combines address AND point checks.
+        // Geotab's Trip records often return startPoint=null for the first
+        // trip of the day (vehicle was parked, no GPS fix at engine-on),
+        // which left the row labeled "Unknown" + isDepot=false. When the
+        // vehicle has no signal at all (no startAddr, no startPoint), fall
+        // back to the team's depot — cleaning vans almost always park
+        // there overnight, so "first stop = depot" is the right default.
+        const r0Addr = sortedTrips[0].startAddress || sortedTrips[0].startLocation || '';
+        const r0Pt = sortedTrips[0].startPoint;
+        const r0Detected = isDepotAddress(r0Addr, v.team) || isDepotPoint(r0Pt, v.team);
+        const r0Inferred = !r0Addr && !r0Pt && !!_depot;
         stopList.push({
-          addr: sortedTrips[0].startAddress || sortedTrips[0].startLocation || 'Unknown',
+          addr: r0Addr || (r0Inferred ? _depot.addr : 'Unknown'),
           inTime: null,
           outTime: new Date(sortedTrips[0].start),
-          isDepot: isDepotAddress(sortedTrips[0].startAddress || '', v.team)
+          isDepot: r0Detected || r0Inferred
         });
       }
 
@@ -27809,7 +27828,11 @@ function renderGPS() {
           addr: arriveAddr,
           inTime: arriveTime,
           outTime: nextDepart,
-          isDepot: isDepotAddress(arriveAddr, v.team),
+          // v11.0.28: include point-based depot detection as a fallback.
+          // GetAddresses occasionally returns "Unknown" or an unrelated
+          // street label for coords that ARE inside the depot radius;
+          // the lat/lng check catches that and flags the row as Office.
+          isDepot: isDepotAddress(arriveAddr, v.team) || isDepotPoint(t.stopPoint, v.team),
           distMi,
           driveMins
         });
