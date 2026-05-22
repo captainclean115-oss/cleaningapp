@@ -27314,7 +27314,10 @@ function updateMapMarkers() {
       if (isDepotAddress(addr, v.team)) return; // skip depot
 
       var clientName = matchStopToClient(addr, teamJobs);
-      var timeStr = t.stop ? new Date(t.stop).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+      // v11.0.30: route through _pentaBusinessTimezone like the timeline
+      // rows do — the map-popup time was the one remaining renderGPS
+      // path still using browser-local TZ.
+      var timeStr = t.stop ? new Date(t.stop).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaBusinessTimezone()}) : '';
 
       var sm = L.circleMarker([lat, lng], {
         radius: 7, fillColor: color, color: '#fff', weight: 1.5, opacity: 1, fillOpacity: 0.8
@@ -31570,22 +31573,34 @@ async function _pentaResolveBusinessTimezone(bid) {
   }
 }
 
-// Synchronous getter for renderers. Prefer the boot-cached value on
-// PentaTenant (set by the businesses{name,legal_name,timezone} fetch
-// in the boot sequence — line ~14597), which is populated before any
-// user-driven surface like GPS renders. Falls back to the IIFE-warmed
-// cache below as a backup, then to undefined (= browser default).
+// Synchronous getter for renderers. Resolution order:
+//   1. PentaTenant.timezone() — set by the boot businesses fetch
+//      (line ~14601). Populated synchronously after boot resolves.
+//   2. _pentaCachedBusinessTimezone — set by the IIFE poll-warmer below.
+//   3. 'America/New_York' hardcoded fallback. Stopgap for the
+//      single-tenant world we're in today (Manna is in MA). When the
+//      first non-US-Eastern customer signs up, replace this with
+//      something that fails LOUDLY rather than silently shifting
+//      their times. Documented in TODO below.
 //
-// Why we need the boot-cache path: GPS first paint was racing the
-// IIFE's poll cycle and falling through to browser-local TZ. For a
-// viewer whose system clock is stale (laptop didn't auto-update its
-// TZ when the user moved offices), that meant a 3-hour drift. Boot
-// runs once on app load, well before any GPS click, so by the time
-// renderGPS fires, PentaTenant.timezone() is guaranteed set.
+// Why we need the hardcoded fallback: PR #46 wired boot to pre-load
+// PentaTenant.timezone(), but Tom still saw 3h drift after deploy +
+// hard refresh + private-window test. Means the boot fetch's silent
+// .catch was swallowing a failure (RLS, network, session expiry, or
+// the .then chain not awaiting properly), and the helper returned
+// undefined → toLocaleTimeString fell back to browser-local TZ. The
+// hardcoded fallback closes that hole. Renders are now ALWAYS
+// in Eastern for the current customer set; correctness for a non-
+// Eastern tenant becomes a known follow-up when we get one.
+//
+// TODO(multi-tenant): drop the hardcoded fallback when adding a
+// second tenant; replace with an awaited boot-time block that
+// throws if businesses.timezone is null. Don't quietly accept a
+// wrong default for a real customer.
 function _pentaBusinessTimezone() {
   var fromTenant = (window.PentaTenant && window.PentaTenant.timezone)
                    ? window.PentaTenant.timezone() : '';
-  return fromTenant || _pentaCachedBusinessTimezone || undefined;
+  return fromTenant || _pentaCachedBusinessTimezone || 'America/New_York';
 }
 
 (function _pentaWireBusinessTimezone(){
