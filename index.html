@@ -5250,6 +5250,7 @@ window.PentaTenant = (function() {
   function legalName()      { return window.__pentaBusinessLegalName || ''; }
   function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
   function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
+  function timezone()       { return window.__pentaBusinessTimezone || ''; }
   // v11.0.1 (Item A): callers need a slug-safe form of the business name
   // for hashtag generation (#TestBusinessTwo). Strip non-alphanumeric.
   function nameSlugCompact() {
@@ -5266,6 +5267,7 @@ window.PentaTenant = (function() {
   function _setLegalName(n)    { if (n) window.__pentaBusinessLegalName = String(n); }
   function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
   function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
+  function _setTimezone(t)     { if (t) window.__pentaBusinessTimezone = String(t); }
   function ready() {
     return new Promise(function(resolve){
       if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
@@ -5278,13 +5280,15 @@ window.PentaTenant = (function() {
     legalName: legalName,
     operatorFirst: operatorFirst,
     operatorPhone: operatorPhone,
+    timezone: timezone,
     nameSlugCompact: nameSlugCompact,
     ready: ready,
     _set: _set,
     _setName: _setName,
     _setLegalName: _setLegalName,
     _setOperatorFirst: _setOperatorFirst,
-    _setOperatorPhone: _setOperatorPhone
+    _setOperatorPhone: _setOperatorPhone,
+    _setTimezone: _setTimezone
   };
 })();
 
@@ -14594,15 +14598,27 @@ window.addEventListener('DOMContentLoaded', function() {
         // v11.0.5 (Issue B-6): also pull legal_name for handbook /
         // applicant-consent surfaces that need to identify the actual
         // legal entity, not just the display name.
-        sbBoot.from('businesses').select('name, legal_name').eq('id', dbBusinessId).maybeSingle()
+        sbBoot.from('businesses').select('name, legal_name, timezone').eq('id', dbBusinessId).maybeSingle()
           .then(function(bres){
             var nm = bres && bres.data && bres.data.name;
             var ln = bres && bres.data && bres.data.legal_name;
+            var tz = bres && bres.data && bres.data.timezone;
             if (nm && window.PentaTenant && window.PentaTenant._setName) {
               window.PentaTenant._setName(nm);
             }
             if (ln && window.PentaTenant && window.PentaTenant._setLegalName) {
               window.PentaTenant._setLegalName(ln);
+            }
+            // v11.0.29: also surface timezone synchronously via PentaTenant.
+            // Pre-PR-43 the GPS render fell through to browser-local TZ when
+            // _pentaBusinessTimezone's async poll-warm hadn't completed yet;
+            // for a viewer with a stale laptop TZ (e.g. moved from CA to MA
+            // without changing system TZ), that produced a 3h drift. Boot
+            // already fetches businesses.{name, legal_name}; piggybacking
+            // timezone on the same query makes it available the moment
+            // PentaTenant.current() is.
+            if (tz && window.PentaTenant && window.PentaTenant._setTimezone) {
+              window.PentaTenant._setTimezone(tz);
             }
           }).catch(function(){});
       }
@@ -31554,13 +31570,22 @@ async function _pentaResolveBusinessTimezone(bid) {
   }
 }
 
-// Synchronous getter for renderers. Returns undefined until the cache
-// warms — toLocaleTimeString treats undefined as "browser default,"
-// so the first paint after login may briefly show browser TZ before
-// the cache lands. Same race the user-TZ helper has and the same
-// trade-off: acceptable for a dashboard, not for a one-shot UI flow.
+// Synchronous getter for renderers. Prefer the boot-cached value on
+// PentaTenant (set by the businesses{name,legal_name,timezone} fetch
+// in the boot sequence — line ~14597), which is populated before any
+// user-driven surface like GPS renders. Falls back to the IIFE-warmed
+// cache below as a backup, then to undefined (= browser default).
+//
+// Why we need the boot-cache path: GPS first paint was racing the
+// IIFE's poll cycle and falling through to browser-local TZ. For a
+// viewer whose system clock is stale (laptop didn't auto-update its
+// TZ when the user moved offices), that meant a 3-hour drift. Boot
+// runs once on app load, well before any GPS click, so by the time
+// renderGPS fires, PentaTenant.timezone() is guaranteed set.
 function _pentaBusinessTimezone() {
-  return _pentaCachedBusinessTimezone || undefined;
+  var fromTenant = (window.PentaTenant && window.PentaTenant.timezone)
+                   ? window.PentaTenant.timezone() : '';
+  return fromTenant || _pentaCachedBusinessTimezone || undefined;
 }
 
 (function _pentaWireBusinessTimezone(){
