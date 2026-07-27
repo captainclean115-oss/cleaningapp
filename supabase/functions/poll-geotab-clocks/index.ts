@@ -201,7 +201,18 @@ function officeForPoint(offices: Office[], lat: number, lng: number): Office | n
 
 // ─── Per-tenant poll ───────────────────────────────────────────────
 
-async function pollTenant(admin: Admin, integ: any, counters: { trips: number; matches: number; misses: number }) {
+// A job's GPS-derived time counts as "divergent" against an existing
+// manual time past this threshold -- matches PR #3's stated 15-minute
+// job alert threshold. Not an alert itself (PR #3 owns the trigger +
+// audit_log write); just feeds the run-summary counts Tom asked for.
+const JOB_DIVERGENCE_THRESHOLD_MIN = 15;
+
+interface Counters {
+  trips: number; matches: number; misses: number;
+  jobsNewlyClocked: number; jobsSkippedExisting: number; jobsDivergent: number;
+}
+
+async function pollTenant(admin: Admin, integ: any, counters: Counters) {
   const businessId = integ.business_id as string;
   const creds: GeotabCreds = { server: integ.server || "my.geotab.com", database: integ.database, username: integ.username, password: integ.password };
 
@@ -271,12 +282,13 @@ async function pollTenant(admin: Admin, integ: any, counters: { trips: number; m
       if (t.stopPoint && !officeForPoint(offices, t.stopPoint.y, t.stopPoint.x)) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.stopPoint.y, p_lng: t.stopPoint.x,
-          p_date: etDateString(t.stop), p_team_code: team, p_radius_meters: 61,
+          p_date: etDateString(t.stop), p_team_code: team, p_event_at: t.stop, p_radius_meters: 61,
         });
         const row = (resolved.data && resolved.data[0]) || null;
         if (row && row.job_id) {
           counters.matches++;
-          await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "start", p_gps_at: t.stop, p_match_log_id: row.log_id });
+          const wr = await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "start", p_gps_at: t.stop, p_match_log_id: row.log_id });
+          tallyWriteResult(wr.data && wr.data[0], counters);
         } else {
           counters.misses++;
         }
@@ -284,12 +296,13 @@ async function pollTenant(admin: Admin, integ: any, counters: { trips: number; m
       if (t.startPoint && !officeForPoint(offices, t.startPoint.y, t.startPoint.x)) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.startPoint.y, p_lng: t.startPoint.x,
-          p_date: etDateString(t.start), p_team_code: team, p_radius_meters: 61,
+          p_date: etDateString(t.start), p_team_code: team, p_event_at: t.start, p_radius_meters: 61,
         });
         const row = (resolved.data && resolved.data[0]) || null;
         if (row && row.job_id) {
           counters.matches++;
-          await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "end", p_gps_at: t.start, p_match_log_id: row.log_id });
+          const wr = await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "end", p_gps_at: t.start, p_match_log_id: row.log_id });
+          tallyWriteResult(wr.data && wr.data[0], counters);
         } else {
           counters.misses++;
         }
@@ -298,43 +311,98 @@ async function pollTenant(admin: Admin, integ: any, counters: { trips: number; m
   }
 }
 
+function tallyWriteResult(result: { did_write?: boolean; skipped_existing?: boolean; divergent_minutes?: number } | null | undefined, counters: Counters) {
+  if (!result) return;
+  if (result.did_write) counters.jobsNewlyClocked++;
+  if (result.skipped_existing) {
+    counters.jobsSkippedExisting++;
+    if (typeof result.divergent_minutes === "number" && result.divergent_minutes >= JOB_DIVERGENCE_THRESHOLD_MIN) {
+      counters.jobsDivergent++;
+    }
+  }
+}
+
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+if (!ANON_KEY) throw new Error("Missing SUPABASE_ANON_KEY env var");
+
+const MANAGER_ROLES = new Set(["owner", "admin", "manager", "dispatcher"]);
+
 serve(async (req) => {
   if (req.method !== "POST" && req.method !== "GET") return json(405, { error: "Method not allowed" });
 
   const authHeader = req.headers.get("Authorization") || "";
   const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!jwt) return json(401, { error: "Missing Authorization header" });
-  let role = "";
+  let decodedRole = "";
   try {
-    const payload = JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    role = payload.role || "";
+    decodedRole = (JSON.parse(atob(jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).role) || "";
   } catch {
     return json(401, { error: "Malformed JWT" });
   }
-  // The platform's own JWT-signature verification (verify_jwt=true) has
-  // already run by the time this code executes -- checking the decoded
-  // role claim here is sufficient, not a second signature check.
-  if (role !== "service_role") return json(403, { error: "service_role only" });
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 
+  // Two callers: pg_cron (service_role, all tenants) or a manager
+  // clicking "Run poll now" in Admin -> Fleet Tracking (their own user
+  // JWT, scoped to their own tenant only). Anything else is rejected.
+  // The platform's own JWT-signature verification (verify_jwt=true) has
+  // already run by the time this code executes -- for the service_role
+  // path, checking the decoded role claim is sufficient. For the manual
+  // path we go further and re-verify the JWT against Supabase Auth
+  // (caller.auth.getUser), since this path grants an authenticated user
+  // the ability to trigger polling, not just read data.
+  let trigger: "cron" | "manual" = "cron";
+  let scopedBusinessId: string | null = null;
+
+  if (decodedRole === "service_role") {
+    trigger = "cron";
+  } else {
+    const caller = createClient(SUPABASE_URL, ANON_KEY);
+    const { data: callerData, error: callerErr } = await caller.auth.getUser(jwt);
+    if (callerErr || !callerData.user) return json(401, { error: "Invalid JWT" });
+    const userRow = await admin.from("users").select("business_id, role").eq("id", callerData.user.id).maybeSingle();
+    const userBusinessId = userRow.data?.business_id as string | undefined;
+    const userRole = userRow.data?.role as string | undefined;
+    if (!userBusinessId || !userRole || !MANAGER_ROLES.has(userRole)) {
+      return json(403, { error: "manager-tier required for manual poll trigger" });
+    }
+    trigger = "manual";
+    scopedBusinessId = userBusinessId;
+  }
+
   const startAt = new Date();
-  const counters = { trips: 0, matches: 0, misses: 0 };
+  const counters: Counters = { trips: 0, matches: 0, misses: 0, jobsNewlyClocked: 0, jobsSkippedExisting: 0, jobsDivergent: 0 };
   let tenantsProcessed = 0;
   const errors: string[] = [];
 
   const integRes = await admin.rpc("list_active_geotab_integrations");
-  const integrations = integRes.data || [];
+  let integrations = integRes.data || [];
   if (integRes.error) errors.push(`list_active_geotab_integrations: ${integRes.error.message}`);
+  if (scopedBusinessId) integrations = integrations.filter((i: any) => i.business_id === scopedBusinessId);
 
   for (const integ of integrations) {
+    const businessId = integ.business_id as string;
+
+    // 1 poll per 5 min per tenant, regardless of cron or manual --
+    // guards against a manual trigger landing seconds after a cron tick
+    // (or a duplicated cron fire) reprocessing the same trips twice.
+    const rateRes = await admin.rpc("check_rate_limit", { p_key: `poll-geotab-clocks:${businessId}`, p_max_calls: 1, p_window_seconds: 300 });
+    if (rateRes.error) {
+      console.error(`[poll-geotab-clocks] rate_limit check failed for ${businessId}:`, rateRes.error.message);
+    } else if (rateRes.data === false) {
+      errors.push(`${businessId}: rate-limited, skipped this cycle`);
+      continue;
+    }
+
     try {
       await pollTenant(admin, integ, counters);
       tenantsProcessed++;
+      await admin.rpc("mark_geotab_integration_used", { p_business_id: businessId });
     } catch (e) {
       const msg = (e as Error).message || String(e);
-      console.error(`[poll-geotab-clocks] tenant ${integ.business_id} failed:`, msg);
-      errors.push(`${integ.business_id}: ${msg}`);
+      console.error(`[poll-geotab-clocks] tenant ${businessId} failed:`, msg);
+      errors.push(`${businessId}: ${msg}`);
+      await admin.rpc("record_geotab_poll_failure", { p_business_id: businessId, p_error: msg });
     }
   }
 
@@ -344,11 +412,18 @@ serve(async (req) => {
     p_tenants_processed: tenantsProcessed, p_trips_processed: counters.trips,
     p_matches: counters.matches, p_misses: counters.misses,
     p_errors: errors.length ? errors.join("; ") : null,
+    p_trigger: trigger,
+    p_jobs_newly_clocked: counters.jobsNewlyClocked,
+    p_jobs_skipped_existing: counters.jobsSkippedExisting,
+    p_jobs_divergent: counters.jobsDivergent,
   });
 
   return json(200, {
-    ok: true, tenantsProcessed, tripsProcessed: counters.trips,
+    ok: true, trigger, tenantsProcessed, tripsProcessed: counters.trips,
     matches: counters.matches, misses: counters.misses,
+    jobsNewlyClocked: counters.jobsNewlyClocked,
+    jobsSkippedExisting: counters.jobsSkippedExisting,
+    jobsDivergent: counters.jobsDivergent,
     errors: errors.length ? errors : undefined,
   });
 });
