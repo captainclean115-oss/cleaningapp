@@ -266,9 +266,14 @@ function revenueTrend(past: JobRow[], now: Date): Factor {
   let prior  = 0;
   for (const j of past) {
     const d = new Date(j.date + "T00:00:00Z");
-    const p = typeof j.price === "number" ? j.price : 0;
-    if (d >= cut90) recent += p;
-    else if (d >= cut180) prior += p;
+    // Coerce rather than typeof-check: Postgres `numeric` can serialize
+    // as a JSON string, and a strict typeof check would silently read
+    // every price as 0 and null out revenue_trend for the whole tenant.
+    const p = Number(j.price);
+    if (Number.isFinite(p)) {
+      if (d >= cut90) recent += p;
+      else if (d >= cut180) prior += p;
+    }
   }
 
   if (recent === 0 && prior === 0) {
@@ -488,18 +493,38 @@ serve(async (req) => {
     const { data: callerData, error: callerErr } = await caller.auth.getUser(jwt);
     if (callerErr)          return json(401, { error: "Invalid JWT", detail: callerErr.message });
     if (!callerData.user)   return json(401, { error: "Invalid JWT (no user)" });
+    // `users` is one of the 5 tables service_role can actually read
+    // (see the grant note below), so this direct select is fine.
     const userRow = await admin
       .from("users").select("business_id").eq("auth_user_id", callerData.user.id).maybeSingle();
     businessId = userRow.data?.business_id;
     if (!businessId) return json(403, { error: "No tenant for caller" });
   }
 
-  // Step 1: config.
-  const bizRes = await admin
-    .from("businesses").select("business_settings").eq("id", businessId).maybeSingle();
-  if (bizRes.error) return json(500, { error: "Failed to load business", detail: bizRes.error.message });
+  // ─── Why every read below goes through an RPC ────────────────────
+  //
+  // `service_role` on this project has NO SELECT on almost every public
+  // table (113 of 118 are `Dxtm` only — TRUNCATE/REFERENCES/TRIGGER/
+  // MAINTAIN, no DML). Only users, employees, employee_invites,
+  // employee_sessions and job_applications grant it more, for the
+  // auth-flow functions. That is deliberate: service_role bypasses RLS,
+  // so withholding table grants bounds what a leaked service key can
+  // reach, and every EF reads through SECURITY DEFINER RPCs instead.
+  //
+  // The first cut of this function read businesses/clients/jobs directly
+  // and 500'd on every run with `42501 permission denied for table
+  // businesses`. Do not reintroduce direct table reads here — add an
+  // RPC in a migration instead (see 072).
 
-  const raw = (bizRes.data?.business_settings as Record<string, unknown> | null)?.client_health;
+  // Step 1: config. Null means the tenant has no client_health key yet,
+  // which is normal — fall through to DEFAULT_CONFIG.
+  const cfgRes = await admin.rpc("get_client_health_config", { p_business_id: businessId });
+  if (cfgRes.error) {
+    console.error("[score-client-health] get_client_health_config failed:", cfgRes.error);
+    return json(500, { error: "Failed to load business config", detail: cfgRes.error.message });
+  }
+
+  const raw = cfgRes.data as Record<string, unknown> | null;
   const cfg: HealthConfig = { ...DEFAULT_CONFIG, ...(raw as Partial<HealthConfig> || {}) };
   cfg.weights = { ...DEFAULT_CONFIG.weights, ...(cfg.weights || {}) };
   if (!cfg.enabled) return json(200, { skipped: true, reason: "client_health.enabled is false" });
@@ -509,13 +534,11 @@ serve(async (req) => {
   // Step 2: the scored set — status='active' AND deleted_at IS NULL.
   // NOT clients.active, which is vestigial and reads true for every row
   // including the ones that are status='inactive'.
-  const clientsRes = await admin
-    .from("clients")
-    .select("id, external_id, first_name, last_name, phone, additional_phones, frequency, frequency_days")
-    .eq("business_id", businessId)
-    .eq("status", "active")
-    .is("deleted_at", null);
-  if (clientsRes.error) return json(500, { error: "Failed to load clients", detail: clientsRes.error.message });
+  const clientsRes = await admin.rpc("list_active_clients_for_scoring", { p_business_id: businessId });
+  if (clientsRes.error) {
+    console.error("[score-client-health] list_active_clients_for_scoring failed:", clientsRes.error);
+    return json(500, { error: "Failed to load clients", detail: clientsRes.error.message });
+  }
   const clients = (clientsRes.data || []) as ClientRow[];
   if (clients.length === 0) return json(200, { skipped: true, reason: "no active clients" });
 
@@ -523,12 +546,14 @@ serve(async (req) => {
   // plus everything future (forward booking).
   const now      = new Date();
   const from180  = new Date(now.getTime() - 180 * DAY_MS).toISOString().slice(0, 10);
-  const jobsRes  = await admin
-    .from("jobs")
-    .select("client_id, date, price, status")
-    .eq("business_id", businessId)
-    .gte("date", from180);
-  if (jobsRes.error) return json(500, { error: "Failed to load jobs", detail: jobsRes.error.message });
+  const jobsRes  = await admin.rpc("list_jobs_for_scoring", {
+    p_business_id: businessId,
+    p_since:       from180,
+  });
+  if (jobsRes.error) {
+    console.error("[score-client-health] list_jobs_for_scoring failed:", jobsRes.error);
+    return json(500, { error: "Failed to load jobs", detail: jobsRes.error.message });
+  }
 
   // jobs.client_id is TEXT and joins clients.external_id, not clients.id.
   const jobsByExternal = new Map<string, JobRow[]>();
@@ -764,7 +789,10 @@ serve(async (req) => {
     p_run_id:      runId,
     p_scores:      scores,
   });
-  if (rec.error) return json(500, { error: "Failed to record run", detail: rec.error.message });
+  if (rec.error) {
+    console.error("[score-client-health] record_client_health_run failed:", rec.error);
+    return json(500, { error: "Failed to record run", detail: rec.error.message });
+  }
 
   return json(200, {
     run_id: runId,
