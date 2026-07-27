@@ -105,6 +105,22 @@ GRANT SELECT ON public.client_health_scores TO authenticated;
 
 -- ─── RPCs ──────────────────────────────────────────────────────────
 
+-- ─── A note on SECURITY INVOKER for the three read functions ───────
+--
+-- These take a caller-supplied p_business_id. Under SECURITY DEFINER
+-- they would run as the owner and bypass RLS, so any authenticated user
+-- could pass ANOTHER tenant's uuid and read that tenant's client names
+-- and scores — p_business_id would be the only thing standing between
+-- tenants, and it is attacker-controlled.
+--
+-- client_health_scores and clients both carry RLS SELECT policies scoped
+-- to the caller's business, so INVOKER makes RLS the actual privilege
+-- boundary and demotes p_business_id to an ordinary filter.
+--
+-- record_client_health_run below is the exception and stays DEFINER: it
+-- is the sole writer, there is deliberately no INSERT policy, and it is
+-- granted to service_role only.
+
 -- Newest score per client for a business, joined to the client's name
 -- so the dashboard renders in one round trip. DISTINCT ON is the
 -- cheapest "latest per group" here and rides the recent_idx directly.
@@ -127,7 +143,7 @@ RETURNS TABLE(
 )
 LANGUAGE sql
 STABLE
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
   SELECT DISTINCT ON (s.client_id)
@@ -154,7 +170,7 @@ CREATE OR REPLACE FUNCTION public.count_at_risk_clients(
 RETURNS integer
 LANGUAGE sql
 STABLE
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
   SELECT count(*)::int
@@ -191,7 +207,7 @@ RETURNS TABLE(
 )
 LANGUAGE sql
 STABLE
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
   WITH ranked AS (

@@ -3156,6 +3156,67 @@ html.pre-auth #filter-row { display: none !important; }
   flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 16px 16px calc(var(--safe-bottom) + 24px);
 }
+/* ─── Client Health ─────────────────────────────────────────────── */
+#client-health-view {
+  display: none;
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 260;
+  background: var(--bg-gradient);
+  flex-direction: column; overflow: hidden;
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+}
+#client-health-view.active { display: flex; }
+#client-health-view .mr-title { font-size: 17px; font-weight: 700; }
+#client-health-view .mr-subtitle { font-size: 12px; color: var(--muted); }
+.ch-tabs {
+  display: flex; gap: 4px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.ch-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 8px 16px calc(var(--safe-bottom) + 24px);
+}
+.ch-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px 14px; margin-bottom: 8px;
+}
+.ch-row { display: flex; align-items: center; gap: 12px; }
+/* Fixed-width so the score column stays aligned down the list. */
+.ch-score {
+  flex: 0 0 46px; height: 46px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 800; color: #fff;
+}
+.ch-name { font-size: 14px; font-weight: 700; }
+.ch-sum  { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+.ch-factors { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ch-factor { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11px; }
+.ch-factor-label { flex: 0 0 108px; color: var(--muted); }
+/* The bar is the whole point of the expanded row: it shows WHICH factor
+   dragged the score down, so the fix is obvious without reading numbers.
+   The track is deliberately darker than --border: a factor scoring 0 has
+   a zero-width fill, and against a near-white track that reads as "this
+   row has no bar" rather than "this bar is empty" — which is exactly
+   backwards for the factor that is dragging the score down. */
+.ch-bar { flex: 1 1 auto; height: 6px; border-radius: 3px; background: rgba(0,0,0,0.10); overflow: hidden; }
+.ch-bar-fill { height: 100%; border-radius: 3px; }
+.ch-factor-val { flex: 0 0 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ch-dormant { opacity: 0.4; }
+.ch-summary-strip {
+  display: flex; gap: 8px; padding: 12px 16px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.ch-stat { flex: 1 1 0; text-align: center; }
+.ch-stat-n { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ch-stat-l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 2px; }
+.ch-drop-card {
+  background: rgba(255,59,48,0.08); border: 1px solid rgba(255,59,48,0.25);
+  border-radius: 12px; padding: 12px 14px; margin-bottom: 8px;
+}
 .sync-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
 .sync-controls {
   display: flex; align-items: center; gap: 8px;
@@ -10810,6 +10871,133 @@ window.PentaIncidents = (function() {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// PentaClientHealth — Client Health Scoring, Phase A.
+//
+// Read-side wrapper over migration 071. The table is written ONLY by the
+// score-client-health Edge Function under service_role — there is no
+// user-facing write path and no INSERT policy, so everything here is a
+// SELECT or an RPC.
+//
+// A note on what the score means, because it is easy to over-read: the
+// behavioral signals a churn score would normally lean on (job completion
+// rate, cancellations, incidents) are all unusable in this data — the app
+// never transitions job status, so 1916 of 1927 past jobs still read
+// 'scheduled'. The score is built from cadence adherence, revenue trend,
+// forward booking, and SMS tone instead. factors[].weight on each row
+// records what actually contributed to THAT score, so a historical row
+// still explains itself after the weights are retuned.
+window.PentaClientHealth = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+
+  // Newest score per active client, joined to the client's name.
+  async function listLatest() {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.rpc('get_latest_client_health', { p_business_id: bid });
+    if (res.error) { console.warn('[PentaClientHealth] listLatest error', res.error); return []; }
+    return res.data || [];
+  }
+
+  // Count only — the home-tile badge refreshes on every home render and
+  // every dock paint, so it must not haul 327 rows of factor jsonb across
+  // the wire just to render a number.
+  async function countAtRisk() {
+    var sb = _sb(); if (!sb) return 0;
+    var bid = _bid(); if (!bid) return 0;
+    var res = await sb.rpc('count_at_risk_clients', { p_business_id: bid });
+    if (res.error) { console.warn('[PentaClientHealth] countAtRisk error', res.error); return 0; }
+    return res.data || 0;
+  }
+
+  // Sharp-drop alert: clients whose newest score fell by at least
+  // minDrop points against their own previous score. Returns [] on a
+  // client's first run (there is no previous score to compare).
+  async function listDrops(minDrop) {
+    var sb = _sb(); if (!sb) return [];
+    var bid = _bid(); if (!bid) return [];
+    var res = await sb.rpc('get_client_health_drops', {
+      p_business_id: bid,
+      p_min_drop: (typeof minDrop === 'number' && minDrop > 0) ? Math.round(minDrop) : 15
+    });
+    if (res.error) { console.warn('[PentaClientHealth] listDrops error', res.error); return []; }
+    return res.data || [];
+  }
+
+  // Per-tenant config lives in businesses.business_settings->'client_health'
+  // (seeded by migration 071), not a separate table.
+  async function getConfig() {
+    var sb = _sb(); if (!sb) return null;
+    var bid = _bid(); if (!bid) return null;
+    var res = await sb.from('businesses').select('business_settings').eq('id', bid).maybeSingle();
+    if (res.error) { console.warn('[PentaClientHealth] getConfig error', res.error); return null; }
+    return (res.data && res.data.business_settings && res.data.business_settings.client_health) || null;
+  }
+
+  async function saveConfig(patch) {
+    var sb = _sb(); if (!sb) throw new Error('PentaClientHealth.saveConfig: no Supabase client');
+    var bid = _bid(); if (!bid) throw new Error('PentaClientHealth.saveConfig: no tenant');
+    // Read-modify-write the whole business_settings object: jsonb_set on
+    // a single key isn't reachable through PostgREST, and clobbering the
+    // parent would drop every other tenant setting alongside it.
+    var cur = await sb.from('businesses').select('business_settings').eq('id', bid).maybeSingle();
+    if (cur.error) throw cur.error;
+    var settings = (cur.data && cur.data.business_settings) || {};
+    settings.client_health = Object.assign({}, settings.client_health || {}, patch || {});
+    var res = await sb.from('businesses').update({ business_settings: settings }).eq('id', bid).select().single();
+    if (res.error) throw res.error;
+    return res.data.business_settings.client_health;
+  }
+
+  // Trigger a scoring run. Forwards the caller's own JWT — the EF resolves
+  // the tenant from the user row in that mode, so a manager can only ever
+  // score their own business.
+  //
+  // Raw fetch, not supabase-js functions.invoke: invoke swallows non-2xx
+  // bodies into error.context.response, which turns every server-side
+  // error into an indistinguishable `data: null`. Bit us on claire-chat
+  // and again on geotab.
+  async function runScoring() {
+    var sb = _sb(); if (!sb) throw new Error('PentaClientHealth.runScoring: no Supabase client');
+    var ses = await sb.auth.getSession();
+    var token = ses && ses.data && ses.data.session && ses.data.session.access_token;
+    if (!token) throw new Error('Not signed in — sign in again and retry');
+    // Read the URL/key off the client instance, same as _geotabCall —
+    // the window globals are a fallback, not the source of truth.
+    var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
+    var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
+    var resp = await fetch(supaUrl + '/functions/v1/score-client-health', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token,
+        'apikey': anonKey
+      },
+      body: JSON.stringify({})
+    });
+    var body = null;
+    try { body = await resp.json(); } catch (e) {}
+    if (!resp.ok) {
+      var msg = (body && (body.error || body.detail)) || ('HTTP ' + resp.status);
+      throw new Error(msg);
+    }
+    return body;
+  }
+
+  return {
+    listLatest: listLatest,
+    countAtRisk: countAtRisk,
+    listDrops: listDrops,
+    getConfig: getConfig,
+    saveConfig: saveConfig,
+    runScoring: runScoring
+  };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // PentaClientRequests — v11.0.17 — Phase B.5.
 //
 // Lightweight operational capture. Employee relays a request from the
@@ -17132,6 +17320,274 @@ window.closeOpenItemsView = closeOpenItemsView;
 window._refreshOpenItems = _refreshOpenItems;
 window._setOpenItemsTab = _setOpenItemsTab;
 
+// ─── Client Health view ───────────────────────────────────────────
+//
+// Defaults to the At Risk tab: the whole point of the screen is the
+// short call list, not the 300 clients who are fine.
+var _clientHealthTab = 'at_risk';   // 'at_risk' | 'drops' | 'watch' | 'all'
+var _clientHealthCache = null;      // last listLatest() result
+var _clientHealthDrops = null;      // last listDrops() result
+var _clientHealthExpanded = {};     // client_id -> bool
+
+function _chBandColor(band) {
+  if (band === 'healthy') return '#34C759';
+  if (band === 'watch')   return '#FF9F0A';
+  return '#FF3B30';
+}
+function _chEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function openClientHealthView() {
+  var v = document.getElementById('client-health-view');
+  if (!v) return;
+  v.classList.add('active'); v.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  await _refreshClientHealth();
+}
+function closeClientHealthView() {
+  var v = document.getElementById('client-health-view');
+  if (!v) return;
+  v.classList.remove('active'); v.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+}
+function _setClientHealthTab(tab) {
+  _clientHealthTab = tab;
+  ['at_risk','drops','watch','all'].forEach(function(t){
+    var btn = document.getElementById('ch-tab-' + t);
+    if (btn) {
+      btn.style.borderBottomColor = (t === tab) ? 'var(--accent)' : 'transparent';
+      btn.style.color = (t === tab) ? 'var(--text)' : 'var(--muted)';
+    }
+  });
+  _renderClientHealthBody();
+}
+function _toggleClientHealthRow(clientId) {
+  _clientHealthExpanded[clientId] = !_clientHealthExpanded[clientId];
+  _renderClientHealthBody();
+}
+
+async function _refreshClientHealth() {
+  var body = document.getElementById('client-health-body');
+  if (!body) return;
+  body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">Loading…</div>';
+  if (!window.PentaClientHealth) {
+    body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">Client health unavailable</div>';
+    return;
+  }
+  var cfg = null;
+  try { cfg = await window.PentaClientHealth.getConfig(); } catch (e) {}
+  var threshold = (cfg && typeof cfg.drop_threshold === 'number') ? cfg.drop_threshold : 15;
+  try {
+    _clientHealthCache = await window.PentaClientHealth.listLatest();
+    _clientHealthDrops = await window.PentaClientHealth.listDrops(threshold);
+  } catch (e) {
+    body.innerHTML = '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px">Could not load scores</div>';
+    return;
+  }
+  _renderClientHealthSummary();
+  _renderClientHealthBody();
+}
+
+function _renderClientHealthSummary() {
+  var strip = document.getElementById('ch-summary-strip');
+  var sub   = document.getElementById('ch-subtitle');
+  var rows  = _clientHealthCache || [];
+  var counts = { healthy: 0, watch: 0, at_risk: 0 };
+  var newest = null;
+  rows.forEach(function(r){
+    if (counts[r.band] !== undefined) counts[r.band]++;
+    if (!newest || (r.scored_at && r.scored_at > newest)) newest = r.scored_at;
+  });
+  if (strip) {
+    strip.innerHTML =
+      '<div class="ch-stat"><div class="ch-stat-n" style="color:#FF3B30">' + counts.at_risk + '</div><div class="ch-stat-l">At Risk</div></div>' +
+      '<div class="ch-stat"><div class="ch-stat-n" style="color:#FF9F0A">' + counts.watch + '</div><div class="ch-stat-l">Watch</div></div>' +
+      '<div class="ch-stat"><div class="ch-stat-n" style="color:#34C759">' + counts.healthy + '</div><div class="ch-stat-l">Healthy</div></div>' +
+      '<div class="ch-stat"><div class="ch-stat-n">' + ((_clientHealthDrops || []).length) + '</div><div class="ch-stat-l">Drops</div></div>';
+  }
+  if (sub) {
+    if (!rows.length) { sub.textContent = 'No scores yet — tap Rescore'; return; }
+    // Render in the BUSINESS timezone, not the viewer's — _pentaBusinessTimezone()
+    // always returns a concrete IANA string (it ends in a hardcoded
+    // 'America/New_York' rather than undefined), which is what keeps
+    // toLocaleString from silently falling back to browser-local.
+    var when = '';
+    try {
+      // Guard the parse: a row without scored_at would otherwise render
+      // the string "Invalid Date" straight into the header.
+      var d = newest ? new Date(newest) : null;
+      if (d && !isNaN(d.getTime())) {
+        var tz = (typeof _pentaBusinessTimezone === 'function') ? _pentaBusinessTimezone() : 'America/New_York';
+        when = d.toLocaleString('en-US', {
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz
+        });
+      }
+    } catch (e) { when = ''; }
+    sub.textContent = rows.length + ' clients scored' + (when ? ' · ' + when : '');
+  }
+}
+
+function _renderClientHealthFactors(factors) {
+  if (!factors || typeof factors !== 'object') return '';
+  var order = ['cadence_adherence','sms_tone','revenue_trend','forward_booking',
+               'completion_rate','cancel_rate','incident_rate'];
+  var html = '<div class="ch-factors">';
+  order.forEach(function(key){
+    var f = factors[key];
+    if (!f) return;
+    var label = key.replace(/_/g, ' ');
+    // A dormant factor (weight 0, no value) is still rendered, greyed —
+    // it documents WHY the score is shaped the way it is instead of
+    // leaving the reader to wonder what happened to completion rate.
+    var dormant = (f.value === null || f.value === undefined || !f.weight);
+    var pct = dormant ? 0 : Math.round(f.value * 100);
+    var col = dormant ? 'var(--border)'
+            : (f.value >= 0.7 ? '#34C759' : (f.value >= 0.4 ? '#FF9F0A' : '#FF3B30'));
+    html += '<div class="ch-factor' + (dormant ? ' ch-dormant' : '') + '" title="' + _chEsc(f.detail || '') + '">' +
+              '<div class="ch-factor-label">' + _chEsc(label) + '</div>' +
+              '<div class="ch-bar"><div class="ch-bar-fill" style="width:' + pct + '%;background:' + col + '"></div></div>' +
+              '<div class="ch-factor-val">' + (dormant ? '—' : pct) + '</div>' +
+            '</div>';
+  });
+  // The detail strings carry the actual evidence ("median gap 21d vs 7d
+  // cadence"). Surface the contributing ones rather than burying them
+  // in a title attribute no one hovers on a phone.
+  var details = order
+    .filter(function(k){ var f = factors[k]; return f && f.weight && f.value !== null && f.detail; })
+    .map(function(k){ return '<div style="font-size:11px;color:var(--muted);margin-top:3px">• ' + _chEsc(factors[k].detail) + '</div>'; })
+    .join('');
+  html += details + '</div>';
+  return html;
+}
+
+function _renderClientHealthBody() {
+  var body = document.getElementById('client-health-body');
+  if (!body) return;
+  var rows = _clientHealthCache || [];
+
+  if (_clientHealthTab === 'drops') {
+    var drops = _clientHealthDrops || [];
+    if (!drops.length) {
+      body.innerHTML = '<div style="padding:40px 16px;text-align:center;color:var(--muted);font-size:14px">No sharp drops since the last run.</div>';
+      return;
+    }
+    body.innerHTML = drops.map(function(d){
+      var nm = ((d.first_name || '') + ' ' + (d.last_name || '')).trim() || 'Client';
+      return '<div class="ch-drop-card"><div class="ch-row">' +
+        '<div class="ch-score" style="background:#FF3B30">-' + d.drop_points + '</div>' +
+        '<div style="flex:1 1 auto;min-width:0">' +
+          '<div class="ch-name">' + _chEsc(nm) + '</div>' +
+          '<div class="ch-sum">Fell from ' + d.previous_score + ' to ' + d.current_score +
+            ' (' + _chEsc(d.current_band).replace('_', ' ') + ')</div>' +
+        '</div></div></div>';
+    }).join('');
+    return;
+  }
+
+  var filtered = rows;
+  if (_clientHealthTab === 'at_risk') filtered = rows.filter(function(r){ return r.band === 'at_risk'; });
+  else if (_clientHealthTab === 'watch') filtered = rows.filter(function(r){ return r.band === 'watch'; });
+
+  // Worst first — this is a call list, so the most urgent client is the
+  // one that should need no scrolling.
+  filtered = filtered.slice().sort(function(a, b){ return a.score - b.score; });
+
+  // Sharp-drop alert. Surfaced as a banner on the default (At Risk) tab
+  // as well as its own tab — a drop is the most time-sensitive signal
+  // here, and burying it behind a tab nobody taps defeats the point. A
+  // client can drop sharply and still be 'healthy' in absolute terms,
+  // so this genuinely is not a subset of the list below it.
+  //
+  // Built BEFORE the empty-list check on purpose: "no clients at risk
+  // but three of them fell 20 points this week" is exactly the state
+  // this banner exists to catch, and an early return would eat it.
+  var dropBanner = '';
+  var dropsNow = _clientHealthDrops || [];
+  if (_clientHealthTab === 'at_risk' && dropsNow.length) {
+    var names = dropsNow.slice(0, 3).map(function(d){
+      return ((d.first_name || '') + ' ' + (d.last_name || '')).trim() + ' (-' + d.drop_points + ')';
+    }).join(', ');
+    dropBanner =
+      '<div class="ch-drop-card" onclick="_setClientHealthTab(\'drops\')" style="cursor:pointer">' +
+        '<div style="font-size:13px;font-weight:700;color:#FF3B30">⚠︎ ' + dropsNow.length +
+          ' sharp drop' + (dropsNow.length === 1 ? '' : 's') + ' since the last run</div>' +
+        '<div class="ch-sum" style="margin-top:3px">' + _chEsc(names) +
+          (dropsNow.length > 3 ? ' and ' + (dropsNow.length - 3) + ' more' : '') + ' — tap to review</div>' +
+      '</div>';
+  }
+
+  if (!filtered.length) {
+    var msg = rows.length
+      ? (_clientHealthTab === 'at_risk' ? '🎉 No clients at risk.' : 'Nothing here.')
+      : 'No scores yet — tap Rescore to run scoring.';
+    body.innerHTML = dropBanner +
+      '<div style="padding:40px 16px;text-align:center;color:var(--muted);font-size:14px">' + msg + '</div>';
+    return;
+  }
+
+  body.innerHTML = dropBanner + filtered.map(function(r){
+    var nm = ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || 'Client';
+    var open = !!_clientHealthExpanded[r.client_id];
+    return '<div class="ch-card" onclick="_toggleClientHealthRow(\'' + r.client_id + '\')" style="cursor:pointer">' +
+      '<div class="ch-row">' +
+        '<div class="ch-score" style="background:' + _chBandColor(r.band) + '">' + r.score + '</div>' +
+        '<div style="flex:1 1 auto;min-width:0">' +
+          '<div class="ch-name">' + _chEsc(nm) + '</div>' +
+          '<div class="ch-sum">' + _chEsc(r.summary || '') + '</div>' +
+        '</div>' +
+        '<div style="flex:0 0 auto;color:var(--muted);font-size:11px">' + (open ? '▾' : '▸') + '</div>' +
+      '</div>' +
+      (open ? _renderClientHealthFactors(r.factors) : '') +
+    '</div>';
+  }).join('');
+}
+
+async function _runClientHealthScoring() {
+  var btn = document.getElementById('ch-run-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scoring…'; }
+  try {
+    var res = await window.PentaClientHealth.runScoring();
+    // Surface a partial SMS pull rather than letting it look like a clean
+    // run — a throttled RingCentral page means some tone signal is missing.
+    if (res && res.sms && res.sms.partial) {
+      console.warn('[client health] RingCentral returned a partial inbox; some SMS tone is missing');
+    }
+    await _refreshClientHealth();
+    try { _refreshClientHealthBadge(); } catch (e) {}
+  } catch (e) {
+    alert('Scoring failed: ' + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Rescore'; }
+  }
+}
+
+// Home/dock badge. Same shape as _refreshSchedTileBadge: the tile reads
+// the cached number synchronously, this refreshes it async and only
+// re-renders when the count actually changed (guards against a render
+// loop, since renderHomeScreen calls back into here).
+var _pentaAtRiskCount = 0;
+function _refreshClientHealthBadge() {
+  if (!window.PentaClientHealth) return;
+  window.PentaClientHealth.countAtRisk().then(function(n){
+    n = n || 0;
+    if (n === _pentaAtRiskCount) return;
+    _pentaAtRiskCount = n;
+    try { if (typeof renderHomeScreen === 'function') renderHomeScreen(); } catch (e) {}
+  }).catch(function(err){
+    console.warn('[client health] badge count error', err);
+  });
+}
+
+window.openClientHealthView = openClientHealthView;
+window.closeClientHealthView = closeClientHealthView;
+window._setClientHealthTab = _setClientHealthTab;
+window._toggleClientHealthRow = _toggleClientHealthRow;
+window._runClientHealthScoring = _runClientHealthScoring;
+window._refreshClientHealthBadge = _refreshClientHealthBadge;
+
 async function renderActivityLog() {
   var btn = document.getElementById('actor-name-btn');
   if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
@@ -20323,6 +20779,7 @@ var LUCIDE = {
   'map-pin': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M20 10c0 7-8 13-8 13s-8-6-8-13a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
   'message-circle': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
   'calendar': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg>',
+  'activity': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>',
   'sparkles': '<svg class="sparkles-brand" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" stroke-width="2"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>',
   'bar-chart-3': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>',
   'handshake': '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="m11 17 2 2a1 1 0 1 0 3-3"/><path d="m14 14 2.5 2.5a1 1 0 1 0 3-3l-3.88-3.88a3 3 0 0 0-4.24 0l-.88.88a1 1 0 1 1-3-3l2.81-2.81a5.79 5.79 0 0 1 7.06-.87l.47.28a2 2 0 0 0 1.42.25L21 4"/><path d="m21 3 1 11h-2"/><path d="M3 3 2 14l6.5 6.5a1 1 0 1 0 3-3"/><path d="M3 4h8"/></svg>',
@@ -20442,6 +20899,13 @@ var HOME_APPS = [
   // Grid row 3
   { id: 'assets',     permKey: 'assets_icon', label: 'Assets',     grad: 'linear-gradient(135deg,#98989D 0%,#636366 100%)',
     iconHtml: LUCIDE['tag'], go: function(){ _launcherComingSoon('Assets'); } },
+  // Client Health — badge is the at-risk count from the newest scoring
+  // run. Reads the cached value synchronously; _refreshClientHealthBadge
+  // updates it on home render and after a Rescore.
+  { id: 'health',     permKey: 'clients_icon', label: 'Health',     grad: 'linear-gradient(135deg,#FF6482 0%,#C9184A 100%)',
+    iconHtml: LUCIDE['activity'],
+    badge: function(){ return _pentaAtRiskCount || 0; },
+    go: function(){ if (typeof openClientHealthView === 'function') openClientHealthView(); } },
   { id: 'inventory',  permKey: 'inventory_icon', label: 'Inventory',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['package'],
     badge: function(){ try { return (typeof calcInventoryCounts === 'function') ? (calcInventoryCounts().needsReorder || 0) : 0; } catch(e){ return 0; } },
@@ -20663,6 +21127,10 @@ function renderHomeScreen() {
   // stale but is at most 1 render behind); the async refresh will
   // re-render the home if the count changed.
   try { _refreshSchedTileBadge(); } catch (e) {}
+  // Same fire-and-forget contract as the Schedule badge above: first
+  // paint uses the cached at-risk count, the async refresh re-renders
+  // only if the number actually moved.
+  try { _refreshClientHealthBadge(); } catch (e) {}
 
   var pagesEl = document.getElementById('home-pages-wrap');
   var dotsEl = document.getElementById('home-page-dots');
@@ -20701,6 +21169,7 @@ function renderDock() {
   // has its own guard against infinite re-render — it only triggers a
   // re-render when the count actually changes.
   try { if (typeof _refreshSchedTileBadge === 'function') _refreshSchedTileBadge(); } catch (e) {}
+  try { if (typeof _refreshClientHealthBadge === 'function') _refreshClientHealthBadge(); } catch (e) {}
   // After render, re-assert active class for the current tab
   var tab = sessionStorage.getItem('cc_tab');
   if (tab) {
@@ -42007,7 +42476,70 @@ function openAdminScreen() {
   try { renderPhoneIntegrationStatus(); } catch(e){}
   try { renderGeotabIntegrationStatus(); } catch(e){}
   try { renderOfficesStatus(); } catch(e){}
+  try { _loadClientHealthConfig(); } catch(e){}
 }
+
+// ─── Client Health config (businesses.business_settings->'client_health') ───
+//
+// Defaults here mirror the seed in migration 071. They matter because a
+// tenant created before that migration ran — or one whose settings jsonb
+// was replaced wholesale — would otherwise render blank inputs and then
+// write those blanks back on the first onchange.
+var _CH_CFG_DEFAULTS = { enabled: true, drop_threshold: 15, sms_lookback_months: 3 };
+
+async function _loadClientHealthConfig() {
+  var status = document.getElementById('admin-client-health-status');
+  if (!window.PentaClientHealth) return;
+  var cfg = null;
+  try { cfg = await window.PentaClientHealth.getConfig(); } catch (e) {}
+  cfg = cfg || _CH_CFG_DEFAULTS;
+
+  var en = document.getElementById('ch-cfg-enabled');
+  var dr = document.getElementById('ch-cfg-drop');
+  var sm = document.getElementById('ch-cfg-sms');
+  if (en) en.checked = (cfg.enabled !== false);
+  if (dr) dr.value = (typeof cfg.drop_threshold === 'number') ? cfg.drop_threshold : _CH_CFG_DEFAULTS.drop_threshold;
+  if (sm) sm.value = (typeof cfg.sms_lookback_months === 'number') ? cfg.sms_lookback_months : _CH_CFG_DEFAULTS.sms_lookback_months;
+
+  if (status) {
+    try {
+      var rows = await window.PentaClientHealth.listLatest();
+      var atRisk = rows.filter(function(r){ return r.band === 'at_risk'; }).length;
+      status.textContent = rows.length
+        ? (rows.length + ' clients scored · ' + atRisk + ' at risk')
+        : 'No scores yet — open Client Health and tap Rescore.';
+    } catch (e) { status.textContent = ''; }
+  }
+}
+
+async function _saveClientHealthConfig() {
+  var status = document.getElementById('admin-client-health-status');
+  var en = document.getElementById('ch-cfg-enabled');
+  var dr = document.getElementById('ch-cfg-drop');
+  var sm = document.getElementById('ch-cfg-sms');
+
+  // Clamp on the way in. sms_lookback_months is clamped again server-side
+  // by rc-inbox (1-12), but a bad value here would silently do nothing
+  // and look like the setting was ignored.
+  var drop = Math.max(1, Math.min(100, parseInt(dr && dr.value, 10) || _CH_CFG_DEFAULTS.drop_threshold));
+  var sms  = Math.max(1, Math.min(12,  parseInt(sm && sm.value, 10) || _CH_CFG_DEFAULTS.sms_lookback_months));
+  if (dr) dr.value = drop;
+  if (sm) sm.value = sms;
+
+  try {
+    await window.PentaClientHealth.saveConfig({
+      enabled: !!(en && en.checked),
+      drop_threshold: drop,
+      sms_lookback_months: sms
+    });
+    if (status) status.textContent = 'Saved.';
+    try { _loadClientHealthConfig(); } catch (e) {}
+  } catch (e) {
+    if (status) status.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+window._loadClientHealthConfig = _loadClientHealthConfig;
+window._saveClientHealthConfig = _saveClientHealthConfig;
 
 // v11.0.4 (Issue A): status line + list/edit modal for the tenant's
 // office locations. Backed by business_offices via PentaOffices.
@@ -45313,6 +45845,28 @@ function _p3dPage(dir) {
   <div class="oi-body" id="open-items-body"></div>
 </div>
 
+<!-- Client Health — scores from migration 071, written by the
+     score-client-health Edge Function. Read-only in the browser. -->
+<div id="client-health-view" data-permission-role="manager" aria-hidden="true">
+  <div class="mr-topbar">
+    <button class="mr-back-btn" onclick="closeClientHealthView()" aria-label="Back">‹</button>
+    <div class="mr-title-wrap">
+      <div class="mr-title">Client Health</div>
+      <div class="mr-subtitle" id="ch-subtitle">…</div>
+    </div>
+    <button id="ch-run-btn" onclick="_runClientHealthScoring()" type="button"
+      style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 12px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;margin-left:auto">Rescore</button>
+  </div>
+  <div class="ch-summary-strip" id="ch-summary-strip"></div>
+  <div class="ch-tabs">
+    <button id="ch-tab-at_risk" onclick="_setClientHealthTab('at_risk')" type="button" style="flex:1;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid var(--accent)">At Risk</button>
+    <button id="ch-tab-drops" onclick="_setClientHealthTab('drops')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Drops</button>
+    <button id="ch-tab-watch" onclick="_setClientHealthTab('watch')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">Watch</button>
+    <button id="ch-tab-all" onclick="_setClientHealthTab('all')" type="button" style="flex:1;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:12px 0;cursor:pointer;border-bottom:2px solid transparent">All</button>
+  </div>
+  <div class="ch-body" id="client-health-body"></div>
+</div>
+
 <!-- Employee Supplies sub-page -->
 <div id="emp-supplies-view" aria-hidden="true">
   <div class="inv-topbar">
@@ -45375,6 +45929,43 @@ function _p3dPage(dir) {
         <button onclick="openGeotabIntegrationSettings()" style="flex:1;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🚗 Configure Geotab integration</button>
       </div>
       <div id="admin-geotab-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- Client Health Scoring. Config lives in
+         businesses.business_settings->'client_health' (seeded by migration
+         071), so this reads/writes that jsonb rather than a table. -->
+    <div class="admin-sec" id="admin-client-health-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Client Health Scoring</div>
+      <div class="admin-row">
+        <div class="admin-row-label">
+          <div style="font-size:14px;font-weight:600;line-height:1.3">Enabled</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:3px">When off, scoring runs exit immediately and no new scores are written.</div>
+        </div>
+        <label class="admin-switch" style="flex:0 0 auto">
+          <input type="checkbox" id="ch-cfg-enabled" onchange="_saveClientHealthConfig()">
+          <span class="admin-switch-track"></span>
+        </label>
+      </div>
+      <div class="admin-row" style="align-items:flex-start">
+        <div class="admin-row-label">
+          <div style="font-size:14px;font-weight:600;line-height:1.3">Sharp-drop threshold</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:3px">Points a client's score must fall, against their own previous score, to appear under Drops.</div>
+        </div>
+        <input id="ch-cfg-drop" type="number" min="1" max="100" step="1" onchange="_saveClientHealthConfig()"
+          style="flex:0 0 64px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;padding:8px;border-radius:8px;text-align:center">
+      </div>
+      <div class="admin-row" style="align-items:flex-start">
+        <div class="admin-row-label">
+          <div style="font-size:14px;font-weight:600;line-height:1.3">SMS lookback (months)</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:3px">How far back RingCentral threads are pulled to read client tone. Clamped 1–12.</div>
+        </div>
+        <input id="ch-cfg-sms" type="number" min="1" max="12" step="1" onchange="_saveClientHealthConfig()"
+          style="flex:0 0 64px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;padding:8px;border-radius:8px;text-align:center">
+      </div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openClientHealthView()" style="flex:1;background:rgba(255,100,130,0.18);border:1px solid rgba(255,100,130,0.45);color:#ffc9d4;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">❤️ Open Client Health</button>
+      </div>
+      <div id="admin-client-health-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- v11.0.4 (Issue A): Offices / Depots. Manager-or-higher gated by
