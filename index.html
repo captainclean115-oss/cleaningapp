@@ -4638,7 +4638,19 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   <div class="filter-scroll" id="filter-chips"></div>
 </div>
 
-
+<!-- Client-list sort. Own row rather than squeezed into .search-inner —
+     that row is already search input + Filter button on a ~375-420px
+     mobile viewport, and .search-box is the only flexible child, so a
+     third control there would come out of the search input's width.
+     Toggled alongside .search-wrap/.filter-row in showTab() so it only
+     shows on the Clients tab, same as those two. -->
+<div id="client-sort-row" style="padding:0 16px 10px">
+  <div style="max-width:600px;margin:0 auto;display:flex;align-items:center;gap:8px">
+    <span style="color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap">Sort:</span>
+    <select id="client-sort-select" onchange="setClientSort(this.value)"
+      style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:6px 10px;border-radius:8px;outline:none;appearance:none"></select>
+  </div>
+</div>
 
 <div id="install-banner-wrap"></div>
 
@@ -5456,7 +5468,12 @@ window.PentaClients = (function() {
       lng: r.lng == null ? null : Number(r.lng),
       geocode_status: r.geocode_status || 'pending',
       geocoded_at: r.geocoded_at || null,
-      margin: null
+      margin: null,
+      // Additive for client-list "Recently added" sort. The query at
+      // :5902 already does select('*'), so this is free — no new column,
+      // no new query, and every existing consumer of PentaClients objects
+      // just ignores the extra key.
+      created_at: r.created_at || null
     };
   }
 
@@ -13673,6 +13690,19 @@ const FREQ_CLASS = {'RMS - WEK':'f-wek','RMS - ETW':'f-etw','RMS - EOW':'f-eow',
 const FREQ_LABEL = {'RMS - WEK':'Weekly','RMS - ETW':'Every 3wk','RMS - EOW':'Every 2wk','RMS - EFW':'Monthly+','RMS - MON':'Monthly','OMS':'One-time'};
 // Sprint 7 polish: short codes for the freq-chip in client list (40×40 chip)
 const FREQ_SHORT = {'RMS - WEK':'WEK','RMS - ETW':'ETW','RMS - EOW':'EOW','RMS - EFW':'EFW','RMS - MON':'MON','OMS':'CUST'};
+
+// Client-list sort: cadence expressed as a day-interval so "most/least
+// frequent" is a plain numeric compare. OMS (one-time) is deliberately a
+// large-but-finite number rather than a null — it's real, known data, so
+// it should sort at the tail of "most frequent first" the same way the
+// task spec places it, not get lumped in with clients whose fc is
+// missing/corrupt (those stay a true null and always sort last — see
+// _clientSortCmp).
+const FREQ_SORT_DAYS = {'RMS - WEK':7,'RMS - EOW':14,'RMS - ETW':21,'RMS - EFW':28,'RMS - MON':30,'OMS':9999};
+function _freqDaysOf(c) {
+  var d = FREQ_SORT_DAYS[c.fc];
+  return (typeof d === 'number') ? d : null;
+}
 const PREF_TIME_LABEL = {
   'anytime':   'Anytime',
   'morning':   'Morning',
@@ -13722,6 +13752,220 @@ let searchVal = '';
 let clientStatusFilter = 'active'; // Migration 008: 'active' | 'paused' | 'inactive' | 'all'
 let drawerClient = null;
 let drawerType = null;
+
+// ─── Client list sort ──────────────────────────────────────────────
+//
+// Applied AFTER filter + search (see applyFilters below, which only
+// wraps its existing PentaClients.filterClients(...) call in a sort —
+// the filter/search predicate itself is untouched).
+//
+// Three of the eleven options need data that isn't on the PentaClients
+// object itself (last serviced, revenue — from PentaJobs; health score —
+// from PentaClientHealth). Rather than query per sort click, those are
+// precomputed into small id→value maps in _clientSortCache, rebuilt once
+// whenever the Clients view opens (_refreshClientSortCaches, called from
+// showClientsSubview) and read by plain object lookup on every sort.
+
+const CLIENT_SORT_STORAGE_KEY = 'client_list_sort_v1';
+const CLIENT_SORT_DEFAULT = 'ln_asc';
+
+const CLIENT_SORT_OPTIONS = [
+  { id: 'ln_asc',            label: 'Last name A→Z' },
+  { id: 'ln_desc',           label: 'Last name Z→A' },
+  { id: 'fn_asc',            label: 'First name A→Z' },
+  { id: 'fn_desc',           label: 'First name Z→A' },
+  { id: 'freq_most',         label: 'Frequency (most frequent first)' },
+  { id: 'freq_least',        label: 'Frequency (least frequent first)' },
+  { id: 'city_asc',          label: 'City A→Z' },
+  { id: 'created_desc',      label: 'Recently added (newest first)' },
+  { id: 'last_serviced_desc',label: 'Last serviced (most recent first)' },
+  { id: 'revenue_desc',      label: 'Revenue (highest first)' },
+  { id: 'health_asc',        label: 'Health score (worst first)' },
+];
+
+let clientSortOrder = localStorage.getItem(CLIENT_SORT_STORAGE_KEY) || CLIENT_SORT_DEFAULT;
+// A build that removed/renamed an option shouldn't leave a stale
+// localStorage value silently sorting nothing.
+if (!CLIENT_SORT_OPTIONS.some(function(o){ return o.id === clientSortOrder; })) {
+  clientSortOrder = CLIENT_SORT_DEFAULT;
+}
+
+// client external_id (c.id) → derived value. Health is keyed by c.uuid
+// instead, because client_health_scores.client_id is clients.id (the
+// Supabase uuid), not external_id — jobs.client_id is the one FK that
+// targets external_id (confirmed against the schema when building
+// score-client-health). Getting this key wrong silently empties the map
+// rather than erroring, which is exactly the failure mode the "no
+// scores/no jobs" empty-state tests below exist to catch.
+const _clientSortCache = {
+  lastServiced: {},  // c.id  → ms timestamp of most recent PAST, non-cancelled job
+  revenue:      {},  // c.id  → sum(price) over the trailing 12 months, excl. cancelled
+  health:       {},  // c.uuid → latest client_health_scores.score (0-100)
+};
+
+// Same local-midnight construction parseDate() already uses for the
+// client card's MM/DD/YYYY fields, just for the ISO YYYY-MM-DD dates
+// jobs.date comes back as. Deliberately NOT `new Date(iso)` — that parses
+// as UTC midnight and can land on the wrong calendar day once compared
+// against a local "today", which is the exact class of bug the GPS
+// timestamp work earlier this project had to chase down across 5 PRs.
+function _isoDateToLocalTs(iso) {
+  if (!iso) return null;
+  var p = String(iso).split('-');
+  if (p.length !== 3) return null;
+  var t = new Date(+p[0], +p[1] - 1, +p[2]).getTime();
+  return isNaN(t) ? null : t;
+}
+
+// Rebuilds the two jobs-derived maps from PentaJobs' already-loaded,
+// in-memory cache (listSync — no query) and kicks off an async refresh
+// of the health-score map (which IS a live RPC call, not a local cache).
+// Called once when the Clients view opens; never on a sort-dropdown
+// click, per the sort spec.
+function _refreshClientSortCaches() {
+  var lastServiced = {};
+  var revenue = {};
+  try {
+    var jobs = (window.PentaJobs && window.PentaJobs.listSync) ? window.PentaJobs.listSync() : [];
+    var todayLocal = new Date(); todayLocal.setHours(0, 0, 0, 0);
+    var todayTs = todayLocal.getTime();
+    var windowStartTs = new Date(todayLocal.getFullYear(), todayLocal.getMonth() - 12, todayLocal.getDate()).getTime();
+    jobs.forEach(function(j) {
+      if (!j.clientId) return;
+      var ts = _isoDateToLocalTs(j.date);
+      if (ts === null) return;
+      // A cancelled job wasn't serviced and generated no revenue — excluded
+      // from both maps for that reason, not because the spec says so
+      // explicitly (it doesn't; this is the natural reading of "serviced"
+      // and "revenue").
+      if (j.cancelled) return;
+      if (ts < todayTs) {
+        if (lastServiced[j.clientId] === undefined || ts > lastServiced[j.clientId]) {
+          lastServiced[j.clientId] = ts;
+        }
+      }
+      if (ts >= windowStartTs && ts <= todayTs) {
+        var price = Number(j.price);
+        if (Number.isFinite(price)) {
+          revenue[j.clientId] = (revenue[j.clientId] || 0) + price;
+        }
+      }
+    });
+  } catch (e) {
+    console.warn('[clientSort] failed to build jobs-derived sort caches — last-serviced/revenue sort will show all clients as unranked', e);
+  }
+  _clientSortCache.lastServiced = lastServiced;
+  _clientSortCache.revenue = revenue;
+  // Re-render now so a client who opened straight into one of these two
+  // sorts sees fresh data immediately, not the previous session's order.
+  try { applyFilters(); } catch (e) {}
+
+  if (window.PentaClientHealth && window.PentaClientHealth.listLatest) {
+    window.PentaClientHealth.listLatest().then(function(rows) {
+      var health = {};
+      (rows || []).forEach(function(r) {
+        if (r && r.client_id && typeof r.score === 'number') health[r.client_id] = r.score;
+      });
+      _clientSortCache.health = health;
+      // Only re-render for this one if the user is actually sorted by
+      // health score right now — otherwise every Clients-view open would
+      // cost an invisible extra reflow for a sort nobody is using.
+      if (clientSortOrder === 'health_asc') { try { applyFilters(); } catch (e) {} }
+    }).catch(function(err) {
+      // Fresh tenant with no scores yet, RPC hiccup, whatever — leave the
+      // map empty. Every client then reads as "no score" and sorts last,
+      // which is the correct empty-state behavior, not a broken one.
+      console.warn('[clientSort] health score fetch failed — clients will sort as unscored', err);
+      _clientSortCache.health = {};
+      if (clientSortOrder === 'health_asc') { try { applyFilters(); } catch (e) {} }
+    });
+  } else {
+    _clientSortCache.health = {};
+  }
+}
+
+// Generic nulls-last comparator. `desc` only flips the ordering among
+// non-null values — nulls always sort to the end regardless of
+// direction, matching every "nulls last" instruction in the sort spec
+// without needing a special case per option.
+function _clientSortCmp(keyFn, desc) {
+  return function(a, b) {
+    var av = keyFn(a), bv = keyFn(b);
+    var aNull = av === null || av === undefined || av === '';
+    var bNull = bv === null || bv === undefined || bv === '';
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    if (av < bv) return desc ? 1 : -1;
+    if (av > bv) return desc ? -1 : 1;
+    return 0;
+  };
+}
+
+// Case-fold for the string sorts. Preserves null/undefined/'' as-is so
+// _clientSortCmp's nulls-last check still recognizes them — only real
+// strings get lowercased. Without this, a single inconsistently-cased
+// name (real-world data: "amy" vs "Zoe") sorts by ASCII value instead of
+// alphabetically, dropping every lowercase-first name to the bottom.
+function _strKey(v) {
+  return (typeof v === 'string' && v !== '') ? v.toLowerCase() : v;
+}
+
+function sortClientList(list, sortId) {
+  switch (sortId) {
+    case 'ln_desc':
+      return list.slice().sort(_clientSortCmp(function(c){ return _strKey(c.ln); }, true));
+    case 'fn_asc':
+      return list.slice().sort(_clientSortCmp(function(c){ return _strKey(c.fn); }, false));
+    case 'fn_desc':
+      return list.slice().sort(_clientSortCmp(function(c){ return _strKey(c.fn); }, true));
+    case 'freq_most':
+      return list.slice().sort(_clientSortCmp(_freqDaysOf, false));
+    case 'freq_least':
+      return list.slice().sort(_clientSortCmp(_freqDaysOf, true));
+    case 'city_asc':
+      return list.slice().sort(_clientSortCmp(function(c){ return _strKey(c.city); }, false));
+    case 'created_desc':
+      return list.slice().sort(_clientSortCmp(function(c){
+        return c.created_at ? new Date(c.created_at).getTime() : null;
+      }, true));
+    case 'last_serviced_desc':
+      return list.slice().sort(_clientSortCmp(function(c){
+        var v = _clientSortCache.lastServiced[c.id];
+        return v === undefined ? null : v;
+      }, true));
+    case 'revenue_desc':
+      return list.slice().sort(_clientSortCmp(function(c){
+        var v = _clientSortCache.revenue[c.id];
+        return v === undefined ? null : v;
+      }, true));
+    case 'health_asc':
+      return list.slice().sort(_clientSortCmp(function(c){
+        var v = _clientSortCache.health[c.uuid];
+        return v === undefined ? null : v;
+      }, false));
+    case 'ln_asc':
+    default:
+      return list.slice().sort(_clientSortCmp(function(c){ return _strKey(c.ln); }, false));
+  }
+}
+
+function setClientSort(id) {
+  if (!CLIENT_SORT_OPTIONS.some(function(o){ return o.id === id; })) id = CLIENT_SORT_DEFAULT;
+  clientSortOrder = id;
+  localStorage.setItem(CLIENT_SORT_STORAGE_KEY, id);
+  applyFilters();
+}
+
+function _populateClientSortSelect() {
+  var sel = document.getElementById('client-sort-select');
+  if (!sel) return;
+  sel.innerHTML = CLIENT_SORT_OPTIONS.map(function(o){
+    return '<option value="' + o.id + '">' + o.label + '</option>';
+  }).join('');
+  sel.value = clientSortOrder;
+}
+_populateClientSortSelect();
 
 function initials(fn, ln) {
   return ((fn||'')[0]||'') + ((ln||'')[0]||'');
@@ -13896,7 +14140,10 @@ function setClientStatusFilter(id) {
 
 function applyFilters(force) {
   const q = searchVal.toLowerCase();
-  filtered = PentaClients.filterClients(c => {
+  // Sort is applied AFTER filter + search, wrapping the existing
+  // PentaClients.filterClients(...) call below — the predicate itself
+  // (status / search / chip filters) is unchanged.
+  filtered = sortClientList(PentaClients.filterClients(c => {
     // Migration 008: status filter (segmented control)
     var cs = c.status || 'active';
     if (clientStatusFilter !== 'all' && cs !== clientStatusFilter) return false;
@@ -13912,7 +14159,7 @@ function applyFilters(force) {
       if (f.startsWith('zone:') && c.zone !== f.slice(5)) return false;
     }
     return true;
-  });
+  }), clientSortOrder);
   renderClientStatusSegment();
   render(force);
 }
@@ -15246,9 +15493,10 @@ function showTab(tab) {
   if (navGps) navGps.classList.toggle('active', tab === 'gps');
   const topSearch = document.querySelector('.search-wrap');
   const filterRow = document.getElementById('filter-row');
+  const sortRow = document.getElementById('client-sort-row');
   const statsBar = document.querySelector('.stats-bar');
   const installBanner = document.getElementById('install-banner-wrap');
-  [topSearch, filterRow, statsBar, installBanner].forEach(el => {
+  [topSearch, filterRow, sortRow, statsBar, installBanner].forEach(el => {
     if (el) el.style.display = tab === 'clients' ? '' : 'none';
   });
   // Show/hide Clients/Staff topbar toggle
@@ -39169,8 +39417,15 @@ function showClientsSubview() {
   document.getElementById('staff-subview').style.display = 'none';
   const searchWrap = document.querySelector('.search-wrap');
   const filterRow = document.getElementById('filter-row');
+  const sortRow = document.getElementById('client-sort-row');
   const statsBar = document.querySelector('.stats-bar');
-  [searchWrap, filterRow, statsBar].forEach(el => { if (el) el.style.display = ''; });
+  [searchWrap, filterRow, sortRow, statsBar].forEach(el => { if (el) el.style.display = ''; });
+  // Refresh the join-derived sort caches (last serviced / revenue / health
+  // score) every time the Clients view opens — not on every sort click,
+  // per the sort spec. Safe to call unconditionally: PentaJobs.listSync()
+  // is already-loaded in-memory data, and PentaClientHealth failures are
+  // caught internally and degrade to "no score" rather than throwing.
+  try { _refreshClientSortCaches(); } catch (e) { console.warn('[clientSort] refresh failed', e); }
 }
 
 function renderStaffSubview() {
