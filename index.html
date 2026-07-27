@@ -43520,8 +43520,57 @@ async function openGeotabIntegrationSettings() {
     +     '<button type="button" onclick="testGeotabIntegration()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:10px 14px;border-radius:8px;cursor:pointer">Send test query</button>'
     +     '<div id="gt-test-status" style="font-size:12px;color:var(--muted);min-height:18px;margin-top:8px"></div>'
     +   '</div>'
+    +   '<div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">'
+    +     '<div style="font-size:13px;font-weight:700;margin-bottom:6px">GPS clock-in/out polling</div>'
+    +     '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.45">Runs the same poll pg_cron fires every 15 minutes, scoped to your business only. Use this to test without waiting, or to re-trigger if cron ever stalls. Results land in <code>gps_match_log</code> either way — writes to job/payroll clock times only happen once your tenant\'s <code>gps_clock_writes_enabled</code> flag is on.</div>'
+    +     '<button type="button" onclick="runGeotabPollNow()" style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#6ee7b7;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:10px 14px;border-radius:8px;cursor:pointer">Run poll now</button>'
+    +     '<div id="gt-poll-status" style="font-size:12px;color:var(--muted);min-height:18px;margin-top:8px"></div>'
+    +   '</div>'
     + '</div>';
   document.body.appendChild(overlay);
+}
+
+// Manual trigger for poll-geotab-clocks (Admin -> Fleet Tracking). Uses
+// the caller's own session JWT, not the service_role key -- the EF's
+// manual-trigger path re-verifies it via caller.auth.getUser and scopes
+// the run to the caller's own business_id only (see the EF's dual-auth
+// block). Rate-limited server-side to 1 call per 5 min per tenant,
+// shared with the cron trigger.
+async function runGeotabPollNow() {
+  var st = document.getElementById('gt-poll-status');
+  if (!st) return;
+  st.style.color = 'var(--muted)';
+  st.textContent = 'Polling…';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var session = (await sb.auth.getSession()).data.session;
+    if (!session || !session.access_token) throw new Error('No active session (sign in again)');
+    var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
+    var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
+    var resp = await fetch(supaUrl + '/functions/v1/poll-geotab-clocks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.access_token, 'apikey': anonKey },
+      body: '{}',
+    });
+    var raw = await resp.text();
+    var data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch (e) {}
+    if (!resp.ok) {
+      var summary = (data && data.error) || ('HTTP ' + resp.status);
+      if (data && data.detail) summary += ' — ' + data.detail;
+      throw new Error(summary);
+    }
+    if (!data) throw new Error('Empty response');
+    st.style.color = '#34d399';
+    st.textContent = '✓ Poll complete — ' + data.tripsProcessed + ' trip(s), ' + data.matches + ' matched, ' + data.misses + ' unmatched'
+      + (data.jobsNewlyClocked ? ', ' + data.jobsNewlyClocked + ' job(s) newly clocked' : '')
+      + (data.jobsDivergent ? ', ' + data.jobsDivergent + ' divergent from manual' : '')
+      + '.';
+  } catch (e) {
+    st.style.color = '#f87171';
+    st.textContent = 'Poll failed: ' + (e.message || e);
+  }
 }
 
 async function saveGeotabIntegrationSettings() {
