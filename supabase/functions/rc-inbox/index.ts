@@ -13,6 +13,20 @@
 // credentials.auth_method ('oauth' | 'jwt'); missing/unknown defaults
 // to 'oauth'. Identical pattern to send-sms.
 //
+// Two caller modes:
+//   - User JWT (browser inbox): tenant resolved from the caller's user
+//     row, 60 calls/hr per user.
+//   - Service role (EF-to-EF): tenant taken from payload.business_id,
+//     120 calls/hr per business. Added for `score-client-health`, which
+//     needs the tenant's whole SMS inbox once per scoring run and has no
+//     user to attribute the call to.
+//
+// NOTE: there is deliberately no per-phone-number filter. RC's
+// message-store endpoint is queried for the whole extension and the
+// caller buckets by number client-side. Scoring 327 clients therefore
+// costs ONE call, not 327 — which is the only way it fits any rate
+// limit at all.
+//
 // Per call: 1 RC OAuth refresh + up to 20 paginated GETs against
 // /account/~/extension/~/message-store?messageType=SMS&dateFrom=…
 // (perPage=250 → max 5000 records). The browser-side path was
@@ -179,45 +193,82 @@ serve(async (req) => {
   const jwt = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!jwt) return json(401, { error: "Empty bearer token" });
 
-  const caller = createClient(SUPABASE_URL, ANON_KEY);
-  const { data: callerData, error: callerErr } = await caller.auth.getUser(jwt);
-  if (callerErr) {
-    console.error("[auth] getUser failed:", callerErr.message, callerErr);
-    return json(401, { error: "Invalid JWT", detail: callerErr.message });
+  // Payload is parsed before auth because the service-role branch takes
+  // its tenant from the body rather than from a user row.
+  let payload: { months_back?: number; business_id?: string } = {};
+  if (req.headers.get("Content-Length") && req.headers.get("Content-Length") !== "0") {
+    try { payload = await req.json(); } catch { /* empty body OK */ }
   }
-  if (!callerData.user) return json(401, { error: "Invalid JWT (no user)" });
-  const callerAuthId = callerData.user.id;
 
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const userRow = await admin.from("users").select("business_id").eq("id", callerAuthId).maybeSingle();
-  const businessId = userRow.data?.business_id;
-  if (!businessId) return json(403, { error: "No tenant for caller" });
 
-  // Rate limit (security audit 3b): 60/hr per user, split check/inc.
-  // Fail-open on RPC error so transient DB issues don't block legit
-  // refreshes. Increment moved to the success path so a failed RC
-  // pagination doesn't consume the user's hourly budget.
-  const userRateKey = `user:${callerAuthId}:rc-inbox`;
-  const USER_LIMIT  = 60;
+  // ─── Two auth modes ──────────────────────────────────────────────
+  //
+  // 1. User JWT (the browser inbox) — resolve the tenant from the
+  //    caller's user row, rate-limit 60/hr per user.
+  //
+  // 2. Service role (EF-to-EF, added for `score-client-health`) — the
+  //    caller IS the platform, so the tenant comes from the payload and
+  //    the per-user limit does not apply. Needed because scoring reads
+  //    the tenant's whole SMS inbox once per run: there is no user to
+  //    attribute it to, and `auth.getUser(service_key)` returns no user
+  //    at all, so mode 1 would hard-401 an internal call.
+  //
+  // A business-scoped limit still applies in mode 2 so a runaway
+  // scoring loop can't hammer RingCentral's API on the tenant's behalf.
+  const isServiceRole = jwt === SERVICE_KEY;
+
+  let businessId: string | undefined;
+  let rateKey:    string;
+  let rateLimit:  number;
+
+  if (isServiceRole) {
+    businessId = typeof payload.business_id === "string" ? payload.business_id : undefined;
+    if (!businessId) {
+      return json(400, {
+        error: "business_id is required in the payload for service-role calls",
+      });
+    }
+    rateKey   = `business:${businessId}:rc-inbox`;
+    rateLimit = 120;
+  } else {
+    const caller = createClient(SUPABASE_URL, ANON_KEY);
+    const { data: callerData, error: callerErr } = await caller.auth.getUser(jwt);
+    if (callerErr) {
+      console.error("[auth] getUser failed:", callerErr.message, callerErr);
+      return json(401, { error: "Invalid JWT", detail: callerErr.message });
+    }
+    if (!callerData.user) return json(401, { error: "Invalid JWT (no user)" });
+    const callerAuthId = callerData.user.id;
+
+    const userRow = await admin.from("users").select("business_id").eq("id", callerAuthId).maybeSingle();
+    businessId = userRow.data?.business_id;
+    if (!businessId) return json(403, { error: "No tenant for caller" });
+
+    rateKey   = `user:${callerAuthId}:rc-inbox`;
+    rateLimit = 60;
+  }
+
+  // Rate limit (security audit 3b): split check/inc. Fail-open on RPC
+  // error so transient DB issues don't block legit refreshes.
+  // Increment moved to the success path so a failed RC pagination
+  // doesn't consume the caller's hourly budget.
+  const userRateKey = rateKey;
   const checkRes = await admin.rpc("rate_limit_check", {
-    p_key: userRateKey, p_max: USER_LIMIT, p_window_seconds: 3600,
+    p_key: userRateKey, p_max: rateLimit, p_window_seconds: 3600,
   });
   if (checkRes.error) {
     console.error("[rc-inbox] rate_limit_check failed:", checkRes.error);
   } else if (checkRes.data === false) {
     return json(429, {
       error:  "rate_limit_exceeded",
-      detail: `Per-user limit ${USER_LIMIT}/hr exceeded for rc-inbox`,
+      detail: `Limit ${rateLimit}/hr exceeded for rc-inbox (${isServiceRole ? "business" : "user"} scope)`,
     });
   }
 
-  // Step 2: parse optional payload. Default 6 months back, clamp 1-12.
-  let payload: { months_back?: number } = {};
-  if (req.headers.get("Content-Length") && req.headers.get("Content-Length") !== "0") {
-    try { payload = await req.json(); } catch { /* empty body OK */ }
-  }
+  // Step 2: resolve the lookback window. Default 6 months, clamp 1-12.
   let monthsBack = Number(payload.months_back);
   if (!Number.isFinite(monthsBack)) monthsBack = 6;
   monthsBack = Math.max(1, Math.min(12, Math.floor(monthsBack)));
