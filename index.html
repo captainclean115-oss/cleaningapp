@@ -10980,8 +10980,15 @@ window.PentaClientHealth = (function() {
     var body = null;
     try { body = await resp.json(); } catch (e) {}
     if (!resp.ok) {
-      var msg = (body && (body.error || body.detail)) || ('HTTP ' + resp.status);
-      throw new Error(msg);
+      // Surface BOTH error and detail. The EF puts the human label in
+      // `error` and the underlying cause in `detail`, and an `||` here
+      // threw the cause away: a `42501 permission denied for table
+      // businesses` surfaced to Tom as bare "Failed to load business",
+      // which reads like a missing row and sent the first diagnosis at
+      // the data instead of the grant.
+      var label  = (body && body.error) || ('HTTP ' + resp.status);
+      var detail = body && body.detail;
+      throw new Error(detail ? (label + ' — ' + detail) : label);
     }
     return body;
   }
