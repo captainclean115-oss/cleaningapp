@@ -45,6 +45,12 @@
 // Deploy:
 //   supabase functions deploy score-client-health --project-ref wymoezilyjmyibmuqqmr
 //
+// Deploy with verify_jwt ENABLED. The gateway check is a pre-filter in
+// front of the auth below, not a replacement for it — both service-role
+// and user callers present a valid JWT, so nothing legitimate is blocked.
+// With it disabled, unauthenticated traffic reaches this function body;
+// it still 401s, but the outer layer is gone.
+//
 // Required secrets: ANTHROPIC_API_KEY (shared with claire-chat).
 //
 // Request:  POST { business_id?, dry_run? }

@@ -21,6 +21,13 @@
 //     needs the tenant's whole SMS inbox once per scoring run and has no
 //     user to attribute the call to.
 //
+// NOTE: deploy this with verify_jwt ENABLED. The gateway check is a
+// pre-filter in front of the auth below, not a replacement for it —
+// both service-role and user callers present a valid JWT, so nothing
+// legitimate is blocked by it. Deploying with verify_jwt disabled lets
+// unauthenticated traffic reach this function body; it still 401s, but
+// the outer layer is gone.
+//
 // NOTE: there is deliberately no per-phone-number filter. RC's
 // message-store endpoint is queried for the whole extension and the
 // caller buckets by number client-side. Scoring 327 clients therefore
