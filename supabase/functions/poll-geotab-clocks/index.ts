@@ -277,12 +277,18 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
     }
 
     // Client arrivals (stopPoint, not at an office) and departures
-    // (startPoint, not at an office).
+    // (startPoint, not at an office). p_geotab_trip_id/p_point_type
+    // make each resolution idempotent -- replaying the same trip+point
+    // in an overlapping poll window returns the original outcome
+    // instead of re-matching or double-logging (migration 079).
+    const deviceId = device.id != null ? String(device.id) : null;
     for (const t of trips) {
+      const tripId = t.id != null ? String(t.id) : null;
       if (t.stopPoint && !officeForPoint(offices, t.stopPoint.y, t.stopPoint.x)) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.stopPoint.y, p_lng: t.stopPoint.x,
-          p_date: etDateString(t.stop), p_team_code: team, p_event_at: t.stop, p_radius_meters: 61,
+          p_date: etDateString(t.stop), p_team_code: team, p_event_at: t.stop,
+          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "stop", p_radius_meters: 61,
         });
         const row = (resolved.data && resolved.data[0]) || null;
         if (row && row.job_id) {
@@ -296,7 +302,8 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
       if (t.startPoint && !officeForPoint(offices, t.startPoint.y, t.startPoint.x)) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.startPoint.y, p_lng: t.startPoint.x,
-          p_date: etDateString(t.start), p_team_code: team, p_event_at: t.start, p_radius_meters: 61,
+          p_date: etDateString(t.start), p_team_code: team, p_event_at: t.start,
+          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "start", p_radius_meters: 61,
         });
         const row = (resolved.data && resolved.data[0]) || null;
         if (row && row.job_id) {
