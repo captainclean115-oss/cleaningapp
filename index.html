@@ -14593,7 +14593,8 @@ async function fetchTeamDayStops(team, dateStr) {
   if (typeof _geotabCall !== 'function') throw new Error('GPS API unavailable');
   var date = new Date(dateStr);
   var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
-  var device = devices.find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
+  var resolved = await _resolveTeamDevice(devices, team, date);
+  var device = resolved.device;
   if (!device) return [];
   var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
   var endOfDay   = new Date(date); endOfDay.setHours(23,59,59,999);
@@ -24834,7 +24835,7 @@ function _teamDayStats(team, dateStr) {
   return { houses: dayJobs.length, revenue: revenue, mins: mins };
 }
 
-function renderTeamManager() {
+async function renderTeamManager() {
   const dateStr = document.getElementById('team-mgr-date').value;
   const date = new Date(dateStr + 'T00:00:00');
   document.getElementById('team-mgr-date-label').textContent =
@@ -24842,6 +24843,16 @@ function renderTeamManager() {
 
   const teams = _pentaTeamNames();
   let html = '';
+
+  // GPS Vehicle assignment (migration 080). Fetched once for all teams,
+  // not per-card, to keep this to one device list call + N resolver
+  // calls (parallelized) regardless of team count.
+  var _gpsDevices = [];
+  try { _gpsDevices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); }
+  catch (e) { console.warn('[TeamMgr] device list fetch failed (Geotab not configured?)', e); }
+  var _teamDeviceMap = {};
+  try { _teamDeviceMap = await _resolveTeamDeviceMap(_gpsDevices, teams, date); }
+  catch (e) { console.warn('[TeamMgr] team device resolution failed', e); }
 
   // v10.5.25: clear empty-state banner so Tom doesn't see a blank panel
   // when the cache hasn't hydrated. Logs the actual counts to console so
@@ -24874,6 +24885,35 @@ function renderTeamManager() {
       ? '$' + (stats.revenue / 1000).toFixed(1) + 'k'
       : '$' + Math.round(stats.revenue);
 
+    // GPS Vehicle row state. resolved.source: 'assignment' (explicit
+    // device chosen), 'assignment-none' (explicit no-GPS), 'name-match'
+    // / 'name-match-none' (no assignment row -> Default option).
+    const _resolved = _teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+    const _defaultDevice = (_gpsDevices || []).find(d => d.name && d.name.toUpperCase().includes(team));
+    const _selectValue = _resolved.source === 'assignment' ? _resolved.device.id
+      : _resolved.source === 'assignment-none' ? '__none__'
+      : '';
+    const _currentLabel = _resolved.source === 'assignment' ? ('Currently: ' + _adminEsc(_resolved.device ? _resolved.device.name : _resolved.device_id) + ' (assigned)')
+      : _resolved.source === 'assignment-none' ? 'Currently: No GPS coverage (assigned)'
+      : _resolved.source === 'assignment-missing' ? 'Currently: assigned device not found in Geotab'
+      : ('Currently: Default → ' + (_defaultDevice ? _adminEsc(_defaultDevice.name) : 'no match'));
+    const _gpsRowHtml = `<div style="padding:8px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${_currentLabel}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted);white-space:nowrap">🚗 GPS Vehicle:</span>
+          <select id="tda-select-${team}" onchange="setTeamDeviceAssignment('${team}','${dateStr}')"
+            style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 8px;border-radius:8px">
+            <option value=""${_selectValue===''?' selected':''}>Default (matches team name)${_defaultDevice ? ' — ' + _adminEsc(_defaultDevice.name) : ' — no match'}</option>
+            ${(_gpsDevices || []).map(d => `<option value="${_adminEsc(String(d.id))}"${_selectValue===String(d.id)?' selected':''}>${_adminEsc(d.name)}</option>`).join('')}
+            <option value="__none__"${_selectValue==='__none__'?' selected':''}>None (no GPS coverage)</option>
+          </select>
+          <input type="date" id="tda-until-${team}" title="Effective until (optional — leave blank for open-ended)"
+            style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 6px;border-radius:8px">
+          <button onclick="toggleTeamDeviceHistory('${team}')" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;white-space:nowrap">History</button>
+        </div>
+      </div>
+      <div id="tda-history-${team}" style="display:none;padding:6px 14px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">Loading…</div>`;
+
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
         <span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>
@@ -24884,6 +24924,7 @@ function renderTeamManager() {
         <span style="font-size:12px;color:var(--muted)">⏱️ ${hLabel}</span>
         <button onclick="openTeamColorEditor()" style="display:none" title="Sprint 7: hidden — use Manage Teams instead">🎨</button>
       </div>
+      ${_gpsRowHtml}
       <div style="padding:8px 14px">
         ${employees.map(emp => {
           const roleIcons = emp.role.map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : r).join(' ');
@@ -24982,6 +25023,71 @@ function renderTeamManager() {
   }
 
   document.getElementById('team-mgr-content').innerHTML = html;
+}
+
+// GPS Vehicle assignment write (migration 080). Upsert on
+// (business_id, team_code, effective_from) — the table's UNIQUE
+// constraint — so re-picking a different option on the same day
+// updates today's row instead of erroring on a duplicate insert.
+// '' (Default) writes the '__default__' sentinel; '__none__' writes
+// device_id = NULL (explicit no-GPS); anything else is a real device id.
+async function setTeamDeviceAssignment(team, dateStr) {
+  var sel = document.getElementById('tda-select-' + team);
+  var untilEl = document.getElementById('tda-until-' + team);
+  if (!sel) return;
+  var selectValue = sel.value;
+  var deviceId = selectValue === '' ? '__default__' : (selectValue === '__none__' ? null : selectValue);
+  var effectiveTo = (untilEl && untilEl.value) ? untilEl.value : null;
+
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+
+  try {
+    var res = await sb.from('team_device_assignments').upsert({
+      business_id: bid, team_code: team, device_id: deviceId,
+      effective_from: dateStr, effective_to: effectiveTo
+    }, { onConflict: 'business_id,team_code,effective_from' });
+    if (res.error) {
+      if (res.error.code === '42501' || /permission|policy/i.test(res.error.message || '')) {
+        alert('Only owners, admins, and managers can change GPS vehicle assignments.');
+      } else {
+        alert('Could not update GPS vehicle assignment: ' + res.error.message);
+      }
+    }
+  } catch (e) {
+    alert('Could not update GPS vehicle assignment: ' + (e.message || e));
+  }
+  try { renderTeamManager(); } catch (e) {}
+}
+
+// Last 5 assignment rows for a team, newest first. Collapsible —
+// fetched lazily on first expand, not on every renderTeamManager call.
+async function toggleTeamDeviceHistory(team) {
+  var el = document.getElementById('tda-history-' + team);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.textContent = 'Loading…';
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { el.textContent = ''; return; }
+  try {
+    var res = await sb.from('team_device_assignments')
+      .select('device_id, effective_from, effective_to, notes')
+      .eq('business_id', bid).eq('team_code', team)
+      .order('effective_from', { ascending: false }).limit(5);
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    if (!rows.length) { el.textContent = 'No history yet.'; return; }
+    el.innerHTML = rows.map(function(r) {
+      var label = r.device_id === '__default__' ? 'Default (name-match)' : (r.device_id ? _adminEsc(r.device_id) : 'No GPS');
+      var range = _adminEsc(r.effective_from) + (r.effective_to ? ' → ' + _adminEsc(r.effective_to) : ' → open-ended');
+      return '<div style="padding:3px 0">' + label + ' · ' + range + (r.notes ? ' · <span style="opacity:0.8">' + _adminEsc(r.notes) + '</span>' : '') + '</div>';
+    }).join('');
+  } catch (e) {
+    el.textContent = 'Could not load history: ' + (e.message || e);
+  }
 }
 
 function quickAssign(empId, team, dateStr) {
@@ -26221,9 +26327,13 @@ async function showDayHistory(team, dateMs) {
 
     // Get device for this team
     const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
-    const device = devices.find(d => d.name && d.name.toUpperCase().includes(team));
+    const resolved = await _resolveTeamDevice(devices, team, date);
+    const device = resolved.device;
     if (!device) {
-      document.getElementById('history-content').innerHTML = '<div style="color:var(--red)">Vehicle not found for team ' + team + '</div>';
+      const msg = resolved.source === 'assignment-none'
+        ? ('No GPS coverage assigned for team ' + team + ' on this day.')
+        : ('Vehicle not found for team ' + team);
+      document.getElementById('history-content').innerHTML = '<div style="color:var(--red)">' + msg + '</div>';
       return;
     }
 
@@ -26719,12 +26829,15 @@ async function loadWeekHours() {
     try {
         const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
       const teamOrder = _pentaTeamNames();
-      teamDevices = devices.filter(d =>
-        teamOrder.some(t => d.name && d.name.toUpperCase().includes(t))
-      ).map(d => ({
-        ...d,
-        team: teamOrder.find(t => d.name.toUpperCase().includes(t))
-      }));
+      // Best-effort supplementary annotation for the whole week — resolves
+      // against the week's first day rather than per-day-of-week (a team's
+      // vehicle assignment could technically change mid-week, but this is
+      // already a best-effort badge wrapped in try/catch, not the source
+      // of truth for hours).
+      const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, days[0]);
+      teamDevices = teamOrder
+        .filter(t => teamDeviceMap[t] && teamDeviceMap[t].device)
+        .map(t => ({ ...teamDeviceMap[t].device, team: t }));
       trips = await _geotabCall('Get', {
         typeName: 'Trip',
         search: {
@@ -27137,8 +27250,13 @@ async function showEmpStops(team, dateMs) {
   try {
     var date = new Date(dateMs);
     var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
-    var device = devices.find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
-    if (!device) { area.innerHTML = '<div style="color:var(--muted);font-size:12px">No vehicle found for '+team+'</div>'; return; }
+    var resolved = await _resolveTeamDevice(devices, team, date);
+    var device = resolved.device;
+    if (!device) {
+      var noDevMsg = resolved.source === 'assignment-none' ? ('No GPS assigned for '+team+' today') : ('No vehicle found for '+team);
+      area.innerHTML = '<div style="color:var(--muted);font-size:12px">'+noDevMsg+'</div>';
+      return;
+    }
 
     var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
     var endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
@@ -28031,8 +28149,11 @@ function updateMapMarkers() {
     });
     const labelMarker = L.marker([v.lat, v.lng], { icon }).addTo(gpsMap);
 
-    // Popup with info
-    marker.bindPopup(`<b>${v.team}</b> — ${v.name}<br>${v.isMoving ? '🟢 Moving ' + v.speed + ' mph' : '🟡 Stopped'}<br>${v.address || ''}`);
+    // Popup with info. Same "don't repeat the team code as the vehicle
+    // name" collapse as the vehicle-card label — only show a qualifier
+    // when the matched/assigned device differs from the team's own name.
+    const _popupSuffix = (v.name && v.name.toUpperCase() !== v.team.toUpperCase()) ? (' — ' + v.name) : '';
+    marker.bindPopup(`<b>${v.team}</b>${_popupSuffix}<br>${v.isMoving ? '🟢 Moving ' + v.speed + ' mph' : '🟡 Stopped'}<br>${v.address || ''}`);
     marker.on('click', () => marker.openPopup());
 
     gpsMarkers.push(marker, labelMarker);
@@ -28357,12 +28478,26 @@ async function loadGPSData() {
       tripsByDevice[did].push(t);
     });
 
-    // Match devices to teams by name
+    // Resolve each team's device: explicit team_device_assignments
+    // override first (migration 080), falling back to name-matching.
+    // Iterates teams rather than devices (was: filter+map over devices)
+    // so a team with NO resolved device still gets a placeholder card
+    // instead of silently vanishing from the list — Tom's explicit ask,
+    // and previously a known gap (a team with no matching device just
+    // disappeared with no indication anything was wrong).
     const teamOrder = _pentaTeamNames();
-    gpsVehicles = devices
-      .filter(d => teamOrder.some(t => d.name && d.name.toUpperCase().includes(t)))
-      .map(d => {
-        const team = teamOrder.find(t => d.name && d.name.toUpperCase().includes(t)) || d.name;
+    const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, selectedDate);
+    gpsVehicles = teamOrder.map(team => {
+        const resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+        const d = resolved.device;
+        if (!d) {
+          return {
+            id: null, name: null, team, color: _pentaTeamColor(team, '#6b7280'),
+            isMoving: false, speed: 0, lat: null, lng: null, lastContact: null, address: '',
+            totalDriveMin: 0, trips: [], stops: [], noGps: true,
+            assignmentSource: resolved.source
+          };
+        }
         const status = statusMap[d.id] || {};
         const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
           new Date(b.start) - new Date(a.start));
@@ -28413,10 +28548,11 @@ async function loadGPSData() {
           address: status.currentStateDuration || '',
           totalDriveMin: Math.round(totalDriveMin),
           trips: deviceTrips,
-          stops
+          stops,
+          noGps: false,
+          assignmentSource: resolved.source
         };
-      })
-      .sort((a,b) => teamOrder.indexOf(a.team) - teamOrder.indexOf(b.team));
+      });
 
     // Reverse geocode current locations
     await reverseGeocodeVehicles();
@@ -28646,12 +28782,25 @@ function renderGPS() {
       stopsHtml = '<div style="color:var(--muted);font-size:13px;padding:4px 0">No trips recorded yet today</div>';
     }
 
-    return `<div class="team-vehicle-card${isExp?' expanded':''}" onclick="toggleGPSCard('${v.id}')">
+    // Label: collapse to just the team code when the assigned/matched
+    // device's name IS the team code (the old code always showed both,
+    // producing "B3 B3" for the common case). Show a qualifier only
+    // when the vehicle differs from the team's own default (borrowed)
+    // or there's no GPS coverage at all (migration 080 assignment).
+    var _tvcLabel = v.team;
+    if (v.noGps) {
+      _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--muted);font-weight:400">(no GPS)</span>';
+    } else if (v.name && v.name.toUpperCase() !== v.team.toUpperCase()) {
+      var _ownerTeam = _pentaTeamNames().find(function(t){ return v.name.toUpperCase().includes(t); });
+      var _borrowedFrom = _ownerTeam && _ownerTeam !== v.team ? (_ownerTeam + '’s vehicle') : v.name;
+      _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--muted);font-weight:400">(in ' + _borrowedFrom + ')</span>';
+    }
+    return `<div class="team-vehicle-card${isExp?' expanded':''}"${v.noGps ? '' : ` onclick="toggleGPSCard('${v.id}')"`}>
       <div class="tvc-main">
         <div class="tvc-color" style="background:${v.color};width:12px;height:12px;border-radius:50%"></div>
         <div class="tvc-info">
-          <div class="tvc-name">${v.team} <span style="font-size:12px;color:var(--muted);font-weight:400">${v.name}</span></div>
-          <div class="tvc-location">${v.address || 'Location unknown'}</div>
+          <div class="tvc-name">${_tvcLabel}</div>
+          <div class="tvc-location">${v.noGps ? 'No GPS device assigned' : (v.address || 'Location unknown')}</div>
         </div>
         <div style="font-size:20px;color:var(--muted);padding:0 4px;line-height:1">${isExp ? '✕' : '☰'}</div>
         <div class="tvc-status">
@@ -43437,6 +43586,46 @@ async function _geotabCall(method, params) {
   }
   if (!data) throw new Error('geotab-call: empty response body');
   return data.result;
+}
+
+// ─── Device-to-team assignment resolver (browser) ───────────────────
+// Checks the explicit team_device_assignments override (get_team_device
+// RPC, migration 080) first; only falls back to the existing
+// device.name.toUpperCase().includes(team) name-matching when NO
+// assignment row exists for that team+date at all. An explicit
+// assignment with device_id = NULL ("no GPS today") is respected as-is
+// and does NOT fall through to name-matching -- that would silently
+// override a deliberate choice. get_team_device returns a TABLE (zero
+// or one row) specifically so those two cases are distinguishable —
+// see the migration's own comment for why a scalar couldn't do this.
+async function _resolveTeamDevice(devices, team, dateObj) {
+  var dateStr = dateKey(dateObj);
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (sb && bid) {
+    try {
+      var res = await sb.rpc('get_team_device', { p_business_id: bid, p_team_code: team, p_on_date: dateStr });
+      if (!res.error && Array.isArray(res.data) && res.data.length > 0) {
+        var assignedId = res.data[0].device_id;
+        if (!assignedId) return { device: null, source: 'assignment-none' };
+        var found = (devices || []).find(function(d){ return String(d.id) === String(assignedId); });
+        return { device: found || null, source: found ? 'assignment' : 'assignment-missing' };
+      }
+    } catch (e) { /* RPC unavailable — fall through to name-matching */ }
+  }
+  var matched = (devices || []).find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
+  return { device: matched || null, source: matched ? 'name-match' : 'name-match-none' };
+}
+
+// Batch variant: resolves every team in teamOrder in parallel. Returns
+// { teamCode: { device, source } }.
+async function _resolveTeamDeviceMap(devices, teamOrder, dateObj) {
+  var pairs = await Promise.all(teamOrder.map(function(t) {
+    return _resolveTeamDevice(devices, t, dateObj).then(function(r) { return [t, r]; });
+  }));
+  var map = {};
+  pairs.forEach(function(pair) { map[pair[0]] = pair[1]; });
+  return map;
 }
 
 async function renderGeotabIntegrationStatus() {

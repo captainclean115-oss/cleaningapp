@@ -210,6 +210,31 @@ const JOB_DIVERGENCE_THRESHOLD_MIN = 15;
 interface Counters {
   trips: number; matches: number; misses: number;
   jobsNewlyClocked: number; jobsSkippedExisting: number; jobsDivergent: number;
+  deviceAssignmentResolved: number; deviceNameMatched: number;
+}
+
+// Device-to-team override (migration 080): explicit team_device_
+// assignments row wins; falls back to the existing name-matching only
+// when no assignment row exists for that team+date at all. Mirrors the
+// browser's _resolveTeamDevice (index.html) -- same RPC, same fallback
+// semantics, kept as a separate small copy here rather than a shared
+// module for the same reason geotab-call's session logic is duplicated
+// (see this file's header comment).
+async function resolveTeamDevice(admin: Admin, businessId: string, team: string, onDate: string, devices: any[], counters: Counters): Promise<any> {
+  // get_team_device_for_poll, not get_team_device: this EF runs as
+  // service_role, which has no table grant on team_device_assignments
+  // (deliberate project convention) — get_team_device is SECURITY
+  // INVOKER for the browser's RLS-backed path and would 42501 here.
+  // See migration 081's comment for the full story.
+  const res = await admin.rpc("get_team_device_for_poll", { p_business_id: businessId, p_team_code: team, p_on_date: onDate });
+  if (!res.error && Array.isArray(res.data) && res.data.length > 0) {
+    counters.deviceAssignmentResolved++;
+    const assignedId = res.data[0].device_id;
+    if (!assignedId) return null; // explicit no-GPS for this team today
+    return (devices || []).find((d: any) => String(d.id) === String(assignedId)) || null;
+  }
+  counters.deviceNameMatched++;
+  return (devices || []).find((d: any) => d.name && String(d.name).toUpperCase().includes(team)) || null;
 }
 
 async function pollTenant(admin: Admin, integ: any, counters: Counters) {
@@ -225,9 +250,10 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
 
   const now = new Date();
   const windowStart = new Date(now.getTime() - 30 * 60 * 1000);
+  const todayStr = etDateString(now.toISOString());
 
   for (const team of allTeams) {
-    const device = (devices || []).find((d: any) => d.name && String(d.name).toUpperCase().includes(team));
+    const device = await resolveTeamDevice(admin, businessId, team, todayStr, devices, counters);
     if (!device) continue;
 
     let trips: any[];
@@ -378,7 +404,7 @@ serve(async (req) => {
   }
 
   const startAt = new Date();
-  const counters: Counters = { trips: 0, matches: 0, misses: 0, jobsNewlyClocked: 0, jobsSkippedExisting: 0, jobsDivergent: 0 };
+  const counters: Counters = { trips: 0, matches: 0, misses: 0, jobsNewlyClocked: 0, jobsSkippedExisting: 0, jobsDivergent: 0, deviceAssignmentResolved: 0, deviceNameMatched: 0 };
   let tenantsProcessed = 0;
   const errors: string[] = [];
 
@@ -423,6 +449,8 @@ serve(async (req) => {
     p_jobs_newly_clocked: counters.jobsNewlyClocked,
     p_jobs_skipped_existing: counters.jobsSkippedExisting,
     p_jobs_divergent: counters.jobsDivergent,
+    p_device_assignment_resolved: counters.deviceAssignmentResolved,
+    p_device_name_matched: counters.deviceNameMatched,
   });
 
   return json(200, {
@@ -431,6 +459,8 @@ serve(async (req) => {
     jobsNewlyClocked: counters.jobsNewlyClocked,
     jobsSkippedExisting: counters.jobsSkippedExisting,
     jobsDivergent: counters.jobsDivergent,
+    deviceAssignmentResolved: counters.deviceAssignmentResolved,
+    deviceNameMatched: counters.deviceNameMatched,
     errors: errors.length ? errors : undefined,
   });
 });
