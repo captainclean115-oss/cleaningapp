@@ -246,6 +246,17 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
   if (!offices.length) return; // nothing to geofence teams against
 
   const devices = await callWithReauth(admin, businessId, creds, "Get", { typeName: "Device", resultsLimit: 50 });
+
+  // Bookkeeping only (migration 082) -- no effect on matching logic.
+  // Lets Live Tracking show every device the tenant has ever seen, not
+  // just ones currently matched to a team, and tracks last_seen_at for
+  // "missing" (assigned but not reporting) detection.
+  for (const d of devices || []) {
+    if (d && d.id != null) {
+      await admin.rpc("upsert_geotab_device_seen", { p_business_id: businessId, p_geotab_device_id: String(d.id) });
+    }
+  }
+
   const allTeams = Array.from(new Set(offices.flatMap((o) => o.teams || [])));
 
   const now = new Date();
