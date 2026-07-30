@@ -4690,14 +4690,26 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         📋 Applicants
         <span id="applicants-badge" style="display:none;background:#fa0;color:#000;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700"></span>
       </button>
+      <button id="staff-subtab-teams" type="button"
+        onclick="setStaffSubtab('teams')"
+        style="flex:1;padding:8px 12px;background:#2a3140;color:#ccc;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">
+        🚐 Teams
+      </button>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <div id="staff-filter-row" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
       <span style="color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">Filter:</span>
       <select id="staff-team-filter-subview" onchange="filterStaffByTeam(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;padding:6px 10px;border-radius:8px;outline:none;appearance:none">
         <option value="">All teams</option>
       </select>
     </div>
     <div id="staff-subview-list"></div>
+    <!-- New "Teams" sub-tab: permanent team↔employee↔GPS-vehicle roster,
+         distinct from Calendar's date-scoped "👥 Teams" (openTeamManager)
+         and from this same view's "⚙️ Teams" (openTeamsManager, the
+         separate PentaTeams id-based CRUD system). Built on the legacy
+         team-code system (B1/B3/... via _pentaTeamNames()) since that's
+         what the GPS geofence/device-assignment feature is keyed on. -->
+    <div id="staff-teams-list" style="display:none"></div>
 <!-- v9.6: manager admin shortcuts. Restricted to owner-equivalent roles via
      data-permission system. -->
 <div style="display:flex;gap:8px;padding:0 16px 16px">
@@ -5202,7 +5214,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           onchange="loadGPSData()">
         <span class="gps-last-update" id="gps-last-update">Loading...</span>
       </div>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="gps-show-hidden" onchange="toggleGPSShowHidden()" style="cursor:pointer">
+          Show hidden
+        </label>
         <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
       </div>
     </div>
@@ -24903,7 +24919,7 @@ async function renderTeamManager() {
           <span style="font-size:12px;color:var(--muted);white-space:nowrap">🚗 GPS Vehicle:</span>
           <select id="tda-select-${team}" onchange="setTeamDeviceAssignment('${team}','${dateStr}')"
             style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 8px;border-radius:8px">
-            <option value=""${_selectValue===''?' selected':''}>Default (matches team name)${_defaultDevice ? ' — ' + _adminEsc(_defaultDevice.name) : ' — no match'}</option>
+            <option value=""${_selectValue===''?' selected':''}>Default (${team})${_defaultDevice ? ' — ' + _adminEsc(_defaultDevice.name) : ' — no match'}</option>
             ${(_gpsDevices || []).map(d => `<option value="${_adminEsc(String(d.id))}"${_selectValue===String(d.id)?' selected':''}>${_adminEsc(d.name)}</option>`).join('')}
             <option value="__none__"${_selectValue==='__none__'?' selected':''}>None (no GPS coverage)</option>
           </select>
@@ -25119,6 +25135,26 @@ function promptDefaultTeam(empId) {
   }
   alert('✓ Default team for ' + emp.name + ' set to ' + team.toUpperCase());
   renderTeamManager();
+}
+
+// Shared write path for permanent (default) team reassignment, factored
+// out of promptDefaultTeam's exact logic (same fromPortal/getByName
+// guard) so the new Staff -> Teams tab doesn't duplicate — or subtly
+// diverge from — the one place this write already worked correctly.
+// newTeam === '' unassigns (removes from the team).
+function _setEmployeeDefaultTeam(empId, newTeam) {
+  var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
+  if (!emp) return false;
+  emp.defaultTeam = newTeam || null;
+  if (emp.fromPortal) {
+    try {
+      if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
+        var pe = window.PentaEmployees.getByName(emp.name);
+        if (pe && pe.id) { window.PentaEmployees.update(pe.id, { team_text: newTeam || '' }); }
+      }
+    } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); }
+  }
+  return true;
 }
 
 function editEmployeeAssignment(employeeId, dateStr) {
@@ -28414,6 +28450,8 @@ function gpsInit() {
   // bug). Inside gpsInit instead so picker onchange / refresh-button
   // paths still respect the user's chosen date.
   setGPSDateToday();
+  var hiddenCb = document.getElementById('gps-show-hidden');
+  if (hiddenCb) hiddenCb.checked = sessionStorage.getItem('gps_show_hidden') === '1';
   loadGPSData();
   setTimeout(function(){
     try { initMap(); updateMapMarkers(); } catch (e) { console.warn('[gps] map init threw', e); }
@@ -28421,6 +28459,12 @@ function gpsInit() {
   // v11.0.19: Hours Worked is sourced from time_entries (not Geotab), so
   // load it regardless of whether the Geotab integration is configured.
   try { loadWeekHours(); } catch (e) { console.warn('[hours] gpsInit loadWeekHours threw', e); }
+}
+
+function toggleGPSShowHidden() {
+  var cb = document.getElementById('gps-show-hidden');
+  sessionStorage.setItem('gps_show_hidden', (cb && cb.checked) ? '1' : '0');
+  loadGPSData();
 }
 
 // Kept as a no-op stub. The "Connect MyGeotab" button is hidden after
@@ -28478,6 +28522,86 @@ async function loadGPSData() {
       tripsByDevice[did].push(t);
     });
 
+    // business_geotab_devices (migration 082): display_name overrides,
+    // hidden flag, last_seen_at for offline detection. Bookkeeping only
+    // -- populated by the poller, not by this render path.
+    var bgdMap = {};
+    try {
+      var bid_ = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+      var sb_ = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (sb_ && bid_) {
+        var bgdRes = await sb_.from('business_geotab_devices').select('geotab_device_id, display_name, hidden, last_seen_at').eq('business_id', bid_);
+        (bgdRes.data || []).forEach(function(r) { bgdMap[r.geotab_device_id] = r; });
+      }
+    } catch (e) { console.warn('[gps] business_geotab_devices fetch failed', e); }
+    var showHidden = document.getElementById('gps-show-hidden') && document.getElementById('gps-show-hidden').checked;
+
+    function displayNameFor(deviceIdOrDevice, fallbackName) {
+      var id = deviceIdOrDevice && deviceIdOrDevice.id != null ? deviceIdOrDevice.id : deviceIdOrDevice;
+      var bgd = id != null ? bgdMap[String(id)] : null;
+      return (bgd && bgd.display_name) ? bgd.display_name : (fallbackName || (bgd ? id : null));
+    }
+
+    // Builds one vehicle-card entry for a resolved device (team-assigned
+    // or unassigned). Shared so team cards and the "every other device"
+    // pass below don't duplicate the trip/stop/stat computation.
+    function buildDeviceEntry(d, team, assignmentSource) {
+      const status = statusMap[d.id] || {};
+      const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
+        new Date(b.start) - new Date(a.start));
+
+      // v11.0.24 — filter to the v11.0.23 day-boundary window so overnight
+      // depot stays and pre-7am idle bounces don't leak into the timeline.
+      // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
+      // what causes the leak; this is the post-filter that closes it.
+      const _window = team ? _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday) : null;
+      const deviceTrips = _window
+        ? allDeviceTrips.filter(function(t){
+            const ts = new Date(t.start);
+            return ts >= _window.trueStart && ts <= _window.trueEnd;
+          })
+        : (team ? [] : allDeviceTrips);
+
+      let totalDriveMin = 0;
+      deviceTrips.forEach(t => {
+        const start = new Date(t.start);
+        const stop = new Date(t.stop || now);
+        totalDriveMin += (stop - start) / 60000;
+      });
+
+      const stops = deviceTrips.map(t => ({
+        address: t.nextTripStart ? 'En route' : (t.stop ? 'Stop' : 'Current'),
+        arrive: t.start,
+        depart: t.stop,
+        duration: t.stop ? Math.round((new Date(t.stop) - new Date(t.start)) / 60000) : null,
+        lat: t.startPoint ? t.startPoint.y : null,
+        lng: t.startPoint ? t.startPoint.x : null
+      }));
+
+      var bgd = bgdMap[String(d.id)];
+      return {
+        id: d.id,
+        name: displayNameFor(d, d.name),
+        rawName: d.name,
+        team: team || null,
+        color: team ? _pentaTeamColor(team, '#6b7280') : '#6b7280',
+        isMoving: status.isDeviceCommunicating && status.speed > 2,
+        speed: Math.round(status.speed || 0),
+        lat: status.latitude,
+        lng: status.longitude,
+        lastContact: status.dateTime,
+        address: status.currentStateDuration || '',
+        totalDriveMin: Math.round(totalDriveMin),
+        trips: deviceTrips,
+        stops,
+        noGps: false,
+        missing: false,
+        unassigned: !team,
+        hidden: !!(bgd && bgd.hidden),
+        assignmentSource: assignmentSource || null
+      };
+    }
+
     // Resolve each team's device: explicit team_device_assignments
     // override first (migration 080), falling back to name-matching.
     // Iterates teams rather than devices (was: filter+map over devices)
@@ -28487,72 +28611,48 @@ async function loadGPSData() {
     // disappeared with no indication anything was wrong).
     const teamOrder = _pentaTeamNames();
     const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, selectedDate);
-    gpsVehicles = teamOrder.map(team => {
+    const usedDeviceIds = {};
+
+    const teamEntries = teamOrder.map(team => {
         const resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
         const d = resolved.device;
-        if (!d) {
+        if (d) { usedDeviceIds[String(d.id)] = true; return buildDeviceEntry(d, team, resolved.source); }
+
+        // 'assignment-missing': explicitly assigned to a device id that
+        // isn't in today's live Geotab device list at all (deactivated,
+        // renamed off the account, etc) — show offline using cached
+        // bookkeeping instead of silently vanishing like 'assignment-none'
+        // (deliberate no-GPS) or 'name-match-none' (nothing to match) do.
+        if (resolved.source === 'assignment-missing' && resolved.rawDeviceId) {
+          var bgdMissing = bgdMap[String(resolved.rawDeviceId)];
           return {
-            id: null, name: null, team, color: _pentaTeamColor(team, '#6b7280'),
-            isMoving: false, speed: 0, lat: null, lng: null, lastContact: null, address: '',
-            totalDriveMin: 0, trips: [], stops: [], noGps: true,
-            assignmentSource: resolved.source
+            id: resolved.rawDeviceId, name: displayNameFor(resolved.rawDeviceId, null), rawName: null,
+            team, color: _pentaTeamColor(team, '#6b7280'),
+            isMoving: false, speed: 0, lat: null, lng: null,
+            lastContact: bgdMissing ? bgdMissing.last_seen_at : null, address: '',
+            totalDriveMin: 0, trips: [], stops: [], noGps: false, missing: true, unassigned: false,
+            hidden: !!(bgdMissing && bgdMissing.hidden), assignmentSource: resolved.source
           };
         }
-        const status = statusMap[d.id] || {};
-        const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
-          new Date(b.start) - new Date(a.start));
-
-        // v11.0.24 — filter to the v11.0.23 day-boundary window so overnight
-        // depot stays and pre-7am idle bounces don't leak into the timeline.
-        // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
-        // what causes the leak; this is the post-filter that closes it.
-        // selectedDate + isToday are in scope from loadGPSData above.
-        const _window = _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday);
-        const deviceTrips = _window
-          ? allDeviceTrips.filter(function(t){
-              const ts = new Date(t.start);
-              return ts >= _window.trueStart && ts <= _window.trueEnd;
-            })
-          : [];
-
-        // Calculate today's stats
-        let totalDriveMin = 0;
-        let totalStopMin = 0;
-        deviceTrips.forEach(t => {
-          const start = new Date(t.start);
-          const stop = new Date(t.stop || now);
-          const dur = (stop - start) / 60000;
-          totalDriveMin += dur;
-        });
-
-        // Build stop list from trips
-        const stops = deviceTrips.map(t => ({
-          address: t.nextTripStart ? 'En route' : (t.stop ? 'Stop' : 'Current'),
-          arrive: t.start,
-          depart: t.stop,
-          duration: t.stop ? Math.round((new Date(t.stop) - new Date(t.start)) / 60000) : null,
-          lat: t.startPoint ? t.startPoint.y : null,
-          lng: t.startPoint ? t.startPoint.x : null
-        }));
 
         return {
-          id: d.id,
-          name: d.name,
-          team,
-          color: _pentaTeamColor(team, '#6b7280'),
-          isMoving: status.isDeviceCommunicating && status.speed > 2,
-          speed: Math.round(status.speed || 0),
-          lat: status.latitude,
-          lng: status.longitude,
-          lastContact: status.dateTime,
-          address: status.currentStateDuration || '',
-          totalDriveMin: Math.round(totalDriveMin),
-          trips: deviceTrips,
-          stops,
-          noGps: false,
+          id: null, name: null, team, color: _pentaTeamColor(team, '#6b7280'),
+          isMoving: false, speed: 0, lat: null, lng: null, lastContact: null, address: '',
+          totalDriveMin: 0, trips: [], stops: [], noGps: true, missing: false, unassigned: false,
           assignmentSource: resolved.source
         };
       });
+
+    // Every other Geotab device the tenant has, whether assigned to a
+    // team or not — Tom's explicit ask: Live Tracking used to only show
+    // devices that matched a team, so a spare/backup vehicle or a newly
+    // added tracker was invisible with no indication it existed.
+    const unassignedEntries = (devices || [])
+      .filter(d => d && d.id != null && !usedDeviceIds[String(d.id)])
+      .map(d => buildDeviceEntry(d, null, null));
+
+    gpsVehicles = teamEntries.concat(unassignedEntries)
+      .filter(v => showHidden || !v.hidden);
 
     // Reverse geocode current locations
     await reverseGeocodeVehicles();
@@ -28785,23 +28885,41 @@ function renderGPS() {
     // Label: collapse to just the team code when the assigned/matched
     // device's name IS the team code (the old code always showed both,
     // producing "B3 B3" for the common case). Show a qualifier only
-    // when the vehicle differs from the team's own default (borrowed)
-    // or there's no GPS coverage at all (migration 080 assignment).
-    var _tvcLabel = v.team;
-    if (v.noGps) {
+    // when the vehicle differs from the team's own default (borrowed),
+    // there's no GPS coverage at all, the assigned device isn't
+    // reporting ("missing"), or the device isn't tied to any team at
+    // all ("unassigned" — every Geotab device now shows, not just
+    // matched ones, per Tom's explicit ask).
+    var _tvcLabel, _tvcLocation;
+    if (v.unassigned) {
+      _tvcLabel = '<span style="color:var(--muted)">Unassigned</span> – ' + _adminEsc(v.name || v.id);
+      _tvcLocation = v.address || 'Location unknown';
+    } else if (v.missing) {
+      var _lastSeen = v.lastContact ? new Date(v.lastContact).toLocaleString('en-US', {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZone: _pentaBusinessTimezone()}) : 'never';
+      _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--red);font-weight:400">(offline — last seen ' + _lastSeen + ')</span>';
+      _tvcLocation = 'Assigned device not currently reporting';
+    } else if (v.noGps) {
       _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--muted);font-weight:400">(no GPS)</span>';
-    } else if (v.name && v.name.toUpperCase() !== v.team.toUpperCase()) {
-      var _ownerTeam = _pentaTeamNames().find(function(t){ return v.name.toUpperCase().includes(t); });
-      var _borrowedFrom = _ownerTeam && _ownerTeam !== v.team ? (_ownerTeam + '’s vehicle') : v.name;
-      _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--muted);font-weight:400">(in ' + _borrowedFrom + ')</span>';
+      _tvcLocation = 'No GPS device assigned';
+    } else {
+      _tvcLabel = v.team;
+      if (v.name && v.name.toUpperCase() !== v.team.toUpperCase()) {
+        var _ownerTeam = _pentaTeamNames().find(function(t){ return v.rawName && v.rawName.toUpperCase().includes(t); });
+        var _borrowedFrom = _ownerTeam && _ownerTeam !== v.team ? (_ownerTeam + '’s vehicle') : v.name;
+        _tvcLabel = v.team + ' <span style="font-size:12px;color:var(--muted);font-weight:400">(in ' + _adminEsc(_borrowedFrom) + ')</span>';
+      }
+      _tvcLocation = v.address || 'Location unknown';
     }
-    return `<div class="team-vehicle-card${isExp?' expanded':''}"${v.noGps ? '' : ` onclick="toggleGPSCard('${v.id}')"`}>
+    var _canClick = !v.noGps && !v.missing && v.id != null;
+    return `<div class="team-vehicle-card${isExp?' expanded':''}"${_canClick ? ` onclick="toggleGPSCard('${v.id}')"` : ''}>
       <div class="tvc-main">
         <div class="tvc-color" style="background:${v.color};width:12px;height:12px;border-radius:50%"></div>
         <div class="tvc-info">
           <div class="tvc-name">${_tvcLabel}</div>
-          <div class="tvc-location">${v.noGps ? 'No GPS device assigned' : (v.address || 'Location unknown')}</div>
+          <div class="tvc-location">${_tvcLocation}</div>
         </div>
+        ${v.id != null ? `<button onclick="event.stopPropagation();openRenameDeviceModal('${_adminEsc(String(v.id))}','${_adminEsc((v.rawName||v.name||''))}')" title="Rename" style="background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 4px">✏️</button>
+        <button onclick="event.stopPropagation();toggleGPSDeviceMenu('${_adminEsc(String(v.id))}')" title="More" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 4px">⋯</button>` : ''}
         <div style="font-size:20px;color:var(--muted);padding:0 4px;line-height:1">${isExp ? '✕' : '☰'}</div>
         <div class="tvc-status">
           <span class="tvc-moving ${v.isMoving?'yes':'no'}">${v.isMoving?'Moving':'Stopped'}</span>
@@ -28809,6 +28927,9 @@ function renderGPS() {
           ${teamJobs.length > 0 ? `<span style="font-size:11px;color:var(--muted)">${completedJobs}/${teamJobs.length} jobs</span>` : ''}
         </div>
       </div>
+      ${v.id != null ? `<div id="gps-device-menu-${_adminEsc(String(v.id))}" style="display:none;padding:8px 14px;border-top:1px solid var(--border);background:var(--surface2)" onclick="event.stopPropagation()">
+        <button onclick="setDeviceHiddenFromMenu('${_adminEsc(String(v.id))}', ${!v.hidden})" style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer">${v.hidden ? '👁️ Show this device' : '🙈 Hide this device'}</button>
+      </div>` : ''}
       <div class="tvc-detail">
         <div class="tvc-detail-title">Today's Activity</div>
         ${stopsHtml}
@@ -28835,6 +28956,73 @@ function renderGPS() {
 function toggleGPSCard(id) {
   gpsExpanded[id] = !gpsExpanded[id];
   renderGPS();
+}
+
+// ⋯ menu (hide/show) on a Live Tracking device row. Closes any other
+// open menu first so only one is visible at a time.
+function toggleGPSDeviceMenu(deviceId) {
+  document.querySelectorAll('[id^="gps-device-menu-"]').forEach(function(el) {
+    if (el.id !== 'gps-device-menu-' + deviceId) el.style.display = 'none';
+  });
+  var el = document.getElementById('gps-device-menu-' + deviceId);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function setDeviceHiddenFromMenu(deviceId, hidden) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) return;
+  try {
+    var res = await sb.rpc('set_geotab_device_hidden', { p_business_id: bid, p_geotab_device_id: deviceId, p_hidden: hidden });
+    if (res.error) {
+      alert(/permission|policy|manager/i.test(res.error.message || '') ? 'Only owners, admins, and managers can hide/unhide devices.' : ('Could not update: ' + res.error.message));
+      return;
+    }
+  } catch (e) { alert('Could not update: ' + (e.message || e)); return; }
+  loadGPSData();
+}
+
+// Rename modal — device nickname (business_geotab_devices.display_name).
+// Does NOT touch Geotab's native device name; every rename is logged to
+// device_name_history (migration 082).
+function openRenameDeviceModal(deviceId, currentGeotabName) {
+  var overlay = document.createElement('div');
+  overlay.id = 'rename-device-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:950;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:420px;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="font-size:16px;font-weight:700;margin-bottom:4px">Rename vehicle</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:14px">Geotab device: <code>' + _adminEsc(currentGeotabName || deviceId) + '</code>. This only changes the name shown in Penta.</div>'
+    +   '<input type="text" id="rename-device-input" value="' + _adminEsc(currentGeotabName || '') + '" placeholder="e.g. Big Blue Van" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;margin-bottom:10px;outline:none">'
+    +   '<input type="text" id="rename-device-reason" placeholder="Reason (optional)" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;padding:9px 12px;border-radius:8px;margin-bottom:16px;outline:none">'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button type="button" onclick="document.getElementById(\'rename-device-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button type="button" onclick="saveRenameDevice(\'' + _adminEsc(deviceId) + '\')" style="flex:2;background:#fbbf24;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
+}
+
+async function saveRenameDevice(deviceId) {
+  var input = document.getElementById('rename-device-input');
+  var reasonEl = document.getElementById('rename-device-reason');
+  var newName = input ? input.value.trim() : '';
+  if (!newName) { alert('Name cannot be empty.'); return; }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  try {
+    var res = await sb.rpc('rename_geotab_device', { p_business_id: bid, p_geotab_device_id: deviceId, p_new_name: newName, p_reason: (reasonEl && reasonEl.value.trim()) || null });
+    if (res.error) {
+      alert(/permission|policy|manager/i.test(res.error.message || '') ? 'Only owners, admins, and managers can rename devices.' : ('Could not rename: ' + res.error.message));
+      return;
+    }
+  } catch (e) { alert('Could not rename: ' + (e.message || e)); return; }
+  var overlay = document.getElementById('rename-device-overlay');
+  if (overlay) overlay.remove();
+  try { loadGPSData(); } catch (e) {}
+  try { if (typeof renderTeamManager === 'function') renderTeamManager(); } catch (e) {}
 }
 
 
@@ -33649,24 +33837,191 @@ async function openInviteManagerModal() {
   }
 }
 
+// Extended from a hardcoded 2-way (staff/applicants) toggle to 3-way
+// (+ teams) by looping over a small config array instead of repeating
+// the if/else per tab — keeps adding a 4th tab later a one-line change
+// instead of another round of copy-paste branches.
+var STAFF_SUBTABS = [
+  { id: 'staff',      btn: 'staff-subtab-staff',      list: 'staff-subview-list' },
+  { id: 'applicants', btn: 'staff-subtab-applicants', list: 'applicants-list-staff' },
+  { id: 'teams',      btn: 'staff-subtab-teams',      list: 'staff-teams-list' }
+];
 function setStaffSubtab(tab) {
   try { sessionStorage.setItem('cc_staff_subtab', tab); } catch (e) {}
-  const btnStaff = document.getElementById('staff-subtab-staff');
-  const btnApps = document.getElementById('staff-subtab-applicants');
-  const listStaff = document.getElementById('staff-subview-list');
-  const listApps = document.getElementById('applicants-list-staff');
-  if (btnStaff) {
-    btnStaff.style.background = tab === 'staff' ? '#5E5CE6' : '#2a3140';
-    btnStaff.style.color = tab === 'staff' ? 'white' : '#ccc';
-  }
-  if (btnApps) {
-    btnApps.style.background = tab === 'applicants' ? '#5E5CE6' : '#2a3140';
-    btnApps.style.color = tab === 'applicants' ? 'white' : '#ccc';
-  }
-  if (listStaff) listStaff.style.display = tab === 'staff' ? '' : 'none';
-  if (listApps) listApps.style.display = tab === 'applicants' ? '' : 'none';
+  STAFF_SUBTABS.forEach(function(t) {
+    var btn = document.getElementById(t.btn);
+    var list = document.getElementById(t.list);
+    var active = t.id === tab;
+    if (btn) { btn.style.background = active ? '#5E5CE6' : '#2a3140'; btn.style.color = active ? 'white' : '#ccc'; }
+    if (list) list.style.display = active ? '' : 'none';
+  });
+  var filterRow = document.getElementById('staff-filter-row');
+  if (filterRow) filterRow.style.display = tab === 'staff' ? 'flex' : 'none';
   if (tab === 'staff') { try { populateTeamFilter('staff-team-filter-subview'); } catch (e) {} }
   if (tab === 'applicants') renderApplicantsList();
+  if (tab === 'teams') renderStaffTeamsList();
+}
+
+// ─── Staff -> Teams tab ──────────────────────────────────────────────
+// Permanent team roster: who's on each team by default, and which GPS
+// vehicle it's assigned. Distinct from:
+//   - Calendar's "👥 Teams" (openTeamManager) -- date-scoped DAILY
+//     overrides, unchanged by this feature.
+//   - This same view's "⚙️ Teams" (openTeamsManager) -- the separate
+//     PentaTeams id-based team CRUD (rename/color/delete), which has no
+//     concept of GPS vehicles and isn't built on the B1/B3/... legacy
+//     codes the Geotab integration actually matches against.
+// Built on the legacy codes (_pentaTeamNames()) specifically so the GPS
+// Vehicle dropdown here resolves through the exact same
+// team_device_assignments system as PR #57's Calendar Team Manager.
+
+function _staffTeamIsActive(emp) {
+  var termData = (typeof getRosterTermData === 'function') ? getRosterTermData() : {};
+  return (termData[emp.id]?.status || 'active') !== 'terminated';
+}
+
+async function renderStaffTeamsList() {
+  var target = document.getElementById('staff-teams-list');
+  if (!target) return;
+  target.innerHTML = '<div style="padding:20px;color:var(--muted);text-align:center">Loading…</div>';
+
+  var teams = _pentaTeamNames();
+  var roster = getUnifiedRoster().filter(_staffTeamIsActive);
+
+  var devices = [];
+  try { devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); }
+  catch (e) { console.warn('[StaffTeams] device list fetch failed (Geotab not configured?)', e); }
+  var teamDeviceMap = {};
+  try { teamDeviceMap = await _resolveTeamDeviceMap(devices, teams, new Date()); }
+  catch (e) { console.warn('[StaffTeams] device resolution failed', e); }
+
+  target.innerHTML = teams.map(function(team) {
+    var members = roster.filter(function(e){ return e.defaultTeam === team; });
+    var resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+    var vehicleLabel = resolved.source === 'assignment' ? _adminEsc(resolved.device ? resolved.device.name : '')
+      : resolved.source === 'assignment-none' ? 'No GPS'
+      : resolved.device ? _adminEsc(resolved.device.name) + ' (default)'
+      : 'No match';
+    var color = _pentaTeamColor(team, '#6b7280');
+    return '<div onclick="openStaffTeamDetailModal(\'' + team + '\')" style="display:flex;align-items:center;gap:10px;padding:12px 14px;margin-bottom:8px;background:var(--surface2);border-radius:12px;cursor:pointer">'
+      + '<span style="width:10px;height:10px;border-radius:50%;background:' + color + '"></span>'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:15px;font-weight:700">' + team + '</div>'
+      +   '<div style="font-size:12px;color:var(--muted)">' + members.length + ' employee' + (members.length===1?'':'s') + ' · 🚐 ' + vehicleLabel + '</div>'
+      + '</div>'
+      + '<span style="color:var(--muted);font-size:18px">›</span>'
+      + '</div>';
+  }).join('');
+}
+
+async function openStaffTeamDetailModal(team) {
+  var roster = getUnifiedRoster().filter(_staffTeamIsActive);
+  var members = roster.filter(function(e){ return e.defaultTeam === team; });
+  var others = roster.filter(function(e){ return e.defaultTeam !== team; });
+
+  var devices = [];
+  try { devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); } catch (e) {}
+  var resolved = { device: null, source: 'name-match-none' };
+  try { resolved = await _resolveTeamDevice(devices, team, new Date()); } catch (e) {}
+
+  var color = _pentaTeamColor(team, '#6b7280');
+  var overlay = document.createElement('div');
+  overlay.id = 'staff-team-detail-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:480px;max-height:88vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:' + color + '"></span>' + team + '</div>'
+    +     '<button type="button" onclick="document.getElementById(\'staff-team-detail-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Employees</div>'
+    +   '<div id="staff-team-detail-members" style="margin-bottom:12px">'
+    +     (members.length ? members.map(function(emp) {
+            return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
+              + '<span style="font-size:14px">' + _adminEsc(emp.name) + '</span>'
+              + '<button onclick="staffTeamRemoveEmployee(\'' + emp.id + '\',\'' + team + '\')" style="background:var(--surface2);border:1px solid var(--border);color:var(--red);font-family:\'DM Sans\',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">Remove</button>'
+              + '</div>';
+          }).join('') : '<div style="color:var(--muted);font-size:13px;padding:4px 0">No employees on this team</div>')
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:18px">'
+    +     '<select id="staff-team-add-select" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;padding:7px 10px;border-radius:8px">'
+    +       '<option value="">+ Add employee…</option>'
+    +       others.map(function(emp) { return '<option value="' + emp.id + '">' + _adminEsc(emp.name) + (emp.defaultTeam ? ' (' + emp.defaultTeam + ')' : '') + '</option>'; }).join('')
+    +     '</select>'
+    +     '<button type="button" onclick="staffTeamAddEmployee(\'' + team + '\')" style="background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer">Add</button>'
+    +   '</div>'
+    +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">GPS Vehicle</div>'
+    +   _buildGpsVehicleSelectHtml('staff-team-device-select', team, devices, resolved)
+    +   '<div style="display:flex;gap:8px;margin-top:18px">'
+    +     '<button type="button" onclick="document.getElementById(\'staff-team-detail-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Close</button>'
+    +     '<button type="button" onclick="staffTeamSaveDevice(\'' + team + '\')" style="flex:2;background:#fbbf24;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save vehicle</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
+}
+
+// Shared GPS-vehicle <select> builder (Default / any live device / None)
+// -- same three-way model as PR #57's Calendar Team Manager, factored
+// out here rather than touching that already-shipped inline markup.
+function _buildGpsVehicleSelectHtml(selectId, team, devices, resolved) {
+  var defaultDevice = (devices || []).find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
+  var selectValue = resolved.source === 'assignment' ? String(resolved.device.id)
+    : resolved.source === 'assignment-none' ? '__none__'
+    : '';
+  var opts = '<option value=""' + (selectValue===''?' selected':'') + '>Default (' + team + ')' + (defaultDevice ? ' — ' + _adminEsc(defaultDevice.name) : ' — no match') + '</option>';
+  (devices || []).forEach(function(d) {
+    opts += '<option value="' + _adminEsc(String(d.id)) + '"' + (selectValue===String(d.id)?' selected':'') + '>' + _adminEsc(d.name) + '</option>';
+  });
+  opts += '<option value="__none__"' + (selectValue==='__none__'?' selected':'') + '>None (no GPS coverage)</option>';
+  return '<select id="' + selectId + '" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;padding:7px 10px;border-radius:8px">' + opts + '</select>';
+}
+
+function staffTeamRemoveEmployee(empId, team) {
+  _setEmployeeDefaultTeam(empId, '');
+  var overlay = document.getElementById('staff-team-detail-overlay');
+  if (overlay) overlay.remove();
+  openStaffTeamDetailModal(team);
+  renderStaffTeamsList();
+}
+
+function staffTeamAddEmployee(team) {
+  var sel = document.getElementById('staff-team-add-select');
+  var empId = sel ? sel.value : '';
+  if (!empId) return;
+  _setEmployeeDefaultTeam(empId, team);
+  var overlay = document.getElementById('staff-team-detail-overlay');
+  if (overlay) overlay.remove();
+  openStaffTeamDetailModal(team);
+  renderStaffTeamsList();
+}
+
+// Writes the GPS vehicle choice via the same team_device_assignments
+// upsert as PR #57's setTeamDeviceAssignment, effective from today
+// open-ended (this modal isn't date-scoped -- "permanent" here means
+// "starting today, until changed again", same semantics as leaving
+// "Effective until" blank in the Calendar Team Manager).
+async function staffTeamSaveDevice(team) {
+  var sel = document.getElementById('staff-team-device-select');
+  if (!sel) return;
+  var selectValue = sel.value;
+  var deviceId = selectValue === '' ? '__default__' : (selectValue === '__none__' ? null : selectValue);
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved — refresh and try again.'); return; }
+  try {
+    var res = await sb.from('team_device_assignments').upsert({
+      business_id: bid, team_code: team, device_id: deviceId,
+      effective_from: dateKey(new Date()), effective_to: null
+    }, { onConflict: 'business_id,team_code,effective_from' });
+    if (res.error) {
+      alert(/permission|policy/i.test(res.error.message || '') ? 'Only owners, admins, and managers can change GPS vehicle assignments.' : ('Could not update: ' + res.error.message));
+      return;
+    }
+  } catch (e) { alert('Could not update: ' + (e.message || e)); return; }
+  var overlay = document.getElementById('staff-team-detail-overlay');
+  if (overlay) overlay.remove();
+  renderStaffTeamsList();
 }
 
 async function renderApplicantsList() {
@@ -43607,9 +43962,9 @@ async function _resolveTeamDevice(devices, team, dateObj) {
       var res = await sb.rpc('get_team_device', { p_business_id: bid, p_team_code: team, p_on_date: dateStr });
       if (!res.error && Array.isArray(res.data) && res.data.length > 0) {
         var assignedId = res.data[0].device_id;
-        if (!assignedId) return { device: null, source: 'assignment-none' };
+        if (!assignedId) return { device: null, source: 'assignment-none', rawDeviceId: null };
         var found = (devices || []).find(function(d){ return String(d.id) === String(assignedId); });
-        return { device: found || null, source: found ? 'assignment' : 'assignment-missing' };
+        return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId };
       }
     } catch (e) { /* RPC unavailable — fall through to name-matching */ }
   }
