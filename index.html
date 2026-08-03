@@ -28165,6 +28165,18 @@ let mapVisible = true;
 
 function initMap() {
   if (gpsMap) { gpsMap.invalidateSize(); return; }
+  if (typeof L === 'undefined') return; // Leaflet CDN not loaded (yet) -- don't throw
+  var container = document.getElementById('gps-map');
+  if (!container) return;
+  // Same defensive pattern renderInlineScheduleMap already needed: if an
+  // earlier L.map() call on this container threw partway through (before
+  // `gpsMap =` completed), Leaflet still stamps container._leaflet_id as
+  // its first step. gpsMap then stays null forever while the container
+  // stays stamped, so every later call hits "Map container is already
+  // initialized" -- a self-perpetuating throw with no way to recover
+  // short of a full page reload. Clearing the stale stamp lets a retry
+  // actually succeed instead of wedging the whole Live Tracking view.
+  if (container._leaflet_id) { delete container._leaflet_id; }
   // Center on South Shore MA
   gpsMap = L.map('gps-map', { zoomControl: true }).setView([42.15, -70.9], 10);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -28966,8 +28978,17 @@ function renderGPS() {
       '<div style="padding:40px 20px;text-align:center;color:var(--muted)">No vehicles found matching your team names (B1, B3, B5, S1, S3, M1, M2, M3)</div>';
   }
 
-  // Update map if visible
-  initMap(); updateMapMarkers();
+  // Update map if visible. Guarded (unlike the naive version this used to
+  // be): renderGPS runs INSIDE loadGPSData's try block, as the very last
+  // step after every Geotab/Supabase fetch has already succeeded. Before
+  // this fix, any Leaflet-layer throw here (map already initialized,
+  // library not loaded, etc.) propagated straight out to loadGPSData's
+  // catch and replaced the whole fleet list with "Could not load fleet
+  // data" -- even though the underlying data load was fine. gpsInit()
+  // already wrapped its own initMap()/updateMapMarkers() call in
+  // try/catch for exactly this reason; this call site, which fires on
+  // every refresh (not just first tab load), had been left unguarded.
+  try { initMap(); updateMapMarkers(); } catch (e) { console.warn('[gps] map render threw', e); }
 }
 
 function toggleGPSCard(id) {
