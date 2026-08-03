@@ -25125,7 +25125,13 @@ function promptDefaultTeam(empId) {
   emp.defaultTeam = team.toUpperCase();
   // Phase 6.4: persist team change through the facade so it lands in Supabase
   // and survives across devices/sessions (was localStorage-only before).
-  if (emp.fromPortal) {
+  // Bug fix: this checked emp.fromPortal, a field getUnifiedRoster() never
+  // sets (it sets fromFacade) -- the guard was permanently false, so this
+  // write never fired for ANY employee. The emp.defaultTeam mutation above
+  // is also thrown away regardless (getUnifiedRoster() returns fresh
+  // objects every call, not a shared/cached reference), so nothing about
+  // this function persisted anything before this fix.
+  if (emp.fromFacade) {
     try {
       if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
         var pe = window.PentaEmployees.getByName(emp.name);
@@ -25138,21 +25144,32 @@ function promptDefaultTeam(empId) {
 }
 
 // Shared write path for permanent (default) team reassignment, factored
-// out of promptDefaultTeam's exact logic (same fromPortal/getByName
-// guard) so the new Staff -> Teams tab doesn't duplicate — or subtly
-// diverge from — the one place this write already worked correctly.
-// newTeam === '' unassigns (removes from the team).
-function _setEmployeeDefaultTeam(empId, newTeam) {
+// out of promptDefaultTeam's logic so the Staff -> Teams tab doesn't
+// duplicate it. newTeam === '' unassigns (removes from the team).
+//
+// Bug (found + fixed alongside promptDefaultTeam's identical defect,
+// see above): copied promptDefaultTeam's `if (emp.fromPortal)` guard
+// verbatim, believing it was proven-working -- it wasn't. getUnifiedRoster()
+// only ever sets fromFacade, never fromPortal, so the guard was always
+// false and PentaEmployees.update() never fired for any employee, in
+// either function. Add/remove appeared to do nothing because it
+// actually did nothing -- no network request, no Supabase write.
+// async + awaited (was fire-and-forget): PentaEmployees.update() is a
+// real network round-trip. Callers that re-render immediately after
+// calling this need the write to actually land in _cache first, or a
+// re-read via getUnifiedRoster() can still show the pre-write state
+// even once the fromPortal/fromFacade typo above is fixed.
+async function _setEmployeeDefaultTeam(empId, newTeam) {
   var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
   if (!emp) return false;
   emp.defaultTeam = newTeam || null;
-  if (emp.fromPortal) {
+  if (emp.fromFacade) {
     try {
       if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
         var pe = window.PentaEmployees.getByName(emp.name);
-        if (pe && pe.id) { window.PentaEmployees.update(pe.id, { team_text: newTeam || '' }); }
+        if (pe && pe.id) { await window.PentaEmployees.update(pe.id, { team_text: newTeam || '' }); }
       }
-    } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); }
+    } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); throw e; }
   }
   return true;
 }
@@ -33977,19 +33994,29 @@ function _buildGpsVehicleSelectHtml(selectId, team, devices, resolved) {
   return '<select id="' + selectId + '" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;padding:7px 10px;border-radius:8px">' + opts + '</select>';
 }
 
-function staffTeamRemoveEmployee(empId, team) {
-  _setEmployeeDefaultTeam(empId, '');
+async function staffTeamRemoveEmployee(empId, team) {
+  try {
+    await _setEmployeeDefaultTeam(empId, '');
+  } catch (e) {
+    alert('Could not remove employee: ' + (e.message || e));
+    return;
+  }
   var overlay = document.getElementById('staff-team-detail-overlay');
   if (overlay) overlay.remove();
   openStaffTeamDetailModal(team);
   renderStaffTeamsList();
 }
 
-function staffTeamAddEmployee(team) {
+async function staffTeamAddEmployee(team) {
   var sel = document.getElementById('staff-team-add-select');
   var empId = sel ? sel.value : '';
   if (!empId) return;
-  _setEmployeeDefaultTeam(empId, team);
+  try {
+    await _setEmployeeDefaultTeam(empId, team);
+  } catch (e) {
+    alert('Could not add employee: ' + (e.message || e));
+    return;
+  }
   var overlay = document.getElementById('staff-team-detail-overlay');
   if (overlay) overlay.remove();
   openStaffTeamDetailModal(team);
