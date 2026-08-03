@@ -5208,11 +5208,19 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   </div>
   <div id="gps-main-section">
     <div class="gps-refresh-row">
-      <div style="display:flex;align-items:center;gap:8px">
-        <input type="date" id="gps-date-picker" 
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select id="gps-activity-window" onchange="onGPSActivityWindowChange()"
+          style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none;cursor:pointer">
+          <option value="24h">Last 24 hours</option>
+          <option value="3d">Last 3 days</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+        </select>
+        <input type="date" id="gps-date-picker"
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none"
           onchange="loadGPSData()">
         <span class="gps-last-update" id="gps-last-update">Loading...</span>
+        <span id="gps-partial-indicator" style="display:none;font-size:11px;color:var(--muted)">Some data loading…</span>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap">
@@ -5227,6 +5235,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div id="gps-map" style="height:280px;width:100%"></div>
     </div>
     <div class="gps-summary-bar" id="gps-summary"></div>
+    <div id="gps-truncation-notice" style="display:none;margin:0 12px 8px;font-size:11px;color:var(--amber)"></div>
     <div id="gps-vehicles"></div>
   </div>
   <!-- v11.0.19: Hours Worked is sibling of gps-main-section so it renders
@@ -28407,6 +28416,30 @@ function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
     const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
     if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = dep; break; }
   }
+  // v11.0.29: Geotab's Trip API never actually returns startPoint --
+  // not just "often" for the first trip as the comment above assumed,
+  // but for every trip, always (confirmed live). depotDepartures is
+  // therefore permanently empty and trueStart used to fall back to
+  // validTrips[0].start unconditionally. That's wrong when trip 0 is
+  // itself a brief near-depot idle blip (engine bump, vehicle hasn't
+  // really left) whose own stop is ALSO inside the depot radius: it
+  // then doubles as its own "late depot arrival" moments later,
+  // collapsing trueEnd to almost the same instant as trueStart and
+  // truncating the rest of the real day out of the window. Confirmed
+  // live: 3 of 8 Manna teams were losing 60-90% of a real day's stops
+  // to this. Fallback: scan every trip in order (not gated on
+  // _isDepotStart, which can never fire) for the first one that isn't
+  // itself a same-blip depot round-trip, using the identical "was this
+  // actually followed by real away-time" test above.
+  if (!trueStartTrip) {
+    for (const candidate of validTrips) {
+      const candTs = new Date(candidate.start);
+      const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > candTs; });
+      if (!nextReturn) { trueStartTrip = candidate; break; }
+      const awayMin = (new Date(nextReturn.stop) - candTs) / 60000;
+      if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = candidate; break; }
+    }
+  }
   const trueStart = trueStartTrip
     ? new Date(trueStartTrip.start)
     : new Date(validTrips[0].start);
@@ -28460,6 +28493,10 @@ const DEPOT_RADIUS_KM   = 1.0;
 let gpsVehicles = [];
 let gpsExpanded = {};
 let weekHours = {}; // teamName -> { mon, tue, wed, thu, fri, total }
+// Monotonic guard for loadGPSData's background address-refinement pass
+// (see _refineGPSAddresses): incremented on every load so a slow
+// geocode from a superseded load can't overwrite/re-render newer data.
+let _gpsLoadToken = 0;
 
 function gpsInit() {
   // PR2: auth + session are server-side via the geotab-call EF. The
@@ -28481,6 +28518,9 @@ function gpsInit() {
   setGPSDateToday();
   var hiddenCb = document.getElementById('gps-show-hidden');
   if (hiddenCb) hiddenCb.checked = sessionStorage.getItem('gps_show_hidden') === '1';
+  var actWindowEl = document.getElementById('gps-activity-window');
+  if (actWindowEl) actWindowEl.value = sessionStorage.getItem('gps_activity_window') || '24h';
+  _syncGPSDatePickerVisibility();
   loadGPSData();
   setTimeout(function(){
     try { initMap(); updateMapMarkers(); } catch (e) { console.warn('[gps] map init threw', e); }
@@ -28496,6 +28536,26 @@ function toggleGPSShowHidden() {
   loadGPSData();
 }
 
+// "Last 24 hours" (default) keeps the existing single-day picker: pick
+// a specific calendar day, reconstruct that team's one-day route. The
+// 3d/7d/30d options are a different mode entirely -- a rolling window
+// ending now, spanning multiple calendar days -- so the date picker
+// (which only ever meant "which single day") doesn't apply; hide it
+// rather than leave a control that's silently ignored.
+function _syncGPSDatePickerVisibility() {
+  var actWindowEl = document.getElementById('gps-activity-window');
+  var picker = document.getElementById('gps-date-picker');
+  if (!actWindowEl || !picker) return;
+  picker.style.display = actWindowEl.value === '24h' ? '' : 'none';
+}
+
+function onGPSActivityWindowChange() {
+  var el = document.getElementById('gps-activity-window');
+  sessionStorage.setItem('gps_activity_window', (el && el.value) || '24h');
+  _syncGPSDatePickerVisibility();
+  loadGPSData();
+}
+
 // Kept as a no-op stub. The "Connect MyGeotab" button is hidden after
 // PR2, but any stale onclick handler that lands here just re-runs the
 // auto-load path rather than ReferenceError'ing.
@@ -28504,7 +28564,14 @@ async function gpsConnect() {
 }
 
 async function loadGPSData() {
+  // Monotonic guard: the background address-refinement pass (below)
+  // checks this before applying its results, so a slow geocode from a
+  // load that's since been superseded (user clicked Refresh again,
+  // changed the activity window, etc) can't clobber newer data.
+  var myGPSLoadToken = ++_gpsLoadToken;
   document.getElementById('gps-last-update').textContent = 'Loading...';
+  var partialEl = document.getElementById('gps-partial-indicator');
+  if (partialEl) partialEl.style.display = 'none';
   // v11.0.25: setGPSDateToday moved to gpsInit so the picker only resets
   // on TAB ACTIVATION, not on every refresh / picker onchange. Keeps the
   // user's date selection sticky within a session while still snapping
@@ -28524,24 +28591,47 @@ async function loadGPSData() {
     const statusMap = {};
     statuses.forEach(s => { statusMap[s.device.id] = s; });
 
-    // Get trips for SELECTED date
+    // Activity window: "Last 24 hours" (default, #gps-activity-window)
+    // keeps the existing single-calendar-day behavior driven by the
+    // date picker -- best quality, since _computeGPSDayWindow's
+    // depot-aware start/end trimming only makes sense for "one team's
+    // one-day route." 3d/7d/30d are a genuinely different mode: a
+    // ROLLING window ending now, spanning multiple calendar days, for
+    // cases that aren't "today's route" at all (verifying employee
+    // hours, investigating a client issue, matching Coast fuel card
+    // transactions -- Tom's explicit examples).
     const selectedDate = getGPSDate();
     const isToday = selectedDate.toDateString() === new Date().toDateString();
-    const startOfDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 0, 0, 0);
-    const endOfDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59);
     const now = new Date();
+    var actWindowEl = document.getElementById('gps-activity-window');
+    var actWindow = (actWindowEl && actWindowEl.value) || '24h';
+    var isRollingWindow = actWindow !== '24h';
+    var fromDate, toDate, tripLimit;
+    if (isRollingWindow) {
+      var ROLLING_MS = { '3d': 3*86400000, '7d': 7*86400000, '30d': 30*86400000 }[actWindow] || 86400000;
+      fromDate = new Date(now.getTime() - ROLLING_MS);
+      toDate = now;
+      // Scaled with the window -- a fixed 500-result cap that's plenty
+      // for one team's one day silently truncates a real 30-day pull
+      // for a 15-device fleet. Still a soft cap, not true pagination;
+      // gpsTripsMaybeTruncated (below) flags it in the UI when hit.
+      tripLimit = { '3d': 1500, '7d': 3000, '30d': 6000 }[actWindow] || 500;
+    } else {
+      fromDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 0, 0, 0);
+      toDate = isToday ? now : new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 23, 59, 59);
+      tripLimit = 500;
+    }
     const trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: {
-        fromDate: startOfDay.toISOString(),
-        toDate: isToday ? now.toISOString() : endOfDay.toISOString(),
+        fromDate: fromDate.toISOString(),
+        toDate: toDate.toISOString(),
         includeOverlappedTrips: true
       },
-      resultsLimit: 500
+      resultsLimit: tripLimit
     });
-
-    // Reverse geocode trip addresses if not already present
-    await reverseGeocodeTrips(trips);
+    window._gpsActivityWindowMode = actWindow;
+    window._gpsTripsMaybeTruncated = trips.length >= tripLimit;
 
     // Group trips by device
     const tripsByDevice = {};
@@ -28583,13 +28673,18 @@ async function loadGPSData() {
       // depot stays and pre-7am idle bounces don't leak into the timeline.
       // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
       // what causes the leak; this is the post-filter that closes it.
-      const _window = team ? _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday) : null;
-      const deviceTrips = _window
-        ? allDeviceTrips.filter(function(t){
-            const ts = new Date(t.start);
-            return ts >= _window.trueStart && ts <= _window.trueEnd;
-          })
-        : (team ? [] : allDeviceTrips);
+      // Skipped entirely in rolling multi-day mode -- "reconstruct one
+      // team's one-day route" doesn't generalize across calendar days;
+      // show every trip in the fetched window verbatim instead.
+      const _window = (!isRollingWindow && team) ? _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday) : null;
+      const deviceTrips = isRollingWindow
+        ? allDeviceTrips
+        : (_window
+            ? allDeviceTrips.filter(function(t){
+                const ts = new Date(t.start);
+                return ts >= _window.trueStart && ts <= _window.trueEnd;
+              })
+            : (team ? [] : allDeviceTrips));
 
       let totalDriveMin = 0;
       deviceTrips.forEach(t => {
@@ -28683,13 +28778,18 @@ async function loadGPSData() {
     gpsVehicles = teamEntries.concat(unassignedEntries)
       .filter(v => showHidden || !v.hidden);
 
-    // Reverse geocode current locations
-    await reverseGeocodeVehicles();
-
+    // Render immediately with what we have. Street addresses aren't in
+    // yet (GetAddresses hasn't run) -- renderGPS falls back to raw
+    // coordinates for those -- but the map + fleet list + moving/stopped
+    // status are all real, current data. Tom's explicit ask: don't gate
+    // the whole view on reverse-geocoding, which is slower, optional
+    // polish, not core fleet data.
     renderGPS();
     const now2 = new Date();
     document.getElementById('gps-last-update').textContent =
       'Updated ' + now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaBusinessTimezone()});
+
+    _refineGPSAddresses(trips, myGPSLoadToken);
 
   } catch(e) {
     // PR2: the EF handles session expiry server-side (re-auth + retry),
@@ -28704,6 +28804,30 @@ async function loadGPSData() {
       if (statusEl) statusEl.textContent = 'Could not load fleet data.';
     }
     if (lastUpd) lastUpd.textContent = 'Error: ' + (e && e.message || 'unknown');
+  }
+}
+
+// Background pass: fills in real street addresses (reverse-geocoded via
+// GetAddresses) over the raw-coordinate/blank placeholders the initial
+// render used. Runs AFTER loadGPSData already cleared "Loading..." and
+// rendered the map + fleet list, so it never blocks that -- only shows
+// a small "Some data loading" indicator while in flight. Guarded by
+// `token` against _gpsLoadToken so a slow pass from a load the user has
+// since superseded (Refresh clicked again, activity window changed)
+// can't overwrite newer data or force a stale re-render.
+async function _refineGPSAddresses(trips, token) {
+  if (token !== _gpsLoadToken) return;
+  var partialEl = document.getElementById('gps-partial-indicator');
+  if (partialEl) partialEl.style.display = '';
+  try {
+    await reverseGeocodeTrips(trips);
+    if (token !== _gpsLoadToken) return; // superseded mid-flight
+    await reverseGeocodeVehicles();
+    if (token === _gpsLoadToken) renderGPS();
+  } catch (e) {
+    console.warn('[gps] address refinement failed', e);
+  } finally {
+    if (token === _gpsLoadToken && partialEl) partialEl.style.display = 'none';
   }
 }
 
@@ -28778,10 +28902,20 @@ async function reverseGeocodeTrips(trips) {
   return trips;
 }
 
+// "Last 24 hours" (default) reads as "Today's Activity" -- the existing,
+// familiar single-day framing. 3d/7d/30d get their own label since
+// stops can now span multiple calendar days.
+function _gpsActivityWindowLabel() {
+  var mode = window._gpsActivityWindowMode || '24h';
+  return { '24h': "Today's", '3d': "Last 3 Days'", '7d': "Last 7 Days'", '30d': "Last 30 Days'" }[mode] || "Today's";
+}
+
 function renderGPS() {
   const moving = gpsVehicles.filter(v => v.isMoving).length;
   const stopped = gpsVehicles.filter(v => !v.isMoving).length;
   const totalJobs = gpsVehicles.reduce((s,v) => s + v.trips.length, 0);
+  const _actLabel = _gpsActivityWindowLabel();
+  const _isRollingView = (window._gpsActivityWindowMode || '24h') !== '24h';
 
   // Summary bar
   document.getElementById('gps-summary').innerHTML = `
@@ -28798,9 +28932,19 @@ function renderGPS() {
       <div class="gps-stat-val" style="color:var(--amber)">${stopped}</div>
     </div>
     <div class="gps-stat">
-      <div class="gps-stat-label">Trips Today</div>
+      <div class="gps-stat-label">Trips ${_isRollingView ? _actLabel : 'Today'}</div>
       <div class="gps-stat-val">${totalJobs}</div>
     </div>`;
+
+  var truncEl = document.getElementById('gps-truncation-notice');
+  if (truncEl) {
+    if (window._gpsTripsMaybeTruncated) {
+      truncEl.textContent = '⚠ Trip results hit the cap for this window — some activity may be missing. Try a shorter window for a complete view.';
+      truncEl.style.display = '';
+    } else {
+      truncEl.style.display = 'none';
+    }
+  }
 
   // Vehicle cards
   document.getElementById('gps-vehicles').innerHTML = gpsVehicles.map(v => {
@@ -28844,7 +28988,8 @@ function renderGPS() {
       }
 
       sortedTrips.forEach((t, ti) => {
-        const arriveAddr = t.stopAddress || t.stopLocation || 'Unknown';
+        const arriveAddr = t.stopAddress || t.stopLocation ||
+          (t.stopPoint ? (t.stopPoint.y.toFixed(4) + ', ' + t.stopPoint.x.toFixed(4)) : 'Unknown');
         const arriveTime = t.stop ? new Date(t.stop) : null;
         const nextDepart = sortedTrips[ti+1] ? new Date(sortedTrips[ti+1].start) : null;
         const distMi = t.distance ? Math.round(t.distance * 0.000621371) : null;
@@ -28873,8 +29018,14 @@ function renderGPS() {
         // model of "team starts at 9 AM" (9 AM EDT at the office, not
         // 9 AM their local time).
         const _tz = _pentaBusinessTimezone();
-        const inStr = s.inTime ? s.inTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : '—';
-        const outStr = s.outTime ? s.outTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_tz}) : (si === stopList.length-1 ? 'Now' : '—');
+        // Rolling multi-day windows (3d/7d/30d) can mix stops from
+        // several calendar days -- bare "2:14 PM" is ambiguous across
+        // days, so stamp the date too in that mode.
+        const _timeOpts = _isRollingView
+          ? {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZone:_tz}
+          : {hour:'numeric', minute:'2-digit', timeZone:_tz};
+        const inStr = s.inTime ? s.inTime.toLocaleString('en-US', _timeOpts) : '—';
+        const outStr = s.outTime ? s.outTime.toLocaleString('en-US', _timeOpts) : (si === stopList.length-1 ? 'Now' : '—');
         const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
@@ -28908,7 +29059,7 @@ function renderGPS() {
 
       stopsHtml = rows;
     } else {
-      stopsHtml = '<div style="color:var(--muted);font-size:13px;padding:4px 0">No trips recorded yet today</div>';
+      stopsHtml = '<div style="color:var(--muted);font-size:13px;padding:4px 0">No trips recorded in this window</div>';
     }
 
     // Label: collapse to just the team code when the assigned/matched
@@ -28939,6 +29090,22 @@ function renderGPS() {
       }
       _tvcLocation = v.address || 'Location unknown';
     }
+
+    // Stale-activity hint: when a resolved (non-missing, non-noGps)
+    // device has zero stops in the current window, say why instead of
+    // just showing an empty card -- a genuinely idle team and a broken
+    // view look identical without this. Uses lastContact (device's own
+    // last-heard-from timestamp, always live via DeviceStatusInfo), not
+    // trip data, so it's accurate even when the window logic above
+    // legitimately finds nothing.
+    var _staleHint = '';
+    if (!v.missing && !v.noGps && v.trips.length === 0 && v.lastContact) {
+      var _hrsSince = (Date.now() - new Date(v.lastContact).getTime()) / 3600000;
+      _staleHint = _hrsSince < 24
+        ? 'No activity in last 24h'
+        : 'Last activity ' + Math.round(_hrsSince / 24) + 'd ago';
+    }
+
     var _canClick = !v.noGps && !v.missing && v.id != null;
     return `<div class="team-vehicle-card${isExp?' expanded':''}"${_canClick ? ` onclick="toggleGPSCard('${v.id}')"` : ''}>
       <div class="tvc-main">
@@ -28946,6 +29113,7 @@ function renderGPS() {
         <div class="tvc-info">
           <div class="tvc-name">${_tvcLabel}</div>
           <div class="tvc-location">${_tvcLocation}</div>
+          ${_staleHint ? `<div style="font-size:11px;color:var(--amber);margin-top:1px">${_staleHint}</div>` : ''}
         </div>
         ${v.id != null ? `<button onclick="event.stopPropagation();openRenameDeviceModal('${_adminEsc(String(v.id))}','${_adminEsc((v.rawName||v.name||''))}')" title="Rename" style="background:none;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 4px">✏️</button>
         <button onclick="event.stopPropagation();toggleGPSDeviceMenu('${_adminEsc(String(v.id))}')" title="More" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 4px">⋯</button>` : ''}
@@ -28960,7 +29128,7 @@ function renderGPS() {
         <button onclick="setDeviceHiddenFromMenu('${_adminEsc(String(v.id))}', ${!v.hidden})" style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer">${v.hidden ? '👁️ Show this device' : '🙈 Hide this device'}</button>
       </div>` : ''}
       <div class="tvc-detail">
-        <div class="tvc-detail-title">Today's Activity</div>
+        <div class="tvc-detail-title">${_actLabel} Activity</div>
         ${stopsHtml}
         ${v.totalDriveMin > 0 ? `<div style="margin-top:8px;font-size:12px;color:var(--muted)">Total drive time: ${Math.floor(v.totalDriveMin/60)}h ${v.totalDriveMin%60}m</div>` : ''}
         <a href="https://my.geotab.com/geotab/checkmate/ui/map.html#zoneId=&dateRange.startTime=${new Date().toISOString().split('T')[0]}&devices=${v.id}" 
