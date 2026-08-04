@@ -24895,7 +24895,7 @@ function _teamDayStats(team, dateStr) {
 var _tmgrGpsCache = { dateStr: null, devices: null, teamDeviceMap: null };
 function _invalidateTmgrGpsCache() { _tmgrGpsCache = { dateStr: null, devices: null, teamDeviceMap: null }; }
 
-async function renderTeamManager() {
+async function renderTeamManager(opts) {
   const dateStr = document.getElementById('team-mgr-date').value;
   const date = new Date(dateStr + 'T00:00:00');
   document.getElementById('team-mgr-date-label').textContent =
@@ -24917,12 +24917,34 @@ async function renderTeamManager() {
   // readiness + forcing the merge here, on every render, closes the
   // race outright instead of relying on whatever timing happened to
   // make a second open "just work."
-  try {
-    if (window.PentaAssignments && window.PentaAssignments.ready) {
-      await window.PentaAssignments.ready();
-    }
-    if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
-  } catch (e) { console.warn('[TeamMgr] assignments readiness/merge failed', e); }
+  //
+  // opts.skipMirror: PR #69's optimistic re-render still felt laggy
+  // because THIS merge is exactly what undid it. _mirrorPentaAssignmentsToInMemory
+  // reads PentaAssignments.listSync() -- the server-confirmed cache --
+  // and "Supabase wins" for any key present there, overwriting
+  // dailyAssignments back to the OLD team. But confirmTeamAssign/
+  // quickAssign fire their Supabase write WITHOUT awaiting it, so at
+  // the moment of the immediate optimistic render, listSync() still
+  // has the pre-write row -- this merge clobbered the just-applied
+  // optimistic value on every single optimistic render, so the grid
+  // visually showed the OLD team until the real round-trip completed
+  // and a second, server-triggered re-render (via PentaAssignments'
+  // onChange listener) finally showed the right thing. That second
+  // render IS "wait, then it registers." Callers doing an immediate
+  // post-write optimistic paint pass {skipMirror:true} to paint
+  // straight from the (already-correct) in-memory dailyAssignments
+  // instead of re-deriving it from a cache that's momentarily stale
+  // by design. Every other caller (initial mount, date change, the
+  // server-confirmed re-render after a real write lands) keeps the
+  // normal merge -- they aren't racing an in-flight write of their own.
+  if (!(opts && opts.skipMirror)) {
+    try {
+      if (window.PentaAssignments && window.PentaAssignments.ready) {
+        await window.PentaAssignments.ready();
+      }
+      if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
+    } catch (e) { console.warn('[TeamMgr] assignments readiness/merge failed', e); }
+  }
 
   // GPS Vehicle assignment (migration 080). Fetched once for all teams,
   // not per-card, to keep this to one device list call + N resolver
@@ -25225,8 +25247,8 @@ function quickAssign(empId, team, dateStr) {
   dailyAssignments[key] = team;
   localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
   // Sprint 10 Phase 3f: dual-write quickAssign to Supabase.
-  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, empId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
-  renderTeamManager();
+  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, empId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); renderTeamManager(); }); } catch(e){}
+  renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
 }
 
 function promptDefaultTeam(empId) {
@@ -25622,7 +25644,7 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
 
   logPendingUpdate(emp.name + ' → ' + _offLabel, dateLabel);
   overlay.remove();
-  renderTeamManager();
+  renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
   recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
   if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
 
