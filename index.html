@@ -25251,37 +25251,25 @@ function quickAssign(empId, team, dateStr) {
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
 }
 
-function promptDefaultTeam(empId) {
+async function promptDefaultTeam(empId) {
   const emp = getUnifiedRoster().find(e => e.id === empId);
   if (!emp) return;
   const team = prompt('Set default team for ' + emp.name + ':\nB1, B3, B5, S1, S3, M1, M2, M3');
   if (!team) return;
   const valid = _pentaTeamNames();
   if (!valid.includes(team.toUpperCase())) { alert('Invalid team. Use: ' + valid.join(', ')); return; }
-  emp.defaultTeam = team.toUpperCase();
-  // Phase 6.4: persist team change through the facade so it lands in Supabase
-  // and survives across devices/sessions (was localStorage-only before).
-  // Bug fix: this checked emp.fromPortal, a field getUnifiedRoster() never
-  // sets (it sets fromFacade) -- the guard was permanently false, so this
-  // write never fired for ANY employee. The emp.defaultTeam mutation above
-  // is also thrown away regardless (getUnifiedRoster() returns fresh
-  // objects every call, not a shared/cached reference), so nothing about
-  // this function persisted anything before this fix.
-  if (emp.fromFacade) {
-    try {
-      if (window.PentaEmployees && window.PentaEmployees.update) {
-        // Same getByName-collision fix as _setEmployeeDefaultTeam --
-        // use the real Supabase id (emp.uuid) directly instead of an
-        // ambiguous name lookup that can match the wrong employee
-        // whenever two share a name (confirmed live in Manna's roster).
-        var targetId = emp.uuid;
-        if (!targetId && window.PentaEmployees.getByName) {
-          var pe = window.PentaEmployees.getByName(emp.name);
-          targetId = pe && pe.id;
-        }
-        if (targetId) { window.PentaEmployees.update(targetId, { team_text: team.toUpperCase() }); }
-      }
-    } catch(e) { console.warn('[Claire change_default_team] facade update failed', e); }
+  // PR #74: this used to duplicate _setEmployeeDefaultTeam's write logic
+  // inline (its own getByName-collision fix, its own team_text-only
+  // write, fire-and-forget with no await) -- a second copy of the same
+  // logic that had already silently drifted from its twin once (the
+  // team_id-vs-team_text bug, see _setEmployeeDefaultTeam's comment)
+  // and could drift again. Delegating to the shared function means
+  // there's only one write path left to keep correct.
+  try {
+    await _setEmployeeDefaultTeam(empId, team.toUpperCase());
+  } catch (e) {
+    alert('Could not set default team: ' + (e.message || e));
+    return;
   }
   alert('✓ Default team for ' + emp.name + ' set to ' + team.toUpperCase());
   renderTeamManager();
@@ -25316,6 +25304,26 @@ function promptDefaultTeam(empId) {
 // getUnifiedRoster() specifically for this) directly -- no name
 // lookup, no ambiguity. getByName kept only as a last-resort fallback
 // for the (should no longer happen) case where uuid is missing.
+//
+// Bug fix (PR #74, "Remove STILL does nothing" after the fix above):
+// this only ever wrote `team_text`. But employees.team_id (a Sprint 6.9
+// FK to the teams table) takes PRIORITY over team_text on read --
+// PentaEmployees._fromRow sets emp.team from team_text first, then
+// OVERWRITES it with the team_id-resolved name whenever team_id is
+// set. Confirmed live: 27 of 27 active employees have team_id
+// populated (they were all created/edited through the full employee
+// forms, which set both team_id and team_text together) -- so clearing
+// team_text alone was a GUARANTEED no-op for every real employee: the
+// write succeeds, the modal re-renders (the "flash" Tom saw), and the
+// very next read resolves the employee's team right back from the
+// untouched team_id. Add "worked" more often only because Tom mostly
+// exercised it through the full edit form (which sets team_id
+// correctly) rather than this quick in-modal path -- both paths route
+// through this same function and were equally broken.
+//
+// Now resolves newTeam (a team CODE like "B1") to its team_id via
+// PentaTeams and writes both fields together, so they can never
+// disagree again.
 async function _setEmployeeDefaultTeam(empId, newTeam) {
   var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
   if (!emp) return false;
@@ -25329,7 +25337,17 @@ async function _setEmployeeDefaultTeam(empId, newTeam) {
           var pe = window.PentaEmployees.getByName(emp.name);
           targetId = pe && pe.id;
         }
-        if (targetId) { await window.PentaEmployees.update(targetId, { team_text: newTeam || '' }); }
+        if (targetId) {
+          var targetTeamId = null;
+          if (newTeam) {
+            try {
+              if (window.PentaTeams && !window.PentaTeams.isLoaded()) await window.PentaTeams.load();
+              var teamRow = (window.PentaTeams && window.PentaTeams.getByName) ? window.PentaTeams.getByName(newTeam) : null;
+              targetTeamId = teamRow ? teamRow.id : null;
+            } catch (e2) { console.warn('[_setEmployeeDefaultTeam] team_id resolution failed', e2); }
+          }
+          await window.PentaEmployees.update(targetId, { team_text: newTeam || '', team_id: targetTeamId });
+        }
       }
     } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); throw e; }
   }

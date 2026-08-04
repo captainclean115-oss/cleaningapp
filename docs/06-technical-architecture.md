@@ -252,6 +252,18 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8w. Team removal still didn't work after PR #68: team_id, not just team_text
+
+PR #68 (§8q) fixed *who* a team write targets (the ambiguous `getByName` name-collision bug). Tom reported Remove was still broken afterward — "row flashes momentarily but nothing changes." Different mechanism, same shared write path (`_setEmployeeDefaultTeam`): the write only ever set `employees.team_text`. `PentaEmployees._fromRow` resolves an employee's displayed team from `team_id` (a Sprint 6.9 FK to the `teams` table) **first**, falling back to `team_text` only when `team_id` is null. Confirmed live: **27 of 27** active employees have `team_id` populated — they're all created/edited through the full employee-profile forms (`saveStaffEmployee`/`saveMainEmployee`), which write `team_id` and `team_text` together. So clearing `team_text` alone was a guaranteed no-op for every real employee: the write succeeds, the modal re-renders (the "flash"), and the very next read resolves the team right back from the untouched `team_id`.
+
+Verified live with a rolled-back transaction against a real employee row: after `UPDATE employees SET team_text = ''`, `team_id` was still populated and still resolves to the original team name via the `teams` join — reproducing the exact symptom outside the app entirely.
+
+Tom's diagnostic question — "compare to add-employee flow on the same surface, what's different about the remove path" — the honest answer is: nothing, code-wise. Both `staffTeamAddEmployee` and `staffTeamRemoveEmployee` route through the same `_setEmployeeDefaultTeam`, and both had the identical `team_id` gap. Add "worked" more often only because Tom more often exercised it through the full profile-edit form (which sets `team_id` correctly) rather than this quick in-modal path; Remove has no equivalent full-form entry point, so it exclusively hit the broken path every time.
+
+**Fix.** `_setEmployeeDefaultTeam` now resolves the target team code (e.g. `"B1"`) to its `team_id` via `PentaTeams.getByName` and writes both fields together — a remove clears both to `''`/`null`, a reassignment sets both to the new team consistently. Also found and eliminated `promptDefaultTeam`'s own **independent duplicate** of this exact write logic (a second, drifted copy — see [[feedback-mirrored-algorithm-copies-diverge]]) that additionally lacked the PR #68 uuid fix's `await` and had the same `team_text`-only gap; it now delegates to `_setEmployeeDefaultTeam` instead of maintaining its own copy, so there's only one write path left to keep correct.
+
+---
+
 ## 8v. Route detail modal from Employee Hours
 
 Hours Report already let Tom tap an employee to expand a 5-day breakdown, and tap a specific day pill to open an edit-hours overlay (`showEmpDayDetail`: start/end time, lunch, team, extra tasks — a load-bearing correction workflow, not new in this PR). Tom asked for a NEW capability: tap a day → a read-only modal showing that day's full GPS route (same level of detail as the Live Tracking timeline), total drive time, and any incidents/notes — using the same modal-over-current-view pattern as PR #70's client card.
