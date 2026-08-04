@@ -25004,11 +25004,15 @@ async function renderTeamManager() {
           return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
             <span style="font-size:14px">${emp.name}<span style="font-size:11px;color:var(--muted)">${roleStr}</span></span>
             <div style="display:flex;gap:6px">
-            <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')" 
+            <button onclick="openDayOffPicker('${emp.id}','${dateStr}')"
+              style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+              🏖 Off
+            </button>
+            <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')"
               style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
               Move
             </button>
-            <button onclick="openRosterEmpEdit('${emp.id}')" 
+            <button onclick="openRosterEmpEdit('${emp.id}')"
               style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
               Edit
             </button>
@@ -25041,6 +25045,10 @@ async function renderTeamManager() {
           return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
           <span style="font-size:14px">${emp.name} ${emp.floater ? '<span style="font-size:10px;color:var(--amber)">FLOATER</span>' : ''} ${_offBadge}</span>
           <div style="display:flex;gap:6px">
+            <button onclick="openDayOffPicker('${emp.id}','${dateStr}')"
+              style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+              🏖 Off
+            </button>
             <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')"
               style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
               Assign
@@ -25069,16 +25077,26 @@ async function renderTeamManager() {
         <span style="font-size:12px;color:var(--muted)">${unassigned.length} employees</span>
       </div>
       <div style="padding:8px 14px">
-        ${unassigned.map(emp => `
+        ${unassigned.map(emp => {
+          var _isOff2 = dailyAssignments[dateStr + '_' + emp.id] === 'OFF';
+          var _offInfo2 = _isOff2 ? getEmployeeDayOffInfo(emp.id, dateStr) : null;
+          var _offBadge2 = _isOff2
+            ? ('<span style="font-size:10px;color:var(--red);background:rgba(239,68,68,0.1);padding:1px 6px;border-radius:8px">🏖 ' +
+                _adminEsc(_offInfo2 && _offInfo2.status_type ? DAY_OFF_CATEGORY_LABELS[_offInfo2.status_type] : 'Day Off') + '</span>')
+            : '';
+          return `
           <div style="padding:8px 0;border-bottom:1px solid var(--border)">
-            <div style="font-size:14px;color:var(--muted);margin-bottom:6px">${emp.name}${emp.fromPortal ? ' <span style="font-size:10px;background:rgba(108,143,255,0.2);color:var(--accent);padding:1px 6px;border-radius:8px">New</span>' : ''}</div>
+            <div style="font-size:14px;color:var(--muted);margin-bottom:6px">${emp.name}${emp.fromPortal ? ' <span style="font-size:10px;background:rgba(108,143,255,0.2);color:var(--accent);padding:1px 6px;border-radius:8px">New</span>' : ''} ${_offBadge2}</div>
             <div style="display:flex;flex-wrap:wrap;gap:5px">
               ${teams.map(t => `<button onclick="quickAssign('${emp.id}','${t}','${dateStr}')"
                 style="background:${_pentaTeamColor(t)}22;border:1px solid ${_pentaTeamColor(t)}44;color:${_pentaTeamColor(t)};font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:8px;cursor:pointer">${t}</button>`).join('')}
+              <button onclick="openDayOffPicker('${emp.id}','${dateStr}')"
+                style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer">🏖 Off</button>
               <button onclick="promptDefaultTeam('${emp.id}')"
                 style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer">⭐ Set Default</button>
             </div>
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>
     </div>`;
   }
@@ -25378,6 +25396,25 @@ function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentD
   var existingBody = sheet.querySelector('div:last-child');
   if (existingBody) sheet.removeChild(existingBody);
   sheet.appendChild(newBody);
+}
+
+// Standalone entry point for the grid's direct "🏖 Off" quick-action
+// (team card rows + Unassigned rows in renderTeamManager) -- reuses the
+// exact same _showDayOffCategoryPicker component the full
+// editEmployeeAssignment picker uses (same 5 categories, same notes
+// field, same confirmTeamAssign/assignEmployee write path), just
+// without requiring the team-list step first. Builds its own bare
+// overlay/sheet since there's no existing picker modal to swap into.
+function openDayOffPicker(employeeId, dateStr) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  const sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden';
+  overlay.appendChild(sheet);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+  const currentDayOff = getEmployeeDayOffInfo(employeeId, dateStr);
+  _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentDayOff);
 }
 
 function getRosterTermData() {
