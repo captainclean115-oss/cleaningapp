@@ -69,6 +69,18 @@
   --surface2: rgba(255,255,255,1); /* v9.3 hotfix: solid — was 0.95, field inputs were translucent */
   --border: rgba(255,255,255,0.5);
   --border2: rgba(255,255,255,0.6);
+  /* PR #75 — form-input fill/border. --surface2 is identical to --surface
+     (both solid white, since the v9.3 hotfix above) and --border is white
+     at 50% opacity — an input using surface2+border on a surface-colored
+     sheet renders with ~zero visible contrast (white-on-white), which is
+     exactly the "bare labels, no visible input boxes" bug reported against
+     the Add Employee form. Scoped as new tokens rather than correcting
+     --surface2/--border directly: those two are referenced ~930 times
+     across the file for many non-input UI (buttons, chips, panels) that
+     can't be visually re-verified here — a real, visible input fill/border
+     was needed without risking a blind sitewide re-theme. */
+  --input-bg: #F1F0F6;
+  --input-border: #DBD9E4;
   --text: #2A2840;
   --muted: #6B6880;
   --accent: #6c8fff;
@@ -511,7 +523,7 @@ body {
 .form-group { margin-bottom: 14px; }
 .form-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; display: block; }
 .form-input, .form-select, .form-textarea {
-  width: 100%; background: var(--surface2); border: 1px solid var(--border2);
+  width: 100%; background: var(--input-bg); border: 1px solid var(--input-border);
   color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px;
   padding: 11px 12px; border-radius: var(--radius-sm); outline: none;
   -webkit-appearance: none; appearance: none;
@@ -937,7 +949,7 @@ body {
   border-bottom:1px solid var(--border);position:sticky;top:0;
   background:var(--surface);z-index:1; }
 .form-title { font-size:17px;font-weight:700; }
-.form-close { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+.form-close { background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);
   width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer; }
 .form-body { padding:16px 20px 32px; }
 .form-section { margin-bottom:20px; }
@@ -947,14 +959,14 @@ body {
 .form-row.full { grid-template-columns:1fr; }
 .form-field { display:flex;flex-direction:column;gap:4px; }
 .form-label { font-size:12px;color:var(--muted); }
-.form-input { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+.form-input { background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);
   font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
   outline:none;width:100%;box-sizing:border-box; }
 .form-input:focus { border-color:var(--accent); }
-.form-select { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+.form-select { background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);
   font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
   outline:none;width:100%;box-sizing:border-box;appearance:none; }
-.form-textarea { background:var(--surface2);border:1px solid var(--border);color:var(--text);
+.form-textarea { background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);
   font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 12px;border-radius:8px;
   outline:none;width:100%;box-sizing:border-box;min-height:80px;resize:vertical; }
 .form-save-btn { width:100%;padding:14px;background:var(--accent);border:none;
@@ -2651,7 +2663,7 @@ body.home-dragging, body.home-dragging * {
 
 
 .field-input {
-  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  width: 100%; background: var(--input-bg); border: 1px solid var(--input-border);
   border-radius: var(--radius-sm); color: var(--text); font-family: 'DM Sans', sans-serif;
   font-size: 15px; padding: 11px 14px; outline: none;
   min-width: 0; /* v9.3.1: keeps inputs from forcing grid columns wider than 1fr on iOS Safari (number-input intrinsic min-width is ~200px otherwise). */
@@ -5015,27 +5027,27 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
   <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface)">
       <div style="font-size:17px;font-weight:600" id="main-emp-modal-title">Edit Employee</div>
-      <button onclick="document.getElementById('main-emp-modal').style.display='none'" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+      <button onclick="document.getElementById('main-emp-modal').style.display='none'" style="background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
     </div>
     <div style="padding:20px">
       <input type="hidden" id="main-emp-idx">
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="main-emp-name" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="main-emp-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team *</div>
-        <select id="main-emp-team" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="main-emp-team" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('main-emp-team', team_id) -->
         </select>
       </div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Portal PIN (4 digits)</div><input type="text" id="main-emp-pin" maxlength="4" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="number" id="main-emp-pay" step="0.25" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Portal PIN (4 digits)</div><input type="text" id="main-emp-pin" maxlength="4" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="number" id="main-emp-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
-        <select id="main-emp-lang" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="main-emp-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="en">English</option><option value="es">Spanish</option>
           <option value="pt">Portuguese</option><option value="cv">Kriolu</option>
         </select>
       </div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="main-emp-phone" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="main-emp-phone" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Status</div>
-        <select id="main-emp-status" onchange="toggleTermFields()" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="main-emp-status" onchange="toggleTermFields()" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
           <option value="terminated">Terminated</option>
@@ -5044,7 +5056,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div id="term-fields" style="display:none">
         <div style="margin-bottom:14px">
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Termination reason</div>
-          <select id="main-emp-term-reason" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="main-emp-term-reason" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select reason...</option>
             <option value="Voluntary resignation">Voluntary resignation</option>
             <option value="No call / no show">No call / no show</option>
@@ -5057,13 +5069,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         </div>
         <div style="margin-bottom:14px">
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes (optional)</div>
-          <textarea id="main-emp-term-notes" rows="2" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:11px 14px;outline:none;resize:none"></textarea>
+          <textarea id="main-emp-term-notes" rows="2" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:11px 14px;outline:none;resize:none"></textarea>
         </div>
         <div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">
           <div style="font-size:14px;color:var(--text)">Eligible for rehire</div>
           <label style="position:relative;display:inline-block;width:44px;height:26px;cursor:pointer">
             <input type="checkbox" id="main-emp-rehire" style="opacity:0;width:0;height:0">
-            <span onclick="this.previousElementSibling.click()" style="position:absolute;inset:0;background:var(--surface2);border:1px solid var(--border);border-radius:13px;transition:.2s" id="rehire-track"></span>
+            <span onclick="this.previousElementSibling.click()" style="position:absolute;inset:0;background:var(--input-bg);border:1px solid var(--input-border);border-radius:13px;transition:.2s" id="rehire-track"></span>
             <span onclick="this.parentElement.querySelector('input').click()" id="rehire-thumb" style="position:absolute;top:3px;left:3px;width:18px;height:18px;background:var(--muted);border-radius:50%;transition:.2s"></span>
           </label>
         </div>
@@ -46113,41 +46125,41 @@ function _p3dPage(dir) {
 
       <!-- PERSONAL INFO -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:12px">Personal Info</div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="staff-name" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="staff-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="staff-phone" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Email</div><input type="email" id="staff-email" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="staff-phone" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Email</div><input type="email" id="staff-email" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       </div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Address</div><input type="text" id="staff-address" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Address</div><input type="text" id="staff-address" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">City</div><input type="text" id="staff-city" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">ZIP</div><input type="text" id="staff-zip" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">City</div><input type="text" id="staff-city" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">ZIP</div><input type="text" id="staff-zip" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       </div>
 
       <!-- EMPLOYMENT -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Employment</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team</div>
-          <select id="staff-team" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-team" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('staff-team', team_id) -->
           </select>
         </div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Role</div>
-          <select id="staff-role" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-role" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="team_member">Team Member</option>
             <option value="team_leader">Team Leader</option>
             <option value="manager">Manager</option>
           </select>
         </div>
       </div>
-      <div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:9px">
+      <div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px">
         <input type="checkbox" id="staff-driver" style="width:18px;height:18px;accent-color:var(--accent);cursor:pointer">
         <label for="staff-driver" style="font-size:14px;cursor:pointer;flex:1">🚗 Driver — shows car icon next to name in team views</label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
-          <select id="staff-lang" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="en">English</option><option value="es">Spanish</option>
             <option value="pt">Portuguese</option><option value="cv">Kriolu</option>
           </select>
@@ -46158,24 +46170,24 @@ function _p3dPage(dir) {
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:10px">Uniform Sizes</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">👕 Shirt Size</div>
-          <select id="staff-shirt-size" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-shirt-size" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select...</option><option value="XSM">XSM</option><option value="SM">SM</option><option value="MED">MED</option><option value="LG">LG</option><option value="XL">XL</option><option value="XXL">XXL</option>
           </select>
         </div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">👖 Pants Size</div>
-          <select id="staff-pants-size" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-pants-size" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select...</option><option value="XSM">XSM</option><option value="SM">SM</option><option value="MED">MED</option><option value="LG">LG</option><option value="XL">XL</option><option value="XXL">XXL</option>
           </select>
         </div>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Status</div>
-        <select id="staff-status" onchange="document.getElementById('staff-term-fields').style.display=this.value==='terminated'?'block':'none'" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="staff-status" onchange="document.getElementById('staff-term-fields').style.display=this.value==='terminated'?'block':'none'" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="active">Active</option><option value="inactive">Inactive</option><option value="terminated">Terminated</option>
         </select>
       </div>
       <div id="staff-term-fields" style="display:none">
         <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Termination Reason</div>
-          <select id="staff-term-reason" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-term-reason" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select...</option>
             <option value="voluntary">Voluntary resignation</option>
             <option value="performance">Performance</option>
@@ -46185,8 +46197,8 @@ function _p3dPage(dir) {
             <option value="other">Other</option>
           </select>
         </div>
-        <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes</div><textarea id="staff-term-notes" rows="2" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none"></textarea></div>
-        <div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--surface2);border-radius:9px">
+        <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes</div><textarea id="staff-term-notes" rows="2" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none"></textarea></div>
+        <div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--input-bg);border-radius:9px">
           <span style="font-size:14px">Eligible for rehire</span>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="staff-rehire" style="width:18px;height:18px;accent-color:var(--accent)">
@@ -46199,7 +46211,7 @@ function _p3dPage(dir) {
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Work Authorization</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Work Auth</div>
-          <select id="staff-work-auth" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-work-auth" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select...</option>
             <option value="citizen">US Citizen</option>
             <option value="resident">Permanent Resident</option>
@@ -46208,7 +46220,7 @@ function _p3dPage(dir) {
           </select>
         </div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Driver's License</div>
-          <select id="staff-license" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-license" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">Select...</option>
             <option value="yes">Yes</option>
             <option value="no">No</option>
@@ -46219,22 +46231,22 @@ function _p3dPage(dir) {
       <!-- EXPERIENCE & AVAILABILITY -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Experience & Availability</div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Experience</div>
-        <select id="staff-experience" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="staff-experience" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="none">No experience</option>
           <option value="some">Less than 1 year</option>
           <option value="1-2">1-2 years</option>
           <option value="3+">3+ years</option>
         </select>
       </div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Experience Notes</div><textarea id="staff-exp-notes" rows="2" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none" placeholder="Describe any relevant experience..."></textarea></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Experience Notes</div><textarea id="staff-exp-notes" rows="2" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none" placeholder="Describe any relevant experience..."></textarea></div>
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Available Days</div>
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-          <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Mon" id="staff-day-Mon" style="accent-color:var(--accent)"> Mon</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Tue" id="staff-day-Tue" style="accent-color:var(--accent)"> Tue</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Wed" id="staff-day-Wed" style="accent-color:var(--accent)"> Wed</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Thu" id="staff-day-Thu" style="accent-color:var(--accent)"> Thu</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Fri" id="staff-day-Fri" style="accent-color:var(--accent)"> Fri</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sat" id="staff-day-Sat" style="accent-color:var(--accent)"> Sat</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sun" id="staff-day-Sun" style="accent-color:var(--accent)"> Sun</label>
+          <label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Mon" id="staff-day-Mon" style="accent-color:var(--accent)"> Mon</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Tue" id="staff-day-Tue" style="accent-color:var(--accent)"> Tue</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Wed" id="staff-day-Wed" style="accent-color:var(--accent)"> Wed</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Thu" id="staff-day-Thu" style="accent-color:var(--accent)"> Thu</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Fri" id="staff-day-Fri" style="accent-color:var(--accent)"> Fri</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sat" id="staff-day-Sat" style="accent-color:var(--accent)"> Sat</label><label style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:8px 4px;cursor:pointer;font-size:12px"><input type="checkbox" value="Sun" id="staff-day-Sun" style="accent-color:var(--accent)"> Sun</label>
         </div>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Preferred Start Time</div>
-        <select id="staff-pref-time" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="staff-pref-time" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="early">Early (7-8am)</option>
           <option value="morning">Morning (8-9am)</option>
           <option value="flexible">Flexible</option>
@@ -46242,16 +46254,16 @@ function _p3dPage(dir) {
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Languages Spoken</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-          <label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="English" id="staff-spoken-English" style="accent-color:var(--accent)"> English</label><label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Spanish" id="staff-spoken-Spanish" style="accent-color:var(--accent)"> Spanish</label><label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Portuguese" id="staff-spoken-Portuguese" style="accent-color:var(--accent)"> Portuguese</label><label style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Kriolu" id="staff-spoken-Kriolu" style="accent-color:var(--accent)"> Kriolu</label>
+          <label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="English" id="staff-spoken-English" style="accent-color:var(--accent)"> English</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Spanish" id="staff-spoken-Spanish" style="accent-color:var(--accent)"> Spanish</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Portuguese" id="staff-spoken-Portuguese" style="accent-color:var(--accent)"> Portuguese</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Kriolu" id="staff-spoken-Kriolu" style="accent-color:var(--accent)"> Kriolu</label>
         </div>
       </div>
 
       <!-- EMERGENCY CONTACT -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Emergency Contact</div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Name</div><input type="text" id="staff-em-name" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Name</div><input type="text" id="staff-em-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="staff-em-phone" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Relationship</div><input type="text" id="staff-em-rel" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none" placeholder="e.g. Spouse"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="staff-em-phone" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Relationship</div><input type="text" id="staff-em-rel" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none" placeholder="e.g. Spouse"></div>
       </div>
 
       <!-- PERSONAL — photo / birthday / culture tag (banner-system v2 fields). LocalStorage only.
@@ -46260,12 +46272,12 @@ function _p3dPage(dir) {
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Photo</div>
         <div style="display:flex;gap:10px;align-items:center">
-          <label for="staff-photo-input" style="display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px">
+          <label for="staff-photo-input" style="display:inline-flex;align-items:center;gap:6px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px">
             <span style="font-size:18px">📷</span><span>Upload</span>
           </label>
           <input type="file" accept="image/*" id="staff-photo-input" style="display:none" onchange="pentaStaffPhotoUpload(this)">
-          <img id="staff-photo-preview" alt="" style="display:none;width:48px;height:48px;border-radius:50%;object-fit:cover;border:1px solid var(--border)">
-          <button type="button" id="staff-photo-remove" onclick="pentaStaffPhotoRemove()" style="display:none;background:none;border:1px solid var(--border);color:var(--muted);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit">Remove</button>
+          <img id="staff-photo-preview" alt="" style="display:none;width:48px;height:48px;border-radius:50%;object-fit:cover;border:1px solid var(--input-border)">
+          <button type="button" id="staff-photo-remove" onclick="pentaStaffPhotoRemove()" style="display:none;background:none;border:1px solid var(--input-border);color:var(--muted);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;font-family:inherit">Remove</button>
         </div>
         <input type="hidden" id="staff-photo-url">
         <div style="font-size:11px;color:var(--muted);margin-top:6px;font-style:italic">Compressed automatically. Max 200 KB.</div>
@@ -46273,7 +46285,7 @@ function _p3dPage(dir) {
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
         <div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Birthday year</div>
-          <select id="staff-bday-year" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-bday-year" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">—</option>
             <option value="2026">2026</option>
             <option value="2025">2025</option>
@@ -46379,7 +46391,7 @@ function _p3dPage(dir) {
         </div>
         <div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Birthday month</div>
-          <select id="staff-bday-month" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-bday-month" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">—</option>
             <option value="01">01 Jan</option><option value="02">02 Feb</option><option value="03">03 Mar</option>
             <option value="04">04 Apr</option><option value="05">05 May</option><option value="06">06 Jun</option>
@@ -46389,7 +46401,7 @@ function _p3dPage(dir) {
         </div>
         <div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Birthday day</div>
-          <select id="staff-bday-day" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <select id="staff-bday-day" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="">—</option>
             <option value="01">01</option><option value="02">02</option><option value="03">03</option><option value="04">04</option><option value="05">05</option><option value="06">06</option><option value="07">07</option><option value="08">08</option><option value="09">09</option><option value="10">10</option>
             <option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option>
@@ -46401,7 +46413,7 @@ function _p3dPage(dir) {
       <div style="font-size:11px;color:var(--muted);margin-top:-8px;margin-bottom:14px;font-style:italic">All three required to save birthday.</div>
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Culture tag</div>
-        <select id="staff-culture-tag" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <select id="staff-culture-tag" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="generic">Generic</option>
           <option value="us">United States</option>
           <option value="mx">México</option>
@@ -46416,7 +46428,7 @@ function _p3dPage(dir) {
       <div id="staff-docs-preview" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px"></div>
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Driver's License (front)</div>
-        <label for="staff-doc-lic-front" style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
+        <label for="staff-doc-lic-front" style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
           <span style="font-size:20px">📷</span><span>Take or choose photo</span>
         </label>
         <input type="file" accept="image/*" id="staff-doc-lic-front" style="display:none" onchange="previewStaffDoc(this,'lic-front')">
@@ -46424,7 +46436,7 @@ function _p3dPage(dir) {
       </div>
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Driver's License (back)</div>
-        <label for="staff-doc-lic-back" style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
+        <label for="staff-doc-lic-back" style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
           <span style="font-size:20px">📷</span><span>Take or choose photo</span>
         </label>
         <input type="file" accept="image/*" id="staff-doc-lic-back" style="display:none" onchange="previewStaffDoc(this,'lic-back')">
@@ -46432,7 +46444,7 @@ function _p3dPage(dir) {
       </div>
       <div style="margin-bottom:14px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Social Security Card (optional)</div>
-        <label for="staff-doc-ssn" style="display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
+        <label for="staff-doc-ssn" style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:10px 14px;cursor:pointer;font-size:14px">
           <span style="font-size:20px">📷</span><span>Take or choose photo</span>
         </label>
         <input type="file" accept="image/*" id="staff-doc-ssn" style="display:none" onchange="previewStaffDoc(this,'ssn')">
@@ -46441,7 +46453,7 @@ function _p3dPage(dir) {
 
       <!-- NOTES -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Internal Notes</div>
-      <div style="margin-bottom:14px"><textarea id="staff-notes" rows="3" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none" placeholder="Any notes about this employee..."></textarea></div>
+      <div style="margin-bottom:14px"><textarea id="staff-notes" rows="3" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;resize:none" placeholder="Any notes about this employee..."></textarea></div>
 
       <!-- SIGNATURE (if signed via app) -->
       <div id="staff-signature-section" style="display:none;margin-bottom:14px;padding:12px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:10px">
