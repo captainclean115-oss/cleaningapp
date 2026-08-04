@@ -252,6 +252,18 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8v. Route detail modal from Employee Hours
+
+Hours Report already let Tom tap an employee to expand a 5-day breakdown, and tap a specific day pill to open an edit-hours overlay (`showEmpDayDetail`: start/end time, lunch, team, extra tasks — a load-bearing correction workflow, not new in this PR). Tom asked for a NEW capability: tap a day → a read-only modal showing that day's full GPS route (same level of detail as the Live Tracking timeline), total drive time, and any incidents/notes — using the same modal-over-current-view pattern as PR #70's client card.
+
+**Scope call, flagged rather than assumed**: the day pill's tap already opens the edit-hours overlay, and that overlay is how Tom corrects hours day-to-day — replacing its tap behavior outright would have silently removed discoverability of an established workflow. Instead, added a "🗺️ Route" button inside `showEmpDayDetail`'s header that opens the new route-detail modal (`openHoursRouteDetail`/`closeHoursRouteDetail`) stacked on top. Both this modal and the edit-hours overlay it's opened from are non-destructive overlays that never touch the Hours Report's own DOM or scroll position, so "Hours Report stays underneath at the same scroll position, employee list still expanded" holds regardless of how many overlays are stacked above it — there's nothing to explicitly restore.
+
+**Implementation**: reuses the same device-resolution + trip-fetch + reverse-geocode pipeline `showEmpStops` already uses for that day/team (`_resolveTeamDevice`, `_geotabCall('Get', {typeName:'Trip', ...})`, `reverseGeocodeTrips`), and renders stops with the same `.tvc-stop-row` markup/classes Live Tracking's `_renderGPSStopRow` uses, for visual consistency. Total drive time is computed independently of the stop-row abstraction — summing each Geotab trip's own start→stop duration — so idle time the vehicle spends parked *between* trips is correctly excluded, only time actually spent driving counts. Incidents/notes: neither `incidents` nor `job_issues` has an employee+date query (both are keyed by `job_id`/`client_id` only), so the section resolves that day's team jobs first (`jobsForDate(date).filter(team)`, the same team+date job filter Live Tracking already uses) and fetches `listForJob` against both tables per job — a best-effort join, not a direct query, called out in the PR description as the scope's honest limit. Map rendering was explicitly named optional/deferrable by Tom ("can be added later") and is not included in this PR.
+
+Escape/backdrop-click/X close, with the same listener add/remove discipline as PR #70's client card (`_hrdKeyHandler`), and every async section (route, incidents) re-checks its target DOM element still exists before writing, so a closed-and-reopened-for-a-different-day modal can't have a stale in-flight fetch paint over the wrong day.
+
+---
+
 ## 8u. GPS day-start algorithm: two mirrored copies had silently diverged (loadWeekHours never got the v11.0.29 fix)
 
 Tom reported an employee's GPS-derived day-start was wrong: system said 8:18am, the real sustained depot departure was 9:11am. His spec: day-start is the LAST depot-departure trip whose next return-to-depot is ≥90 min away (or never returns) — `SUSTAINED_AWAY_MIN_MIN`, unchanged from v11.0.23.
