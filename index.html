@@ -8359,7 +8359,7 @@ window.PentaAssignments = (function() {
       var pages = 0;
       while (pages < 50) {
         var pageRes = await sb.from('daily_assignments')
-          .select('id, business_id, date, team, employee_id, created_at, deleted_at')
+          .select('id, business_id, date, team, employee_id, created_at, created_by, deleted_at, status_type, notes')
           .eq('business_id', bid)
           .is('deleted_at', null)
           .order('date', { ascending: true })
@@ -8446,7 +8446,10 @@ window.PentaAssignments = (function() {
     return null;
   }
 
-  async function assign(dateStr, team, employeeId) {
+  // extra: optional { status_type, notes } -- only meaningful when
+  // team === 'OFF' (migration 086's CHECK enforces this server-side
+  // too). Structured "Day off" categories.
+  async function assign(dateStr, team, employeeId, extra) {
     var sb = SB();
     if (!sb) throw new Error('PentaAssignments.assign: no Supabase client');
     if (!dateStr || !team || !employeeId) throw new Error('PentaAssignments.assign: date/team/employeeId required');
@@ -8458,9 +8461,21 @@ window.PentaAssignments = (function() {
     var dbEmpId = await _resolveEmployeeId(employeeId);
     if (!dbEmpId) throw new Error('PentaAssignments.assign: could not resolve employee id ' + JSON.stringify(employeeId));
 
+    var statusType = (extra && extra.status_type) || null;
+    var notes = (extra && extra.notes) || null;
+
     // Check existing active assignment for this employee on this date.
+    // Same team AND same status_type/notes is a true no-op; a category
+    // or notes CHANGE on an already-OFF day (e.g. correcting
+    // "Unexcused" to "Excused" after the fact) must still supersede the
+    // old row -- otherwise picking a new category while already marked
+    // OFF would silently do nothing.
     var existing = _byKey[dateStr + '_' + dbEmpId];
-    if (existing && existing.team === team) return existing;  // no-op
+    if (existing && existing.team === team
+        && (existing.status_type || null) === statusType
+        && (existing.notes || null) === notes) {
+      return existing;  // no-op
+    }
 
     // Soft-delete any existing active row for this (date, employee) pair.
     if (existing) {
@@ -8470,7 +8485,8 @@ window.PentaAssignments = (function() {
     }
 
     var ins = await sb.from('daily_assignments').insert({
-      business_id: bid, date: dateStr, team: team, employee_id: dbEmpId
+      business_id: bid, date: dateStr, team: team, employee_id: dbEmpId,
+      status_type: statusType, notes: notes
     }).select().maybeSingle();
     if (ins.error) throw ins.error;
     if (ins.data) _cache.push(ins.data);
@@ -13101,18 +13117,25 @@ function _mirrorPentaAssignmentsToInMemory() {
   // Symptom: Tom moved 8 people last night, all wrote to Supabase, but
   // on next session the manager view showed default teams again.
   var supabaseEntries = Object.create(null);
+  // Structured "Day off" categories: mirror status_type/notes alongside
+  // the plain team string, keyed the same way. Purely additive/display
+  // data -- not persisted to localStorage, always re-derivable from
+  // PentaAssignments, so no dailyAssignments-style dual-write risk here.
+  var detailEntries = Object.create(null);
   var hasFacade = !!(window.PentaEmployees && window.PentaEmployees.getById);
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (!r || !r.date || !r.employee_id) continue;
     var uuidKey = r.date + '_' + r.employee_id;
     supabaseEntries[uuidKey] = r.team;
+    detailEntries[uuidKey] = { status_type: r.status_type || null, notes: r.notes || null };
     // Also store under legacy_roster_id so legacy-keyed lookups hit.
     if (hasFacade) {
       try {
         var emp = window.PentaEmployees.getById(r.employee_id);
         if (emp && emp.legacy_roster_id && emp.legacy_roster_id !== r.employee_id) {
           supabaseEntries[r.date + '_' + emp.legacy_roster_id] = r.team;
+          detailEntries[r.date + '_' + emp.legacy_roster_id] = detailEntries[uuidKey];
         }
       } catch (e) {}
     }
@@ -13125,6 +13148,9 @@ function _mirrorPentaAssignmentsToInMemory() {
       merged = true;
     }
   });
+  if (typeof dailyAssignmentDetails !== 'undefined') {
+    Object.keys(detailEntries).forEach(function(k) { dailyAssignmentDetails[k] = detailEntries[k]; });
+  }
   if (merged) {
     try { saveDailyAssignments(); } catch (e) {}
     try { if (typeof renderTeamManager === 'function') renderTeamManager(); } catch (e) {}
@@ -25002,19 +25028,30 @@ async function renderTeamManager() {
         <span style="font-weight:700;font-size:15px;color:var(--muted)">⚪ Unassigned</span>
       </div>
       <div style="padding:8px 14px">
-        ${unassigned.map(emp => `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-          <span style="font-size:14px">${emp.name} ${emp.floater ? '<span style="font-size:10px;color:var(--amber)">FLOATER</span>' : ''}</span>
+        ${unassigned.map(emp => {
+          // Structured "Day off" categories: distinguish a real day-off
+          // (with a reason) from "genuinely never assigned" instead of
+          // lumping both into an unlabeled "Unassigned" row.
+          var _isOff = dailyAssignments[dateStr + '_' + emp.id] === 'OFF';
+          var _offInfo = _isOff ? getEmployeeDayOffInfo(emp.id, dateStr) : null;
+          var _offBadge = _isOff
+            ? ('<span style="font-size:10px;color:var(--red);background:rgba(239,68,68,0.1);padding:1px 6px;border-radius:8px">🏖 ' +
+                _adminEsc(_offInfo && _offInfo.status_type ? DAY_OFF_CATEGORY_LABELS[_offInfo.status_type] : 'Day Off') + '</span>')
+            : '';
+          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:14px">${emp.name} ${emp.floater ? '<span style="font-size:10px;color:var(--amber)">FLOATER</span>' : ''} ${_offBadge}</span>
           <div style="display:flex;gap:6px">
             <button onclick="editEmployeeAssignment('${emp.id}','${dateStr}')"
               style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
               Assign
             </button>
-            <button onclick="openRosterEmpEdit('${emp.id}')" 
+            <button onclick="openRosterEmpEdit('${emp.id}')"
               style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
               Edit
             </button>
           </div>
-        </div>`).join('')}
+        </div>`;
+        }).join('')}
       </div>
     </div>`;
   }
@@ -25208,6 +25245,7 @@ function editEmployeeAssignment(employeeId, dateStr) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
   const currentTeam = getEmployeeTeam(employeeId, dateStr);
+  const currentDayOff = getEmployeeDayOffInfo(employeeId, dateStr);
   const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
 
   // Build picker modal
@@ -25219,11 +25257,18 @@ function editEmployeeAssignment(employeeId, dateStr) {
   // Build picker using DOM (avoids quote escaping issues)
   const sheet = document.createElement('div');
   sheet.style.cssText = 'background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden';
-  
+
   const header = document.createElement('div');
   header.style.cssText = 'padding:16px 20px;border-bottom:1px solid var(--border)';
+  // Structured "Day off" categories: show the category label when
+  // currently off with one set, instead of a bare "Unassigned" that
+  // can't tell "day off (vacation)" from "never assigned."
+  const _currentLabel = currentTeam ? currentTeam
+    : (dailyAssignments[dateStr + '_' + employeeId] === 'OFF'
+        ? ('Day Off' + (currentDayOff && currentDayOff.status_type ? ' — ' + DAY_OFF_CATEGORY_LABELS[currentDayOff.status_type] : ''))
+        : 'Unassigned');
   header.innerHTML = '<div style="font-size:16px;font-weight:700">' + emp.name + '</div>' +
-    '<div style="font-size:12px;color:var(--muted)">' + dateLabel + ' · Currently: <span style="color:var(--accent)">' + (currentTeam || 'Unassigned') + '</span></div>';
+    '<div style="font-size:12px;color:var(--muted)">' + dateLabel + ' · Currently: <span style="color:var(--accent)">' + _adminEsc(_currentLabel) + '</span></div>';
   sheet.appendChild(header);
 
   const body = document.createElement('div');
@@ -25243,13 +25288,16 @@ function editEmployeeAssignment(employeeId, dateStr) {
     body.appendChild(btn);
   });
 
-  // Day Off button
+  // Day Off button -- opens the category submenu instead of saving
+  // directly (structured "Day off" categories, migration 086).
   const offBtn = document.createElement('button');
   offBtn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
     'background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:10px;cursor:pointer;text-align:left';
   offBtn.innerHTML = '<span style="width:12px;height:12px;border-radius:50%;background:var(--red);flex-shrink:0"></span>' +
-    '<span style="font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;color:var(--red)">Day Off</span>';
-  offBtn.addEventListener('click', function() { confirmTeamAssign(employeeId, dateStr, 'OFF', overlay); });
+    '<span style="font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;color:var(--red)">Day Off' +
+    (currentDayOff && currentDayOff.status_type ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">(' + _adminEsc(DAY_OFF_CATEGORY_LABELS[currentDayOff.status_type]) + ')</span>' : '') +
+    '</span>';
+  offBtn.addEventListener('click', function() { _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentDayOff); });
   body.appendChild(offBtn);
 
   // Cancel button
@@ -25264,6 +25312,72 @@ function editEmployeeAssignment(employeeId, dateStr) {
   overlay.appendChild(sheet);
   overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
+}
+
+// Submenu shown after tapping "Day Off": pick one of the 5 structured
+// categories + optional notes, replacing the team-picker body in place
+// (same overlay/sheet, no nested modal). Saving happens on category
+// tap -- matches the existing single-tap-per-action pattern the team
+// buttons already use, just with the notes value (if any) captured
+// first.
+function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentDayOff) {
+  const emp = getUnifiedRoster().find(e => e.id === employeeId);
+  const dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+
+  const newBody = document.createElement('div');
+  newBody.style.cssText = 'padding:12px 16px';
+
+  const backRow = document.createElement('button');
+  backRow.style.cssText = 'display:flex;align-items:center;gap:6px;background:none;border:none;color:var(--muted);' +
+    'font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer;padding:4px 0;margin-bottom:10px';
+  backRow.innerHTML = '← Back';
+  backRow.addEventListener('click', function() { overlay.remove(); editEmployeeAssignment(employeeId, dateStr); });
+  newBody.appendChild(backRow);
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size:14px;font-weight:700;margin-bottom:2px';
+  title.textContent = 'Day Off — ' + (emp ? emp.name : '') ;
+  newBody.appendChild(title);
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:12px';
+  sub.textContent = dateLabel + ' — choose a reason';
+  newBody.appendChild(sub);
+
+  const notesInput = document.createElement('input');
+  notesInput.type = 'text';
+  notesInput.placeholder = 'Notes (optional) — e.g. "kid sick", "car trouble"';
+  notesInput.value = (currentDayOff && currentDayOff.notes) || '';
+  notesInput.style.cssText = 'width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);' +
+    'color:var(--text);font-family:DM Sans,sans-serif;font-size:14px;padding:10px 12px;border-radius:10px;margin-bottom:12px;outline:none';
+  newBody.appendChild(notesInput);
+
+  DAY_OFF_CATEGORIES.forEach(function(cat) {
+    const isCurrent = currentDayOff && currentDayOff.status_type === cat;
+    const btn = document.createElement('button');
+    btn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
+      'background:' + (isCurrent ? 'rgba(239,68,68,0.15)' : 'var(--surface2)') + ';' +
+      'border:1px solid ' + (isCurrent ? 'var(--red)' : 'var(--border)') + ';' +
+      'border-radius:10px;cursor:pointer;text-align:left';
+    btn.innerHTML = '<span style="font-family:DM Sans,sans-serif;font-size:15px;font-weight:600;color:var(--text)">' + _adminEsc(DAY_OFF_CATEGORY_LABELS[cat]) + '</span>' +
+      (isCurrent ? '<span style="font-size:11px;color:var(--red);margin-left:auto">Current</span>' : '');
+    btn.addEventListener('click', function() {
+      var notesVal = notesInput.value.trim();
+      confirmTeamAssign(employeeId, dateStr, 'OFF', overlay, { status_type: cat, notes: notesVal || null });
+    });
+    newBody.appendChild(btn);
+  });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.style.cssText = 'width:100%;padding:12px;background:none;border:1px solid var(--border);' +
+    'border-radius:10px;cursor:pointer;font-family:DM Sans,sans-serif;font-size:14px;color:var(--muted)';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', function() { overlay.remove(); });
+  newBody.appendChild(cancelBtn);
+
+  // Swap the sheet's existing body (team-picker view) for this one.
+  var existingBody = sheet.querySelector('div:last-child');
+  if (existingBody) sheet.removeChild(existingBody);
+  sheet.appendChild(newBody);
 }
 
 function getRosterTermData() {
@@ -25376,7 +25490,7 @@ function saveRosterEmpEdit(empId, overlay) {
   renderTeamManager();
 }
 
-async function confirmTeamAssign(employeeId, dateStr, team, overlay) {
+async function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
 
@@ -25390,9 +25504,12 @@ async function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   // logic with its own fire-and-forget dual-write and no rollback; unify
   // so a failed save can't leave OFF looking saved when it isn't, same
   // as the normal-team case.
+  //
+  // extra: optional { status_type, notes } for structured "Day off"
+  // categories (migration 086) -- only meaningful when team === 'OFF'.
   var saveOk = true;
   try {
-    await assignEmployee(employeeId, team, dateStr);
+    await assignEmployee(employeeId, team, dateStr, extra);
   } catch (e) {
     // assignEmployee already rolled back the optimistic local write and
     // toasted the failure -- don't log/recalc against a change that
@@ -25401,8 +25518,11 @@ async function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   }
 
   if (saveOk) {
+    var _offLabel = (team === 'OFF' && extra && extra.status_type && DAY_OFF_CATEGORY_LABELS[extra.status_type])
+      ? ('Day Off — ' + DAY_OFF_CATEGORY_LABELS[extra.status_type])
+      : (team === 'OFF' ? 'Day Off' : team);
     logPendingUpdate(
-      emp.name + ' → ' + (team === 'OFF' ? 'Day Off' : team),
+      emp.name + ' → ' + _offLabel,
       new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
     );
   }
@@ -25481,6 +25601,33 @@ let dailyAssignments = JSON.parse(localStorage.getItem('daily_assignments') || '
 
 function saveDailyAssignments() {
   localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+}
+
+// Structured "Day off" categories (migration 086). Same key shape as
+// dailyAssignments ('YYYY-MM-DD_employeeId'), but holds { status_type,
+// notes } instead of a team string. In-memory only, not persisted to
+// localStorage -- always re-derivable from PentaAssignments via
+// _mirrorPentaAssignmentsToInMemory, so there's no dual-write/staleness
+// risk to manage for this one (see feedback_dailyassignments_dual_
+// system_race for why that matters for dailyAssignments itself).
+let dailyAssignmentDetails = {};
+
+const DAY_OFF_CATEGORIES = ['vacation', 'excused_absence', 'unexcused_absence', 'no_call_no_show', 'not_scheduled'];
+const DAY_OFF_CATEGORY_LABELS = {
+  vacation: 'Vacation',
+  excused_absence: 'Excused absence',
+  unexcused_absence: 'Unexcused absence',
+  no_call_no_show: 'No call / no show',
+  not_scheduled: 'Not scheduled'
+};
+
+// Returns { status_type, notes } for an employee's OFF day, or null if
+// they're not off (or off with no category set -- e.g. a legacy OFF
+// row from before this feature shipped).
+function getEmployeeDayOffInfo(employeeId, dateStr) {
+  const key = dateStr + '_' + employeeId;
+  if (dailyAssignments[key] !== 'OFF') return null;
+  return dailyAssignmentDetails[key] || null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -25851,10 +25998,18 @@ function getTeamEmployees(team, dateStr) {
   return getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team);
 }
 
-async function assignEmployee(employeeId, team, dateStr) {
+async function assignEmployee(employeeId, team, dateStr, extra) {
   const key = dateStr + '_' + employeeId;
   const prevValue = dailyAssignments[key]; // undefined if there was no override yet
+  const prevDetail = dailyAssignmentDetails[key]; // undefined if no prior category/notes
   dailyAssignments[key] = team;
+  // Structured "Day off" categories (migration 086): optimistic detail
+  // update, same rollback-on-failure treatment as the team write below.
+  if (extra && (extra.status_type || extra.notes)) {
+    dailyAssignmentDetails[key] = { status_type: extra.status_type || null, notes: extra.notes || null };
+  } else {
+    delete dailyAssignmentDetails[key];
+  }
   saveDailyAssignments();
   // Sprint 10 Phase 3f: dual-write to Supabase via PentaAssignments.
   // 'OFF' is a magic team value (employee marked off for the day) — the
@@ -25881,11 +26036,12 @@ async function assignEmployee(employeeId, team, dateStr) {
   // Staff -> Teams save bug this session (_setEmployeeDefaultTeam).
   try {
     if (window.PentaAssignments) {
-      await window.PentaAssignments.assign(dateStr, team, employeeId);
+      await window.PentaAssignments.assign(dateStr, team, employeeId, extra);
     }
   } catch (e) {
     console.warn('[Phase 3f] assign failed:', e);
     if (prevValue === undefined) delete dailyAssignments[key]; else dailyAssignments[key] = prevValue;
+    if (prevDetail === undefined) delete dailyAssignmentDetails[key]; else dailyAssignmentDetails[key] = prevDetail;
     saveDailyAssignments();
     try {
       if (typeof showToast === 'function') {
