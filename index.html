@@ -14311,6 +14311,7 @@ function render(force) {
         <div class="card-main">
           <div class="card-name-row" style="display:flex;align-items:baseline;gap:6px"><div class="card-name" style="flex:1;min-width:0">${name}</div></div>
           <div class="card-sub">${c.city}${c.addr ? ' · ' + c.addr : ''}</div>
+          ${c.geocode_status === 'failed' && c.addr ? `<div style="font-size:11px;color:var(--red);margin-top:2px" title="Address could not be geocoded automatically -- GPS/Live Tracking client matching won't work for this client until it's corrected">📍⚠️ Address needs review — couldn't locate this address</div>` : ''}
           ${(c.pref_day || c.pref_time) ? `<div class="card-pref" style="font-size:11px;color:var(--muted);margin-top:2px">🕐 Prefers ${[prefDayFormat(c.pref_day), c.pref_time ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : ''].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
         <div class="card-right">
@@ -26676,6 +26677,13 @@ function distKm(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// Feet variant of distKm -- used by the GPS-stop-to-client geofence
+// matcher (matchStopToClientGeo), which mirrors migration 084's
+// resolve_job_from_gps_stop tiering (200ft/400ft) in the browser.
+function distFeet(lat1, lng1, lat2, lng2) {
+  return distKm(lat1, lng1, lat2, lng2) * 3280.84;
+}
+
 // v11.0.4 (Issue A) — PentaOffices: per-tenant depot/office locations.
 //
 // Used to be hardcoded DEPOT_MARLBOROUGH / DEPOT_ABINGTON consts
@@ -28333,6 +28341,54 @@ function matchStopToClient(addr, teamJobs) {
   return _match ? ((_match.fn||'') + ' ' + (_match.ln||'')) : '';
 }
 
+// GPS-stop-to-client geofence matcher. Mirrors migration 084's
+// resolve_job_from_gps_stop tiering (200ft / 400ft) in the browser, so
+// Live Tracking's "possible lunch/break" flagging doesn't depend on the
+// poller pipeline at all (poll-geotab-clocks has never actually run for
+// this tenant -- gps_match_log is empty). Distance-based, so it finds
+// real client visits regardless of whether a job was scheduled for
+// that team+client+day -- the bug this fixes (a client with a real GPS
+// match but no job today rendered as an unrecognized "possible lunch"
+// stop).
+//
+// Returns null (no match -- genuinely unrecognized stop, eligible for
+// the lunch/break heuristic) or { name, confidence, scheduled, distFt }.
+// confidence: 'high' (<=200ft, scheduled) | 'medium' (<=200ft,
+// unscheduled) | 'low' (200-400ft, scheduled or not). scheduled is
+// computed independently of the tier -- a 'low' match can still be
+// scheduled (a job existed, GPS was just a bit off) and a 'medium'
+// match is always unscheduled by definition.
+var GPS_CLIENT_MATCH_HIGH_FT = 200;
+var GPS_CLIENT_MATCH_LOW_FT  = 400;
+
+function matchStopToClientGeo(lat, lng, addr, teamJobs, team) {
+  if (lat != null && lng != null && window.PentaClients && typeof PentaClients.forEachClient === 'function') {
+    var best = null, bestDist = Infinity;
+    PentaClients.forEachClient(function(c) {
+      if (c.status !== 'active' || c.lat == null || c.lng == null) return;
+      var d = distFeet(lat, lng, c.lat, c.lng);
+      if (d <= GPS_CLIENT_MATCH_LOW_FT && d < bestDist) { bestDist = d; best = c; }
+    });
+    if (best) {
+      var scheduled = !!(teamJobs && teamJobs.some(function(tj) { return tj.clientId === best.id; }));
+      var confidence = bestDist <= GPS_CLIENT_MATCH_HIGH_FT ? (scheduled ? 'high' : 'medium') : 'low';
+      return { name: ((best.fn||'') + ' ' + (best.ln||'')).trim(), confidence: confidence, scheduled: scheduled, distFt: bestDist };
+    }
+  }
+  // Fallback: stop has no lat/lng (Geotab never returns startPoint --
+  // the "first stop of the day" row) or no client is geocoded close
+  // enough (client missing lat/lng entirely) -- fall back to the
+  // existing address-string match so clients still mid-backfill aren't
+  // worse off than before this change.
+  var name = matchStopToClient(addr, teamJobs);
+  if (!name) return null;
+  var scheduledFallback = !!(teamJobs && teamJobs.some(function(tj) {
+    var c = PentaClients.getClient(tj.clientId);
+    return c && name.includes(c.fn) && name.includes(c.ln);
+  }));
+  return { name: name, confidence: scheduledFallback ? 'high' : 'medium', scheduled: scheduledFallback, distFt: null };
+}
+
 // Get selected date for GPS queries
 function getGPSDate() {
   const picker = document.getElementById('gps-date-picker');
@@ -29004,12 +29060,14 @@ function renderGPS() {
           // street label for coords that ARE inside the depot radius;
           // the lat/lng check catches that and flags the row as Office.
           isDepot: isDepotAddress(arriveAddr, v.team) || isDepotPoint(t.stopPoint, v.team),
+          lat: t.stopPoint ? t.stopPoint.y : null,
+          lng: t.stopPoint ? t.stopPoint.x : null,
           distMi,
           driveMins
         });
       });
 
-      // Use shared matchStopToClient function
+      // Use shared matchStopToClientGeo function
 
       rows = stopList.map((s, si) => {
         // v11.0.27: render in the BUSINESS's timezone (where the work
@@ -29030,14 +29088,16 @@ function renderGPS() {
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
         const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
-        const clientName = s.isDepot ? 'Office' : matchStopToClient(s.addr, teamJobs);
-
-        // Flag potential lunch: not office, not a scheduled client, AND (under 60 min or no client match at all)
-        const isScheduledClient = !s.isDepot && clientName && teamJobs.some(function(tj) {
-          var c = PentaClients.getClient(tj.clientId);
-          return c && clientName.includes(c.fn) && clientName.includes(c.ln);
-        });
-        const maybeLunch = !s.isDepot && !isScheduledClient && dur !== null && dur > 0 && dur < 60;
+        // Geo-first client match (migration 084 tiering, mirrored in
+        // JS): matches a real client visit even when it wasn't on
+        // today's schedule, which is the bug this fixes -- an
+        // unscheduled stop at a real client's house used to render as
+        // an unrecognized "possible lunch" stop just because no job
+        // existed for that team+client+day.
+        const _match = s.isDepot ? null : matchStopToClientGeo(s.lat, s.lng, s.addr, teamJobs, v.team);
+        const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
+        const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
+        const maybeLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
 
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${si > 0 ? driveInfo : ''}
@@ -29045,7 +29105,7 @@ function renderGPS() {
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
             ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
-            ${clientName && !maybeLunch ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}</div>` : ''}
+            ${clientName && !maybeLunch ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>` : ''}
             <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
             <div style="display:flex;gap:12px;font-size:11px;align-items:center">
               ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}

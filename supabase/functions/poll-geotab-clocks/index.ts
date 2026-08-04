@@ -321,14 +321,23 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
     const deviceId = device.id != null ? String(device.id) : null;
     for (const t of trips) {
       const tripId = t.id != null ? String(t.id) : null;
+      // migration 084 widened resolve_job_from_gps_stop's default search
+      // radius to 400ft (121.92m, was 200ft/61m) so Live Tracking can
+      // label unscheduled client visits in a 200-400ft "low confidence"
+      // buffer tier. That's a display-only widening -- clock-in/out
+      // writes here stay gated to confidence IN ('high','medium')
+      // (<=200ft) explicitly, rather than bare job_id truthiness, so
+      // payroll clock accuracy isn't loosened as a side effect. No
+      // p_radius_meters override needed; the new 121.92 default matches
+      // what the confidence tiers are computed against.
       if (t.stopPoint && !officeForPoint(offices, t.stopPoint.y, t.stopPoint.x)) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.stopPoint.y, p_lng: t.stopPoint.x,
           p_date: etDateString(t.stop), p_team_code: team, p_event_at: t.stop,
-          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "stop", p_radius_meters: 61,
+          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "stop",
         });
         const row = (resolved.data && resolved.data[0]) || null;
-        if (row && row.job_id) {
+        if (row && row.job_id && (row.confidence === "high" || row.confidence === "medium")) {
           counters.matches++;
           const wr = await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "start", p_gps_at: t.stop, p_match_log_id: row.log_id });
           tallyWriteResult(wr.data && wr.data[0], counters);
@@ -340,10 +349,10 @@ async function pollTenant(admin: Admin, integ: any, counters: Counters) {
         const resolved = await admin.rpc("resolve_job_from_gps_stop", {
           p_business_id: businessId, p_lat: t.startPoint.y, p_lng: t.startPoint.x,
           p_date: etDateString(t.start), p_team_code: team, p_event_at: t.start,
-          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "start", p_radius_meters: 61,
+          p_device_id: deviceId, p_geotab_trip_id: tripId, p_point_type: "start",
         });
         const row = (resolved.data && resolved.data[0]) || null;
-        if (row && row.job_id) {
+        if (row && row.job_id && (row.confidence === "high" || row.confidence === "medium")) {
           counters.matches++;
           const wr = await admin.rpc("write_job_gps_clock", { p_business_id: businessId, p_job_id: row.job_id, p_mode: "end", p_gps_at: t.start, p_match_log_id: row.log_id });
           tallyWriteResult(wr.data && wr.data[0], counters);
