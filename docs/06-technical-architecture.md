@@ -252,6 +252,23 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
+
+Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
+
+**Where it lives**: `#client-sort-row` is a DOM *sibling* of `#clients-view` (added in the client-list-sort feature, own comment: "Toggled alongside .search-wrap/.filter-row in showTab() so it only shows on the Clients tab, same as those two"), not nested inside it, and its static markup has no default `display:none`. Its visibility is therefore entirely the job of whichever "manager chrome" show/hide list happens to run — and there are **four** independent ones, not one:
+
+1. `showTab(tab)` — generic per-tab toggle, `[topSearch, filterRow, sortRow, statsBar, installBanner].forEach(...)`. Already included it. Correct.
+2. `showClientsSubview()` — restores visibility when returning to the Clients tab's own list view. Already included it. Correct.
+3. `showStaffView()` — the Clients↔Staff sub-toggle's "switch to Staff" half. Its hide-list was `[searchWrap, filterRow, statsBar]` — **missing `sortRow`**. This is why it leaked onto the Staff tab: switching from Clients to Staff never touched the sort row's `display`, so whatever it was left visible.
+4. `body.in-portal` CSS rule — the "hide every manager-shell element while the employee portal is open" block (`#clients-view`, `.topbar`, `.search-wrap`, `#filter-row`, etc., all `display: none !important`). **Missing `#client-sort-row`** from that selector list. This is why it leaked onto the Employee portal — nothing in that rule ever targeted it.
+
+Both omissions are the same failure mode: when the sort dropdown was added as a new manager-chrome element, it was correctly wired into the two lists that manage the Clients↔non-Clients-tab boundary (`showTab`, `showClientsSubview`) but missed the two lists that manage *other* transitions (Clients↔Staff sub-toggle, manager↔employee-portal mode) — parallel lists that needed the same addition and didn't get it. Same class of bug as [[feedback-mirrored-algorithm-copies-diverge]], just expressed as independent show/hide selector lists instead of duplicated JS logic — a fourth instance of that pattern this session.
+
+**Fix**: added `#client-sort-row` to `showStaffView()`'s hide-`forEach` and to the `body.in-portal` CSS selector list. Left `showTab()` and `showClientsSubview()` untouched (already correct) — verified via test that Schedule tab, which only ever went through `showTab()`'s already-correct generic toggle, was never actually affected by this bug class.
+
+---
+
 ## 8y. Add Employee form: split Full Name into First Name / Last Name
 
 Split the single "Full Name *" input on the Add Employee form (`#staff-modal`'s edit tab, same styling as PR #75) into "First Name *" / "Last Name *", both required, laid out in the same two-column grid pattern already used for Phone/Email below it.
