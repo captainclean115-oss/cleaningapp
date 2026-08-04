@@ -27643,7 +27643,10 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
     +'<div><div style="font-size:17px;font-weight:600">'+empName+'</div>'
     +'<div style="font-size:13px;color:var(--muted)">'+team+' — '+dateLabel+'</div></div>'
-    +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>'
+    +'<div style="display:flex;align-items:center;gap:6px">'
+    +'<button onclick="openHoursRouteDetail(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+team+'\','+dateMs+')" title="View full GPS route for this day" style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-family:DM Sans,sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">🗺️ Route</button>'
+    +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">×</button>'
+    +'</div>'
     +'</div>'
     +'<div style="padding:16px 20px">'
     +'<div style="display:flex;gap:12px;margin-bottom:14px">'
@@ -27783,6 +27786,179 @@ async function showEmpStops(team, dateMs) {
     area.innerHTML = html;
   } catch(e) {
     area.innerHTML = '<div style="color:var(--muted);font-size:12px">Could not load stops</div>';
+  }
+}
+
+// ROUTE DETAIL MODAL FROM EMPLOYEE HOURS -- PR #73. Read-only, full-day
+// GPS route view (same modal-over-current-view pattern as PR #70's
+// client card): opens on top of whatever's already showing (the
+// existing showEmpDayDetail edit-hours overlay, itself on top of the
+// Hours Report), never touches either's DOM, so closing it needs no
+// explicit scroll/expanded-state restore -- nothing underneath ever
+// changed. Deliberately layered as an ADDITIVE entry point (a "🗺️
+// Route" button in showEmpDayDetail's header) rather than replacing the
+// existing day-tap behavior, which already opens a load-bearing
+// edit-hours workflow (start/end/lunch/team/tasks) -- see PR
+// description for the scope call.
+var _hrdKeyHandler = null;
+
+async function openHoursRouteDetail(empId, empName, team, dateMs) {
+  var modal = document.getElementById('hours-route-modal');
+  var body = document.getElementById('hrd-body');
+  if (!modal || !body) return;
+
+  var date = new Date(dateMs);
+  var dk = dateKey(date);
+  var dateLabel = date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+
+  document.getElementById('hrd-title').textContent = empName || 'Employee';
+  document.getElementById('hrd-subtitle').textContent = team + ' — ' + dateLabel;
+  body.innerHTML = '<div style="color:var(--muted);text-align:center;font-size:13px;padding:24px 0">Loading route…</div>';
+
+  modal.style.display = 'flex';
+  _hrdKeyHandler = function(e) { if (e.key === 'Escape') closeHoursRouteDetail(); };
+  document.addEventListener('keydown', _hrdKeyHandler);
+
+  try {
+    var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    var resolved = await _resolveTeamDevice(devices, team, date);
+    var device = resolved.device;
+    if (!device) {
+      var noDevMsg = resolved.source === 'assignment-none' ? ('No GPS assigned for ' + team + ' that day') : ('No vehicle found for ' + team);
+      body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:24px 0">' + escapeHtml(noDevMsg) + '</div>';
+      return;
+    }
+
+    var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
+    var endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
+    var trips = await _geotabCall('Get', {
+      typeName: 'Trip',
+      search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
+      resultsLimit: 100
+    });
+    await reverseGeocodeTrips(trips);
+
+    if (!trips || trips.length === 0) {
+      body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:24px 0">No trips recorded this day.</div>';
+      _hrdRenderIncidents(body, team, dk); // still worth showing incidents even with no GPS trips
+      return;
+    }
+    trips.sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
+
+    // Same stop-list construction as showEmpStops (and the same shape
+    // Live Tracking's renderGPS builds) -- first stop is a synthetic
+    // "day open" row, then one row per trip's arrival.
+    var stops = [];
+    stops.push({ addr: trips[0].startAddress || 'Unknown', inTime: null, outTime: new Date(trips[0].start), isDepot: isDepotAddress(trips[0].startAddress||'', team) });
+    trips.forEach(function(t, ti) {
+      var arr = t.stop ? new Date(t.stop) : null;
+      var nextDep = trips[ti+1] ? new Date(trips[ti+1].start) : null;
+      var dist = t.distance ? Math.round(t.distance * 0.000621371) : null;
+      var dm = arr ? Math.round((arr - new Date(t.start)) / 60000) : null;
+      stops.push({ addr: t.stopAddress || 'Unknown', inTime: arr, outTime: nextDep, isDepot: isDepotAddress(t.stopAddress||'', team), distMi: dist, driveMins: dm });
+    });
+
+    // Total drive time = sum of each trip's own start->stop duration
+    // (each Geotab trip IS one continuous drive segment), independent
+    // of the stop-row abstraction above.
+    var totalDriveMin = trips.reduce(function(sum, t) {
+      if (!t.stop) return sum;
+      return sum + Math.max(0, Math.round((new Date(t.stop) - new Date(t.start)) / 60000));
+    }, 0);
+    var totalDriveLabel = totalDriveMin >= 60 ? (Math.floor(totalDriveMin/60) + 'h ' + (totalDriveMin%60) + 'm') : (totalDriveMin + 'm');
+
+    var stopsHtml = stops.map(function(s, si) {
+      var inStr = s.inTime ? fmt12(s.inTime) : '—';
+      var outStr = s.outTime ? fmt12(s.outTime) : (si === stops.length-1 ? 'Now' : '—');
+      var dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
+      var durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
+      var dot = s.isDepot ? 'var(--green)' : 'var(--accent)';
+      var driveInfo = s.distMi && si > 0 ? '<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ' + s.distMi + 'mi · ' + (s.driveMins||'?') + 'm drive</div>' : '';
+      var mapsLink = s.addr ? 'https://maps.google.com/?q=' + encodeURIComponent(s.addr) : '';
+      return driveInfo + '<div class="tvc-stop-row" style="align-items:flex-start">'
+        + '<span class="tvc-stop-dot" style="background:' + dot + ';margin-top:4px"></span>'
+        + '<div style="flex:1;min-width:0">'
+        + (s.isDepot ? '<div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:1px">Office</div>' : '')
+        + '<div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(s.addr) + '</div>'
+        + '<div style="display:flex;gap:12px;font-size:11px;align-items:center">'
+        + (s.inTime ? '<span style="color:var(--green)">▶ In: ' + inStr + '</span>' : '<span style="color:var(--green)">▶ Out: ' + outStr + '</span>')
+        + (s.inTime && s.outTime ? '<span style="color:var(--red)">◀ Out: ' + outStr + '</span>' : '')
+        + (durStr ? '<span style="color:var(--muted)">' + durStr + '</span>' : '')
+        + (mapsLink ? '<a href="' + mapsLink + '" target="_blank" onclick="event.stopPropagation()" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>' : '')
+        + '</div></div></div>';
+    }).join('');
+
+    body.innerHTML = '<div style="display:flex;gap:10px;margin-bottom:16px">'
+      + '<div style="flex:1;background:var(--surface2);border-radius:10px;padding:10px 12px;text-align:center">'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">Total Drive Time</div>'
+      + '<div style="font-size:18px;font-weight:700;color:var(--accent)">' + totalDriveLabel + '</div></div>'
+      + '<div style="flex:1;background:var(--surface2);border-radius:10px;padding:10px 12px;text-align:center">'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">Stops</div>'
+      + '<div style="font-size:18px;font-weight:700;color:var(--text)">' + stops.length + '</div></div>'
+      + '</div>'
+      + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Route</div>'
+      + '<div style="margin-bottom:20px">' + stopsHtml + '</div>'
+      + '<div id="hrd-incidents"></div>';
+
+    _hrdRenderIncidents(document.getElementById('hrd-incidents'), team, dk);
+  } catch (e) {
+    console.warn('[HoursRouteDetail] load failed', e);
+    body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:24px 0">Could not load route.</div>';
+  }
+}
+
+// Best-effort "incidents / notes" section. Incidents and job issues are
+// keyed by job_id, not employee+date directly, so this resolves the
+// day's team jobs first (same jobsForDate+team filter Live Tracking
+// uses) and fetches per-job -- there's no employee-scoped incidents
+// query to call instead.
+async function _hrdRenderIncidents(el, team, dk) {
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Incidents &amp; Notes</div>'
+    + '<div id="hrd-incidents-list" style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try {
+    var dayTeamJobs = (typeof jobsForDate === 'function' ? jobsForDate(new Date(dk + 'T00:00:00')) : [])
+      .filter(function(j){ return j.team === team; });
+    var rows = [];
+    for (var i = 0; i < dayTeamJobs.length; i++) {
+      var j = dayTeamJobs[i];
+      try {
+        if (window.PentaIncidents && window.PentaIncidents.listForJob) {
+          var inc = await window.PentaIncidents.listForJob(j.id);
+          (inc || []).forEach(function(r){ rows.push({ kind: 'incident', client: j.clientName, data: r }); });
+        }
+      } catch (e) {}
+      try {
+        if (window.PentaJobIssues && window.PentaJobIssues.listForJob) {
+          var iss = await window.PentaJobIssues.listForJob(j.id);
+          (iss || []).forEach(function(r){ rows.push({ kind: 'issue', client: j.clientName, data: r }); });
+        }
+      } catch (e) {}
+    }
+    var target = document.getElementById('hrd-incidents-list');
+    if (!target) return; // modal closed while this was in flight
+    if (!rows.length) { target.textContent = 'No incidents or issues reported this day.'; return; }
+    target.innerHTML = rows.map(function(r) {
+      var label = r.kind === 'incident' ? (r.data.incident_type || 'incident') : (r.data.issue_type || 'issue');
+      var note = r.data.description || r.data.notes || '';
+      return '<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+        + '<div style="font-weight:600;color:var(--text)">🚨 ' + escapeHtml(label.replace(/_/g,' ')) + (r.client ? ' — ' + escapeHtml(r.client) : '') + '</div>'
+        + (note ? '<div style="color:var(--muted);margin-top:2px">' + escapeHtml(note) + '</div>' : '')
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    console.warn('[HoursRouteDetail] incidents load failed', e);
+    var target2 = document.getElementById('hrd-incidents-list');
+    if (target2) target2.textContent = 'Could not load incidents.';
+  }
+}
+
+function closeHoursRouteDetail() {
+  var modal = document.getElementById('hours-route-modal');
+  if (modal) modal.style.display = 'none';
+  if (_hrdKeyHandler) {
+    document.removeEventListener('keydown', _hrdKeyHandler);
+    _hrdKeyHandler = null;
   }
 }
 
@@ -47164,6 +47340,20 @@ function _p3dPage(dir) {
       <button onclick="closeGPSClientCard()" style="background:none;border:none;color:var(--muted);font-size:26px;cursor:pointer;padding:8px;margin:-8px;line-height:1">×</button>
     </div>
     <div style="padding:16px 20px 40px" id="gps-cc-body"></div>
+  </div>
+</div>
+
+<!-- HOURS ROUTE DETAIL MODAL (PR #73) -->
+<div id="hours-route-modal" style="display:none;position:fixed;inset:0;z-index:10060;background:rgba(0,0,0,0.6);align-items:flex-end" onclick="if(event.target===this)closeHoursRouteDetail()">
+  <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div>
+        <div style="font-size:17px;font-weight:700" id="hrd-title">Route</div>
+        <div style="font-size:13px;color:var(--muted)" id="hrd-subtitle"></div>
+      </div>
+      <button onclick="closeHoursRouteDetail()" style="background:none;border:none;color:var(--muted);font-size:26px;cursor:pointer;padding:8px;margin:-8px;line-height:1">×</button>
+    </div>
+    <div style="padding:16px 20px 40px" id="hrd-body"></div>
   </div>
 </div>
 
