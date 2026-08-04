@@ -28612,8 +28612,16 @@ function normalizeStreet(s) {
     .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
 }
 
-function matchStopToClient(addr, teamJobs) {
-  if (!addr) return '';
+// Same matching logic as matchStopToClient (below), but returns the
+// matched client object (well, { name, id }) instead of just a
+// formatted name string -- needed so callers that need to actually
+// LINK to the client (e.g. the GPS client-card modal) don't have to
+// re-resolve by name afterward, which would reintroduce the exact
+// name-collision risk just fixed for employees (PR #68). Kept as the
+// single implementation; matchStopToClient is a thin wrapper so its
+// existing callers (map popups, etc.) are unaffected.
+function matchStopToClientObj(addr, teamJobs) {
+  if (!addr) return null;
   var aNorm = normalizeStreet(addr);
   var aNum = (aNorm.match(/^(\d+)/) || [])[1] || ''; // house number from GPS
   var aStreetOnly = aNorm.replace(/^\d+\s*/,''); // street without house number
@@ -28627,17 +28635,17 @@ function matchStopToClient(addr, teamJobs) {
       if (c && c.addr) {
         var cNorm = normalizeStreet(c.addr);
         // Exact or contains match (best)
-        if (aNorm.includes(cNorm) || cNorm.includes(aNorm)) return (c.fn||'') + ' ' + (c.ln||'');
+        if (aNorm.includes(cNorm) || cNorm.includes(aNorm)) return { name: (c.fn||'') + ' ' + (c.ln||''), id: c.id };
         // Street name match (OK for scheduled clients — we expect them to be there)
         var cStreetOnly = cNorm.replace(/^\d+\s*/,'');
-        if (aStreetOnly.length > 3 && cStreetOnly.length > 3 && (aStreetOnly.includes(cStreetOnly) || cStreetOnly.includes(aStreetOnly))) return (c.fn||'') + ' ' + (c.ln||'');
+        if (aStreetOnly.length > 3 && cStreetOnly.length > 3 && (aStreetOnly.includes(cStreetOnly) || cStreetOnly.includes(aStreetOnly))) return { name: (c.fn||'') + ' ' + (c.ln||''), id: c.id };
       }
     }
   }
 
   // STEP 2: Check all clients — require house number match to avoid false positives
   // A stop on "123 Main St" should NOT match a client at "456 Main St" unless scheduled
-  if (!aNum) return ''; // no house number from GPS = can't reliably match
+  if (!aNum) return null; // no house number from GPS = can't reliably match
   var _match = PentaClients.findClient(function(cl) {
     if (!cl.addr) return false;
     var cNorm2 = normalizeStreet(cl.addr);
@@ -28649,7 +28657,12 @@ function matchStopToClient(addr, teamJobs) {
     var cCity = (cl.city||'').toLowerCase();
     return !aCity || !cCity || aCity.includes(cCity) || cCity.includes(aCity);
   });
-  return _match ? ((_match.fn||'') + ' ' + (_match.ln||'')) : '';
+  return _match ? { name: (_match.fn||'') + ' ' + (_match.ln||''), id: _match.id } : null;
+}
+
+function matchStopToClient(addr, teamJobs) {
+  var m = matchStopToClientObj(addr, teamJobs);
+  return m ? m.name : '';
 }
 
 // GPS-stop-to-client geofence matcher. Mirrors migration 084's
@@ -28683,21 +28696,20 @@ function matchStopToClientGeo(lat, lng, addr, teamJobs, team) {
     if (best) {
       var scheduled = !!(teamJobs && teamJobs.some(function(tj) { return tj.clientId === best.id; }));
       var confidence = bestDist <= GPS_CLIENT_MATCH_HIGH_FT ? (scheduled ? 'high' : 'medium') : 'low';
-      return { name: ((best.fn||'') + ' ' + (best.ln||'')).trim(), confidence: confidence, scheduled: scheduled, distFt: bestDist };
+      return { name: ((best.fn||'') + ' ' + (best.ln||'')).trim(), id: best.id, confidence: confidence, scheduled: scheduled, distFt: bestDist };
     }
   }
   // Fallback: stop has no lat/lng (Geotab never returns startPoint --
   // the "first stop of the day" row) or no client is geocoded close
   // enough (client missing lat/lng entirely) -- fall back to the
   // existing address-string match so clients still mid-backfill aren't
-  // worse off than before this change.
-  var name = matchStopToClient(addr, teamJobs);
-  if (!name) return null;
-  var scheduledFallback = !!(teamJobs && teamJobs.some(function(tj) {
-    var c = PentaClients.getClient(tj.clientId);
-    return c && name.includes(c.fn) && name.includes(c.ln);
-  }));
-  return { name: name, confidence: scheduledFallback ? 'high' : 'medium', scheduled: scheduledFallback, distFt: null };
+  // worse off than before this change. matchStopToClientObj (not the
+  // name-only matchStopToClient) so the client id comes straight from
+  // the actual matched record, not a second name-based re-lookup.
+  var matchObj = matchStopToClientObj(addr, teamJobs);
+  if (!matchObj) return null;
+  var scheduledFallback = !!(teamJobs && teamJobs.some(function(tj) { return tj.clientId === matchObj.id; }));
+  return { name: matchObj.name, id: matchObj.id, confidence: scheduledFallback ? 'high' : 'medium', scheduled: scheduledFallback, distFt: null };
 }
 
 // Get selected date for GPS queries
@@ -29427,7 +29439,10 @@ function renderGPS() {
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
             ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
-            ${clientName && !maybeLunch ? `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>` : ''}
+            ${clientName && !maybeLunch ? (_match && _match.id
+              ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
+              : `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
+            ) : ''}
             <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
             <div style="display:flex;gap:12px;font-size:11px;align-items:center">
               ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
@@ -30710,6 +30725,142 @@ function closeClientEdit() {
     }
   } catch(e) {}
   window._newClientDraftId = null;
+}
+
+// GPS STOP CLIENT CARD MODAL -- PR #70. Read-only client card opened by
+// tapping a matched client's name on a Live Tracking stop row. Built as
+// a plain overlay appended on top of the existing Live view and never
+// touches its DOM or scroll position -- closing it needs no explicit
+// scroll/filter restore because nothing about the view underneath ever
+// changed.
+var _gpsClientCardKeyHandler = null;
+
+function openGPSClientCard(clientId) {
+  const c = PentaClients.getClient(clientId);
+  if (!c) return;
+  const modal = document.getElementById('gps-client-card-modal');
+  const body = document.getElementById('gps-cc-body');
+  if (!modal || !body) return;
+
+  document.getElementById('gps-cc-title').textContent = ((c.fn||'') + ' ' + (c.ln||'')).trim() || 'Client';
+
+  const _allClientJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(j => j.clientId === c.id);
+  function _gccJobDate(j) {
+    if (!j.date) return null;
+    if (j.date.includes('-')) { const p=j.date.split('-'); return new Date(+p[0], +p[1]-1, +p[2]); }
+    if (j.date.includes('/')) { const p=j.date.split('/'); return new Date(+p[2], +p[0]-1, +p[1]); }
+    return null;
+  }
+  function _gccFmt(j) {
+    if (!j.date) return '';
+    if (j.date.includes('/')) return j.date;
+    const p = j.date.split('-');
+    if (p.length === 3) return p[1]+'/'+p[2]+'/'+p[0];
+    return j.date;
+  }
+  const _todayMid = (function(){ const d=new Date(); d.setHours(0,0,0,0); return d; })();
+  const recentJobs = _allClientJobs
+    .filter(j => { const dt = _gccJobDate(j); return !!dt && dt <= _todayMid; })
+    .sort((a,b) => _gccJobDate(b) - _gccJobDate(a))
+    .slice(0, 5);
+
+  const mapsLink = c.addr ? 'https://maps.google.com/?q='+encodeURIComponent((c.addr||'')+' '+(c.city||'')) : '';
+  const telLink = c.ph ? 'tel:' + c.ph.replace(/[^\d+]/g,'') : '';
+
+  body.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+      ${c.addr ? `<a href="${mapsLink}" target="_blank" style="color:var(--accent);font-size:14px;font-weight:500;text-decoration:none">📍 ${escapeHtml(c.addr)}${c.city ? ', ' + escapeHtml(c.city) : ''}</a>` : ''}
+      ${c.ph ? `<a href="${telLink}" style="color:var(--accent);font-size:14px;font-weight:500;text-decoration:none">📱 ${escapeHtml(c.ph)}</a>` : ''}
+      ${c.em ? `<div style="color:var(--muted);font-size:13px">✉️ ${escapeHtml(c.em)}</div>` : ''}
+    </div>
+    ${c.notes ? `<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--text);margin-bottom:16px;white-space:pre-wrap">📝 ${escapeHtml(c.notes)}</div>` : ''}
+
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Client Health</div>
+    <div id="gps-cc-health" style="margin-bottom:18px;font-size:13px;color:var(--muted)">Loading…</div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Recent Cleans</div>
+    <div style="margin-bottom:18px">
+      ${recentJobs.length ? recentJobs.map(j => {
+        const status = j.cancelled ? '<span style="font-size:10px;background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-weight:700">CANCELLED</span>' : (j.done ? '<span style="font-size:10px;background:var(--green);color:#000;padding:1px 6px;border-radius:4px;font-weight:700">DONE</span>' : '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 6px;border-radius:4px;font-weight:700;border:1px solid var(--border)">PAST</span>');
+        return `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span style="font-weight:600">${_gccFmt(j)}</span>${status}
+          ${j.price ? `<span style="color:var(--green);font-weight:600">$${j.price}</span>` : ''}
+        </div>`;
+      }).join('') : '<div style="font-size:12px;color:var(--muted)">No past cleans on file.</div>'}
+    </div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Payment History</div>
+    <div id="gps-cc-payments" style="margin-bottom:20px;font-size:13px;color:var(--muted)">Loading…</div>
+
+    <button onclick="closeGPSClientCard();openClientEdit('${c.id}')" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:12px;cursor:pointer">Edit Client</button>
+  `;
+
+  modal.style.display = 'flex';
+
+  _gpsClientCardKeyHandler = function(e) { if (e.key === 'Escape') closeGPSClientCard(); };
+  document.addEventListener('keydown', _gpsClientCardKeyHandler);
+
+  _gccLoadHealth(c.uuid);
+  _gccLoadPayments(c.id);
+}
+
+function closeGPSClientCard() {
+  const modal = document.getElementById('gps-client-card-modal');
+  if (modal) modal.style.display = 'none';
+  if (_gpsClientCardKeyHandler) {
+    document.removeEventListener('keydown', _gpsClientCardKeyHandler);
+    _gpsClientCardKeyHandler = null;
+  }
+}
+
+// Per-session cache of the whole listLatest() health payload -- avoids
+// re-fetching every active client's score on every card open. clientUuid
+// here MUST be clients.id (the uuid), not the legacy external_id --
+// client_health_scores.client_id targets clients.id, not external_id
+// (see project_client_id_fk_targets_differ memory). Every code path below
+// writes a concrete fallback string, never leaves the loading text stuck
+// or the element blank.
+var _gccHealthCache = null;
+async function _gccLoadHealth(clientUuid) {
+  if (!document.getElementById('gps-cc-health')) return;
+  try {
+    if (!_gccHealthCache) {
+      _gccHealthCache = (window.PentaClientHealth && window.PentaClientHealth.listLatest) ? await window.PentaClientHealth.listLatest() : [];
+    }
+    const target = document.getElementById('gps-cc-health');
+    if (!target) return; // modal closed (or reopened for a different client) while this was in flight
+    const row = (_gccHealthCache || []).find(r => r.client_id === clientUuid);
+    if (!row || row.score == null) { target.textContent = 'No health score yet.'; return; }
+    const score = Math.round(row.score);
+    const color = score >= 70 ? 'var(--green)' : (score >= 40 ? 'var(--amber)' : 'var(--red)');
+    target.innerHTML = `<span style="font-size:20px;font-weight:800;color:${color}">${score}</span><span style="color:var(--muted);font-size:12px"> / 100</span>`;
+  } catch (e) {
+    console.warn('[GPSClientCard] health load failed', e);
+    const target = document.getElementById('gps-cc-health');
+    if (target) target.textContent = 'Health score unavailable.';
+  }
+}
+
+async function _gccLoadPayments(clientId) {
+  if (!document.getElementById('gps-cc-payments')) return;
+  try {
+    const rows = (window.PentaPayments && window.PentaPayments.listForClient) ? await window.PentaPayments.listForClient(clientId, {}) : [];
+    const target = document.getElementById('gps-cc-payments');
+    if (!target) return;
+    if (!rows || !rows.length) { target.textContent = 'No payments on file.'; return; }
+    const methodLabels = { cash:'Cash', check:'Check', venmo:'Venmo', zelle:'Zelle', credit_card:'Card', other:'Other' };
+    target.innerHTML = rows.slice(0, 10).map(r => {
+      const when = r.received_at ? new Date(r.received_at).toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }) : '';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--muted)">${escapeHtml(when)} · ${escapeHtml(methodLabels[r.method] || r.method || 'payment')}</span>
+        <span style="font-weight:700;color:var(--text)">$${escapeHtml(String(r.amount))}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    console.warn('[GPSClientCard] payments load failed', e);
+    const target = document.getElementById('gps-cc-payments');
+    if (target) target.textContent = 'Payment history unavailable.';
+  }
 }
 
 let _cePickerIdx = null;
@@ -46960,6 +47111,17 @@ function _p3dPage(dir) {
       <button onclick="closeClientEdit()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;padding:0;line-height:1">×</button>
     </div>
     <div style="padding:16px 20px 40px" id="client-edit-body"></div>
+  </div>
+</div>
+
+<!-- GPS STOP CLIENT CARD MODAL (v11.0.31, PR #70) -->
+<div id="gps-client-card-modal" style="display:none;position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,0.6);align-items:flex-end" onclick="if(event.target===this)closeGPSClientCard()">
+  <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div style="font-size:17px;font-weight:700" id="gps-cc-title">Client</div>
+      <button onclick="closeGPSClientCard()" style="background:none;border:none;color:var(--muted);font-size:26px;cursor:pointer;padding:8px;margin:-8px;line-height:1">×</button>
+    </div>
+    <div style="padding:16px 20px 40px" id="gps-cc-body"></div>
   </div>
 </div>
 
