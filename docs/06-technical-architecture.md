@@ -252,6 +252,20 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8q. Staff → Teams "Remove does nothing" — name-based resolution bug
+
+Tom reported clicking "Remove" on an employee in the Staff → Teams team builder modal appeared to do nothing — no error, no visual change. Investigation found two compounding bugs, both caused by resolving employees by *name* instead of a stable id, in `getUnifiedRoster()` and `_setEmployeeDefaultTeam()` (index.html).
+
+**Bug 1 — silent roster drop.** `getUnifiedRoster()` deduped its output by name (`existsByName`) as well as `legacy_roster_id`. That dedup only ever made sense while the (now permanently empty, retired v10.5.22) hardcoded `EMPLOYEE_ROSTER` array could collide with facade rows loaded from Supabase — with `EMPLOYEE_ROSTER` always `[]`, the check was comparing facade employees against *each other*. Confirmed live: Manna's real roster currently has 7+ groups of employees sharing a normalized name ("Tom Manna" ×2, "Keyshla -" ×2, "Viviana -" ×2, "Test -" ×2, "Maria Vieira" ×2, "Maria Ventura" ×2, "Tom -" ×3). Every employee after the first in each group was completely invisible to every `getUnifiedRoster()`-based view — Staff → Teams *and* the Schedule tab's Team Manager, which shares this same function — impossible to select, add, remove, or manage at all.
+
+**Bug 2 — wrong-record mutation.** Even for the employee that *did* survive bug 1 (the first of a duplicate-name group), `_setEmployeeDefaultTeam()` re-resolved the Supabase row to write via `PentaEmployees.getByName(emp.name)` — a case-insensitive, first-match-wins lookup with no uniqueness guarantee. Clicking Remove on a same-named employee silently wrote to whichever duplicate happened to be first in `PentaEmployees._cache`'s iteration order — not necessarily the one actually clicked. This reproduces exactly as "no visible feedback": the employee Tom was looking at doesn't change (a *different*, same-named employee got mutated instead), with no error surfaced anywhere. Live data corroborates this: two employees (Melissa Manna, "tomas manna") had `team_text` cleared to `''` with `updated_at` timestamps from minutes before this investigation — plausibly Tom's own recent removal attempts landing on the wrong record, or on a record whose change was invisible per bug 1. Flagged for Tom to review; not corrected here, since intent can't be inferred from the data alone.
+
+**Fix**: `getUnifiedRoster()` no longer dedups by name — only by `legacy_roster_id` (a legitimate check; two facade rows genuinely can't share one legacy id) — and now carries the real Supabase `employees.id` through as `emp.uuid` on every returned row (mirroring the `id`/`uuid` split `PentaClients` already uses for the same reason). `_setEmployeeDefaultTeam()` and its sibling `promptDefaultTeam()` (the Schedule tab's "⭐ Set Default" button, same `getByName` pattern) both now write via `emp.uuid` directly — no name lookup, no ambiguity — with `getByName` retained only as a defensive last-resort fallback if `uuid` is ever unexpectedly absent.
+
+**Known follow-up, not addressed here**: duplicate-named employees now correctly all appear in Staff → Teams' member/dropdown lists, but are visually indistinguishable by name alone (e.g., two identical "Tom Manna" rows). Functionally correct (each has a distinct, correctly-targeted `id`/`uuid`) but a UX polish item for a future pass if Tom wants a disambiguator (e.g., hire date, phone, or an id suffix) shown when names collide.
+
+---
+
 ## 8p. Structured "Day off" categories (migration 086)
 
 Previously "Day Off" was a single flag (`daily_assignments.team = 'OFF'`, collapsed to `null` by every reader) with no way to say why someone is off. Adds a categorized status alongside the existing OFF mechanism.
