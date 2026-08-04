@@ -252,6 +252,25 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8u. GPS day-start algorithm: two mirrored copies had silently diverged (loadWeekHours never got the v11.0.29 fix)
+
+Tom reported an employee's GPS-derived day-start was wrong: system said 8:18am, the real sustained depot departure was 9:11am. His spec: day-start is the LAST depot-departure trip whose next return-to-depot is ≥90 min away (or never returns) — `SUSTAINED_AWAY_MIN_MIN`, unchanged from v11.0.23.
+
+**What was actually happening.** `loadWeekHours()` (feeds the Hours Report — where Tom saw the 8:18 figure) and `_computeGPSDayWindow()` (Live Tracking) are two independently-maintained copies of the same algorithm, explicitly commented as "mirrors" of each other. They had diverged:
+
+- `_computeGPSDayWindow` received a v11.0.29 fix: its primary loop (candidates = `validTrips.filter(_isDepotStart)`) is *always empty* — Geotab's Trip API never returns `trip.startPoint` or `trip.startAddress`, for any trip, confirmed live (see `project_geotab_trip_startpoint_never_returned` memory) — so v11.0.29 added a fallback that scans every trip for the first one not followed by a quick depot return.
+- `loadWeekHours` **never got that fix.** Its fallback, when the same always-empty primary loop found nothing, was simply `trueStart = validTrips[0].start` — no sustained-away check at all. That's "day-start = first GPS ping of the day," exactly the naive algorithm Tom's spec explicitly rejects (his diagnostic checklist named it as option 1 of 3 possible wrong algorithms). Whatever Ines's vehicle's first trip of the day was — even an unrelated early errand — always won outright, regardless of `SUSTAINED_AWAY_MIN_MIN`, because that threshold only lived inside the dead `depotDepartures` loop it never reached.
+
+Separately, `_computeGPSDayWindow`'s v11.0.29 fallback was *also* still wrong, just less severely: it scanned all trips for the first one not followed by a quick depot return, but never required the candidate to have actually departed the depot at all. An early trip completely unrelated to the depot (a personal stop, leaving from home) could still get crowned "the start" merely because nothing routed through the depot again soon after it — the same failure class by a different path.
+
+**Fix.** Extracted one shared `_findTrueDepotDepartureTrip(validTrips, isDepotStop, sustainedAwayMinMin)`, used by both call sites, so this can't silently fork again. Since a trip's own start-side fields are unusable, "did this trip depart the depot" is inferred from the **preceding** trip's stop instead — reliable, because `stopPoint`/`stopAddress` *are* returned by Geotab. A trip only becomes a start candidate if the trip immediately before it (same day, same device) ended at the depot; the first such candidate whose next depot return is sustained (or never happens) wins. The very first trip of the day has no preceding trip to confirm it, so it's deferred to the existing last-resort fallback (`validTrips[0].start`) rather than auto-qualifying or auto-disqualifying — this preserves the common "vehicle parked at the depot overnight" case (the fallback lands on the same trip the main loop would have picked anyway) while no longer letting an unconfirmed first trip outrank a later, actually-confirmed departure.
+
+Verified against the documented v11.0.23 examples (quick gas-run bounce still correctly skipped) plus a reconstruction of Tom's reported case (an unrelated early trip followed by a genuine depot visit, then the real sustained departure) — the new algorithm picks the later, depot-confirmed trip; the old `loadWeekHours` fallback and the old `_computeGPSDayWindow` fallback both reproducibly pick the earlier, wrong one on the same data.
+
+Note: neither Geotab's live trip history nor per-day trip logs are persisted anywhere queryable (no Supabase table stores them — they're fetched live per request), so this diagnosis is grounded in the code path itself and reconstructed test data matching Tom's reported timestamps, not a direct query against Ines's actual trip rows for that day. If the fix doesn't fully resolve what Tom sees next, the next step would be temporarily logging the real trip list + candidate evaluation for a specific team/day to compare against live Geotab data directly.
+
+---
+
 ## 8t. Optimistic team-assignment render was clobbered by its own "readiness" merge (PR #69 didn't actually fix the lag)
 
 PR #69 (§8r) made `confirmTeamAssign`/`quickAssign` fire their Supabase write without awaiting it, then immediately call `renderTeamManager()` for an "optimistic" repaint. Tom reported the lag was unchanged. Root cause: `renderTeamManager()`'s first action, before building any HTML, was an *unconditional* call to `_mirrorPentaAssignmentsToInMemory()` (added in an earlier PR to close a stale-data race on modal open — see the "Bug fix" comment at the top of `renderTeamManager`). That function reads `PentaAssignments.listSync()` — the **server-confirmed** cache — and lets "Supabase wins" overwrite `dailyAssignments` back to whatever's still in that cache for any key present there.
