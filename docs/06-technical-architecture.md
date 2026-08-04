@@ -252,6 +252,18 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8r. Optimistic team-assignment UI updates
+
+Tom reported noticeable delay on the Schedule tab's team modal — "click a button, wait, then it registers." Profiled the flow and found two separate causes, both fixed.
+
+**Cause 1 — UI gated behind the network round-trip.** `confirmTeamAssign()` used to `await assignEmployee(...)` before touching the DOM at all — closing the modal and re-rendering the grid were both blocked on the full Supabase write completing (a team *change*, as opposed to a first-time assignment, means TWO sequential writes inside `PentaAssignments.assign()`: soft-delete the old row, then insert the new one). `assignEmployee()`'s local write (`dailyAssignments`/`dailyAssignmentDetails`) already happens synchronously, *before* its own first `await` — calling it without awaiting means that write is already applied by the time the next line of `confirmTeamAssign` runs. Rewritten to not await: the modal close, re-render, activity log, and `recalcTeamTimes` all now happen immediately against the optimistic state; the actual network write continues in the background via `writePromise.catch(...)`. PR #64's rollback-on-failure (revert `dailyAssignments`/`dailyAssignmentDetails`, toast an error) is unchanged inside `assignEmployee()` — the `.catch()` handler just additionally re-renders (and re-runs `recalcTeamTimes`) so the grid visibly reflects the revert instead of continuing to show a change that never persisted. `confirmTeamAssign` is no longer `async` — no caller awaited it (both call sites are inline `addEventListener` closures), so this is a safe signature change.
+
+**Cause 2 — unrelated GPS data re-fetched on every render.** `renderTeamManager()` unconditionally re-fetched the full Geotab device list (a live external API round-trip) *and* re-resolved every team's device assignment (`_resolveTeamDeviceMap`, N parallel Supabase RPCs) on **every single call** — including a plain employee add/remove/day-off save that has nothing to do with GPS vehicles. Added a per-date cache (`_tmgrGpsCache`) that's reused across renders for the same date; only re-fetched when the date picker actually changes (a different cache key) or `_invalidateTmgrGpsCache()` is explicitly called after a real device-assignment change (`setTeamDeviceAssignment`, the only place a vehicle assignment is genuinely mutated). A run of several employee saves in a row now triggers exactly one device fetch total, not one per save.
+
+**Scope note**: this PR covers the Schedule tab's `confirmTeamAssign`/`renderTeamManager` flow specifically (Tom's explicit ask). Staff → Teams' separate `staffTeamAddEmployee`/`staffTeamRemoveEmployee` (§8q) still await their write before updating the UI — same general principle would apply there, but it's a distinct surface not covered by this request.
+
+---
+
 ## 8q. Staff → Teams "Remove does nothing" — name-based resolution bug
 
 Tom reported clicking "Remove" on an employee in the Staff → Teams team builder modal appeared to do nothing — no error, no visual change. Investigation found two compounding bugs, both caused by resolving employees by *name* instead of a stable id, in `getUnifiedRoster()` and `_setEmployeeDefaultTeam()` (index.html).
