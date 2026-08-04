@@ -252,6 +252,16 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8t. Optimistic team-assignment render was clobbered by its own "readiness" merge (PR #69 didn't actually fix the lag)
+
+PR #69 (§8r) made `confirmTeamAssign`/`quickAssign` fire their Supabase write without awaiting it, then immediately call `renderTeamManager()` for an "optimistic" repaint. Tom reported the lag was unchanged. Root cause: `renderTeamManager()`'s first action, before building any HTML, was an *unconditional* call to `_mirrorPentaAssignmentsToInMemory()` (added in an earlier PR to close a stale-data race on modal open — see the "Bug fix" comment at the top of `renderTeamManager`). That function reads `PentaAssignments.listSync()` — the **server-confirmed** cache — and lets "Supabase wins" overwrite `dailyAssignments` back to whatever's still in that cache for any key present there.
+
+`PentaAssignments.assign()` has no internal optimistic update: `_cache`/`_byKey` only change *after* the real `await sb.from(...).insert(...)` resolves. So at the exact moment of the immediate optimistic render — a write in flight, not yet confirmed — `listSync()` still returns the OLD row. The mirror step read that stale cache and clobbered the fresh optimistic value `assignEmployee()` had just written synchronously, moments before it was ever painted. The grid only showed the correct team once the real round-trip completed and `PentaAssignments`' `onChange` listener re-mirrored and re-rendered — which *is* "click a button, wait, then it registers." PR #69's fire-without-awaiting change was real and necessary, but it painted a render that immediately undid itself.
+
+**Fix.** `renderTeamManager(opts)` now accepts `{skipMirror: true}`, used only by the immediate post-write calls in `confirmTeamAssign` and `quickAssign` (the latter had the identical bug — it's the Team Manager grid's own "quick-assign an unassigned employee" buttons, same `dailyAssignments`-then-immediate-render pattern). That specific render paints straight from the already-correct in-memory `dailyAssignments` instead of re-deriving it from a cache that's momentarily stale by design. Every other caller (initial mount, date change, the server-confirmed re-render `PentaAssignments.onChange` triggers after a real write lands) keeps the normal merge — they aren't racing an in-flight write of their own, and still want the authoritative state. `quickAssign`'s failure path (previously silent — no rollback, no re-render at all) now also triggers a normal (mirroring) re-render on rejection, so a failed quick-assign self-corrects visually instead of leaving the grid showing a team that never persisted.
+
+---
+
 ## 8s. Client card modal from GPS stops
 
 Live Tracking stop rows already matched a GPS stop to a client (§8m's geo-first tiering, `matchStopToClientGeo`) and rendered the client's name, but the name was inert text. Tom asked for it to be tappable, opening a read-only client card (address, phone, notes, recent cleans, payment history, health score) as an overlay on top of the Live view — for all three match-confidence tiers (high, medium/unscheduled, low), not just high-confidence scheduled visits.
