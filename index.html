@@ -27118,6 +27118,67 @@ function isNearDepot(lat, lng, team) {
 function isDepotAddress(address, team) { return window.PentaOffices.isDepotAddress(address, team); }
 function isDepotPoint(point, team)    { return window.PentaOffices.isDepotPoint(point, team); }
 
+// v11.0.32 — shared depot-departure / true-day-start detector, used by
+// BOTH loadWeekHours (Hours Report) and _computeGPSDayWindow (Live
+// Tracking). These two "mirrored" copies had silently diverged:
+// _computeGPSDayWindow got the v11.0.29 fallback-loop fix, loadWeekHours
+// never did. Extracting one shared implementation means a future fix
+// here can't land in only one of the two call sites again (see
+// feedback_verify_copied_guards_not_assumed_working memory).
+//
+// Geotab's Trip API never returns trip.startPoint or trip.startAddress
+// -- confirmed live, for EVERY trip, not just the first (see
+// project_geotab_trip_startpoint_never_returned memory) -- so a trip's
+// own start-side fields can never confirm "this trip departed the
+// depot." A trip's start is always physically the PREVIOUS trip's
+// stop, and stopPoint/stopAddress ARE reliable, so departure is
+// inferred from the preceding trip's stop instead.
+//
+// This replaces two previously-broken approaches:
+//   1. loadWeekHours (pre-fix): filtered candidates to
+//      validTrips.filter(_isDepotStart), which is ALWAYS empty (see
+//      above) -- so it never found any candidate and fell straight to
+//      `validTrips[0].start` with NO sustained-away check at all. Since
+//      that's "day start = first GPS ping of the day," it's exactly
+//      the naive algorithm Tom's spec explicitly rejects, and exactly
+//      what picked 8:18am over the real 9:11am departure for Ines:
+//      whatever her vehicle's first trip of the day was (even an
+//      unrelated pre-work errand) always won, regardless of the
+//      SUSTAINED_AWAY_MIN_MIN threshold, because that threshold was
+//      only ever checked inside the dead depotDepartures loop.
+//   2. _computeGPSDayWindow's v11.0.29 fallback: scanned ALL trips
+//      (ignoring where each one started) for the first one not
+//      followed by a quick depot return. That over-corrected -- an
+//      early trip completely unrelated to the depot (leaving from
+//      home, a personal stop) could still get crowned "the start"
+//      merely because nothing routed through the depot again soon
+//      after it, which is the same failure mode by a different path.
+function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinMin) {
+  const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
+    .sort(function(a,b){ return new Date(a.stop) - new Date(b.stop); });
+
+  let trueStartTrip = null;
+  for (let i = 0; i < validTrips.length; i++) {
+    const trip = validTrips[i];
+    const prev = i > 0 ? validTrips[i - 1] : null;
+    // No same-day prior trip to confirm this one departed the depot --
+    // NOT auto-disqualifying (the very first trip of the day often IS
+    // a real depot departure, e.g. the vehicle was parked at the depot
+    // overnight) but not auto-confirming either. Left for the
+    // last-resort fallback below rather than evaluated here, so an
+    // unconfirmed first trip never outranks a later, confirmed
+    // candidate the way the old "always try validTrips[0] first"
+    // fallback did.
+    if (!prev || !_isDepotStop(prev)) continue;
+    const depTs = new Date(trip.start);
+    const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > depTs; });
+    if (!nextReturn) { trueStartTrip = trip; break; }
+    const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
+    if (awayMin >= sustainedAwayMinMin) { trueStartTrip = trip; break; }
+  }
+  return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
+}
+
 async function loadWeekHours() {
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
@@ -27329,31 +27390,20 @@ async function loadWeekHours() {
         //   depot-departures: 8:00 (first job), 11:30 (resupply)
         //   8:00 → next return 11:00 (3 hrs) — sustained, pick this  ✓
         const SUSTAINED_AWAY_MIN_MIN = 90;
-        const _isDepotStart = function(t) {
-          var sa = t.startAddress || t.startLocation || '';
-          return isDepotAddress(sa, team) || isDepotPoint(t.startPoint, team);
-        };
         const _isDepotStop = function(t) {
           var sa = t.stopAddress || t.stopLocation || '';
           return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
         };
-        const depotDepartures = validTrips.filter(_isDepotStart);
-        const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
-          .sort((a,b) => new Date(a.stop) - new Date(b.stop));
-
-        let trueStartTrip = null;
-        for (const dep of depotDepartures) {
-          const depTs = new Date(dep.start);
-          const nextReturn = depotArrivalsAsc.find(a => new Date(a.stop) > depTs);
-          if (!nextReturn) { trueStartTrip = dep; break; } // never returned
-          const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
-          if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = dep; break; }
-        }
+        const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
+        const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+        const trueStartTrip = _depotResult.trueStartTrip;
         if (trueStartTrip) {
           trueStart = new Date(trueStartTrip.start);
         } else {
-          // Fallback: legacy first-trip-after-7am behavior (depot detection
-          // missed the addresses — common when offices table is incomplete).
+          // Last resort: no trip all day was confirmed as a depot
+          // departure (vehicle never touched the depot today, or depot
+          // detection failed entirely -- offices table incomplete or
+          // misconfigured). Fall back to the first trip of the day.
           const firstTrip = validTrips[0];
           if (firstTrip) trueStart = new Date(firstTrip.start);
         }
@@ -28784,10 +28834,6 @@ function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
 
   const SUSTAINED_AWAY_MIN_MIN = 90;
 
-  const _isDepotStart = function(t){
-    var sa = t.startAddress || t.startLocation || '';
-    return isDepotAddress(sa, team) || isDepotPoint(t.startPoint, team);
-  };
   const _isDepotStop = function(t){
     var sa = t.stopAddress || t.stopLocation || '';
     return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
@@ -28805,42 +28851,16 @@ function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
   const validTrips = dayTrips;
   if (validTrips.length === 0) return null;
 
-  const depotDepartures = validTrips.filter(_isDepotStart);
-  const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
-    .sort(function(a,b){ return new Date(a.stop) - new Date(b.stop); });
-
-  let trueStartTrip = null;
-  for (const dep of depotDepartures) {
-    const depTs = new Date(dep.start);
-    const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > depTs; });
-    if (!nextReturn) { trueStartTrip = dep; break; }
-    const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
-    if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = dep; break; }
-  }
-  // v11.0.29: Geotab's Trip API never actually returns startPoint --
-  // not just "often" for the first trip as the comment above assumed,
-  // but for every trip, always (confirmed live). depotDepartures is
-  // therefore permanently empty and trueStart used to fall back to
-  // validTrips[0].start unconditionally. That's wrong when trip 0 is
-  // itself a brief near-depot idle blip (engine bump, vehicle hasn't
-  // really left) whose own stop is ALSO inside the depot radius: it
-  // then doubles as its own "late depot arrival" moments later,
-  // collapsing trueEnd to almost the same instant as trueStart and
-  // truncating the rest of the real day out of the window. Confirmed
-  // live: 3 of 8 Manna teams were losing 60-90% of a real day's stops
-  // to this. Fallback: scan every trip in order (not gated on
-  // _isDepotStart, which can never fire) for the first one that isn't
-  // itself a same-blip depot round-trip, using the identical "was this
-  // actually followed by real away-time" test above.
-  if (!trueStartTrip) {
-    for (const candidate of validTrips) {
-      const candTs = new Date(candidate.start);
-      const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > candTs; });
-      if (!nextReturn) { trueStartTrip = candidate; break; }
-      const awayMin = (new Date(nextReturn.stop) - candTs) / 60000;
-      if (awayMin >= SUSTAINED_AWAY_MIN_MIN) { trueStartTrip = candidate; break; }
-    }
-  }
+  // v11.0.32: was two separate loops here (a primary pass gated on
+  // _isDepotStart -- always empty, Geotab never returns trip.startPoint
+  // /startAddress -- plus a v11.0.29 fallback that scanned every trip
+  // regardless of where it started). Unified into
+  // _findTrueDepotDepartureTrip, shared with loadWeekHours, which had
+  // silently fallen behind without the v11.0.29 fix at all. See that
+  // function's comment for the full history.
+  const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
+  const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+  const trueStartTrip = _depotResult.trueStartTrip;
   const trueStart = trueStartTrip
     ? new Date(trueStartTrip.start)
     : new Date(validTrips[0].start);
