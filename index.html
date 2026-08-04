@@ -23181,7 +23181,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
     if (!emp2) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
     var dk2 = input.date || dateKey(new Date());
-    assignEmployee(emp2.id, input.team.toUpperCase(), dk2);
+    assignEmployee(emp2.id, input.team.toUpperCase(), dk2).catch(function(e){ console.warn('[Claire move_employee] assign failed', e); });
     logPendingUpdate(emp2.name+' → '+input.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
     _claireLastToolResult = emp2.name+' moved to Team '+input.team.toUpperCase()+' on '+new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'. Done.';
     claireReply(message || 'Moved '+emp2.name+' to Team '+input.team.toUpperCase()+'.');
@@ -24213,7 +24213,7 @@ function _executeClaire_legacy(action, message) {
     if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (action.employee||'').toLowerCase(); });
     if (emp2 && action.team) {
       var dk2 = action.date || dateKey(new Date());
-      assignEmployee(emp2.id, action.team.toUpperCase(), dk2);
+      assignEmployee(emp2.id, action.team.toUpperCase(), dk2).catch(function(e){ console.warn('[Claire team action] assign failed', e); });
       logPendingUpdate(emp2.name + ' → ' + action.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
       claireReply(message || 'Moved '+emp2.name+' to Team '+action.team.toUpperCase()+'.');
     } else {
@@ -24870,6 +24870,26 @@ async function renderTeamManager() {
   const teams = _pentaTeamNames();
   let html = '';
 
+  // Bug fix: getEmployeeTeam reads the legacy localStorage-backed
+  // dailyAssignments object, which only picks up real Supabase
+  // overrides via _mirrorPentaAssignmentsToInMemory -- an async merge
+  // that runs on its own schedule (onChange / ready() / a 1.5s backup
+  // timer, see ~L13134), independent of when this modal happens to
+  // open. Opening the modal before that merge has run at least once
+  // showed stale/default assignments instead of the real one --
+  // "close and reopen to fix it" is exactly the same race the
+  // v10.5.25 empty-roster banner below already worked around for the
+  // fully-empty case, just not for this partially-wrong case. Awaiting
+  // readiness + forcing the merge here, on every render, closes the
+  // race outright instead of relying on whatever timing happened to
+  // make a second open "just work."
+  try {
+    if (window.PentaAssignments && window.PentaAssignments.ready) {
+      await window.PentaAssignments.ready();
+    }
+    if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
+  } catch (e) { console.warn('[TeamMgr] assignments readiness/merge failed', e); }
+
   // GPS Vehicle assignment (migration 080). Fetched once for all teams,
   // not per-card, to keep this to one device list call + N resolver
   // calls (parallelized) regardless of team count.
@@ -25356,34 +25376,45 @@ function saveRosterEmpEdit(empId, overlay) {
   renderTeamManager();
 }
 
-function confirmTeamAssign(employeeId, dateStr, team, overlay) {
+async function confirmTeamAssign(employeeId, dateStr, team, overlay) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
 
   // Track old team so we can recalc its schedule
   var oldTeam = getEmployeeTeam(employeeId, dateStr);
 
-  if (team === 'OFF') {
-    dailyAssignments[dateStr + '_' + employeeId] = 'OFF';
-    saveDailyAssignments();
-    // Sprint 10 Phase 3f: dual-write OFF branch to Supabase.
-    // (The else branch routes through assignEmployee which is already dual-wired.)
-    try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, 'OFF', employeeId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
-  } else {
-    assignEmployee(employeeId, team, dateStr);
+  // Bug fix: both branches now route through the single awaited
+  // assignEmployee path (it already handles 'OFF' correctly -- it's
+  // just another team value as far as dailyAssignments/PentaAssignments
+  // are concerned). Previously the OFF branch duplicated the write
+  // logic with its own fire-and-forget dual-write and no rollback; unify
+  // so a failed save can't leave OFF looking saved when it isn't, same
+  // as the normal-team case.
+  var saveOk = true;
+  try {
+    await assignEmployee(employeeId, team, dateStr);
+  } catch (e) {
+    // assignEmployee already rolled back the optimistic local write and
+    // toasted the failure -- don't log/recalc against a change that
+    // didn't actually persist.
+    saveOk = false;
   }
 
-  logPendingUpdate(
-    emp.name + ' → ' + (team === 'OFF' ? 'Day Off' : team),
-    new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
-  );
+  if (saveOk) {
+    logPendingUpdate(
+      emp.name + ' → ' + (team === 'OFF' ? 'Day Off' : team),
+      new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
+    );
+  }
 
   overlay.remove();
   renderTeamManager();
 
-  // Recalc job times for affected teams (durations changed with different team size)
-  if (oldTeam) recalcTeamTimes(oldTeam, dateStr);
-  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+  if (saveOk) {
+    // Recalc job times for affected teams (durations changed with different team size)
+    if (oldTeam) recalcTeamTimes(oldTeam, dateStr);
+    if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+  }
 }
 
 
@@ -25820,16 +25851,17 @@ function getTeamEmployees(team, dateStr) {
   return getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team);
 }
 
-function assignEmployee(employeeId, team, dateStr) {
+async function assignEmployee(employeeId, team, dateStr) {
   const key = dateStr + '_' + employeeId;
+  const prevValue = dailyAssignments[key]; // undefined if there was no override yet
   dailyAssignments[key] = team;
   saveDailyAssignments();
   // Sprint 10 Phase 3f: dual-write to Supabase via PentaAssignments.
   // 'OFF' is a magic team value (employee marked off for the day) — the
   // schema's `team text NOT NULL` column accepts it as-is, and existing
-  // readers (getEmployeeTeam at L17414, etc.) already map 'OFF' → null
-  // at read time. Auto-covers callers in Claire moveteam, schedule
-  // team-dropdown, Phase 3d 'swap' strategy, and legacy Claire moveteam.
+  // readers (getEmployeeTeam, etc.) already map 'OFF' → null at read
+  // time. Auto-covers callers in Claire moveteam, schedule team-dropdown,
+  // Phase 3d 'swap' strategy, and legacy Claire moveteam.
   //
   // v10.5.23: surface dual-write failures via toast. The original silent
   // console.warn left assignments stranded in localStorage with no UI
@@ -25837,19 +25869,30 @@ function assignEmployee(employeeId, team, dateStr) {
   // saw them on the dispatch view, employee sessions saw nothing because
   // the Supabase writes never landed). A toast is loud enough that a
   // dispatcher knows the assignment didn't persist.
+  //
+  // Bug fix: this write was previously fire-and-forget (no await) --
+  // the optimistic local write to dailyAssignments stayed in place even
+  // when the Supabase write failed, so THIS session kept showing the
+  // assignment as if it saved while every other session/device (and
+  // this one too, after its next hydrate+merge) never saw it. Now
+  // awaited with an explicit rollback of the optimistic write on
+  // failure, so dailyAssignments can't silently diverge from what
+  // actually persisted -- same remediation already applied to the
+  // Staff -> Teams save bug this session (_setEmployeeDefaultTeam).
   try {
     if (window.PentaAssignments) {
-      window.PentaAssignments.assign(dateStr, team, employeeId).catch(function(e){
-        console.warn('[Phase 3f] assign failed:', e);
-        try {
-          if (typeof showToast === 'function') {
-            showToast('Assignment did not save: ' + (e && e.message ? e.message : 'unknown error'), 'error');
-          }
-        } catch (_te) {}
-      });
+      await window.PentaAssignments.assign(dateStr, team, employeeId);
     }
-  } catch(e){
-    console.warn('[Phase 3f] assign threw sync:', e);
+  } catch (e) {
+    console.warn('[Phase 3f] assign failed:', e);
+    if (prevValue === undefined) delete dailyAssignments[key]; else dailyAssignments[key] = prevValue;
+    saveDailyAssignments();
+    try {
+      if (typeof showToast === 'function') {
+        showToast('Assignment did not save: ' + (e && e.message ? e.message : 'unknown error'), 'error');
+      }
+    } catch (_te) {}
+    throw e;
   }
 }
 
@@ -27563,7 +27606,7 @@ function clearLunchStop() {
 
 function onEmpTeamChange(empId, dk, newTeam, dateMs) {
   // Reassign employee to new team for this day
-  assignEmployee(empId, newTeam, dk);
+  assignEmployee(empId, newTeam, dk).catch(function(e){ console.warn('[onEmpTeamChange] assign failed', e); });
 
   // Update dropdown color
   var sel = document.getElementById('emp-hr-team');

@@ -1,0 +1,31 @@
+-- Adds the unique constraint that PentaAssignments.assign() (index.html,
+-- Sprint 10 Phase 3f) has always documented as already existing:
+--
+--   "Same employee can only be on one team per day. The unique
+--   constraint (business_id, date, team, employee_id) WHERE
+--   deleted_at IS NULL guarantees this server-side too."
+--
+-- It didn't -- confirmed live via pg_constraint on daily_assignments:
+-- only a primary key on `id` plus FKs, nothing enforcing one active row
+-- per (business_id, date, employee_id). No duplicates exist in
+-- production today (checked before writing this migration), but
+-- nothing in the schema prevented a race (two near-simultaneous
+-- assign() calls -- different tabs/devices, a retry after a network
+-- hiccup) from leaving two active rows for the same employee+date with
+-- different teams. Since PentaAssignments._byKey and the browser-side
+-- _mirrorPentaAssignmentsToInMemory merge both resolve "the" team for
+-- a (date, employee) key by taking whichever row happens to appear
+-- last in an unordered-by-recency array, a latent duplicate would make
+-- which team "wins" effectively random across renders/reloads --
+-- exactly the kind of intermittent flip Tom described ("changes
+-- revert to defaults" reads the same as "changes flip to whichever
+-- duplicate sorts last").
+--
+-- Deliberately NOT including `team` in the uniqueness (unlike the
+-- aspirational comment above) -- the whole point is "one team per
+-- employee per day," so the key is (business_id, date, employee_id)
+-- alone. A unique index on a partial predicate is the standard
+-- Postgres way to express "unique among non-deleted rows."
+CREATE UNIQUE INDEX IF NOT EXISTS daily_assignments_active_unique
+  ON public.daily_assignments (business_id, date, employee_id)
+  WHERE deleted_at IS NULL;
