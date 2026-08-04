@@ -24887,6 +24887,14 @@ function _teamDayStats(team, dateStr) {
   return { houses: dayJobs.length, revenue: revenue, mins: mins };
 }
 
+// Per-date cache for renderTeamManager's GPS device list + team-device
+// resolution -- see the perf-fix comment inside renderTeamManager for
+// why this exists. Invalidated by date change (the cache key) or
+// explicitly by _invalidateTmgrGpsCache() after a real device-
+// assignment change.
+var _tmgrGpsCache = { dateStr: null, devices: null, teamDeviceMap: null };
+function _invalidateTmgrGpsCache() { _tmgrGpsCache = { dateStr: null, devices: null, teamDeviceMap: null }; }
+
 async function renderTeamManager() {
   const dateStr = document.getElementById('team-mgr-date').value;
   const date = new Date(dateStr + 'T00:00:00');
@@ -24919,12 +24927,32 @@ async function renderTeamManager() {
   // GPS Vehicle assignment (migration 080). Fetched once for all teams,
   // not per-card, to keep this to one device list call + N resolver
   // calls (parallelized) regardless of team count.
-  var _gpsDevices = [];
-  try { _gpsDevices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); }
-  catch (e) { console.warn('[TeamMgr] device list fetch failed (Geotab not configured?)', e); }
-  var _teamDeviceMap = {};
-  try { _teamDeviceMap = await _resolveTeamDeviceMap(_gpsDevices, teams, date); }
-  catch (e) { console.warn('[TeamMgr] team device resolution failed', e); }
+  //
+  // Perf fix: this used to re-fetch on EVERY renderTeamManager() call --
+  // including a plain employee add/remove/day-off save, which has
+  // nothing to do with GPS vehicles at all. That's a live Geotab API
+  // round-trip PLUS N parallel Supabase RPCs (_resolveTeamDeviceMap,
+  // one per team) on every single re-render, directly causing the
+  // "click a button, wait, then it registers" delay Tom reported --
+  // the render (and the modal-close it gates) was blocked on device
+  // data nobody asked to refresh. Cached per date now; only re-fetched
+  // when the date actually changes or something explicitly invalidates
+  // it (setTeamDeviceAssignment, after actually changing a vehicle
+  // assignment). A plain team/day-off save reuses the cache and skips
+  // straight to building the HTML.
+  var _gpsDevices, _teamDeviceMap;
+  if (_tmgrGpsCache.dateStr === dateStr && _tmgrGpsCache.devices) {
+    _gpsDevices = _tmgrGpsCache.devices;
+    _teamDeviceMap = _tmgrGpsCache.teamDeviceMap;
+  } else {
+    _gpsDevices = [];
+    try { _gpsDevices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); }
+    catch (e) { console.warn('[TeamMgr] device list fetch failed (Geotab not configured?)', e); }
+    _teamDeviceMap = {};
+    try { _teamDeviceMap = await _resolveTeamDeviceMap(_gpsDevices, teams, date); }
+    catch (e) { console.warn('[TeamMgr] team device resolution failed', e); }
+    _tmgrGpsCache = { dateStr: dateStr, devices: _gpsDevices, teamDeviceMap: _teamDeviceMap };
+  }
 
   // v10.5.25: clear empty-state banner so Tom doesn't see a blank panel
   // when the cache hasn't hydrated. Logs the actual counts to console so
@@ -25159,6 +25187,7 @@ async function setTeamDeviceAssignment(team, dateStr) {
   } catch (e) {
     alert('Could not update GPS vehicle assignment: ' + (e.message || e));
   }
+  _invalidateTmgrGpsCache(); // the whole point of this write -- force a fresh device-map fetch
   try { renderTeamManager(); } catch (e) {}
 }
 
@@ -25553,51 +25582,57 @@ function saveRosterEmpEdit(empId, overlay) {
   renderTeamManager();
 }
 
-async function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
+// Perf fix: this used to `await assignEmployee(...)` before touching
+// the UI at all -- closing the modal and re-rendering the grid were
+// both gated behind the full Supabase round-trip (soft-delete + insert
+// for a team CHANGE means TWO sequential writes), which is exactly the
+// "click a button, wait, then it registers" delay Tom reported.
+// assignEmployee's local write (dailyAssignments / dailyAssignmentDetails)
+// already happens synchronously, before its own first `await` -- so
+// calling it here WITHOUT awaiting already applies that write by the
+// time this function's next line runs. The modal close + re-render +
+// recalc now happen immediately against that optimistic state; the
+// actual network write, and PR #64's existing rollback-on-failure +
+// toast, continue in the background. On failure, assignEmployee has
+// already reverted dailyAssignments/dailyAssignmentDetails by the time
+// its promise rejects -- re-render + re-recalc here so the grid
+// visibly reflects the revert instead of continuing to show a change
+// that never actually persisted.
+//
+// Bug fix (unchanged from before): both branches route through the
+// single assignEmployee path (it already handles 'OFF' correctly --
+// it's just another team value as far as dailyAssignments/
+// PentaAssignments are concerned) rather than a separate OFF-specific
+// write with its own rollback to keep in sync.
+//
+// extra: optional { status_type, notes } for structured "Day off"
+// categories (migration 086) -- only meaningful when team === 'OFF'.
+function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
 
   // Track old team so we can recalc its schedule
   var oldTeam = getEmployeeTeam(employeeId, dateStr);
+  var _offLabel = (team === 'OFF' && extra && extra.status_type && DAY_OFF_CATEGORY_LABELS[extra.status_type])
+    ? ('Day Off — ' + DAY_OFF_CATEGORY_LABELS[extra.status_type])
+    : (team === 'OFF' ? 'Day Off' : team);
+  var dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
 
-  // Bug fix: both branches now route through the single awaited
-  // assignEmployee path (it already handles 'OFF' correctly -- it's
-  // just another team value as far as dailyAssignments/PentaAssignments
-  // are concerned). Previously the OFF branch duplicated the write
-  // logic with its own fire-and-forget dual-write and no rollback; unify
-  // so a failed save can't leave OFF looking saved when it isn't, same
-  // as the normal-team case.
-  //
-  // extra: optional { status_type, notes } for structured "Day off"
-  // categories (migration 086) -- only meaningful when team === 'OFF'.
-  var saveOk = true;
-  try {
-    await assignEmployee(employeeId, team, dateStr, extra);
-  } catch (e) {
-    // assignEmployee already rolled back the optimistic local write and
-    // toasted the failure -- don't log/recalc against a change that
-    // didn't actually persist.
-    saveOk = false;
-  }
+  var writePromise = assignEmployee(employeeId, team, dateStr, extra);
 
-  if (saveOk) {
-    var _offLabel = (team === 'OFF' && extra && extra.status_type && DAY_OFF_CATEGORY_LABELS[extra.status_type])
-      ? ('Day Off — ' + DAY_OFF_CATEGORY_LABELS[extra.status_type])
-      : (team === 'OFF' ? 'Day Off' : team);
-    logPendingUpdate(
-      emp.name + ' → ' + _offLabel,
-      new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
-    );
-  }
-
+  logPendingUpdate(emp.name + ' → ' + _offLabel, dateLabel);
   overlay.remove();
   renderTeamManager();
+  recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
+  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
 
-  if (saveOk) {
-    // Recalc job times for affected teams (durations changed with different team size)
-    if (oldTeam) recalcTeamTimes(oldTeam, dateStr);
+  writePromise.catch(function() {
+    // assignEmployee already rolled back the optimistic write and
+    // toasted the failure -- reflect that revert visually.
+    renderTeamManager();
+    recalcTeamTimes(oldTeam, dateStr);
     if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
-  }
+  });
 }
 
 
