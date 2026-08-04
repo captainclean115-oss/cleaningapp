@@ -252,6 +252,20 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8o. Live Tracking date headers for 7d/30d activity windows
+
+Tom's ask: when viewing 3d/7d/30d in Live Tracking's activity-window selector, group stops by calendar day with a "Monday, Aug 3"-style header before each day's activity, most recent day at top. The 24h view is unchanged (no headers — one day, no ambiguity).
+
+`renderGPS()`'s per-vehicle stop-row rendering (was a single `stopList.map(...)`) is split into a shared `_renderGPSStopRow(s, includeDriveInfo)` template plus two render paths: the 24h path renders `stopList` flat, unchanged; the rolling-window path groups `stopList` entries by business-timezone calendar date (`toLocaleDateString('en-CA', {timeZone})` as the grouping key, `{weekday:'long', month:'short', day:'numeric'}` for the header label), sorts groups descending (most recent day first), and renders each group's header followed by its stops in their original chronological order.
+
+Two things had to change to make grouping/reordering safe:
+- **"Now" label** (the currently-open, no-`outTime` stop) used to be identified by array position (`si === stopList.length - 1`). Position no longer implies recency once groups reorder the render, so it's now found by object reference (`s === stopList[stopList.length - 1]`) — `stopList` itself stays in chronological order regardless of render order.
+- **Drive-time info** (distance/duration between consecutive stops) used to show for every stop after the first (`si > 0`). Now it's scoped to "the first stop within its own day's group" (`si2 > 0` inside each group) — a 3am arrival on a new day isn't meaningfully "a drive" from yesterday's last stop, and showing it there would misrepresent an overnight gap as a short hop.
+
+The existing per-row date-stamped time format (added when the activity-window feature first shipped, to disambiguate cross-day stops in a flat list) was removed — the new day headers make that redundant, so times render as plain `h:mm AM/PM` in both view modes again.
+
+---
+
 ## 8n. Schedule tab team-assignment save bugs (migration 085)
 
 Two reported symptoms: (1) opening a team on the Schedule tab didn't show the real assignment until closed and reopened, (2) morning assignment changes reverted to defaults by afternoon.
