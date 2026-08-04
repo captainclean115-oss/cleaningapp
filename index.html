@@ -2787,7 +2787,8 @@ body.in-portal .topbar,
 body.in-portal .search-wrap,
 body.in-portal .stats-bar,
 body.in-portal #install-banner-wrap,
-body.in-portal #filter-row { display: none !important; }
+body.in-portal #filter-row,
+body.in-portal #client-sort-row { display: none !important; }
 
 /* Phase 6.3a Fix 13: hide the entire portal-screen when an overlay is active
    over the employee portal. The greeting and date sit in .portal-header — a
@@ -40972,11 +40973,17 @@ async function showStaffView() {
   }
   renderStaffSubview();
 
-  // Update search/filter/stats visibility
+  // Update search/filter/sort/stats visibility. PR #77: sortRow (the
+  // client-list "Sort:" dropdown) was missing from this list -- it's a
+  // sibling of .search-wrap/#filter-row, toggled by its OWN parallel
+  // show/hide list (see showClientsSubview's matching list, which DOES
+  // include it) rather than nested inside #clients-view, so leaving it
+  // out here left it visibly bleeding into the Staff tab.
   const searchWrap = document.querySelector('.search-wrap');
   const filterRow = document.getElementById('filter-row');
+  const sortRow = document.getElementById('client-sort-row');
   const statsBar = document.querySelector('.stats-bar');
-  [searchWrap, filterRow, statsBar].forEach(el => { if (el) el.style.display = 'none'; });
+  [searchWrap, filterRow, sortRow, statsBar].forEach(el => { if (el) el.style.display = 'none'; });
   // Sprint 4.2.B Section 4C — restore last-used sub-tab when entering Staff view
   setTimeout(function() { if (typeof setStaffSubtab === 'function') setStaffSubtab(sessionStorage.getItem('cc_staff_subtab') || 'staff'); }, 50);
 }
