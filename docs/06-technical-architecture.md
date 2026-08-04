@@ -252,6 +252,20 @@ Documented across migrations 036 / 037 / 038.
 
 ---
 
+## 8y. Add Employee form: split Full Name into First Name / Last Name
+
+Split the single "Full Name *" input on the Add Employee form (`#staff-modal`'s edit tab, same styling as PR #75) into "First Name *" / "Last Name *", both required, laid out in the same two-column grid pattern already used for Phone/Email below it.
+
+**Data model — no migration needed.** `public.employees` already has `first_name text NOT NULL` and `last_name text NOT NULL` columns; there is no `full_name`/`name` column at the DB level at all (confirmed live via `information_schema.columns`). The single "Full Name" input was purely a UI simplification — `PentaEmployees._toRow` already split it via `_splitName()` (first word → `first_name`, remainder → `last_name`, defaulting to `'-'` when the typed name was a single word, since `last_name` can't be null) at save time, and `_fromRow` already recomposes `emp.name = (first_name + ' ' + last_name).trim()` at read time for every display surface. So: **display surfaces need no changes** — every existing consumer of `emp.name` (team rosters, schedule assignments, Hours Report, GPS client-name matching, etc.) keeps working unchanged, since that computed field's inputs (`first_name`/`last_name`) are exactly what the new form now sets directly instead of guessing.
+
+**Existing employees with only a single name typed into the old field**: confirmed live, 7 of 28 active employees have `last_name = '-'` (the historical placeholder). No backfill — editing one of these now shows `-` in the new Last Name field, editable in place like any other value. Both fields are required going forward, so this placeholder can only persist until the next time that employee's profile is edited.
+
+**Removed two duplicated "guess the split" blocks.** Beyond `_toRow`'s fallback (kept, as a safety net for any other future caller that only supplies a combined `name`), `saveStaffEmployee()` had grown two of its *own* independent copies of the identical first-space-split logic — one building the `employees` dual-write patch, one building the companion `users` row when promoting someone to manager. Both are now direct reads of `emp.first_name`/`emp.last_name` (populated straight from the new form fields), removing two more instances of the "duplicated logic silently drifts" pattern this session has hit repeatedly (see the mirrored-algorithm-copies memory) — before they had a chance to.
+
+**Scope note**: `#main-emp-modal` (Team Manager's own parallel Add/Edit Employee modal, fixed for CSS in PR #75) still has a single "Full Name" field — left as-is here since that modal has zero live callers (confirmed dead code), and splitting its name handling too would mean writing equivalent logic for code nothing currently reaches. Worth revisiting together if that modal is ever rewired.
+
+---
+
 ## 8x. Add Employee form inputs invisible — --surface2 was identical to --surface
 
 Tom reported the Add Employee form (Staff → "+ Add", `#staff-modal`'s edit tab, header "Add New Employee") rendered as bare labels with no visible input boxes. First diagnosis pass (checking `openAddStaff()`'s target markup) wrongly concluded the form was already correctly styled — every input DID have the standard inline pattern (`background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:11px 14px`, label above). That conclusion was source-code-only and wrong: the STRUCTURE was right, but `--surface2` (`rgba(255,255,255,1)`, solid white) is **identical** to `--surface` (`rgba(255,255,255,1)`, also solid white — the modal sheet's own background) — both set that way by a "v9.3 hotfix" comment that made them opaque without differentiating them. `--border` (`rgba(255,255,255,0.5)`, white at 50% opacity) has no visible contrast against a white fill either. An input rendered with these three values is genuinely white-on-white — technically styled, visually invisible. This is a global `:root` token bug, not specific to the employee form.
