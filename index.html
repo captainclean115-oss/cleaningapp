@@ -35402,7 +35402,8 @@ function openAddStaff() {
     const setC = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
 
     set('staff-edit-idx', '-1');
-    set('staff-name', '');    populateEmpTeamDropdown('staff-team', null);
+    set('staff-first-name', ''); set('staff-last-name', '');
+    populateEmpTeamDropdown('staff-team', null);
     set('staff-role', 'team_member');  // v9.5: default new hires to team_member
     set('staff-pin', '');     set('staff-pay', '');
     set('staff-phone', '');   set('staff-lang', 'en');
@@ -35928,7 +35929,8 @@ function openEditStaff(idx) {
   document.getElementById('staff-modal-title').textContent = 'Edit — ' + emp.name;
   document.getElementById('staff-edit-idx').value = idx;
   // Personal
-  document.getElementById('staff-name').value = emp.name || '';
+  document.getElementById('staff-first-name').value = emp.first_name || '';
+  document.getElementById('staff-last-name').value = emp.last_name || '';
   document.getElementById('staff-phone').value = emp.phone || '';
   document.getElementById('staff-email').value = emp.email || '';
   document.getElementById('staff-address').value = emp.address || '';
@@ -36072,8 +36074,11 @@ function previewStaffDoc(input, id) {
 async function saveStaffEmployee() {
   try {
   const idx = parseInt(document.getElementById('staff-edit-idx').value);
-  const name = document.getElementById('staff-name').value.trim();
-  if (!name) { alert('Name is required'); return; }
+  const firstName = document.getElementById('staff-first-name').value.trim();
+  const lastName = document.getElementById('staff-last-name').value.trim();
+  if (!firstName) { alert('First name is required'); return; }
+  if (!lastName) { alert('Last name is required'); return; }
+  const name = (firstName + ' ' + lastName).trim();
   const list = getStaffList();
   const status = document.getElementById('staff-status').value;
   const availDays = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
@@ -36095,6 +36100,14 @@ async function saveStaffEmployee() {
   const emp = {
     id: (idx >= 0 && list[idx] && list[idx].id) || ('e_' + Date.now()),
     name,
+    // PR #76: explicit first/last name fields from the form, no more
+    // guessing via a first-space split. Carried through under the
+    // facade's expected snake_case names too (_toRow reads first_name/
+    // last_name directly and skips its name-splitting fallback whenever
+    // they're present) -- same alias pattern already used for
+    // emergency_contact_name/manager_notes below.
+    first_name: firstName,
+    last_name: lastName,
     team_id: document.getElementById('staff-team').value || null,
     team: (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     // v9.5: portal permission role. v9.6: 'manager' also triggers a
@@ -36178,14 +36191,9 @@ async function saveStaffEmployee() {
       });
       if (supaRow) {
         var langMap = { es: 'mx', pt: 'br', ko: 'kr', en: 'us' };
-        var first = '', last = '-';
-        if (emp.name && emp.name.indexOf(' ') > -1) {
-          first = emp.name.split(' ')[0];
-          last = emp.name.split(' ').slice(1).join(' ');
-        } else {
-          first = emp.name || '';
-          last = '-';
-        }
+        // PR #76: real values from the form now, not a first-space guess.
+        var first = emp.first_name || '';
+        var last = emp.last_name || '-';
         var phoneClean = String(emp.phone || '').replace(/\D/g, '');
         var patch = {
           first_name: first,
@@ -36265,11 +36273,9 @@ async function saveStaffEmployee() {
         if (supaEmp && supaEmp.business_id) {
           // Compose user payload. id= auth_user_id when known; otherwise leave
           // out and let the invite-acceptance flow create+link.
-          var firstM = '', lastM = '-';
-          if (emp.name && emp.name.indexOf(' ') > -1) {
-            firstM = emp.name.split(' ')[0];
-            lastM = emp.name.split(' ').slice(1).join(' ');
-          } else { firstM = emp.name || ''; lastM = '-'; }
+          // PR #76: real values from the form now, not a first-space guess.
+          var firstM = emp.first_name || '';
+          var lastM = emp.last_name || '-';
           var userRow96 = {
             business_id: supaEmp.business_id,
             email: emp.email || (firstM.toLowerCase() + '.' + lastM.toLowerCase().replace(/\s+/g,'') + '@managers.penta.internal'),
@@ -46125,7 +46131,10 @@ function _p3dPage(dir) {
 
       <!-- PERSONAL INFO -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:12px">Personal Info</div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Full Name *</div><input type="text" id="staff-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">First Name *</div><input type="text" id="staff-first-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Last Name *</div><input type="text" id="staff-last-name" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="staff-phone" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Email</div><input type="email" id="staff-email" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
