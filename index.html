@@ -25218,9 +25218,17 @@ function promptDefaultTeam(empId) {
   // this function persisted anything before this fix.
   if (emp.fromFacade) {
     try {
-      if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
-        var pe = window.PentaEmployees.getByName(emp.name);
-        if (pe && pe.id) { window.PentaEmployees.update(pe.id, { team_text: team.toUpperCase() }); }
+      if (window.PentaEmployees && window.PentaEmployees.update) {
+        // Same getByName-collision fix as _setEmployeeDefaultTeam --
+        // use the real Supabase id (emp.uuid) directly instead of an
+        // ambiguous name lookup that can match the wrong employee
+        // whenever two share a name (confirmed live in Manna's roster).
+        var targetId = emp.uuid;
+        if (!targetId && window.PentaEmployees.getByName) {
+          var pe = window.PentaEmployees.getByName(emp.name);
+          targetId = pe && pe.id;
+        }
+        if (targetId) { window.PentaEmployees.update(targetId, { team_text: team.toUpperCase() }); }
       }
     } catch(e) { console.warn('[Claire change_default_team] facade update failed', e); }
   }
@@ -25244,15 +25252,33 @@ function promptDefaultTeam(empId) {
 // calling this need the write to actually land in _cache first, or a
 // re-read via getUnifiedRoster() can still show the pre-write state
 // even once the fromPortal/fromFacade typo above is fixed.
+// Bug fix (Staff -> Teams "Remove does nothing"): this used to
+// re-resolve the Supabase row via PentaEmployees.getByName(emp.name)
+// -- a case-insensitive, first-match-wins lookup with no uniqueness
+// guarantee. Manna's real roster currently has 7+ groups of employees
+// sharing a normalized name (confirmed live: "Tom Manna" x2, "Keyshla
+// -" x2, etc). Clicking Remove/Add for the SECOND "Tom Manna" silently
+// wrote to the FIRST one's row instead -- the employee actually
+// clicked never changed (looked like nothing happened), while a
+// different, same-named employee got mutated with no visible feedback
+// either. Now uses emp.uuid (the real employees.id, carried through by
+// getUnifiedRoster() specifically for this) directly -- no name
+// lookup, no ambiguity. getByName kept only as a last-resort fallback
+// for the (should no longer happen) case where uuid is missing.
 async function _setEmployeeDefaultTeam(empId, newTeam) {
   var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
   if (!emp) return false;
   emp.defaultTeam = newTeam || null;
   if (emp.fromFacade) {
     try {
-      if (window.PentaEmployees && window.PentaEmployees.getByName && window.PentaEmployees.update) {
-        var pe = window.PentaEmployees.getByName(emp.name);
-        if (pe && pe.id) { await window.PentaEmployees.update(pe.id, { team_text: newTeam || '' }); }
+      if (window.PentaEmployees && window.PentaEmployees.update) {
+        var targetId = emp.uuid;
+        if (!targetId && window.PentaEmployees.getByName) {
+          console.warn('[_setEmployeeDefaultTeam] emp.uuid missing, falling back to ambiguous getByName lookup for', emp.name);
+          var pe = window.PentaEmployees.getByName(emp.name);
+          targetId = pe && pe.id;
+        }
+        if (targetId) { await window.PentaEmployees.update(targetId, { team_text: newTeam || '' }); }
       }
     } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); throw e; }
   }
@@ -25597,28 +25623,42 @@ async function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
 const EMPLOYEE_ROSTER = [];
 
 // Phase 6.5b: getUnifiedRoster() — EMPLOYEE_ROSTER (hardcoded + pre-6.3b
-// portal merge) UNION facade rows (post-6.3b additions), deduped by name +
+// portal merge) UNION facade rows (post-6.3b additions), deduped by
 // legacy_roster_id, computed at call time. Does not mutate EMPLOYEE_ROSTER.
 // Used by Team Manager admin + Hours Report so post-6.3b employees appear
 // in their team rows. Field translation: facade row.team → unified
 // emp.defaultTeam; legacy_roster_id || id → unified emp.id (so
-// dailyAssignments / roster_term_data localStorage lookups remain stable).
+// dailyAssignments / roster_term_data localStorage lookups remain stable);
+// facade row.id is ALSO carried through as emp.uuid, always the real
+// Supabase employees.id regardless of which value emp.id ended up being.
+//
+// Bug fix (Staff -> Teams "Remove does nothing"): this used to also
+// dedup by NAME ("existsByName"), dropping every facade employee after
+// the first with a given (case-insensitive) name. That check only ever
+// made sense while EMPLOYEE_ROSTER (retired v10.5.22, permanently [])
+// could hold entries that might collide with facade rows -- with
+// EMPLOYEE_ROSTER always empty, it was silently comparing facade
+// employees against EACH OTHER, and Manna's real roster currently has
+// 7+ groups of same-named employees ("Tom Manna" x2, "Keyshla -" x2,
+// etc, confirmed live). Every employee after the first in each group
+// was invisible to this entire roster-based UI -- impossible to
+// select, add, remove, or manage via Staff -> Teams (or the Schedule
+// tab, which shares this same function) at all. Name-based dedup
+// removed entirely; legacy_roster_id is still a legitimate duplicate
+// guard (two facade rows genuinely can't share one legacy id).
 function getUnifiedRoster() {
   var rows = EMPLOYEE_ROSTER.slice();
   if (!window.PentaEmployees || !window.PentaEmployees.listSync) return rows;
   try {
     var facade = window.PentaEmployees.listSync() || [];
     facade.forEach(function(fe) {
-      var name = (fe.name || '').toLowerCase();
-      var existsByName = rows.find(function(r) {
-        return (r.name || '').toLowerCase() === name;
-      });
       var existsByLegacy = fe.legacy_roster_id ? rows.find(function(r) {
         return r.id === fe.legacy_roster_id;
       }) : null;
-      if (!existsByName && !existsByLegacy && fe.status !== 'terminated') {
+      if (!existsByLegacy && fe.status !== 'terminated') {
         rows.push({
           id: fe.legacy_roster_id || fe.id,
+          uuid: fe.id,
           name: fe.name,
           defaultTeam: fe.team || fe.team_text || null,
           role: Array.isArray(fe.role) ? fe.role : [],
