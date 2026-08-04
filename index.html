@@ -29112,21 +29112,32 @@ function renderGPS() {
 
       // Use shared matchStopToClientGeo function
 
-      rows = stopList.map((s, si) => {
+      const _tz = _pentaBusinessTimezone();
+
+      // v11.0.30: extracted from the old stopList.map() so both the
+      // flat 24h render and the grouped-by-day rolling-window render
+      // (below) share one row template. includeDriveInfo replaces the
+      // old `si > 0` check -- "was there a previous stop to show
+      // drive-time from" now means "previous stop IN THIS DAY'S GROUP",
+      // not "previous stop in the whole multi-day list" (a 3am arrival
+      // on a new day isn't a "drive" from yesterday's last stop).
+      function _renderGPSStopRow(s, includeDriveInfo) {
         // v11.0.27: render in the BUSINESS's timezone (where the work
         // happens), not the viewer's. A CA-based owner viewing MA-based
         // fleet wants times in Eastern to match MyGeotab + their mental
         // model of "team starts at 9 AM" (9 AM EDT at the office, not
         // 9 AM their local time).
-        const _tz = _pentaBusinessTimezone();
-        // Rolling multi-day windows (3d/7d/30d) can mix stops from
-        // several calendar days -- bare "2:14 PM" is ambiguous across
-        // days, so stamp the date too in that mode.
-        const _timeOpts = _isRollingView
-          ? {month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZone:_tz}
-          : {hour:'numeric', minute:'2-digit', timeZone:_tz};
+        // Rolling multi-day windows (3d/7d/30d) group stops under a
+        // per-day date header (below), so bare "2:14 PM" is unambiguous
+        // again within each group -- no date stamp needed on the row
+        // itself in either mode.
+        const _timeOpts = {hour:'numeric', minute:'2-digit', timeZone:_tz};
         const inStr = s.inTime ? s.inTime.toLocaleString('en-US', _timeOpts) : '—';
-        const outStr = s.outTime ? s.outTime.toLocaleString('en-US', _timeOpts) : (si === stopList.length-1 ? 'Now' : '—');
+        // "Now" only for the single chronologically-last stop overall
+        // (found by reference, not array position -- position no longer
+        // implies recency once rolling-view groups reorder the render).
+        const isLastOverall = s === stopList[stopList.length - 1];
+        const outStr = s.outTime ? s.outTime.toLocaleString('en-US', _timeOpts) : (isLastOverall ? 'Now' : '—');
         const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
         const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
         const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
@@ -29143,7 +29154,7 @@ function renderGPS() {
         const maybeLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
 
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
-        return `${si > 0 ? driveInfo : ''}
+        return `${includeDriveInfo ? driveInfo : ''}
         <div class="tvc-stop-row" style="align-items:flex-start${maybeLunch ? ';background:rgba(251,191,36,0.06);border-radius:6px;margin:0 -4px;padding:4px' : ''}">
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
@@ -29158,7 +29169,39 @@ function renderGPS() {
             </div>
           </div>
         </div>`;
-      }).join('');
+      }
+
+      if (!_isRollingView) {
+        // 24h view: unchanged flat list, no date headers.
+        rows = stopList.map((s, si) => _renderGPSStopRow(s, si > 0)).join('');
+      } else {
+        // 3d/7d/30d view: group by calendar date (business timezone),
+        // most recent day first, with a "Monday, Aug 3" header before
+        // each day's stops. Tom's explicit ask -- stops spanning
+        // multiple days need to be visually separated by day, not read
+        // as one long ambiguous list.
+        const _dayGroups = {};
+        const _dayOrder = [];
+        stopList.forEach(function(s) {
+          const d = s.inTime || s.outTime;
+          const dKey = d ? d.toLocaleDateString('en-CA', {timeZone:_tz}) : 'unknown';
+          if (!_dayGroups[dKey]) {
+            _dayGroups[dKey] = {
+              label: d ? d.toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric', timeZone:_tz}) : 'Unknown date',
+              items: []
+            };
+            _dayOrder.push(dKey);
+          }
+          _dayGroups[dKey].items.push(s);
+        });
+        _dayOrder.sort(function(a,b){ return b < a ? -1 : b > a ? 1 : 0; }); // descending -- most recent day first
+        rows = _dayOrder.map(function(dKey, gi) {
+          const g = _dayGroups[dKey];
+          const headerHtml = `<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;padding:${gi === 0 ? '2px' : '10px'} 0 4px${gi === 0 ? '' : ';border-top:1px solid var(--border);margin-top:6px'}">${g.label}</div>`;
+          const itemsHtml = g.items.map(function(s, si2) { return _renderGPSStopRow(s, si2 > 0); }).join('');
+          return headerHtml + itemsHtml;
+        }).join('');
+      }
 
       stopsHtml = rows;
     } else {
