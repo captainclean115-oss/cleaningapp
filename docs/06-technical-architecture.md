@@ -434,6 +434,22 @@ Verified: `node --check` on the extracted inline script; grepped for every remov
 
 ---
 
+## 8am. Team Color (PR #90, migration 093)
+
+`teams.color` already existed (added at some earlier point, per the column list — nullable, no default, no format check) but had no editable UI beyond the optional param on `PentaTeams.create()`, and no write method existed for an *existing* team (`rename()` only touched `name`). New "Team Color" field in the Staff → Teams → click-team modal (`openStaffTeamDetailModal`), the one place that already shows employees + GPS vehicle for a team — 10 preset swatches (Red/Orange/Amber/Green/Teal/Cyan/Blue/Indigo/Purple/Pink) + a native `<input type="color">` "Custom" swatch, selected one gets a ring + checkmark.
+
+**Schema**: `ALTER COLUMN color SET DEFAULT '#3B82F6'`, a `teams_color_format_check` CHECK (`^#[0-9A-Fa-f]{6}$`, nullable still allowed), and a sequential-preset backfill for any row still missing a color (`ROW_NUMBER() OVER (PARTITION BY business_id ORDER BY display_order, created_at)`, wrapping `% 10`) — a no-op for Manna today (all 8 active teams already had real colors from the legacy hardcoded map) but real protection for any other tenant/future team. `teams` also gained its first-ever audit trigger (`audit_teams_capture` + a `'teams' → 'team'` case in `audit_log_capture()`'s entity-type mapping) — no team change of any kind was audited before this.
+
+**`PentaTeams.updateColor(teamId, color)`** — new facade method, same plain-write pattern as the existing `rename()` (no RPC needed; `teams_update` RLS already permits it). The edit modal itself is keyed by legacy team-code *string* (`"M3"`), not the PentaTeams row *id* color lives on — resolved via `PentaTeams.getByName(team)`, the exact same name lookup `_pentaTeamColor()` already relies on everywhere else, confirmed to resolve correctly for all 8 of Manna's active legacy codes.
+
+**Why the other 5 "where color should appear" surfaces needed zero code changes**: this codebase already went through a "Sprint 7: PentaTeams-first team list + color resolvers — single source of truth" pass before this feature. Every surface Tom listed (Team Assignments header, schedule-board job dot, Live Tracking row, the per-employee team-assignment picker, the Staff→Teams list) already resolves color via `_pentaTeamColor()` or a direct `PentaTeams.getById()/getByName()` lookup, live off the same `teams.color` this feature writes to — so once a real write path existed, they all picked it up automatically. Verified this by reading every one of the ~30 call sites, not by assuming the "single source of truth" comment was still accurate: found and confirmed 8 *additional* sites (an Employee Portal preview badge, the real-employee login badge, the portal's own schedule accent, the Staff panel's two employee-list renderers, the employee profile page, and the client-edit "Assign Team" picker) that also **already** check `PentaTeams.getById`/`getByName` first and only fall back to an old hardcoded map (`TEAM_COLORS`/`COLORS`, both stale duplicates of the same values) when an employee has no `team_id` set (2 of 19 active Manna employees, a pre-existing data-completeness gap unrelated to this feature, not fixed here) — none of these needed editing either.
+
+**Accessibility**: color is additive everywhere it appears — the team code/name is already rendered alongside every color dot/accent across all these surfaces (pre-existing, not something this feature had to add), so nothing here makes color the sole differentiator.
+
+Verified: 9 new Node assertions (extraction-based) for the swatch picker — exact palette match, single-checkmark-on-selected-preset, custom-color path, case-insensitive hex matching. Live rolled-back-transaction tests: a color update correctly auto-audits (`action_type='updated', entity_type='team'`, old/new color both captured); the CHECK constraint rejects a non-hex string; a synthetic second-tenant team row (real `businesses` row, "Test Business Two") confirmed Manna's own owner cannot write to another tenant's team color — RLS silently no-ops the UPDATE (0 rows affected) rather than erroring, same pattern as every other cross-tenant boundary already verified this session.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
@@ -952,6 +968,7 @@ The Activity Log surfaces in two places: the global Updates tab (`renderActivity
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **093** — Team Color (§8am). `teams.color` gets a `#3B82F6` DEFAULT, a `teams_color_format_check` CHECK (`^#[0-9A-Fa-f]{6}$`), and a sequential-preset backfill for any row still missing a color. Adds `teams`' first-ever audit trigger (`audit_teams_capture` + `'teams' → 'team'` in `audit_log_capture()`).
 - **092** — Client cancellation flow (§8ak). Adds `clients.cancellation_reason` (CHECK'd against 9 preset values), `cancellation_notes`, `cancelled_at`, `cancelled_by` (→ `users.id`). Extends `audit_log_capture()` with a `clients` `cancelled_at` NULL→non-NULL branch (mirrors the existing `jobs` one) so cancellations auto-label `action_type='cancelled'`.
 - **091** — GPS Verification start date scaffolding (§8ai). Adds `businesses.gps_verification_start_date date` (nullable). Column only — the cross-check logic that will read it is separate, deferred future work.
 - **090** — Backfill stale `scheduled` jobs (§8ah). One-time data fix, no schema change: `UPDATE jobs SET status='completed' WHERE business_id=<manna> AND status='scheduled' AND date < CURRENT_DATE` — 22 rows, $2,608.
