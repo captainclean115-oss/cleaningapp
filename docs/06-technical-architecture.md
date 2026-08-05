@@ -351,6 +351,20 @@ Verified: DB shows $5,303.36 across 19 completed jobs for 2026-08-03, all `activ
 
 ---
 
+## 8ag. Clients tab: Recurring/OMS/Inactive segment (PR #84)
+
+Post-import, the Clients tab mixed ~433 one-time OMS clients and ~331 inactive clients in with the ~460 normal recurring ones, all under one list with no way to separate them. Added a new primary segment (`#client-type-segment`, `renderClientTypeSegment`/`setClientTypeFilter`/`clientTypeFilter`) above the existing Active/Paused/Inactive/All status segment from migration 008: **Recurring** (default) / **OMS** / **Inactive**.
+
+**Recurring is `!tags.includes('oms_only')`, not `tags.includes('recurring')`.** A manually-created client (`+ New Client`) never gets a `recurring` tag — only the Maids importer sets it, and only on clients with a 2026 recurring-schedule row (`clients.tags` defaults to `'{}'`). Requiring the positive tag would have made every non-imported client invisible in the default view. The negative check (everyone *except* OMS-only clients) is safe for both imported and manually-created clients and matches Tom's intent ("Recurring active clients only" as the default, meaning "not the one-time OMS bucket").
+
+**OMS and Inactive bypass the nested Active/Paused/Inactive/All status segment** (hidden via `renderClientTypeSegment` when either is selected) — active/paused doesn't meaningfully apply to a one-time OMS booking, and "Inactive" here already fully determines its own slice (`status === 'inactive'`, independent of tags) rather than nesting under another status control. Within the Recurring tab, the existing status segment still works exactly as before (Active is the default, Paused/All still selectable) — this composes as "default = Recurring tab + Active status," matching Tom's literal spec, while keeping the pre-existing Paused-status workflow intact rather than replacing it.
+
+The redundant `oms_only` quick-filter chip (added in PR #78, in the secondary filter-chips drawer) was removed now that OMS is a primary tab — having both would let a manager accidentally AND them together with no visual explanation for why the list went empty.
+
+Verified against real data: `!oms_only` (Recurring) = 460 clients, `oms_only` (OMS) = 433, `status='inactive'` (Inactive) = 331 (460 + 433 = 893 = total, confirming the importer's tag logic keeps `recurring`/`oms_only` mutually exclusive as designed); default view (Recurring + Active) = 374 clients.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
