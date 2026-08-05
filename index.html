@@ -29658,35 +29658,90 @@ function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
   };
 }
 
-// Calls the migration-087 RPC (one Postgres transaction: client
-// upserts, job upserts/wipe, derived-stat recompute, review-flag
-// sweep, import_runs row) and re-hydrates the in-memory facades so the
-// rest of the app reflects the import immediately, no reload needed.
-async function maidsCommitImport(payload) {
+// Splits jobs into fixed-size batches for import_maids_jobs_batch.
+// 500/batch keeps each RPC call at ~150-800ms even at full real-data
+// scale (measured live) -- comfortably under the `authenticated`
+// role's 8s statement_timeout, which is what a single unbatched
+// ~14,000-row commit blew through (see migration 089).
+var MAIDS_JOB_BATCH_SIZE = 500;
+function maidsChunkArray(arr, size) {
+  var out = [];
+  for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Orchestrates the batched import (migration 089): one atomic
+// client-upsert call (import_maids_start), N sequential job batches
+// (import_maids_jobs_batch, each its own transaction), then one
+// finish call (import_maids_finish) for the derived-stat recompute +
+// final totals. Progress/resume state lives on _maidsState.commit --
+// on any failure, nextBatchIndex stays at the failed batch, so a
+// retry (re-calling this function) skips every batch that already
+// landed rather than restarting the whole import or re-wiping
+// anything. Each batch is idempotent (upsert on the existing
+// (client, date, start_time) dedup key), so even a batch the client
+// isn't sure succeeded is always safe to resend.
+async function maidsRunCommitBatched(onProgress) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-  if (!sb) throw new Error('maidsCommitImport: no Supabase client');
+  if (!sb) throw new Error('maidsRunCommitBatched: no Supabase client');
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
-  if (!bid) throw new Error('maidsCommitImport: tenant not resolved');
-  var res = await sb.rpc('import_maids_data', {
+  if (!bid) throw new Error('maidsRunCommitBatched: tenant not resolved');
+
+  var c = _maidsState.commit;
+  if (!c) {
+    var csvTypes = Object.keys(_maidsState.csvRows);
+    var payload = maidsBuildPayload(_maidsState.preview, _maidsState.decisions, _maidsState.wipeMode ? 'wipe' : 'upsert', csvTypes);
+    var startRes = await sb.rpc('import_maids_start', {
+      p_business_id: bid,
+      p_mode: payload.p_mode,
+      p_csv_types: payload.p_csv_types,
+      p_clients_update: payload.p_clients_update,
+      p_clients_create: payload.p_clients_create
+    });
+    if (startRes.error) throw startRes.error;
+    c = _maidsState.commit = {
+      runId: startRes.data.run_id,
+      batches: maidsChunkArray(payload.p_jobs, MAIDS_JOB_BATCH_SIZE),
+      nextBatchIndex: 0,
+      acc: { jobs_created: 0, jobs_updated: 0, jobs_flagged_multi_visit: 0, rows_processed: payload.p_jobs.length }
+    };
+  }
+
+  var total = c.batches.length;
+  for (var i = c.nextBatchIndex; i < total; i++) {
+    if (onProgress) onProgress(i + 1, total);
+    var batchRes = await sb.rpc('import_maids_jobs_batch', {
+      p_business_id: bid, p_run_id: c.runId, p_jobs: c.batches[i]
+    });
+    if (batchRes.error) throw batchRes.error; // nextBatchIndex NOT advanced -- retry resumes at batch i
+    c.acc.jobs_created += batchRes.data.jobs_created;
+    c.acc.jobs_updated += batchRes.data.jobs_updated;
+    c.acc.jobs_flagged_multi_visit += batchRes.data.jobs_flagged_multi_visit;
+    c.nextBatchIndex = i + 1;
+  }
+
+  var finishRes = await sb.rpc('import_maids_finish', {
     p_business_id: bid,
-    p_mode: payload.p_mode,
-    p_csv_types: payload.p_csv_types,
-    p_clients_update: payload.p_clients_update,
-    p_clients_create: payload.p_clients_create,
-    p_jobs: payload.p_jobs
+    p_run_id: c.runId,
+    p_rows_processed: c.acc.rows_processed,
+    p_jobs_created: c.acc.jobs_created,
+    p_jobs_updated: c.acc.jobs_updated,
+    p_jobs_flagged_multi_visit: c.acc.jobs_flagged_multi_visit
   });
-  if (res.error) throw res.error;
+  if (finishRes.error) throw finishRes.error;
+
+  _maidsState.commit = null; // import complete -- clear resume state
   try { if (window.PentaClients && window.PentaClients.refreshFromSupabase) await window.PentaClients.refreshFromSupabase(); } catch (e) { console.warn('[MaidsImport] client cache refresh failed', e); }
   try { if (window.PentaJobs && window.PentaJobs._hydrate) await window.PentaJobs._hydrate(); } catch (e) { console.warn('[MaidsImport] job cache refresh failed', e); }
-  return res.data;
+  return finishRes.data;
 }
 
 // ── Maids Import UI ─────────────────────────────────────────────────
 var MAIDS_CSV_LABELS = { '2026_recurring': '2026 Recurring', '2026_oms': '2026 OMS', '2025_combined': '2025 Combined' };
-var _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false };
+var _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false, commit: null };
 
 function openMaidsImportModal() {
-  _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false };
+  _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false, commit: null };
   document.getElementById('maids-import-modal').style.display = 'block';
   renderMaidsUploadStep();
 }
@@ -29828,18 +29883,46 @@ function maidsResolveConfirmRow(key, decision) {
 
 async function maidsRunCommit() {
   if (!_maidsAllConfirmRowsResolved()) return;
-  var btn = document.getElementById('maids-commit-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
   try {
-    var csvTypes = Object.keys(_maidsState.csvRows);
-    var payload = maidsBuildPayload(_maidsState.preview, _maidsState.decisions, _maidsState.wipeMode ? 'wipe' : 'upsert', csvTypes);
-    var result = await maidsCommitImport(payload);
+    var result = await maidsRunCommitBatched(renderMaidsImportProgress);
     renderMaidsSummaryStep(result);
   } catch (e) {
     console.error('[MaidsImport] commit failed', e);
-    alert('Import failed: ' + (e.message || e));
-    if (btn) { btn.disabled = false; btn.textContent = 'Confirm and Import'; }
+    renderMaidsImportError(e);
   }
+}
+
+// Shown while batches are in flight. "Confirm and Import" ->
+// "Importing batch N of M…" with a fill bar, per Tom's spec.
+function renderMaidsImportProgress(batchNum, totalBatches) {
+  var body = document.getElementById('maids-import-body');
+  if (!body) return;
+  var pct = totalBatches ? Math.round(((batchNum - 1) / totalBatches) * 100) : 0;
+  body.innerHTML = '<div style="text-align:center;padding:50px 0">'
+    + '<div style="font-size:15px;font-weight:700;margin-bottom:14px">Importing batch ' + batchNum + ' of ' + totalBatches + '…</div>'
+    + '<div style="background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;height:10px;overflow:hidden;max-width:320px;margin:0 auto">'
+    +   '<div style="background:var(--accent);height:100%;width:' + pct + '%;transition:width .2s"></div>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:10px">Please keep this screen open</div>'
+    + '</div>';
+}
+
+// A failed batch never touches batches that already committed --
+// nextBatchIndex on _maidsState.commit marks exactly where to resume.
+// "Retry" re-invokes maidsRunCommit, which resumes from there instead
+// of restarting the whole import.
+function renderMaidsImportError(e) {
+  var body = document.getElementById('maids-import-body');
+  if (!body) return;
+  var c = _maidsState.commit;
+  var progressNote = (c && c.batches) ? ('Progress saved: ' + c.nextBatchIndex + ' of ' + c.batches.length + ' job batches already imported. Retrying will not re-import or duplicate them.') : '';
+  body.innerHTML = '<div style="text-align:center;padding:40px 0">'
+    + '<div style="font-size:36px;margin-bottom:10px">⚠️</div>'
+    + '<div style="font-size:15px;font-weight:700;margin-bottom:8px">Import failed</div>'
+    + '<div style="font-size:13px;color:var(--muted);margin-bottom:10px">' + escapeHtml(e.message || String(e)) + '</div>'
+    + (progressNote ? '<div style="font-size:12px;color:var(--muted);margin-bottom:20px">' + escapeHtml(progressNote) + '</div>' : '<div style="margin-bottom:20px"></div>')
+    + '<button onclick="maidsRunCommit()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer">Retry</button>'
+    + '</div>';
 }
 
 // Best-effort client display name for a duplicate case -- external_id
