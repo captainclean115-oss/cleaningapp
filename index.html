@@ -4674,6 +4674,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div style="font-size:19px;font-weight:700;letter-spacing:-0.01em">Clients</div>
       <button data-permission="new_client_icon" data-permission-role="manager" onclick="openNewCustomerForm()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:8px 16px;border-radius:20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px">+ New Client</button>
     </div>
+    <!-- PR #84: primary Recurring/OMS/Inactive segment, above the
+         existing Active/Paused/Inactive/All status segment (which
+         renderClientTypeSegment shows/hides depending on which of
+         these is selected). -->
+    <div id="client-type-segment" style="padding:0 16px 10px;display:flex;gap:6px;overflow-x:auto"></div>
     <div id="client-status-segment" style="padding:0 16px 10px;display:flex;gap:6px;overflow-x:auto"></div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
@@ -13838,6 +13843,7 @@ let expandedId = null;
 let activeFilters = new Set();
 let searchVal = '';
 let clientStatusFilter = 'active'; // Migration 008: 'active' | 'paused' | 'inactive' | 'all'
+let clientTypeFilter = 'recurring'; // PR #84: 'recurring' | 'oms' | 'inactive'
 let drawerClient = null;
 let drawerType = null;
 
@@ -14088,8 +14094,10 @@ function buildFilters() {
   const special = [
     {id:'bal', label:'Balance due'},
     // PR #78 — Maids import review filters.
+    // 'oms_only' removed from this drawer (PR #84) -- promoted to a
+    // primary Recurring/OMS/Inactive tab (#client-type-segment) so it's
+    // not also duplicated as a secondary chip here.
     {id:'import_review', label:'Import Review'},
-    {id:'oms_only', label:'OMS'},
     {id:'needs_address', label:'Needs Address Details'},
     {id:'multi_visit', label:'Double-Billed'},
   ];
@@ -14203,6 +14211,49 @@ function buildSchedule(c) {
   return results;
 }
 
+// PR #84 — top-level Recurring/OMS/Inactive segment, layered above the
+// existing Active/Paused/Inactive/All status segment. "Recurring" is
+// !tags.includes('oms_only') rather than requiring tags.includes(
+// 'recurring') -- a manually-created client (+ New Client) has no tags
+// at all (clients.tags defaults to '{}'), and requiring a positive
+// 'recurring' tag match would make every non-imported client invisible
+// in the default view. "OMS" and "Inactive" still bypass the nested
+// status segment entirely -- active/paused doesn't meaningfully apply
+// to a one-time OMS booking, and "Inactive" here already IS a full
+// status slice.
+function renderClientTypeSegment() {
+  const wrap = document.getElementById('client-type-segment');
+  if (!wrap) return;
+  const all = PentaClients.list();
+  let nRec = 0, nOms = 0, nInactive = 0;
+  for (var i = 0; i < all.length; i++) {
+    var c = all[i];
+    var tags = c.tags || [];
+    if ((c.status || 'active') === 'inactive') nInactive++;
+    if (tags.includes('oms_only')) nOms++;
+    else nRec++;
+  }
+  const segs = [
+    { id: 'recurring', label: 'Recurring', n: nRec },
+    { id: 'oms', label: 'OMS', n: nOms },
+    { id: 'inactive', label: 'Inactive', n: nInactive }
+  ];
+  wrap.innerHTML = segs.map(function(s){
+    var on = clientTypeFilter === s.id;
+    return '<button onclick="setClientTypeFilter(\'' + s.id + '\')" style="background:' + (on ? 'var(--text)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + ';border:1px solid ' + (on ? 'var(--text)' : 'var(--border)') + ';border-radius:16px;padding:6px 12px;font-size:12px;font-weight:700;font-family:\'DM Sans\',sans-serif;white-space:nowrap;cursor:pointer">' + s.label + ' (' + s.n + ')</button>';
+  }).join('');
+  // The Active/Paused/Inactive/All status segment only makes sense
+  // while browsing Recurring clients -- hide it for OMS/Inactive, which
+  // already fully determine their own slice above.
+  var statusWrap = document.getElementById('client-status-segment');
+  if (statusWrap) statusWrap.style.display = (clientTypeFilter === 'recurring') ? 'flex' : 'none';
+}
+
+function setClientTypeFilter(id) {
+  clientTypeFilter = id;
+  applyFilters(true);
+}
+
 function renderClientStatusSegment() {
   const wrap = document.getElementById('client-status-segment');
   if (!wrap) return;
@@ -14252,16 +14303,26 @@ function applyFilters(force) {
   // PentaClients.filterClients(...) call below — the predicate itself
   // (status / search / chip filters) is unchanged.
   filtered = sortClientList(PentaClients.filterClients(c => {
-    // Migration 008: status filter (segmented control)
     var cs = c.status || 'active';
-    if (clientStatusFilter !== 'all' && cs !== clientStatusFilter) return false;
+    var ctags = c.tags || [];
+    // PR #84: top-level Recurring/OMS/Inactive segment.
+    if (clientTypeFilter === 'oms') {
+      if (!ctags.includes('oms_only')) return false;
+    } else if (clientTypeFilter === 'inactive') {
+      if (cs !== 'inactive') return false;
+    } else { // 'recurring' (default) -- everyone except OMS-only clients
+      if (ctags.includes('oms_only')) return false;
+      // Migration 008: status filter (segmented control) -- only applies
+      // within the Recurring tab; OMS/Inactive above already fully
+      // determine their own slice.
+      if (clientStatusFilter !== 'all' && cs !== clientStatusFilter) return false;
+    }
     const name = cleanName(c).toLowerCase();
     if (q && !name.includes(q) && !(c.city || '').toLowerCase().includes(q) && !(c.ph || '').includes(q) && !(c.addr || '').toLowerCase().includes(q)) return false;
     for (const f of activeFilters) {
       if (f === 'bal' && c.bal <= 0) return false;
       // PR #78 — Maids import review filters.
       if (f === 'import_review' && !(c.review_flags || []).includes('not_in_maids_import')) return false;
-      if (f === 'oms_only' && !(c.tags || []).includes('oms_only')) return false;
       if (f === 'needs_address' && !(c.review_flags || []).includes('needs_address_details')) return false;
       if (f === 'multi_visit' && !_maidsClientHasMultiVisitJob(c.id)) return false;
       if (f.startsWith('freq:')) {
@@ -14273,6 +14334,7 @@ function applyFilters(force) {
     }
     return true;
   }), clientSortOrder);
+  renderClientTypeSegment();
   renderClientStatusSegment();
   render(force);
 }
