@@ -4817,7 +4817,25 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <button onclick="clearActivityLog()" style="background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">Clear</button>
     </div>
   </div>
+  <!-- PR #95 Part 3: filter bar. Populated by _renderActivityLogFilterBar(). -->
+  <div id="activity-log-filters" style="padding:8px 12px 6px;display:flex;flex-direction:column;gap:6px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <select id="alf-entity" onchange="setActivityLogFilter('entityType', this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:5px 8px;border-radius:8px"></select>
+      <select id="alf-action" onchange="setActivityLogFilter('actionType', this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:5px 8px;border-radius:8px"></select>
+      <select id="alf-actor" onchange="setActivityLogFilter('actorId', this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:5px 8px;border-radius:8px"></select>
+    </div>
+    <div id="alf-date-presets" style="display:flex;gap:4px;flex-wrap:wrap"></div>
+    <div id="alf-custom-range" style="display:none;gap:6px;align-items:center">
+      <input type="date" id="alf-date-from" onchange="setActivityLogFilter('dateFrom', this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;padding:5px 8px;border-radius:8px">
+      <span style="color:var(--muted);font-size:11px">to</span>
+      <input type="date" id="alf-date-to" onchange="setActivityLogFilter('dateTo', this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;padding:5px 8px;border-radius:8px">
+    </div>
+    <input type="text" id="alf-search" placeholder="Search activity…" oninput="_activityLogSearchDebounced(this.value)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:7px 10px;border-radius:8px;width:100%;box-sizing:border-box">
+  </div>
   <div id="activity-log-list" style="padding:0 12px 20px"></div>
+  <div id="activity-log-load-more-wrap" style="padding:0 12px 12px;display:none">
+    <button id="activity-log-load-more" onclick="loadMoreActivityLog()" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:10px;border-radius:10px;cursor:pointer">Load 50 more</button>
+  </div>
   <div class="bottom-pad"></div>
 </div>
 
@@ -16948,7 +16966,7 @@ function _auditDescribe(row) {
   // This shim is kept for any non-activity-log caller that hasn't
   // migrated yet — it returns a stripped-down approximation by
   // running through the new renderer's text-only branch.
-  var html = _renderAuditRowSummary(row, { users: {}, clients: {}, jobs: {}, employees: {} });
+  var html = _renderAuditRowSummary(row, { users: {}, clients: {}, clientsByUuid: {}, jobs: {}, employees: {}, teams: {}, nameHints: {} });
   // Extract plain text for legacy callers.
   var tmp = document.createElement('div');
   tmp.innerHTML = (html && html.summary) || '';
@@ -16990,15 +17008,23 @@ var _AUDIT_FIELD_LABEL = {
   zip: 'zip', zip_code: 'zip', ph: 'phone', phone: 'phone',
   email: 'email', notes: 'notes',
   team: 'team', team_text: 'team', team_id: 'team',
-  time: 'time', endTime: 'end time', date: 'date',
+  time: 'time', end_time: 'end time', endTime: 'end time', date: 'date',
+  scheduled_start_time: 'time', scheduled_end_time: 'end time',
   fc: 'frequency', frequency: 'frequency', pkg: 'package',
-  price: 'price', avgRev: 'avg revenue',
-  status: 'status', cancelled: 'cancellation', cancelReason: 'cancel reason',
+  price: 'price', avgRev: 'avg revenue', current_price: 'price', amount: 'amount',
+  status: 'status', cancelled: 'cancellation', cancelReason: 'cancel reason', cancel_reason: 'cancel reason',
+  cancellation_reason: 'cancellation reason', cancellation_notes: 'cancellation notes',
+  cancellation_type: 'cancellation type', pause_reason: 'pause reason',
   pref_day: 'preferred day', pref_time: 'preferred time',
-  position: 'position', is_team_leader: 'team leader flag', is_driver: 'driver flag',
+  position: 'position', role: 'role', is_team_leader: 'team leader flag', is_driver: 'driver flag',
+  driver: 'driver flag', pay_rate: 'pay rate', team_id: 'team',
   clock_in_at: 'clock in', clock_out_at: 'clock out',
   description: 'description', resolution_note: 'resolution note',
-  occasional: 'occasional flag', keyCode: 'key code'
+  occasional: 'occasional flag', keyCode: 'key code',
+  color: 'color', active: 'active', depot_id: 'depot',
+  employee_id: 'employee', status_type: 'status', method: 'payment method',
+  voided: 'voided', void_reason: 'void reason',
+  incident_type: 'incident type'
 };
 var _AUDIT_NOISE_FIELDS = {
   id:1, business_id:1, created_at:1, updated_at:1, last_seen_at:1,
@@ -17008,8 +17034,77 @@ var _AUDIT_NOISE_FIELDS = {
   external_id:1, legacy_id:1, legacy_roster_id:1,
   is_team_leader_synced_at:1, actual_start_at:1, actual_end_at:1,
   actual_start_by:1, actual_end_by:1, items_loaded_at:1,
-  auth_user_id:1, first_seen_at:1, last_login_at:1
+  auth_user_id:1, first_seen_at:1, last_login_at:1,
+  // PR #95 additions -- internal/computed/noisy columns surfaced by
+  // widening entity coverage (users/teams/daily_assignments/reward_*).
+  deleted_at:1, deleted_by:1, created_by:1, settings:1, manager_permissions:1,
+  photo_path:1, photo_expires_at:1, ocr_results:1, ocr_status:1, ocr_confidence:1,
+  ocr_processed_at:1, team_performance:1, review_flags:1, tags:1, home_features:1,
+  additional_phones:1, available_days:1, languages_spoken:1, geocoded_at:1,
+  geocode_status:1, historical_cancellation_count:1, historical_completion_count:1,
+  estimated_minutes:1, margin:1, timezone:1, event_key:1, reference_id:1,
+  legacy_roster_id_synced_at:1
 };
+
+// PR #95 — type-aware diff formatting + per-entity meaningful-field
+// allowlists. Real DB column names throughout (old_values/new_values
+// are literal to_jsonb(row) snapshots) -- confirmed against
+// information_schema for clients/jobs/employees/teams/
+// daily_assignments/payments/incidents, not guessed.
+var _AUDIT_FIELD_TYPE = {
+  price: 'money', current_price: 'money', avgRev: 'money', amount: 'money',
+  balance: 'money', pay_rate: 'money', balance_due: 'money',
+  time: 'time', end_time: 'time', endTime: 'time',
+  scheduled_start_time: 'time', scheduled_end_time: 'time',
+  clock_in_at: 'datetime', clock_out_at: 'datetime',
+  date: 'date', cancelled_date: 'date', effective_from: 'date', effective_to: 'date',
+  cancelled_at: 'datetime',
+  is_team_leader: 'bool', is_driver: 'bool', driver: 'bool', occasional: 'bool',
+  active: 'bool', urgent: 'bool', voided: 'bool', within_window: 'bool', flexible: 'bool'
+};
+var _AUDIT_QUOTED_FIELDS = {
+  notes:1, cancellation_notes:1, cancellation_reason:1, cancel_reason:1,
+  description:1, resolution_note:1, void_reason:1, rejection_reason:1,
+  pause_reason:1, manager_notes:1
+};
+// Per Tom's spec: only these fields show up in a diff for the named
+// entity types (blocklist above still applies too). Entity types not
+// listed here keep the old blocklist-only behavior.
+var _AUDIT_MEANINGFUL_FIELDS = {
+  client: ['first_name','last_name','address','city','zip_code','phone','email',
+    'frequency','current_price','status','notes','cancellation_reason',
+    'cancellation_notes','pause_reason'],
+  job: ['date','time','end_time','team','status','price','cancellation_type','cancel_reason'],
+  employee: ['first_name','last_name','phone','email','position','team_id','pay_rate','is_driver'],
+  team: ['name','color','active','depot_id'],
+  daily_assignment: ['employee_id','team','status_type','notes','date'],
+  payment: ['amount','method','voided','void_reason'],
+  incident: ['incident_type','description','status','resolution_note']
+};
+function _audFmtMoney(v) {
+  var n = parseFloat(v);
+  return isNaN(n) ? String(v) : '$' + n.toFixed(2);
+}
+function _audFmtBoolVal(v) {
+  return (v === 'true' || v === true || v === '1' || v === 1) ? 'yes' : 'no';
+}
+// Formats one side of a diff pair. `isTo` controls the empty-value
+// wording per Tom's spec: '(empty)' on the "from" side, '(removed)'
+// on the "to" side.
+function _audFmtDiffSide(field, raw, isTo) {
+  if (raw == null || raw === '') return isTo ? '(removed)' : '(empty)';
+  var type = _AUDIT_FIELD_TYPE[field] || 'text';
+  if (type === 'money') return _audFmtMoney(raw);
+  if (type === 'bool') return _audFmtBoolVal(raw);
+  if (type === 'time') return _audFmtTime24to12(raw);
+  if (type === 'date') return _audFmtDateShort(raw);
+  if (type === 'datetime') {
+    try { return new Date(raw).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }); }
+    catch (e) { return String(raw); }
+  }
+  var s = _audTrunc(String(raw), 40);
+  return _AUDIT_QUOTED_FIELDS[field] ? ("'" + s + "'") : s;
+}
 
 function _audEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
@@ -17052,14 +17147,38 @@ function _audFmtDateShort(ymd) {
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   } catch (e) { return ymd; }
 }
-function _audClientName(ctx, cid) {
+// PR #95 — snapshot-first name resolution. Root cause of the old
+// "(deleted client)" bug: the live-cache lookup was the ONLY source
+// tried, keyed by the wrong id shape for client-entity rows (entity_id
+// is the clients.id UUID; PentaClients.getClient() keys by
+// external_id), and its placeholder string was truthy so the
+// snapshot-based `|| ...` fallbacks already written at every call site
+// never actually ran. Fix: try the CURRENT row's own snapshot first
+// (nv/ov — always a full-row jsonb dump, so a client/employee-entity
+// row always has its own name right there), only fall back to the
+// live cache (now correctly reachable via ctx.clientsByUuid for the
+// UUID-shaped id case), then a same-batch sibling snapshot, then an
+// honest last-resort label — never a placeholder that reads as data.
+function _audNameFromSnapshot(nv, ov) {
+  var src = (nv && (nv.first_name || nv.last_name)) ? nv : ((ov && (ov.first_name || ov.last_name)) ? ov : null);
+  if (!src) return null;
+  var n = ((src.first_name || '') + ' ' + (src.last_name || '')).trim();
+  return n || null;
+}
+function _audClientName(ctx, cid, nv, ov) {
   if (!cid) return null;
-  var c = ctx.clients[cid];
-  if (!c) return '(deleted client)';
-  var fn = c.fn || c.first_name || '';
-  var ln = c.ln || c.last_name || '';
-  var n = (fn + ' ' + ln).trim();
-  return n || '(unnamed client)';
+  var snap = _audNameFromSnapshot(nv, ov);
+  if (snap) return snap;
+  var c = ctx.clients[cid] || (ctx.clientsByUuid && ctx.clientsByUuid[cid]);
+  if (c) {
+    var fn = c.fn || c.first_name || '';
+    var ln = c.ln || c.last_name || '';
+    var n = (fn + ' ' + ln).trim();
+    if (n) return n;
+  }
+  var hint = ctx.nameHints && ctx.nameHints['client:' + cid];
+  if (hint) return hint;
+  return null;
 }
 function _audJobCtx(ctx, jid) {
   if (!jid) return { text: '', clientId: null };
@@ -17071,23 +17190,46 @@ function _audJobCtx(ctx, jid) {
   if (j.team) bits.push('Team ' + j.team);
   return { text: bits.join(' · '), clientId: j.clientId || j.client_id || null };
 }
-function _audEmpName(ctx, eid) {
+function _audEmpName(ctx, eid, nv, ov) {
   if (!eid) return null;
+  var snap = _audNameFromSnapshot(nv, ov);
+  if (snap) return snap;
   var e = ctx.employees[eid];
-  if (!e) return '(former staff)';
-  var fn = e.first_name || e.fn || '';
-  var ln = e.last_name || e.ln || '';
-  var n = (fn + ' ' + ln).trim();
-  return n || e.name || 'Employee';
+  if (e) {
+    var fn = e.first_name || e.fn || '';
+    var ln = e.last_name || e.ln || '';
+    var n = (fn + ' ' + ln).trim();
+    if (n) return n || e.name;
+  }
+  var hint = ctx.nameHints && ctx.nameHints['employee:' + eid];
+  if (hint) return hint;
+  return null;
 }
-function _audDiffFields(oldV, newV) {
+function _audTeamName(ctx, tid, nv, ov) {
+  if (!tid) return null;
+  var src = (nv && nv.name) ? nv : ((ov && ov.name) ? ov : null);
+  if (src && src.name) return src.name;
+  var t = ctx.teams && ctx.teams[tid];
+  if (t && t.name) return t.name;
+  var hint = ctx.nameHints && ctx.nameHints['team:' + tid];
+  if (hint) return hint;
+  return null;
+}
+function _audDiffFields(oldV, newV, entityType) {
   oldV = oldV || {}; newV = newV || {};
+  // PR #95: per-entity meaningful-field allowlist, on top of the
+  // existing noise blocklist. Entity types with no list here (job_issue,
+  // client_request, chat_message, form_submission, reward_*, user,
+  // employee_invite, team_device_assignment) keep blocklist-only
+  // behavior -- unchanged from before.
+  var allow = _AUDIT_MEANINGFUL_FIELDS[entityType] || null;
   var keys = {};
   Object.keys(oldV).forEach(function(k){ keys[k] = 1; });
   Object.keys(newV).forEach(function(k){ keys[k] = 1; });
   var out = [];
   Object.keys(keys).forEach(function(k){
     if (_AUDIT_NOISE_FIELDS[k]) return;
+    if (allow && allow.indexOf(k) === -1) return;
     var a = oldV[k], b = newV[k];
     // Treat null/'' as equivalent; nested objects compared by JSON.
     var aStr = (a == null) ? '' : (typeof a === 'object' ? JSON.stringify(a) : String(a));
@@ -17096,8 +17238,11 @@ function _audDiffFields(oldV, newV) {
     out.push({
       field: k,
       label: _AUDIT_FIELD_LABEL[k] || k.replace(/_/g, ' '),
-      from: aStr || '∅',
-      to: bStr || '∅'
+      // PR #95: type-aware formatting (money/time/date/bool) + the
+      // (empty)/(removed) wording baked in here now, so every caller
+      // downstream gets consistently formatted from/to for free.
+      from: _audFmtDiffSide(k, a, false),
+      to: _audFmtDiffSide(k, b, true)
     });
   });
   return out;
@@ -17177,8 +17322,12 @@ function _renderAuditRowSummary(row, ctx) {
         summary += ' → ' + _audEsc(_AUDIT_STATUS_LABEL[nv.status] || nv.status);
         chips.push({ label: 'STATUS: ' + (nv.status || '').toUpperCase().replace('_',' '), color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
       } else {
+        var incDiffs = _audDiffFields(ov, nv, 'incident').slice(0, 3);
         summary = _audEsc(actor) + ' updated incident';
         if (icName) summary += ' on ' + _audEsc(icName);
+        if (incDiffs.length) {
+          summary += ': ' + incDiffs.map(function(dd){ return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to); }).join(', ');
+        }
       }
       drill = ijid ? { type: 'job', id: ijid } : (iCid ? { type: 'client', id: iCid } : null);
     } else {
@@ -17187,22 +17336,41 @@ function _renderAuditRowSummary(row, ctx) {
   }
   // ─── client ────────────────────────────────────────────────────
   else if (et === 'client') {
-    var cn = _audClientName(ctx, row.entity_id) || ((nv.first_name || nv.fn || '') + ' ' + (nv.last_name || nv.ln || '')).trim() || '(unnamed client)';
+    var cn = _audClientName(ctx, row.entity_id, nv, ov) || '(unnamed client)';
     var city = nv.city || ov.city || '';
     if (at === 'created') {
-      summary = _audEsc(actor) + ' added new client <strong>' + _audEsc(cn) + '</strong>';
-      if (city) summary += ' (' + _audEsc(city) + ')';
+      // PR #95 Part 2: creations show key fields as a list, not a diff.
+      var cBits = [_audEsc(cn)];
+      if (nv.address) cBits.push(_audEsc(nv.address));
+      if (city) cBits.push(_audEsc(city));
+      if (nv.frequency) cBits.push(_audEsc(String(nv.frequency)));
+      if (nv.current_price != null) cBits.push(_audEsc(_audFmtMoney(nv.current_price)));
+      summary = _audEsc(actor) + ' created Client: <strong>' + cBits.join(', ') + '</strong>';
+      drill = { type: 'client', id: row.entity_id };
+    } else if (at === 'cancelled') {
+      // PR #95 Part 2: cancellation reason + future-jobs-cascaded count
+      // (row._cascadeCount is attached by an enrichment pass before
+      // render -- see _enrichCancellationCascades -- since that count
+      // lives in separate sibling job/'cancelled' audit rows, not on
+      // this row itself).
+      summary = _audEsc(actor) + ' cancelled Client: <strong>' + _audEsc(cn) + '</strong>';
+      if (nv.cancellation_reason) summary += ' - Reason: &lsquo;' + _audEsc(_audTrunc(nv.cancellation_reason, 90)) + '&rsquo;';
+      if (nv.cancellation_notes) summary += ' (' + _audEsc(_audTrunc(nv.cancellation_notes, 80)) + ')';
+      if (typeof row._cascadeCount === 'number' && row._cascadeCount > 0) {
+        summary += '. ' + row._cascadeCount + ' future job' + (row._cascadeCount === 1 ? '' : 's') + ' auto-cancelled';
+      }
+      chips.push({ label: 'CANCELLED', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
       drill = { type: 'client', id: row.entity_id };
     } else if (at === 'deleted') {
       summary = _audEsc(actor) + ' deleted client <strong>' + _audEsc(cn) + '</strong>';
     } else if (at === 'updated') {
-      var diffs = _audDiffFields(ov, nv).slice(0, 3);
-      summary = _audEsc(actor) + ' updated <strong>' + _audEsc(cn) + '</strong>';
+      var diffs = _audDiffFields(ov, nv, 'client').slice(0, 3);
+      summary = _audEsc(actor) + ' updated Client: <strong>' + _audEsc(cn) + '</strong>';
       if (diffs.length > 0) {
         var changeStrs = diffs.map(function(dd){
-          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(dd.from, 22)) + ' → ' + _audEsc(_audTrunc(dd.to, 22));
+          return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to);
         });
-        summary += ' — changed: ' + changeStrs.join(', ');
+        summary += ': ' + changeStrs.join(', ');
       }
       drill = { type: 'client', id: row.entity_id };
     } else if (at === 'restored') {
@@ -17224,38 +17392,36 @@ function _renderAuditRowSummary(row, ctx) {
       if (jdate) bits.push(_audFmtDateShort(jdate));
       if (jtime) bits.push(_audFmtTime24to12(jtime));
       if (jteam) bits.push('Team ' + _audEsc(jteam));
-      if (nv.price) bits.push('$' + _audEsc(String(nv.price)));
-      summary = _audEsc(actor) + ' added new job: <strong>' + bits.join(' · ') + '</strong>';
+      if (nv.price != null) bits.push(_audEsc(_audFmtMoney(nv.price)));
+      summary = _audEsc(actor) + ' created Job: <strong>' + bits.join(', ') + '</strong>';
       drill = { type: 'job', id: row.entity_id };
     } else if (at === 'cancelled') {
-      summary = _audEsc(actor) + ' cancelled <strong>' + _audEsc(jcn) + '</strong>';
+      summary = _audEsc(actor) + ' cancelled Job: <strong>' + _audEsc(jcn) + '</strong>';
       if (jdate) summary += '&rsquo;s ' + _audEsc(_audFmtDateShort(jdate)) + ' cleaning';
       var reason = nv.reason || nv.cancel_reason || ov.cancel_reason;
-      if (reason) summary += ' — reason: &lsquo;' + _audEsc(_audTrunc(String(reason), 80)) + '&rsquo;';
-      if (nv.source) chips.push({ label: nv.source.toUpperCase(), color: '#c2410c', bg: 'rgba(249,115,22,0.14)' });
+      if (reason) summary += ' - Reason: &lsquo;' + _audEsc(_audTrunc(String(reason), 80)) + '&rsquo;';
+      if (nv.cancellation_type) chips.push({ label: nv.cancellation_type.toUpperCase().replace(/_/g,' '), color: '#c2410c', bg: 'rgba(249,115,22,0.14)' });
       drill = { type: 'job', id: row.entity_id };
     } else if (at === 'updated') {
-      var jdiffs = _audDiffFields(ov, nv).slice(0, 3);
+      var jdiffs = _audDiffFields(ov, nv, 'job').slice(0, 3);
       // Time move is the common case — special-case to read clean.
       var timeDiff = jdiffs.find(function(d){ return d.field === 'time'; });
       var teamDiff = jdiffs.find(function(d){ return d.field === 'team'; });
       var dateDiff = jdiffs.find(function(d){ return d.field === 'date'; });
       if (timeDiff && jdiffs.length === 1) {
         summary = _audEsc(actor) + ' moved <strong>' + _audEsc(jcn) + '</strong>: '
-          + _audEsc(_audFmtTime24to12(timeDiff.from)) + ' → ' + _audEsc(_audFmtTime24to12(timeDiff.to));
+          + _audEsc(timeDiff.from) + ' → ' + _audEsc(timeDiff.to);
       } else if (teamDiff && jdiffs.length === 1) {
         summary = _audEsc(actor) + ' reassigned <strong>' + _audEsc(jcn) + '</strong>: Team '
           + _audEsc(teamDiff.from) + ' → Team ' + _audEsc(teamDiff.to);
       } else if (dateDiff && jdiffs.length === 1) {
         summary = _audEsc(actor) + ' rescheduled <strong>' + _audEsc(jcn) + '</strong>: '
-          + _audEsc(_audFmtDateShort(dateDiff.from)) + ' → ' + _audEsc(_audFmtDateShort(dateDiff.to));
+          + _audEsc(dateDiff.from) + ' → ' + _audEsc(dateDiff.to);
       } else if (jdiffs.length > 0) {
         var jChangeStrs = jdiffs.map(function(dd){
-          var fr = dd.field === 'time' ? _audFmtTime24to12(dd.from) : (dd.field === 'date' ? _audFmtDateShort(dd.from) : dd.from);
-          var to = dd.field === 'time' ? _audFmtTime24to12(dd.to)   : (dd.field === 'date' ? _audFmtDateShort(dd.to)   : dd.to);
-          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(fr, 20)) + ' → ' + _audEsc(_audTrunc(to, 20));
+          return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to);
         });
-        summary = _audEsc(actor) + ' updated <strong>' + _audEsc(jcn) + '</strong> — ' + jChangeStrs.join(', ');
+        summary = _audEsc(actor) + ' updated Job: <strong>' + _audEsc(jcn) + '</strong>: ' + jChangeStrs.join(', ');
       } else {
         summary = _audEsc(actor) + ' updated <strong>' + _audEsc(jcn) + '</strong>';
       }
@@ -17390,15 +17556,11 @@ function _renderAuditRowSummary(row, ctx) {
       if (ci) summary += ' at ' + _audEsc(ci);
       if (nv.team) summary += ' (Team ' + _audEsc(nv.team) + ')';
     } else if (at === 'updated') {
-      var teDiffs = _audDiffFields(ov, nv).slice(0, 2);
+      var teDiffs = _audDiffFields(ov, nv, 'time_entry').slice(0, 2);
       summary = _audEsc(en) + ' updated time entry';
       if (teDiffs.length) {
         var teStrs = teDiffs.map(function(dd){
-          var f = (dd.field === 'clock_in_at' || dd.field === 'clock_out_at')
-            ? (dd.from === '∅' ? '∅' : new Date(dd.from).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })) : dd.from;
-          var t = (dd.field === 'clock_in_at' || dd.field === 'clock_out_at')
-            ? (dd.to   === '∅' ? '∅' : new Date(dd.to).toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })) : dd.to;
-          return _audEsc(dd.label) + ' ' + _audEsc(f) + ' → ' + _audEsc(t);
+          return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to);
         });
         summary += ' — ' + teStrs.join(', ');
       }
@@ -17434,8 +17596,17 @@ function _renderAuditRowSummary(row, ctx) {
     } else if (at === 'deleted') {
       summary = _audEsc(actor) + ' unassigned <strong>' + _audEsc(daEn) + '</strong> from Team ' + _audEsc(ov.team || '?');
       if (dStr) summary += ' on ' + _audEsc(dStr);
-    } else if (at === 'updated' && ov.team && nv.team && ov.team !== nv.team) {
-      summary = _audEsc(actor) + ' moved <strong>' + _audEsc(daEn) + '</strong>: Team ' + _audEsc(ov.team) + ' → Team ' + _audEsc(nv.team);
+    } else if (at === 'updated') {
+      var daDiffs = _audDiffFields(ov, nv, 'daily_assignment').slice(0, 3);
+      var daTeamDiff = daDiffs.find(function(d){ return d.field === 'team'; });
+      if (daTeamDiff && daDiffs.length === 1) {
+        summary = _audEsc(actor) + ' moved <strong>' + _audEsc(daEn) + '</strong>: Team ' + _audEsc(daTeamDiff.from) + ' → Team ' + _audEsc(daTeamDiff.to);
+      } else if (daDiffs.length > 0) {
+        summary = _audEsc(actor) + ' updated assignment for <strong>' + _audEsc(daEn) + '</strong>: '
+          + daDiffs.map(function(dd){ return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to); }).join(', ');
+      } else {
+        summary = _audEsc(actor) + ' updated assignment for <strong>' + _audEsc(daEn) + '</strong>';
+      }
       if (dStr) summary += ' on ' + _audEsc(dStr);
     } else {
       summary = _audEsc(actor) + ' ' + _audEsc(at) + ' assignment for ' + _audEsc(daEn);
@@ -17444,17 +17615,27 @@ function _renderAuditRowSummary(row, ctx) {
   }
   // ─── employee ──────────────────────────────────────────────────
   else if (et === 'employee') {
-    var en2 = _audEmpName(ctx, row.entity_id) || ((nv.first_name || '') + ' ' + (nv.last_name || '')).trim() || 'Employee';
+    var en2 = _audEmpName(ctx, row.entity_id, nv, ov) || 'Employee';
     if (at === 'created') {
-      summary = _audEsc(actor) + ' added staff member <strong>' + _audEsc(en2) + '</strong>';
+      var empBits = [_audEsc(en2)];
+      if (nv.position) empBits.push(_audEsc(nv.position));
+      if (nv.phone) empBits.push(_audEsc(nv.phone));
+      summary = _audEsc(actor) + ' created Employee: <strong>' + empBits.join(', ') + '</strong>';
     } else if (at === 'deleted') {
       summary = _audEsc(actor) + ' removed staff member <strong>' + _audEsc(en2) + '</strong>';
     } else if (at === 'updated') {
-      var eDiffs = _audDiffFields(ov, nv).slice(0, 3);
-      summary = _audEsc(actor) + ' updated <strong>' + _audEsc(en2) + '</strong>';
+      var eDiffs = _audDiffFields(ov, nv, 'employee').slice(0, 3);
+      summary = _audEsc(actor) + ' updated Employee: <strong>' + _audEsc(en2) + '</strong>';
       if (eDiffs.length) {
-        summary += ' — ' + eDiffs.map(function(dd){
-          return _audEsc(dd.label) + ': ' + _audEsc(_audTrunc(dd.from, 20)) + ' → ' + _audEsc(_audTrunc(dd.to, 20));
+        summary += ': ' + eDiffs.map(function(dd){
+          // team_id diffs are UUIDs -- resolve to the team's name via
+          // its own snapshot/live cache instead of showing a raw uuid.
+          if (dd.field === 'team_id') {
+            var fromName = _audTeamName(ctx, ov.team_id) || dd.from;
+            var toName = _audTeamName(ctx, nv.team_id) || dd.to;
+            return 'team ' + _audEsc(fromName) + ' → ' + _audEsc(toName);
+          }
+          return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to);
         }).join(', ');
       }
     } else {
@@ -17468,14 +17649,14 @@ function _renderAuditRowSummary(row, ctx) {
   else if (et === 'payment') {
     var pCid = nv.client_id || ov.client_id;
     var pcn = _audClientName(ctx, pCid) || nv.client_name || '(unknown client)';
-    var amt = nv.amount || nv.amt;
+    var amt = nv.amount;
     var methodKey = nv.method || ov.method;
     var methodLabels = { cash: 'cash', check: 'check', venmo: 'Venmo', zelle: 'Zelle', credit_card: 'credit card', other: 'other' };
     var methodLabel = methodLabels[methodKey] || methodKey || 'payment';
     var hasPhoto = !!(nv.photo_path || ov.photo_path);
     if (at === 'received' || at === 'created') {
       summary = _audEsc(actor) + ' recorded';
-      if (amt != null) summary += ' $' + _audEsc(String(amt));
+      if (amt != null) summary += ' ' + _audEsc(_audFmtMoney(amt));
       summary += ' ' + _audEsc(methodLabel) + ' payment';
       if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
       if (methodKey === 'check' && nv.check_number) summary += ' · check #' + _audEsc(nv.check_number);
@@ -17483,16 +17664,41 @@ function _renderAuditRowSummary(row, ctx) {
       if (hasPhoto) chips.push({ label: '📎 PHOTO', color: '#1d4ed8', bg: 'rgba(59,130,246,0.14)' });
     } else if (at === 'refunded') {
       summary = _audEsc(actor) + ' voided';
-      if (amt != null) summary += ' $' + _audEsc(String(amt));
+      if (amt != null) summary += ' ' + _audEsc(_audFmtMoney(amt));
       summary += ' ' + _audEsc(methodLabel) + ' payment';
       if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
       var voidReason = nv.void_reason;
       if (voidReason) summary += ' — reason: &lsquo;' + _audEsc(_audTrunc(voidReason, 80)) + '&rsquo;';
       chips.push({ label: 'VOIDED', color: '#dc2626', bg: 'rgba(220,38,38,0.14)' });
+    } else if (at === 'updated') {
+      var payDiffs = _audDiffFields(ov, nv, 'payment').slice(0, 3);
+      summary = _audEsc(actor) + ' updated payment';
+      if (pcn) summary += ' from <strong>' + _audEsc(pcn) + '</strong>';
+      if (payDiffs.length) {
+        summary += ': ' + payDiffs.map(function(dd){ return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to); }).join(', ');
+      }
     } else {
       summary = _audEsc(actor) + ' ' + _audEsc(at) + ' payment';
     }
     if (pCid) drill = { type: 'client', id: pCid };
+  }
+  // ─── team (PR #95 — was falling to the generic fallback, no name/diff) ──
+  else if (et === 'team') {
+    var tn = _audTeamName(ctx, row.entity_id, nv, ov) || 'Team';
+    if (at === 'created') {
+      summary = _audEsc(actor) + ' created Team: <strong>' + _audEsc(tn) + '</strong>';
+    } else if (at === 'deleted') {
+      summary = _audEsc(actor) + ' removed Team <strong>' + _audEsc(tn) + '</strong>';
+    } else if (at === 'updated') {
+      var tDiffs = _audDiffFields(ov, nv, 'team').slice(0, 3);
+      summary = _audEsc(actor) + ' updated Team: <strong>' + _audEsc(tn) + '</strong>';
+      if (tDiffs.length) {
+        summary += ': ' + tDiffs.map(function(dd){ return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to); }).join(', ');
+      }
+    } else {
+      summary = _audEsc(actor) + ' ' + _audEsc(at) + ' Team <strong>' + _audEsc(tn) + '</strong>';
+    }
+    drill = { type: 'team', id: row.entity_id };
   }
   // ─── system (manual_note + sync approvals) ─────────────────────
   else if (et === 'system') {
@@ -17518,8 +17724,8 @@ function _renderAuditRowSummary(row, ctx) {
 // clients/jobs/employees come from in-memory facade caches (sync, no
 // network).
 async function _buildAuditContext(rows, sb) {
-  var ctx = { users: {}, clients: {}, jobs: {}, employees: {} };
-  var userIds = {}, clientIds = {}, jobIds = {}, employeeIds = {};
+  var ctx = { users: {}, clients: {}, clientsByUuid: {}, jobs: {}, employees: {}, teams: {}, nameHints: {} };
+  var userIds = {}, clientIds = {}, jobIds = {}, employeeIds = {}, teamIds = {};
   (rows || []).forEach(function(r){
     if (r.user_id) userIds[r.user_id] = 1;
     var nv = r.new_values || {}, ov = r.old_values || {};
@@ -17532,6 +17738,26 @@ async function _buildAuditContext(rows, sb) {
     if (nv.employee_id) employeeIds[nv.employee_id] = 1;
     if (ov.employee_id) employeeIds[ov.employee_id] = 1;
     if (r.entity_type === 'employee' && r.entity_id) employeeIds[r.entity_id] = 1;
+    if (nv.team_id) teamIds[nv.team_id] = 1;
+    if (ov.team_id) teamIds[ov.team_id] = 1;
+    if (r.entity_type === 'team' && r.entity_id) teamIds[r.entity_id] = 1;
+    // PR #95 — same-batch sibling snapshot fallback: if THIS row's own
+    // entity_type has a name field in its snapshot, remember it keyed
+    // by (type:id) so a DIFFERENT row referencing that same id (e.g. a
+    // job pointing at a client that's since been removed from the live
+    // cache) can still recover the name without another query.
+    if (r.entity_type === 'client' && r.entity_id) {
+      var cHint = _audNameFromSnapshot(nv, ov);
+      if (cHint) ctx.nameHints['client:' + r.entity_id] = cHint;
+    }
+    if (r.entity_type === 'employee' && r.entity_id) {
+      var eHint = _audNameFromSnapshot(nv, ov);
+      if (eHint) ctx.nameHints['employee:' + r.entity_id] = eHint;
+    }
+    if (r.entity_type === 'team' && r.entity_id) {
+      var tHint = (nv && nv.name) || (ov && ov.name);
+      if (tHint) ctx.nameHints['team:' + r.entity_id] = tHint;
+    }
   });
   var uidList = Object.keys(userIds);
   if (uidList.length > 0 && sb) {
@@ -17542,10 +17768,26 @@ async function _buildAuditContext(rows, sb) {
       });
     } catch (e) {}
   }
+  // PR #95 — clientsByUuid: entity_type='client' rows' entity_id is
+  // the clients.id UUID, but PentaClients.getClient() keys by
+  // external_id (a totally different string shape) -- confirmed live
+  // by joining audit_log back to clients (e.g. entity_id
+  // "bd4bc71e-..." vs external_id "10984646", never equal). Scan the
+  // already-loaded client cache once and index it by uuid too so a
+  // client-entity row's OWN id can resolve via the live cache as a
+  // fallback tier (snapshot is tried first regardless -- see
+  // _audClientName -- so this only matters when the snapshot itself
+  // is somehow missing the name, which shouldn't happen for a full-row
+  // jsonb dump, but keeps the fallback chain real instead of dead).
+  try {
+    if (window.PentaClients && window.PentaClients.list) {
+      window.PentaClients.list().forEach(function(c){ if (c && c.uuid) ctx.clientsByUuid[c.uuid] = c; });
+    }
+  } catch (e) {}
   Object.keys(clientIds).forEach(function(cid){
     try {
       if (window.PentaClients && window.PentaClients.getClient) {
-        var c = window.PentaClients.getClient(cid);
+        var c = window.PentaClients.getClient(cid) || ctx.clientsByUuid[cid];
         if (c) ctx.clients[cid] = c;
       }
     } catch (e) {}
@@ -17566,7 +17808,50 @@ async function _buildAuditContext(rows, sb) {
       }
     } catch (e) {}
   });
+  Object.keys(teamIds).forEach(function(tid){
+    try {
+      if (window.PentaTeams && window.PentaTeams.getById) {
+        var t = window.PentaTeams.getById(tid);
+        if (t) ctx.teams[tid] = t;
+      }
+    } catch (e) {}
+  });
   return ctx;
+}
+
+// PR #95 Part 2 — for a client 'cancelled' row, count sibling job
+// 'cancelled' rows written by the same actor within a tight window of
+// the client cancellation (the cascade in openCancelClientModal's
+// _executeCancelClient writes them synchronously, one insert per
+// future job, immediately after the client row's own cancellation
+// write). A live query, not a join, since audit_log has no explicit
+// "caused by" link between rows -- correlating by client_id + actor +
+// a 2-minute window is the best available signal without adding a new
+// column. Mutates each row in place (adds _cascadeCount) so
+// _renderAuditRowSummary can read it synchronously.
+async function _enrichCancellationCascades(rows, sb, bid) {
+  if (!sb || !bid) return rows;
+  var targets = (rows || []).filter(function(r){ return r.entity_type === 'client' && r.action_type === 'cancelled'; });
+  for (var i = 0; i < targets.length; i++) {
+    var r = targets[i];
+    var nv = r.new_values || {};
+    var clientExternalId = nv.external_id;
+    if (!clientExternalId) continue;
+    try {
+      var windowStart = new Date(new Date(r.created_at).getTime() - 5000).toISOString();
+      var windowEnd = new Date(new Date(r.created_at).getTime() + 120000).toISOString();
+      var res = await sb.from('audit_log')
+        .select('id', { count: 'exact', head: true })
+        .eq('business_id', bid)
+        .eq('entity_type', 'job')
+        .eq('action_type', 'cancelled')
+        .filter('new_values->>client_id', 'eq', clientExternalId)
+        .gte('created_at', windowStart)
+        .lte('created_at', windowEnd);
+      r._cascadeCount = (res && typeof res.count === 'number') ? res.count : 0;
+    } catch (e) { r._cascadeCount = 0; }
+  }
+  return rows;
 }
 
 // Build the HTML for a single audit-log row using the new renderer.
@@ -17616,6 +17901,10 @@ function _wireAuditDrill(containerEl) {
       if (t === 'client' && typeof openClientEdit === 'function') openClientEdit(id);
       else if (t === 'job' && typeof openJobModal === 'function') openJobModal(id);
       else if (t === 'employee' && typeof openStaffMember === 'function') openStaffMember(id);
+      else if (t === 'team' && typeof openStaffTeamDetailModal === 'function') {
+        var _t = window.PentaTeams && window.PentaTeams.getById && window.PentaTeams.getById(id);
+        if (_t && _t.name) openStaffTeamDetailModal(_t.name);
+      }
       else { console.log('[auditDrill] no handler for', t, id); }
     } catch (err) { console.warn('[auditDrill] handler threw', err); }
   });
@@ -18300,6 +18589,255 @@ window._toggleClientHealthRow = _toggleClientHealthRow;
 window._runClientHealthScoring = _runClientHealthScoring;
 window._refreshClientHealthBadge = _refreshClientHealthBadge;
 
+// ═══════════════════════════════════════════════════════════════════════
+// PR #95 Parts 3-4 — Activity Log filters + real server-side pagination.
+// Replaces the old fixed .limit(250)/first-8-dates rendering with a
+// filter bar (entity/action/actor/date/search, AND-combined) and
+// cursor-based paging (created_at DESC, id DESC tiebreak) via
+// "Load 50 more". Date groups now show a count in the header.
+// ═══════════════════════════════════════════════════════════════════════
+var _activityLogFilters = {
+  entityType: 'all', actionType: 'all', actorId: 'all',
+  datePreset: 'last_30_days', dateFrom: null, dateTo: null, search: ''
+};
+var _activityLogState = {
+  rows: [], ctx: null, loading: false, hasMore: true,
+  cursorCreatedAt: null, cursorId: null, pageSize: 50
+};
+var _activityLogActorsCache = null;
+var _activityLogSearchTimer = null;
+
+function _activityLogDateRangeFor(f) {
+  var now = new Date();
+  var from = null, to = null;
+  if (f.datePreset === 'today') {
+    from = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  } else if (f.datePreset === 'this_week') {
+    var d = new Date(now); d.setDate(d.getDate() - d.getDay());
+    from = new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
+  } else if (f.datePreset === 'this_month') {
+    from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  } else if (f.datePreset === 'last_30_days') {
+    from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  } else if (f.datePreset === 'custom') {
+    if (f.dateFrom) from = new Date(f.dateFrom + 'T00:00:00').toISOString();
+    if (f.dateTo) to = new Date(f.dateTo + 'T23:59:59').toISOString();
+  }
+  return { from: from, to: to };
+}
+
+async function _fetchActivityLogPage(reset) {
+  if (_activityLogState.loading) return;
+  if (!reset && !_activityLogState.hasMore) return;
+  _activityLogState.loading = true;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) { _activityLogState.loading = false; return; }
+  if (reset) {
+    _activityLogState.rows = [];
+    _activityLogState.hasMore = true;
+    _activityLogState.cursorCreatedAt = null;
+    _activityLogState.cursorId = null;
+  }
+
+  var f = _activityLogFilters;
+  var q = sb.from('audit_log')
+    .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
+    .eq('business_id', bid);
+
+  if (f.entityType === '__reward__') {
+    q = q.in('entity_type', ['reward_ledger', 'reward_submission', 'reward_redemption']);
+  } else if (f.entityType && f.entityType !== 'all') {
+    q = q.eq('entity_type', f.entityType);
+  }
+  if (f.actionType && f.actionType !== 'all') q = q.eq('action_type', f.actionType);
+  if (f.actorId && f.actorId !== 'all') q = q.eq('user_id', f.actorId);
+
+  var range = _activityLogDateRangeFor(f);
+  if (range.from) q = q.gte('created_at', range.from);
+  if (range.to) q = q.lte('created_at', range.to);
+
+  if (f.search && f.search.trim()) {
+    var term = f.search.trim().replace(/[%_]/g, '\\$&');
+    q = q.or('old_values::text.ilike.%' + term + '%,new_values::text.ilike.%' + term + '%');
+  }
+
+  // Cursor: created_at DESC + id DESC tiebreak, per Tom's spec. Not a
+  // meaningfully-ordered tiebreak (uuids aren't sequential) -- it just
+  // guarantees a stable, gap-free page boundary when multiple rows
+  // share the exact same created_at timestamp.
+  if (_activityLogState.cursorCreatedAt) {
+    q = q.or('created_at.lt.' + _activityLogState.cursorCreatedAt
+      + ',and(created_at.eq.' + _activityLogState.cursorCreatedAt + ',id.lt.' + _activityLogState.cursorId + ')');
+  }
+
+  q = q.order('created_at', { ascending: false }).order('id', { ascending: false })
+    .limit(_activityLogState.pageSize + 1);
+
+  var res;
+  try { res = await q; } catch (e) { console.warn('[activity log] query failed', e); _activityLogState.loading = false; return; }
+  if (res.error) { console.warn('[activity log] query error', res.error); _activityLogState.loading = false; return; }
+  var got = res.data || [];
+  _activityLogState.hasMore = got.length > _activityLogState.pageSize;
+  var page = got.slice(0, _activityLogState.pageSize);
+  if (page.length) {
+    var last = page[page.length - 1];
+    _activityLogState.cursorCreatedAt = last.created_at;
+    _activityLogState.cursorId = last.id;
+  }
+  await _enrichCancellationCascades(page, sb, bid);
+  _activityLogState.rows = _activityLogState.rows.concat(page);
+  _activityLogState.loading = false;
+}
+
+function _renderActivityLogDatePresetButtons() {
+  var wrap = document.getElementById('alf-date-presets');
+  if (!wrap) return;
+  var presets = [
+    { v: 'today', l: 'Today' }, { v: 'this_week', l: 'This week' }, { v: 'this_month', l: 'This month' },
+    { v: 'last_30_days', l: 'Last 30 days' }, { v: 'custom', l: 'Custom range' }
+  ];
+  wrap.innerHTML = presets.map(function(p){
+    var on = _activityLogFilters.datePreset === p.v;
+    return '<button onclick="setActivityLogDatePreset(\'' + p.v + '\')" style="background:' + (on ? 'var(--accent)' : 'var(--surface2)')
+      + ';color:' + (on ? '#fff' : 'var(--muted)') + ';border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)')
+      + ';border-radius:14px;padding:4px 10px;font-size:11px;font-weight:600;font-family:\'DM Sans\',sans-serif;cursor:pointer">' + p.l + '</button>';
+  }).join('');
+}
+
+async function _renderActivityLogFilterBar() {
+  var entitySel = document.getElementById('alf-entity');
+  if (entitySel && !entitySel.options.length) {
+    var entityOpts = [
+      { v: 'all', l: 'All' }, { v: 'client', l: 'Client' }, { v: 'job', l: 'Job' }, { v: 'employee', l: 'Employee' },
+      { v: 'team', l: 'Team' }, { v: 'daily_assignment', l: 'Assignment' }, { v: 'payment', l: 'Payment' },
+      { v: 'chat_message', l: 'Chat' }, { v: 'incident', l: 'Incident' }, { v: '__reward__', l: 'Reward' }
+    ];
+    entitySel.innerHTML = entityOpts.map(function(o){ return '<option value="' + o.v + '">' + o.l + '</option>'; }).join('');
+  }
+  var actionSel = document.getElementById('alf-action');
+  if (actionSel && !actionSel.options.length) {
+    // Real action_type values that actually get written (confirmed
+    // live in PR #94's capture-sweep). Tom's spec listed "Assigned" as
+    // a distinct option -- that's not its own action_type, it's the
+    // 'Created' action on the 'Assignment' entity, so it's reachable
+    // via Entity=Assignment + Action=Created instead of a redundant
+    // option here. 'Moved' IS a real action_type in the CHECK
+    // constraint's enum but is never actually written by the trigger
+    // today (team moves land as 'updated', not 'moved') -- kept in
+    // the list since it's valid schema, but will show zero rows.
+    var actionOpts = [
+      { v: 'all', l: 'All' }, { v: 'created', l: 'Created' }, { v: 'updated', l: 'Updated' },
+      { v: 'cancelled', l: 'Cancelled' }, { v: 'deleted', l: 'Deleted' }, { v: 'restored', l: 'Restored' },
+      { v: 'moved', l: 'Moved' }, { v: 'approved', l: 'Approved' }, { v: 'rejected', l: 'Rejected' },
+      { v: 'resolved', l: 'Resolved' }, { v: 'received', l: 'Received' }, { v: 'refunded', l: 'Refunded' }
+    ];
+    actionSel.innerHTML = actionOpts.map(function(o){ return '<option value="' + o.v + '">' + o.l + '</option>'; }).join('');
+  }
+  var actorSel = document.getElementById('alf-actor');
+  if (actorSel && !actorSel.options.length) {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    var opts = [{ v: 'all', l: 'All' }];
+    // "Claire (AI)" is deliberately NOT offered as an actor option.
+    // Claire's tool-driven writes execute through the same
+    // authenticated session as the signed-in user (confirmed in
+    // PR #94's capture sweep -- claire-chat is a pure API proxy, it
+    // performs no DB writes itself), so there is no data-level way to
+    // distinguish a Claire-initiated action from that user's own
+    // manual action. An option that can't actually filter anything
+    // would be worse than not offering it.
+    if (sb && bid) {
+      if (!_activityLogActorsCache) {
+        try {
+          var ures = await sb.from('users').select('id, first_name, last_name, email').eq('business_id', bid);
+          _activityLogActorsCache = (ures.data || []).map(function(u){
+            return { id: u.id, name: ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || 'User' };
+          }).sort(function(a, b){ return a.name.localeCompare(b.name); });
+        } catch (e) { _activityLogActorsCache = []; }
+      }
+      (_activityLogActorsCache || []).forEach(function(u){ opts.push({ v: u.id, l: u.name }); });
+    }
+    actorSel.innerHTML = opts.map(function(o){ return '<option value="' + o.v + '">' + _audEsc(o.l) + '</option>'; }).join('');
+  }
+  _renderActivityLogDatePresetButtons();
+}
+
+async function _activityLogRefresh() {
+  var el = document.getElementById('activity-log-list');
+  if (el && !_activityLogState.rows.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Loading…</div>';
+  }
+  await _fetchActivityLogPage(true);
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  _activityLogState.ctx = await _buildAuditContext(_activityLogState.rows, sb);
+  _renderActivityLogRows();
+}
+
+function setActivityLogFilter(key, val) {
+  _activityLogFilters[key] = val;
+  _activityLogRefresh();
+}
+
+function setActivityLogDatePreset(preset) {
+  _activityLogFilters.datePreset = preset;
+  var customWrap = document.getElementById('alf-custom-range');
+  if (customWrap) customWrap.style.display = (preset === 'custom') ? 'flex' : 'none';
+  _renderActivityLogDatePresetButtons();
+  if (preset !== 'custom') _activityLogRefresh();
+}
+
+function _activityLogSearchDebounced(val) {
+  _activityLogFilters.search = val;
+  clearTimeout(_activityLogSearchTimer);
+  _activityLogSearchTimer = setTimeout(function(){ _activityLogRefresh(); }, 350);
+}
+
+async function loadMoreActivityLog() {
+  var btn = document.getElementById('activity-log-load-more');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  await _fetchActivityLogPage(false);
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  _activityLogState.ctx = await _buildAuditContext(_activityLogState.rows, sb);
+  _renderActivityLogRows();
+}
+
+// PR #95 Part 4: date-group headers now carry a count, e.g.
+// "Wednesday, Aug 5 — 47 events". Empty state text matches Tom's spec
+// verbatim ("No activity matches these filters.").
+function _renderActivityLogRows() {
+  var el = document.getElementById('activity-log-list');
+  if (!el) return;
+  var rows = _activityLogState.rows;
+  var wrap = document.getElementById('activity-log-load-more-wrap');
+  if (!rows.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity matches these filters.</div>';
+    if (wrap) wrap.style.display = 'none';
+    return;
+  }
+  var grouped = {}, order = [];
+  rows.forEach(function(row){
+    var d = new Date(row.created_at);
+    var dateLabel = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+    if (!grouped[dateLabel]) { grouped[dateLabel] = []; order.push(dateLabel); }
+    grouped[dateLabel].push(row);
+  });
+  var html = '';
+  order.forEach(function(dateLabel){
+    var n = grouped[dateLabel].length;
+    html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">'
+      + dateLabel + ' — ' + n + (n === 1 ? ' event' : ' events') + '</div>';
+    grouped[dateLabel].forEach(function(row){ html += _renderAuditRowHtml(row, _activityLogState.ctx, { fullTime: false }); });
+  });
+  el.innerHTML = html;
+  _wireAuditDrill(el);
+  if (wrap) {
+    wrap.style.display = _activityLogState.hasMore ? 'block' : 'none';
+    var btn = document.getElementById('activity-log-load-more');
+    if (btn) { btn.disabled = false; btn.textContent = 'Load 50 more'; }
+  }
+}
+
 async function renderActivityLog() {
   var btn = document.getElementById('actor-name-btn');
   if (btn) btn.textContent = 'Signed in as: ' + getCurrentActor();
@@ -18312,43 +18850,8 @@ async function renderActivityLog() {
     return;
   }
   try {
-    // v11.0.14 (Build 1): pull old_values too so the diff path on
-    // 'updated' rows can compare both sides.
-    var res = await sb.from('audit_log')
-      .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
-      .eq('business_id', bid)
-      .order('created_at', { ascending: false })
-      .limit(250);
-    if (res.error) {
-      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable: ' + (res.error.message || 'error') + '</div>';
-      return;
-    }
-    var rows = res.data || [];
-    if (rows.length === 0) {
-      el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">No activity yet</div>';
-      return;
-    }
-    // Build the resolver context (users + clients + jobs + employees)
-    // once for the whole render. Clients/jobs/employees come from the
-    // already-hydrated facade caches; only users hits the DB.
-    var ctx = await _buildAuditContext(rows, sb);
-    var grouped = {};
-    rows.forEach(function(row){
-      var d = new Date(row.created_at);
-      var dateLabel = d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      (grouped[dateLabel] = grouped[dateLabel] || []).push(row);
-    });
-    var html = '';
-    var dates = Object.keys(grouped);
-    dates.forEach(function(dateLabel, di) {
-      if (di > 7) return;
-      html += '<div style="font-size:11px;font-weight:600;color:var(--accent);margin-top:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">' + dateLabel + '</div>';
-      grouped[dateLabel].forEach(function(row) {
-        html += _renderAuditRowHtml(row, ctx, { fullTime: false });
-      });
-    });
-    el.innerHTML = html;
-    _wireAuditDrill(el);
+    await _renderActivityLogFilterBar();
+    await _activityLogRefresh();
   } catch (e) {
     console.warn('[activity log] render failed', e);
     el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:16px">Activity unavailable</div>';
@@ -32012,11 +32515,17 @@ async function openClientActivityLog(clientId) {
     try {
       // v11.0.14 (Build 1): pull old_values too so the diff path on
       // 'updated' rows can compare both sides.
+      // PR #95: entity_id for a 'client'-entity row is the clients.id
+      // UUID (c.uuid), NOT c.id/clientId (external_id) -- that
+      // mismatch was the root cause of every client-entity row here
+      // silently matching zero rows. new_values->>client_id (used by
+      // jobs/payments/etc.) IS external_id-shaped, so `related` below
+      // was always correct; only `direct` was broken.
       var directRes = await sb.from('audit_log')
         .select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
         .eq('business_id', bid)
         .eq('entity_type', 'client')
-        .eq('entity_id', clientId)
+        .eq('entity_id', c.uuid)
         .order('created_at', { ascending: false })
         .limit(200);
       var direct = (directRes && directRes.data) || [];
@@ -32033,6 +32542,7 @@ async function openClientActivityLog(clientId) {
       var seen = {};
       direct.concat(related).forEach(function(r){ if (r && r.id && !seen[r.id]) { seen[r.id] = 1; log.push(r); }});
       log.sort(function(a, b){ return new Date(b.created_at) - new Date(a.created_at); });
+      await _enrichCancellationCascades(log, sb, bid);
     } catch (err) {
       console.warn('[ClientActivityLog] read failed', err);
     }
@@ -32040,7 +32550,7 @@ async function openClientActivityLog(clientId) {
 
   // v11.0.14 (Build 1): use the shared resolver context — users +
   // clients + jobs + employees.
-  var ctx = sb ? await _buildAuditContext(log, sb) : { users:{}, clients:{}, jobs:{}, employees:{} };
+  var ctx = sb ? await _buildAuditContext(log, sb) : { users:{}, clients:{}, clientsByUuid:{}, jobs:{}, employees:{}, teams:{}, nameHints:{} };
 
   var old = document.getElementById('client-activity-overlay');
   if (old) old.remove();
