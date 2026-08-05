@@ -321,6 +321,22 @@ Verified end-to-end: a full 29-batch simulation (14,500 synthetic jobs across 89
 
 ---
 
+## 8ae. Post-import date drift — `new Date('YYYY-MM-DD')` on job dates rolls back a day in EDT (PR #82)
+
+Post-import, Lisa Creighton's real 7/7 clean showed as 7/6 in the Client History "Jobs" tab, and its GPS-match detail reported "No GPS records matched this clean" even though real Geotab trip data existed for that day. `jobs.date` in the DB was confirmed correct (`2026-07-07`, a plain `date` column — no timezone component to drift at storage). The bug is entirely client-side: `new Date('2026-07-07')` (no time component) parses as **UTC midnight**, which in any timezone behind UTC (Manna's business TZ, America/New_York, is UTC-4/UTC-5) is still the previous calendar day locally — every subsequent local-time read (`.toLocaleDateString()`, `.setHours(0,0,0,0)`, a `<`/`>` comparison against a local `Date`) inherits that already-wrong day.
+
+Two independent sites had this pattern (a third, unrelated Live Tracking bug was also found and is tracked separately, not fixed here — see below):
+- **`renderHistoryJobsTab`** (`index.html`, Client History → Jobs tab): the past-jobs filter, the sort, and the display-string formatter all built `new Date(j.date)` directly.
+- **`fetchTeamDayStops`** (feeds `getJobHistoryMetrics`/`toggleJobHistRow`'s GPS-match detail, and `_resolveTeamDevice`'s team-device lookup): built its Geotab `Trip` search window (`fromDate`/`toDate`) and device-resolution date key from `new Date(dateStr)` on the raw job date — silently querying Geotab for the *previous* day's trips, which explains the false "no GPS record" report (the message was accurate for the date actually being queried; the date being queried was wrong).
+
+Both fixed the same way: anchor the string to local midnight before constructing the `Date` — `new Date(dateStr + 'T00:00:00')` — rather than switching to manual string-splitting (the pattern several *other* date-display helpers in this codebase already use safely: `_isoToMDY`, `_svcHistoryFmtDate`, `_gccFmt`, `_audFmtDateShort` — all pure string-split, all unaffected by this bug; `PentaJobs._transformRow` also passes `date` straight through as a string with no conversion, so the DB-read layer was never the problem). This is a "mirrored implementation diverged" bug: 5+ independent date-formatting call sites exist in this file, and 2 of them never got the `T00:00:00` anchor the other safe ones already use.
+
+**Verified**: reproduced the exact rollback in Node under `TZ=America/New_York` (old code: `new Date('2026-07-07')` → "Mon, Jul 6, 2026"; fixed code → "Tue, Jul 7, 2026"; the Geotab trip-search window shifted by the same 24h). Spot-checked 5 additional real clients' completed-job dates against the fixed formatter — all render on their correct DB date.
+
+**Not fixed here, flagged as a separate follow-up**: `renderGPS()` (the main Live Tracking view) hardcodes `dateKey(new Date())` — i.e. "today" — when building the job list used to match GPS stops to the schedule and render the `UNSCHEDULED` badge / job-count badge, regardless of what day is selected on the `#gps-date-picker`. This is a different bug class (a missing date-scope thread-through, not a UTC-rollback), doesn't reproduce Tom's reported symptom (which was specifically the display/GPS-match date being off by one day, both explained by the two fixes above), and touches Live Tracking's core stop-matching logic — scoping it into a dedicated PR rather than bundling it into this timezone fix.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
