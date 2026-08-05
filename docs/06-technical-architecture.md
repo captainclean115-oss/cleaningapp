@@ -450,6 +450,23 @@ Verified: 9 new Node assertions (extraction-based) for the swatch picker — exa
 
 ---
 
+## 8an. Cancelled jobs still plotting as stops on the Schedule Map (PR #91)
+
+Three independent "plot today's jobs" filters existed across the file, and only one of them excluded `status='cancelled'` jobs. Confirmed live: Manna had 3 real cancelled jobs on 2026-08-05 alone that were rendering as phantom pins/route stops.
+
+**Bugs found and fixed** (each a one-line filter addition — `!j.cancelled`, which is type-agnostic by construction, so it excludes `cancellation_type='client_initiated'` and `'company_closure'` identically without needing to check the type at all):
+- `_scheduleMapDayJobs()` (`index.html`) — the single shared data source for **both** the inline Schedule Map (under the day's job list on the Calendar tab) and the fullscreen Schedule Map modal (`openScheduleMap()`). One fix covers both surfaces, confirmed by grepping every call site.
+- `buildRoutes()` — the Route Optimizer's day-job list, a second independent "plot the day's stops and build a driving route" feature. Same missing-exclusion bug, same fix.
+- `renderGPS()`'s `teamJobs` — Live Tracking's cross-reference of GPS stops against the day's schedule (drives the `UNSCHEDULED` badge via `matchStopToClientGeo` and the completed-job count). A cancelled job here could make a coincidental GPS stop near that address silently read as "scheduled" instead of flagged.
+
+**Verified as already correct, left untouched**: `jobsForDate()` (the main Calendar/Schedule board's list view) deliberately does *not* exclude cancelled jobs — it shows them with a red `CANCELLED` badge, and separately computes house/hour stats via its own `!j.cancelled` filter (`renderCal`'s `liveJobs`). `_teamDayStats()` (Team Assignments board), the employee portal's "today's jobs" count, drag/drop time recalculation, and `getDayRevenue()` all already excluded cancelled jobs correctly before this PR.
+
+No "Dispatch" view exists in this app — every case-insensitive "dispatch" hit in the file is SMS/message dispatch, unrelated.
+
+Verified: 2 new Node assertions (extraction-based) confirming `_scheduleMapDayJobs()` excludes both cancellation types identically alongside wrong-day/no-team/auto-generated exclusions; the other two fixes verified by direct code read (both are async/DOM-heavy functions not cleanly extractable, same one-line pattern); confirmed live that Manna currently has real cancelled jobs today that this fix now correctly excludes.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
