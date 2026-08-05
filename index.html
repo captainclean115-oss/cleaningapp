@@ -29449,17 +29449,66 @@ function maidsBuildPreview(sourceSets, existingClients) {
         status: statusMap.status,
         cancel_reason: statusMap.status === 'cancelled' ? (row['jobsummary'] || null) : null,
         cancellation_type: cancellationType,
-        frequency: row['frequency']
+        frequency: row['frequency'],
+        // Job Reference: present only in the 17-col file shape, never
+        // displayed (matches the "reference only" treatment Customer ID
+        // already gets) -- read here purely as a stable tie-breaker for
+        // the same-time duplicate offset below, so a re-import bumps
+        // the SAME job by the SAME amount even if row order changes.
+        job_reference: row['jobreference'] || ''
       });
     });
   });
 
+  // Same-time multi-visit duplicates ("Option D"): Maids sometimes
+  // bills main house + in-law/pool/guest house as separate jobs at the
+  // exact same nominal start time -- both are real revenue, never
+  // skip or merge. Group on (client, date, start time); every member
+  // after the first gets its start time bumped by 1 more minute (2nd =
+  // +1, 3rd = +2, ...) so the (client, date, scheduled_start_time)
+  // dedup key stays unique. Sorted by Job Reference when available
+  // (stable across re-imports even if row order changes); when the
+  // file has no Job Reference column, this degrades to stable
+  // original-encounter order, which is still deterministic within one
+  // run and, for the rare case of two byte-identical rows, harmless to
+  // swap (nothing user-visible differs between them but the internal
+  // offset).
+  jobs.forEach(function(j) { j._parsedStart = maidsParseTime(j.start_time_raw); });
+  var byExactSlot = {};
+  jobs.forEach(function(j) {
+    if (!j._parsedStart) return; // no start time -> outside the partial unique index, never collides
+    var sk = j.client_external_id + '|' + j.date + '|' + j._parsedStart;
+    if (!byExactSlot[sk]) byExactSlot[sk] = [];
+    byExactSlot[sk].push(j);
+  });
+  var duplicateGroups = [];
+  Object.keys(byExactSlot).forEach(function(sk) {
+    var slot = byExactSlot[sk];
+    if (slot.length < 2) return;
+    slot.sort(function(a, b) { return String(a.job_reference || '').localeCompare(String(b.job_reference || '')); });
+    var originalTime = slot[0]._parsedStart;
+    slot.forEach(function(j, idx) {
+      j.duplicate_group = true;
+      j.scheduled_start_time_original = originalTime;
+      j.adjustment_minutes = idx;
+      j.scheduled_start_time_adjusted = idx > 0;
+      if (idx > 0) j._parsedStart = maidsBumpTime(originalTime, idx);
+    });
+    duplicateGroups.push({
+      client_external_id: slot[0].client_external_id,
+      date: slot[0].date,
+      original_start_time: originalTime,
+      count: slot.length
+    });
+  });
+
   // Multi-visit: group the resolved job list by (client, date); 2+
-  // distinct start times => flag every job in that group.
+  // distinct start times => flag every job in that group. Runs AFTER
+  // the duplicate-offset step above, so same-time collisions (now
+  // artificially distinct) are naturally caught by this same check --
+  // no separate flagging path needed for them.
   var byClientDate = {};
   jobs.forEach(function(j) {
-    var t = maidsParseTime(j.start_time_raw);
-    j._parsedStart = t;
     var dk = j.client_external_id + '|' + j.date;
     if (!byClientDate[dk]) byClientDate[dk] = [];
     byClientDate[dk].push(j);
@@ -29483,7 +29532,9 @@ function maidsBuildPreview(sourceSets, existingClients) {
     summaryRowSkipCount: summaryRowSkipCount,
     emptyDateSkipCount: emptyDateSkipCount,
     uniqueClients: order.length,
-    multiVisitJobCount: jobs.filter(function(j) { return j.is_multi_visit_day; }).length
+    multiVisitJobCount: jobs.filter(function(j) { return j.is_multi_visit_day; }).length,
+    duplicateGroups: duplicateGroups,
+    duplicatesDetected: duplicateGroups.length
   };
 }
 
@@ -29511,6 +29562,16 @@ function maidsParseTime(v) {
   }
   if (h < 0 || h > 23) return null;
   return String(h).padStart(2, '0') + ':' + min;
+}
+// "HH:MM" + N minutes -> "HH:MM", wrapping at midnight (24h -> 1440 min).
+// Real cleaning jobs never start in the last minute of a day, so the
+// wrap is a theoretical safety net, not a scenario expected in practice.
+function maidsBumpTime(hhmm, addMinutes) {
+  var parts = String(hhmm || '').split(':');
+  var total = (parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10) + addMinutes) % 1440;
+  if (total < 0) total += 1440;
+  var h = Math.floor(total / 60), m = total % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
 
 // Builds the final RPC payload once every 'confirm' (70-89%) row has a
@@ -29565,6 +29626,16 @@ function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
       date: j.date,
       scheduled_start_time: j._parsedStart || maidsParseTime(j.start_time_raw),
       scheduled_end_time: maidsParseTime(j.end_time_raw),
+      // Set together by the duplicate-offset pass in maidsBuildPreview.
+      // scheduled_start_time_original is populated on EVERY member of a
+      // duplicate group (including the one that kept its original
+      // time), not just the bumped ones -- audit symmetry, and it's
+      // what the RPC uses to look each job back up for its
+      // maids_import_duplicates tracking row.
+      scheduled_start_time_original: j.scheduled_start_time_original || null,
+      scheduled_start_time_adjusted: !!j.scheduled_start_time_adjusted,
+      duplicate_group: !!j.duplicate_group,
+      adjustment_minutes: j.adjustment_minutes || 0,
       team: j.team,
       team_code_raw: j.team_code_raw,
       price: j.price,
@@ -29771,8 +29842,45 @@ async function maidsRunCommit() {
   }
 }
 
+// Best-effort client display name for a duplicate case -- external_id
+// is the Maids Customer ID, matched against PentaClients if the
+// just-imported client list is already hydrated locally; falls back to
+// the raw id (still useful for lookup) rather than blocking rendering.
+function _maidsClientLabelForExternalId(externalId) {
+  var list = (window.PentaClients && window.PentaClients.list && window.PentaClients.list()) || [];
+  var c = list.find(function(x) { return x.id === externalId; });
+  if (!c) return externalId;
+  var label = (c.ln || '') + (c.fn ? ', ' + c.fn : '');
+  return label.replace(/^,\s*/, '') || externalId;
+}
+
+function _maidsToggleDuplicatesDetail() {
+  var el = document.getElementById('maids-duplicates-detail');
+  if (el) el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+}
+
 function renderMaidsSummaryStep(result) {
   var body = document.getElementById('maids-import-body');
+  var dupCount = result.duplicates_detected || 0;
+  var dupList = result.duplicates || [];
+  var dupHtml = '';
+  if (dupCount > 0) {
+    var rowsHtml = dupList.map(function(d) {
+      var label = _maidsClientLabelForExternalId(d.client_id);
+      var timeNote = d.kept_original_time
+        ? (d.original_start_time + ' (kept)')
+        : (d.original_start_time + ' → ' + d.adjusted_start_time + ' (+' + d.adjustment_minutes + ' min)');
+      return '<div style="padding:8px 10px;border-bottom:1px solid var(--input-border);font-size:12px">'
+        + '<strong>' + escapeHtml(String(label)) + '</strong> — ' + escapeHtml(d.service_date) + ' — ' + escapeHtml(timeNote)
+        + '</div>';
+    }).join('');
+    dupHtml = '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:12px;margin-bottom:20px">'
+      +   '<div style="font-size:13px;font-weight:600;color:#d97706">⚠️ ' + dupCount + ' same-time multi-visit' + (dupCount === 1 ? '' : 's') + ' detected. Both jobs kept, start times slightly offset.</div>'
+      +   '<div style="font-size:11px;color:var(--muted);margin:4px 0 6px">Main house + in-law/pool/guest house billed as separate jobs at the same nominal start time — nothing was skipped or merged.</div>'
+      +   '<button onclick="_maidsToggleDuplicatesDetail()" style="background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;padding:0">Review here</button>'
+      +   '<div id="maids-duplicates-detail" style="display:none;max-height:200px;overflow-y:auto;margin-top:8px;border:1px solid var(--input-border);border-radius:8px">' + rowsHtml + '</div>'
+      + '</div>';
+  }
   body.innerHTML = '<div style="text-align:center;padding:20px 0 30px">'
     + '<div style="font-size:44px;margin-bottom:10px">✅</div>'
     + '<div style="font-size:18px;font-weight:700">Import complete</div>'
@@ -29785,6 +29893,7 @@ function renderMaidsSummaryStep(result) {
     +   _maidsStatCard('Jobs updated', result.jobs_updated)
     +   _maidsStatCard('Multi-visit jobs', result.jobs_flagged_multi_visit)
     + '</div>'
+    + dupHtml
     + '<div id="maids-enrich-status" style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px">🏠 Looking up square footage for clients missing it in the background — safe to close this screen.</div>'
     + '<button onclick="closeMaidsImportModal()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer">Done</button>';
   // Fire-and-forget — not awaited, so "Done" is never blocked on ~300
