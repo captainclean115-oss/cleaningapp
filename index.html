@@ -30365,10 +30365,26 @@ function maidsBuildPreview(sourceSets, existingClients) {
     else newRows.push(entry);
   });
 
-  // Jobs: one per CSV row, resolved against the group's Customer ID
-  // (real Maids ID if present on the row, else the group key — matched
-  // clients get their external_id set to this same value by the RPC,
-  // so job.client_external_id always lines up post-commit).
+  // Jobs: one per CSV row. client_external_id here is a PREVIEW-TIME
+  // value only, used for the multi-visit/duplicate-offset grouping
+  // below (which just needs rows for the same client to key
+  // consistently against EACH OTHER within this one preview -- it
+  // doesn't matter what the value actually is for that purpose).
+  //
+  // PR #97: it is NOT safe to assume this value matches the client's
+  // real external_id post-commit. That assumption was this comment's
+  // original claim and was wrong whenever maidsMatchClient resolves
+  // the group to an EXISTING client -- pushUpdate (in
+  // maidsBuildPayload, below) sets that client's external_id to
+  // entry.match.client.id (their real, pre-existing id), which can
+  // differ from this group's own first-row Customer ID/key whenever a
+  // client's rows are inconsistent about carrying one. When it did
+  // differ, every job in the group orphaned silently (client_id
+  // pointing at nothing) -- confirmed live, 8 rows across 4 clients in
+  // the 2026-08-05 import, repaired in migration 097. The FINAL,
+  // correct external_id per group is resolved in maidsBuildPayload
+  // (which has the match/decision data this function doesn't), keyed
+  // by group_key.
   var jobs = [];
   order.forEach(function(key) {
     var g = groups[key];
@@ -30383,6 +30399,7 @@ function maidsBuildPreview(sourceSets, existingClients) {
       var cancellationType = (statusMap.status === 'cancelled') ? maidsCancellationType(date) : null;
       jobs.push({
         client_external_id: groupExternalId,
+        group_key: key,
         date: date,
         start_time_raw: row['starttime'],
         end_time_raw: row['endtime'],
@@ -30525,17 +30542,25 @@ function maidsBumpTime(hhmm, addMinutes) {
 // key->'match'|'new' map from the preview UI.
 function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
   var clientsUpdate = [], clientsCreate = [];
+  // PR #97: the single source of truth for "what external_id does
+  // THIS group's jobs actually belong to" -- populated inline by
+  // pushUpdate/pushCreate (the only two places that decide a client's
+  // real external_id), not recomputed separately, so there's no
+  // second copy of this branching logic that could drift from it.
+  var keyToExternalId = {};
 
   function pushUpdate(entry) {
+    var extId = String(entry.match.client.id);
     clientsUpdate.push({
       id: entry.pentaId,
-      external_id: String(entry.match.client.id),
+      external_id: extId,
       address: entry.addr.street || null,
       city: entry.addr.city || null,
       zip_code: entry.addr.zip || null,
       frequency: maidsMapFrequency(entry.rows_frequency),
       tags: entry.tags
     });
+    keyToExternalId[entry.key] = extId;
   }
   function pushCreate(entry) {
     // Always this row's OWN Customer ID (entry.key is the real Maids
@@ -30553,6 +30578,7 @@ function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
       tags: entry.tags,
       status: entry.status
     });
+    keyToExternalId[entry.key] = entry.key;
   }
 
   preview.autoRows.forEach(function(entry) {
@@ -30567,8 +30593,17 @@ function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
   preview.newRows.forEach(function(entry) { pushCreate(entry); });
 
   var jobsPayload = preview.jobs.map(function(j) {
+    // PR #97: resolve against the client's ACTUAL final external_id
+    // (set by pushUpdate/pushCreate above), not j.client_external_id
+    // (a preview-time-only value that was only ever correct for the
+    // create case -- see the comment at the jobs-building loop in
+    // maidsBuildPreview). Falls back to the old value defensively;
+    // every job should always have a group_key from a group that went
+    // through pushUpdate/pushCreate, so this should never trigger.
+    var resolvedExternalId = keyToExternalId[j.group_key];
+    if (resolvedExternalId == null) resolvedExternalId = j.client_external_id;
     return {
-      client_external_id: j.client_external_id,
+      client_external_id: resolvedExternalId,
       date: j.date,
       scheduled_start_time: j._parsedStart || maidsParseTime(j.start_time_raw),
       scheduled_end_time: maidsParseTime(j.end_time_raw),
@@ -30666,13 +30701,18 @@ async function maidsRunCommitBatched(onProgress) {
     c.nextBatchIndex = i + 1;
   }
 
+  // PR #97: preview.warnings was always computed (summary/empty-date
+  // skip counts, unmapped team codes, status anomalies) but never
+  // actually sent anywhere -- import_maids_finish now persists it to
+  // import_runs.warnings_json for audit.
   var finishRes = await sb.rpc('import_maids_finish', {
     p_business_id: bid,
     p_run_id: c.runId,
     p_rows_processed: c.acc.rows_processed,
     p_jobs_created: c.acc.jobs_created,
     p_jobs_updated: c.acc.jobs_updated,
-    p_jobs_flagged_multi_visit: c.acc.jobs_flagged_multi_visit
+    p_jobs_flagged_multi_visit: c.acc.jobs_flagged_multi_visit,
+    p_warnings: (_maidsState.preview && _maidsState.preview.warnings) || []
   });
   if (finishRes.error) throw finishRes.error;
 
