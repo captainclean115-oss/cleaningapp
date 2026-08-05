@@ -25110,8 +25110,6 @@ function _invalidateTmgrGpsCache() { _tmgrGpsCache = { dateStr: null, devices: n
 async function renderTeamManager(opts) {
   const dateStr = document.getElementById('team-mgr-date').value;
   const date = new Date(dateStr + 'T00:00:00');
-  document.getElementById('team-mgr-date-label').textContent =
-    date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
 
   const teams = _pentaTeamNames();
   let html = '';
@@ -25219,34 +25217,38 @@ async function renderTeamManager(opts) {
       ? '$' + (stats.revenue / 1000).toFixed(1) + 'k'
       : '$' + Math.round(stats.revenue);
 
-    // GPS Vehicle row state. resolved.source: 'assignment' (explicit
+    // GPS Vehicle chip state. resolved.source: 'assignment' (explicit
     // device chosen), 'assignment-none' (explicit no-GPS), 'name-match'
     // / 'name-match-none' (no assignment row -> Default option).
+    // PR #89: collapsed from a separate verbose row (label text + a
+    // full-width <select> + an "effective until" date + a History
+    // button) into a compact "🚗 <car> ▾" chip inline in the team
+    // header. The <select> itself is UNCHANGED (same onchange ->
+    // setTeamDeviceAssignment, same options, same save path) — it's
+    // just visually collapsed to zero size and layered over the chip
+    // text via position:absolute, so a tap on the chip/arrow lands
+    // directly on the native select and opens its picker exactly as
+    // before. No functional change to how a vehicle gets assigned.
     const _resolved = _teamDeviceMap[team] || { device: null, source: 'name-match-none' };
     const _defaultDevice = (_gpsDevices || []).find(d => d.name && d.name.toUpperCase().includes(team));
     const _selectValue = _resolved.source === 'assignment' ? _resolved.device.id
       : _resolved.source === 'assignment-none' ? '__none__'
       : '';
-    const _currentLabel = _resolved.source === 'assignment' ? ('Currently: ' + _adminEsc(_resolved.device ? _resolved.device.name : _resolved.device_id) + ' (assigned)')
-      : _resolved.source === 'assignment-none' ? 'Currently: No GPS coverage (assigned)'
-      : _resolved.source === 'assignment-missing' ? 'Currently: assigned device not found in Geotab'
-      : ('Currently: Default → ' + (_defaultDevice ? _adminEsc(_defaultDevice.name) : 'no match'));
-    const _gpsRowHtml = `<div style="padding:8px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${_currentLabel}</div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--muted);white-space:nowrap">🚗 GPS Vehicle:</span>
-          <select id="tda-select-${team}" onchange="setTeamDeviceAssignment('${team}','${dateStr}')"
-            style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 8px;border-radius:8px">
-            <option value=""${_selectValue===''?' selected':''}>Default (${team})${_defaultDevice ? ' — ' + _adminEsc(_defaultDevice.name) : ' — no match'}</option>
-            ${(_gpsDevices || []).map(d => `<option value="${_adminEsc(String(d.id))}"${_selectValue===String(d.id)?' selected':''}>${_adminEsc(d.name)}</option>`).join('')}
-            <option value="__none__"${_selectValue==='__none__'?' selected':''}>None (no GPS coverage)</option>
-          </select>
-          <input type="date" id="tda-until-${team}" title="Effective until (optional — leave blank for open-ended)"
-            style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 6px;border-radius:8px">
-          <button onclick="toggleTeamDeviceHistory('${team}')" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;white-space:nowrap">History</button>
-        </div>
-      </div>
-      <div id="tda-history-${team}" style="display:none;padding:6px 14px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">Loading…</div>`;
+    const _carLabel = _resolved.source === 'assignment' ? (_resolved.device ? _resolved.device.name : _resolved.device_id)
+      : _resolved.source === 'assignment-none' ? 'None'
+      : _resolved.source === 'assignment-missing' ? '⚠️'
+      : (_defaultDevice ? _defaultDevice.name : team);
+    const _carChipHtml = `<span style="position:relative;display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer">
+        🚗 ${_adminEsc(_carLabel)}<span style="font-size:9px">▾</span>
+        <select id="tda-select-${team}" onchange="setTeamDeviceAssignment('${team}','${dateStr}')" aria-label="Change vehicle for ${_adminEsc(team)}"
+          style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer">
+          <option value=""${_selectValue===''?' selected':''}>Default (${team})${_defaultDevice ? ' — ' + _adminEsc(_defaultDevice.name) : ' — no match'}</option>
+          ${(_gpsDevices || []).map(d => `<option value="${_adminEsc(String(d.id))}"${_selectValue===String(d.id)?' selected':''}>${_adminEsc(d.name)}</option>`).join('')}
+          <option value="__none__"${_selectValue==='__none__'?' selected':''}>None (no GPS coverage)</option>
+        </select>
+      </span>`;
+    const _untilChipHtml = `<input type="date" id="tda-until-${team}" title="Vehicle assignment effective until (optional — leave blank for open-ended)"
+        style="background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:0;width:92px;cursor:pointer">`;
 
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
@@ -25256,9 +25258,10 @@ async function renderTeamManager(opts) {
         <span style="font-size:12px;color:var(--green)">${revLabel}</span>
         <span style="font-size:12px;color:var(--muted)">🏠 ${stats.houses}</span>
         <span style="font-size:12px;color:var(--muted)">⏱️ ${hLabel}</span>
+        ${_carChipHtml}
+        ${_untilChipHtml}
         <button onclick="openTeamColorEditor()" style="display:none" title="Sprint 7: hidden — use Manage Teams instead">🎨</button>
       </div>
-      ${_gpsRowHtml}
       <div style="padding:8px 14px">
         ${employees.map(emp => {
           const roleIcons = emp.role.map(r => r === 'D' ? '🚗' : r === 'TL' ? '⭐' : r).join(' ');
@@ -25423,35 +25426,6 @@ async function setTeamDeviceAssignment(team, dateStr) {
   }
   _invalidateTmgrGpsCache(); // the whole point of this write -- force a fresh device-map fetch
   try { renderTeamManager(); } catch (e) {}
-}
-
-// Last 5 assignment rows for a team, newest first. Collapsible —
-// fetched lazily on first expand, not on every renderTeamManager call.
-async function toggleTeamDeviceHistory(team) {
-  var el = document.getElementById('tda-history-' + team);
-  if (!el) return;
-  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
-  el.style.display = 'block';
-  el.textContent = 'Loading…';
-  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
-  if (!sb || !bid) { el.textContent = ''; return; }
-  try {
-    var res = await sb.from('team_device_assignments')
-      .select('device_id, effective_from, effective_to, notes')
-      .eq('business_id', bid).eq('team_code', team)
-      .order('effective_from', { ascending: false }).limit(5);
-    if (res.error) throw res.error;
-    var rows = res.data || [];
-    if (!rows.length) { el.textContent = 'No history yet.'; return; }
-    el.innerHTML = rows.map(function(r) {
-      var label = r.device_id === '__default__' ? 'Default (name-match)' : (r.device_id ? _adminEsc(r.device_id) : 'No GPS');
-      var range = _adminEsc(r.effective_from) + (r.effective_to ? ' → ' + _adminEsc(r.effective_to) : ' → open-ended');
-      return '<div style="padding:3px 0">' + label + ' · ' + range + (r.notes ? ' · <span style="opacity:0.8">' + _adminEsc(r.notes) + '</span>' : '') + '</div>';
-    }).join('');
-  } catch (e) {
-    el.textContent = 'Could not load history: ' + (e.message || e);
-  }
 }
 
 function quickAssign(empId, team, dateStr) {
@@ -47665,7 +47639,6 @@ function _p3dPage(dir) {
     <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
       <div>
         <div style="font-size:17px;font-weight:700">👥 Team Assignments</div>
-        <div style="font-size:12px;color:var(--muted)" id="team-mgr-date-label">Today</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <input type="date" id="team-mgr-date" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;padding:5px 8px;border-radius:8px;outline:none" onchange="renderTeamManager()">

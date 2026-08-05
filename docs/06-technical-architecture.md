@@ -421,6 +421,19 @@ Verified: 5 new Node assertions (extraction-based, dates relative to the real sy
 
 ---
 
+## 8al. Team Assignments UI cleanup (PR #89)
+
+Pure visual/layout polish, no data or logic changes — four items on `renderTeamManager` (Team Assignments modal):
+
+1. **Removed the "History" button** and its handler `toggleTeamDeviceHistory` (queried `team_device_assignments` for the last 5 rows into a collapsible `#tda-history-${team}` div). Confirmed via grep it was called from exactly one place before removal — safe to delete both together.
+2. **Collapsed the GPS vehicle selector** from a separate full-width row (a "Currently: ..." text line + a `🚗 GPS Vehicle:` label + a full-width `<select>` + an "effective until" date input + the History button) into a compact `🚗 <car> ▾` chip inline in the team header, alongside team name/employee count/revenue/houses/hours. The underlying `<select id="tda-select-${team}">` is **functionally unchanged** — same `onchange="setTeamDeviceAssignment(...)"`, same options, same save path (`team_device_assignments` upsert) — it's visually collapsed to `opacity:0` and layered via `position:absolute` over the visible chip text, so a tap on the chip/arrow lands directly on the native select and opens its picker exactly as before. The "effective until" date input (`#tda-until-${team}`) survives too, restyled compact and label-less, moved into the same header row.
+3. **Removed the "Currently: ..." text line** — was the redundant restatement directly above the old verbose row, gone along with the row itself.
+4. **Removed the duplicate date** — `#team-mgr-date-label` (a formatted-text restatement of the date, e.g. "Monday, August 5") sitting directly under the "👥 Team Assignments" heading, redundant with the actual `<input type="date" id="team-mgr-date">` picker right next to it in the same header row. The picker (the only one that actually changes the day) is untouched.
+
+Verified: `node --check` on the extracted inline script; grepped for every removed id/function (`team-mgr-date-label`, `toggleTeamDeviceHistory`, `tda-history-`) post-edit to confirm zero remaining references; confirmed `#tda-select-${team}`/`#tda-until-${team}` — the two ids `setTeamDeviceAssignment` actually reads on save — are unchanged in both id and save-path wiring.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
