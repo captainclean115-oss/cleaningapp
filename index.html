@@ -5514,7 +5514,18 @@ window.PentaClients = (function() {
       created_at: r.created_at || null,
       // In-home minutes, PR #1: quoted minutes for a full-team clean.
       // NULL = no quote set; consumers fall back to clientExtras/120.
-      estimated_minutes: r.estimated_minutes == null ? null : Number(r.estimated_minutes)
+      estimated_minutes: r.estimated_minutes == null ? null : Number(r.estimated_minutes),
+      // PR #78 (Maids import): segment tags (oms_only/past_client/recurring/
+      // past_client_marketing_target) and manager-review flags
+      // (not_in_maids_import/needs_address_details) -- independent arrays,
+      // see migration 087's column comments.
+      tags: Array.isArray(r.tags) ? r.tags : [],
+      review_flags: Array.isArray(r.review_flags) ? r.review_flags : [],
+      current_price: r.current_price == null ? null : Number(r.current_price),
+      first_service_date: r.first_service_date || null,
+      historical_cancellation_count: r.historical_cancellation_count == null ? null : Number(r.historical_cancellation_count),
+      historical_completion_count: r.historical_completion_count == null ? null : Number(r.historical_completion_count),
+      team_performance: r.team_performance || null
     };
   }
 
@@ -7910,6 +7921,15 @@ window.PentaJobs = (function() {
       actual_end_at:   row.actual_end_at   || null,
       actual_start_by: row.actual_start_by || null,
       actual_end_by:   row.actual_end_by   || null,
+      // Migration 087 (Maids import, PR #78) — read-only here, written
+      // exclusively via the import_maids_data RPC, not PentaJobs.update.
+      scheduledStartTime: row.scheduled_start_time || null,
+      scheduledEndTime: row.scheduled_end_time || null,
+      balanceDue: row.balance_due != null ? Number(row.balance_due) : null,
+      actualMin: row.actual_minutes != null ? Number(row.actual_minutes) : null,
+      cancellationType: row.cancellation_type || null,
+      teamCodeRaw: row.team_code_raw || null,
+      isMultiVisitDay: !!row.is_multi_visit_day,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -14067,6 +14087,11 @@ function buildFilters() {
   
   const special = [
     {id:'bal', label:'Balance due'},
+    // PR #78 — Maids import review filters.
+    {id:'import_review', label:'Import Review'},
+    {id:'oms_only', label:'OMS'},
+    {id:'needs_address', label:'Needs Address Details'},
+    {id:'multi_visit', label:'Double-Billed'},
   ];
   
   [...special].forEach(f => {
@@ -14206,6 +14231,21 @@ function setClientStatusFilter(id) {
   applyFilters(true);
 }
 
+// PR #78 — Double-Billed chip. Cached against the global jobs[] array's
+// length so re-filtering (search keystrokes, other chip toggles) inside
+// the same import doesn't re-scan every job every time; a real
+// length change (new import, job added/removed) rebuilds it.
+var _maidsMultiVisitCache = { len: -1, set: null };
+function _maidsClientHasMultiVisitJob(clientId) {
+  if (typeof jobs === 'undefined') return false;
+  if (_maidsMultiVisitCache.len !== jobs.length) {
+    var s = new Set();
+    jobs.forEach(function(j) { if (j.isMultiVisitDay && j.clientId) s.add(j.clientId); });
+    _maidsMultiVisitCache = { len: jobs.length, set: s };
+  }
+  return _maidsMultiVisitCache.set.has(clientId);
+}
+
 function applyFilters(force) {
   const q = searchVal.toLowerCase();
   // Sort is applied AFTER filter + search, wrapping the existing
@@ -14219,6 +14259,11 @@ function applyFilters(force) {
     if (q && !name.includes(q) && !(c.city || '').toLowerCase().includes(q) && !(c.ph || '').includes(q) && !(c.addr || '').toLowerCase().includes(q)) return false;
     for (const f of activeFilters) {
       if (f === 'bal' && c.bal <= 0) return false;
+      // PR #78 — Maids import review filters.
+      if (f === 'import_review' && !(c.review_flags || []).includes('not_in_maids_import')) return false;
+      if (f === 'oms_only' && !(c.tags || []).includes('oms_only')) return false;
+      if (f === 'needs_address' && !(c.review_flags || []).includes('needs_address_details')) return false;
+      if (f === 'multi_visit' && !_maidsClientHasMultiVisitJob(c.id)) return false;
       if (f.startsWith('freq:')) {
         const fl = f.slice(5);
         const cl = FREQ_LABEL[c.fc] || c.freq;
@@ -15664,6 +15709,30 @@ function getWeekStart(d) {
 // Specific team chip (B1, B3, …) → vertical list of expanded job cards for
 // that team only, sorted by start time. Each card reuses openCalJobCard for
 // drill-down so we don't fork the detail flow.
+// PR #78 — same card-list rendering as _renderTeamListForFilter, but
+// for jobs whose Maids team code never mapped to a Penta team (team is
+// null; team_code_raw holds the original text for Tom to re-assign
+// from here).
+function _renderUnassignedTeamList(dayJobs) {
+  var teamJobs = dayJobs.filter(function(j){ return !j.team && j.teamCodeRaw; });
+  teamJobs.sort(function(a, b) {
+    if (a.flexible && !b.flexible) return 1;
+    if (!a.flexible && b.flexible) return -1;
+    return (a.time || '').localeCompare(b.time || '');
+  });
+  if (teamJobs.length === 0) return '<div class="cal-empty">No unassigned-team jobs today</div>';
+  var html = '<div data-team-list="__UNASSIGNED__" style="padding:4px 0 12px">';
+  teamJobs.forEach(function(j) {
+    var safeId = String(j.id || '').replace(/['"]/g, '');
+    html += '<div data-jid="' + safeId + '" style="background:var(--surface);border-radius:20px;margin-bottom:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.18)">';
+    html += '<div style="padding:8px 16px 0;font-size:11px;font-weight:700;color:var(--red)">Raw team from CSV: "' + escapeHtml(j.teamCodeRaw) + '"</div>';
+    html += _renderJobCardContent(j, { showCloseButton: false });
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
 function _renderTeamListForFilter(team, dayJobs) {
   // Sprint 7: vertical list of FULL job cards (matches openCalJobCard layout).
   // Reuses _renderJobCardContent + _attachJobCardActions for parity with the
@@ -15750,9 +15819,18 @@ function renderCal() {
         var active = window.calTeamFilter === t;
         bodyHtml += '<button onclick="window.calTeamFilter=&quot;'+t+'&quot;;renderCal()" style="font-size:13px;padding:5px 12px;border-radius:20px;border:1px solid '+tc2+'44;background:'+(active?tc2:'var(--surface2)')+';color:'+(active?'#fff':'var(--text)')+';">'+t+'</button>';
       });
+      // PR #78 — jobs whose Maids team code didn't map to a Penta team
+      // (team_code stayed null, raw text kept on team_code_raw).
+      var _unassignedCount = dayJobs.filter(function(j){ return !j.team && j.teamCodeRaw; }).length;
+      if (_unassignedCount > 0) {
+        var unassignedActive = window.calTeamFilter === '__UNASSIGNED__';
+        bodyHtml += '<button onclick="window.calTeamFilter=&quot;__UNASSIGNED__&quot;;renderCal()" style="font-size:13px;padding:5px 12px;border-radius:20px;border:1px solid rgba(239,68,68,0.4);background:'+(unassignedActive?'var(--red)':'rgba(239,68,68,0.12)')+';color:'+(unassignedActive?'#fff':'var(--red)')+';">⚠️ Unassigned Team ('+_unassignedCount+')</button>';
+      }
       bodyHtml += '</div>';
 
-      if (window.calTeamFilter) {
+      if (window.calTeamFilter === '__UNASSIGNED__') {
+        bodyHtml += _renderUnassignedTeamList(dayJobs);
+      } else if (window.calTeamFilter) {
         // Sprint 7: vertical list mode for the selected team
         bodyHtml += _renderTeamListForFilter(window.calTeamFilter, dayJobs);
       } else {
@@ -28944,6 +29022,761 @@ function matchStopToClient(addr, teamJobs) {
   return m ? m.name : '';
 }
 
+// =====================================================================
+// MAIDS CSV IMPORTER — PR #78.
+//
+// Client-side parses + resolves everything (CSV parsing, name/address
+// matching, team/status mapping, holiday-cancellation classification,
+// multi-visit flagging) before ever calling the server. The RPC
+// (public.import_maids_data, migration 087) is purely mechanical: given
+// an already-resolved payload, write it atomically and recompute
+// derived client stats. That split is deliberate -- fuzzy matching and
+// per-row manager confirmation (the 70-89% confidence band) are much
+// easier to build and reason about as UI-driven JS than as SQL.
+//
+// Every pure function below (parse/normalize/score/map) is written so
+// it can be unit-tested by copying it verbatim into a Node script (this
+// codebase has no browser test runner) -- no DOM, no Supabase, no
+// closures over UI state.
+// =====================================================================
+
+var MAIDS_TEAM_MAP = { '3 GREEN': 'M3', '1 RED': 'M1', '2 BLUE': 'M2' };
+var MAIDS_KNOWN_PENTA_TEAMS = ['B1', 'B3', 'B5', 'M1', 'M2', 'M3', 'S1', 'S3'];
+
+// US company holidays, computed for any year (matches migration 087's
+// cancellation_type split -- kept in sync deliberately: this is the
+// ONLY place that computes it; the RPC just stores whatever
+// cancellation_type this function decided, it doesn't recompute).
+function maidsIsCompanyHoliday(dateStr) {
+  if (!dateStr) return false;
+  var d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return false;
+  var y = d.getFullYear(), m = d.getMonth(), day = d.getDate();
+  if (m === 0 && day === 1) return true;   // New Year's Day
+  if (m === 6 && day === 4) return true;   // July 4th
+  if (m === 11 && day === 24) return true; // Christmas Eve
+  if (m === 11 && day === 25) return true; // Christmas Day
+  if (m === 10) { // November: 4th Thursday + the Friday after
+    var nov1Dow = new Date(y, 10, 1).getDay(); // 0=Sun..6=Sat
+    var firstThu = 1 + ((4 - nov1Dow + 7) % 7);
+    var fourthThu = firstThu + 21;
+    if (day === fourthThu || day === fourthThu + 1) return true;
+  }
+  return false;
+}
+
+function maidsCancellationType(dateStr) {
+  return maidsIsCompanyHoliday(dateStr) ? 'company_closure' : 'client_initiated';
+}
+
+// jobs.status CHECK only allows scheduled|completed|cancelled. Anything
+// else surfaces as a preview warning rather than failing the whole row.
+function maidsMapStatus(raw) {
+  var s = String(raw || '').trim().toLowerCase();
+  if (s === 'scheduled') return { status: 'scheduled', warning: null };
+  if (s === 'cancelled' || s === 'canceled') return { status: 'cancelled', warning: null };
+  if (s === 'complete' || s === 'completed') return { status: 'completed', warning: null };
+  return { status: 'scheduled', warning: 'Unrecognized Job Status "' + raw + '" — defaulted to scheduled, please verify' };
+}
+
+// Team mapping per Tom's spec. Anything unrecognized keeps team=null
+// (and the raw text on team_code_raw) rather than guessing -- the
+// Schedule view's "Unassigned team" filter is where these get fixed.
+function maidsMapTeam(raw) {
+  var s = String(raw || '').trim();
+  if (!s) return { team: null, raw: s, mapped: false };
+  var upper = s.toUpperCase();
+  if (MAIDS_TEAM_MAP[upper]) return { team: MAIDS_TEAM_MAP[upper], raw: s, mapped: true };
+  if (MAIDS_KNOWN_PENTA_TEAMS.indexOf(upper) !== -1) return { team: upper, raw: s, mapped: true };
+  return { team: null, raw: s, mapped: false };
+}
+
+// CSV frequency codes (WEK/EOW/ETW/EFW/MON/OMS) -> the DB enum's
+// compact form (RMS-WEK / ... / OMS). NOT the same as the in-app
+// spaced display form ("RMS - WEK") PentaClients normalizes to on
+// read -- this payload is written directly via SQL, bypassing that
+// translation layer, so it must match the raw enum values exactly.
+function maidsMapFrequency(raw) {
+  var s = String(raw || '').trim().toUpperCase();
+  if (!s) return null;
+  if (s === 'OMS') return 'OMS';
+  if (['WEK', 'EOW', 'ETW', 'EFW', 'MON'].indexOf(s) !== -1) return 'RMS-' + s;
+  return null; // unrecognized code -- leave client.frequency untouched (COALESCE in the RPC)
+}
+
+// RFC4180-ish CSV parser: quote-aware, handles escaped "" quotes AND
+// embedded newlines inside quoted fields (Maids notes/summary columns
+// are exactly the kind of field that has both). The app-wide
+// parseCSV() helper does neither -- built fresh rather than reused, per
+// the diagnosis this session's PR #78 report flagged.
+function maidsParseCSV(text) {
+  var rows = [];
+  var row = [];
+  var field = '';
+  var inQuotes = false;
+  var s = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (var i = 0; i < s.length; i++) {
+    var c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  // Drop trailing fully-empty rows (common at EOF).
+  while (rows.length && rows[rows.length - 1].every(function(f) { return f === ''; })) rows.pop();
+  if (!rows.length) return [];
+  var header = rows[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
+  return rows.slice(1).map(function(r) {
+    var obj = {};
+    header.forEach(function(h, idx) { obj[h] = (r[idx] !== undefined ? r[idx] : '').trim(); });
+    return obj;
+  });
+}
+
+// "Last, First" per Tom's spec. Rows with no comma (a company name, or
+// a Maids export quirk) are treated as last-name-only -- still
+// comparable via the same scoring function, just with an empty first
+// name (which scores as a wash, not a penalty, against another empty
+// first name, and mismatches against a real first name the normal way).
+function maidsParseName(customerName) {
+  var s = String(customerName || '').trim();
+  if (!s) return { first: '', last: '' };
+  var comma = s.indexOf(',');
+  if (comma === -1) return { first: '', last: s };
+  return {
+    last: s.slice(0, comma).trim(),
+    first: s.slice(comma + 1).trim()
+  };
+}
+
+// Job Location -> street/city/zip. Maids exports typically read
+// "123 Main St, Boston, MA 02101" -- comma-split is the primary path;
+// falls back to a looser regex scan (zip from the end, city as the
+// token block before the state) for rows that don't follow that exact
+// shape. Flagged explicitly as unverified against a real Maids export
+// in the PR description -- there was no sample file to test against.
+function maidsParseAddress(jobLocation) {
+  var s = String(jobLocation || '').trim();
+  if (!s) return { street: '', houseNum: '', city: '', zip: '' };
+  var parts = s.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
+  var street = '', city = '', zip = '';
+  if (parts.length >= 3) {
+    street = parts[0];
+    city = parts[1];
+    zip = (parts[2].match(/\d{5}/) || [''])[0];
+  } else if (parts.length === 2) {
+    street = parts[0];
+    var stateZip = parts[1].match(/^(.*?)\s*([A-Z]{2})?\s*(\d{5})?$/);
+    city = stateZip ? (stateZip[1] || '').trim() : parts[1];
+    zip = (parts[1].match(/\d{5}/) || [''])[0];
+  } else {
+    street = parts[0] || s;
+    zip = (s.match(/\d{5}/) || [''])[0];
+  }
+  var houseNum = (street.match(/^(\d+)/) || [''])[0];
+  return { street: street, houseNum: houseNum, city: city, zip: zip };
+}
+
+// 0..1 character-similarity via edit distance (_lev, index.html —
+// shared with the "did you mean" client-search suggestions). Exact
+// match (including both-empty) = 1.
+function maidsNameSim(a, b) {
+  var x = String(a || '').trim().toLowerCase();
+  var y = String(b || '').trim().toLowerCase();
+  if (x === y) return 1;
+  var maxLen = Math.max(x.length, y.length);
+  if (!maxLen) return 1;
+  return 1 - (_lev(x, y) / maxLen);
+}
+
+// Combined confidence score (0-100) per Tom's spec: last+first name
+// similarity (last weighted higher — the primary identifier in Maids'
+// own "Last, First" convention), GATED by street-number agreement. No
+// street-number match caps the score at 50 -- a perfect name match at
+// a totally different address can never reach the 90%+ auto-match band
+// on name alone, which is the literal "last+first + street number
+// match" requirement.
+function maidsScoreMatch(csvParsedName, csvParsedAddr, pentaClient) {
+  var nameScore = 0.6 * maidsNameSim(csvParsedName.last, pentaClient.ln)
+                 + 0.4 * maidsNameSim(csvParsedName.first, pentaClient.fn);
+  var pentaAddr = normalizeStreet(pentaClient.addr || '');
+  var pentaHouseNum = (pentaAddr.match(/^(\d+)/) || [''])[0];
+  var streetMatch = !!(csvParsedAddr.houseNum && pentaHouseNum && csvParsedAddr.houseNum === pentaHouseNum);
+  var combined = streetMatch ? nameScore : nameScore * 0.5;
+  return { percent: Math.round(combined * 100), streetMatch: streetMatch };
+}
+
+// Best match for one CSV row against the full existing client list.
+// Returns { tier: 'auto'|'confirm'|'new', client, percent } — `client`
+// is null when tier is 'new'. Primary path is exact Customer ID ->
+// clients.external_id (Manna's external_ids are already Maids-format
+// IDs — see PR #78 diagnosis); fuzzy scoring only runs for rows that
+// don't hit that exact match.
+function maidsMatchClient(csvRow, existingClients) {
+  var customerId = String(csvRow['customer id'] || '').trim();
+  if (customerId) {
+    var exact = existingClients.find(function(c) { return c.id && String(c.id) === customerId; });
+    if (exact) return { tier: 'auto', client: exact, percent: 100 };
+  }
+  var name = maidsParseName(csvRow['customer name'] || csvRow['company name']);
+  var addr = maidsParseAddress(csvRow['job location']);
+  var best = null, bestPercent = -1;
+  for (var i = 0; i < existingClients.length; i++) {
+    var scored = maidsScoreMatch(name, addr, existingClients[i]);
+    if (scored.percent > bestPercent) { bestPercent = scored.percent; best = existingClients[i]; }
+  }
+  if (bestPercent >= 90) return { tier: 'auto', client: best, percent: bestPercent };
+  if (bestPercent >= 70) return { tier: 'confirm', client: best, percent: bestPercent };
+  return { tier: 'new', client: null, percent: Math.max(bestPercent, 0) };
+}
+
+// A row's own Frequency column determines OMS-vs-recurring for the
+// 2025 combined file (it mixes both categories); the 2026 files are
+// already pre-split by Tom's own upload labeling.
+function maidsRowIsOms(row, sourceType) {
+  if (sourceType === '2026_oms') return true;
+  if (sourceType === '2026_recurring') return false;
+  return maidsMapFrequency(row['frequency']) === 'OMS';
+}
+
+// Groups every row across all uploaded CSVs by client (Customer ID when
+// present, else normalized name+street), scores each group's best
+// Penta match once (not per-row — a client with 40 recurring visits
+// shouldn't be scored 40 times), and returns the full preview
+// structure the UI renders and the eventual commit payload is built
+// from. Pure function: no DOM, no network. `sourceSets` is
+// { '2026_recurring': rows[], '2026_oms': rows[], '2025_combined': rows[] }
+// (only the keys Tom actually uploaded).
+function maidsBuildPreview(sourceSets, existingClients) {
+  var groups = {}; // key -> { key, rows: [{row, sourceType}], name, addr }
+  var order = [];
+  Object.keys(sourceSets).forEach(function(sourceType) {
+    (sourceSets[sourceType] || []).forEach(function(row) {
+      var customerId = String(row['customer id'] || '').trim();
+      var name = maidsParseName(row['customer name'] || row['company name']);
+      var addr = maidsParseAddress(row['job location']);
+      var key = customerId || (normalizeStreet(name.last + ' ' + name.first) + '|' + normalizeStreet(addr.street));
+      if (!groups[key]) { groups[key] = { key: key, rows: [], name: name, addr: addr }; order.push(key); }
+      groups[key].rows.push({ row: row, sourceType: sourceType });
+    });
+  });
+
+  var warnings = [];
+  var autoRows = [], confirmRows = [], newRows = [];
+
+  order.forEach(function(key) {
+    var g = groups[key];
+    var firstRow = g.rows[0].row;
+    var match = maidsMatchClient(firstRow, existingClients);
+
+    var hasRecurring2026 = g.rows.some(function(r) { return r.sourceType === '2026_recurring'; });
+    var has2026Any = g.rows.some(function(r) { return r.sourceType === '2026_recurring' || r.sourceType === '2026_oms'; });
+    var allOms = g.rows.every(function(r) { return maidsRowIsOms(r.row, r.sourceType); });
+    var tags = [];
+    if (hasRecurring2026) tags.push('recurring');
+    if (allOms && !hasRecurring2026) tags.push('oms_only');
+    if (!has2026Any) tags.push('past_client');
+
+    // current_frequency comes from the chronologically-latest row in
+    // this client's group, not just whichever CSV happened to list
+    // them first.
+    var latestRow = g.rows.slice().sort(function(a, b) {
+      return String(a.row['date'] || '').localeCompare(String(b.row['date'] || ''));
+    }).pop().row;
+
+    var entry = {
+      key: key, name: g.name, addr: g.addr, tags: tags,
+      rowCount: g.rows.length, match: match,
+      pentaId: match.client ? match.client.uuid : null,
+      pentaExternalId: match.client ? match.client.id : null,
+      status: (!has2026Any) ? 'inactive' : 'active',
+      rows_frequency: latestRow['frequency']
+    };
+
+    if (match.tier === 'auto') autoRows.push(entry);
+    else if (match.tier === 'confirm') confirmRows.push(entry);
+    else newRows.push(entry);
+  });
+
+  // Jobs: one per CSV row, resolved against the group's Customer ID
+  // (real Maids ID if present on the row, else the group key — matched
+  // clients get their external_id set to this same value by the RPC,
+  // so job.client_external_id always lines up post-commit).
+  var jobs = [];
+  order.forEach(function(key) {
+    var g = groups[key];
+    var groupExternalId = String(g.rows[0].row['customer id'] || '').trim() || key;
+    g.rows.forEach(function(r) {
+      var row = r.row;
+      var statusMap = maidsMapStatus(row['job status']);
+      if (statusMap.warning) warnings.push({ type: 'status', client: g.name.last + ', ' + g.name.first, detail: statusMap.warning });
+      var teamMap = maidsMapTeam(row['team']);
+      if (!teamMap.mapped && teamMap.raw) warnings.push({ type: 'team', client: g.name.last + ', ' + g.name.first, detail: 'Unmapped team code "' + teamMap.raw + '" — flagged unassigned' });
+      var date = String(row['date'] || '').trim();
+      var cancellationType = (statusMap.status === 'cancelled') ? maidsCancellationType(date) : null;
+      jobs.push({
+        client_external_id: groupExternalId,
+        date: date,
+        start_time_raw: row['start time'],
+        end_time_raw: row['end time'],
+        team: teamMap.team,
+        team_code_raw: teamMap.mapped ? null : teamMap.raw,
+        price: maidsParseMoney(row['job total']),
+        balance_due: maidsParseMoney(row['balance due']),
+        quoted_minutes: maidsParseInt(row['quoted inhome min']),
+        actual_minutes: maidsParseInt(row['actual inhome min']),
+        status: statusMap.status,
+        cancel_reason: statusMap.status === 'cancelled' ? (row['job summary'] || null) : null,
+        cancellation_type: cancellationType,
+        frequency: row['frequency']
+      });
+    });
+  });
+
+  // Multi-visit: group the resolved job list by (client, date); 2+
+  // distinct start times => flag every job in that group.
+  var byClientDate = {};
+  jobs.forEach(function(j) {
+    var t = maidsParseTime(j.start_time_raw);
+    j._parsedStart = t;
+    var dk = j.client_external_id + '|' + j.date;
+    if (!byClientDate[dk]) byClientDate[dk] = [];
+    byClientDate[dk].push(j);
+  });
+  Object.keys(byClientDate).forEach(function(dk) {
+    var group = byClientDate[dk];
+    var distinctStarts = {};
+    group.forEach(function(j) { if (j._parsedStart) distinctStarts[j._parsedStart] = true; });
+    var isMulti = Object.keys(distinctStarts).length > 1;
+    group.forEach(function(j) { j.is_multi_visit_day = isMulti; });
+  });
+
+  return {
+    autoRows: autoRows, confirmRows: confirmRows, newRows: newRows,
+    jobs: jobs, warnings: warnings,
+    rowsParsed: order.reduce(function(n, k) { return n + groups[k].rows.length; }, 0),
+    uniqueClients: order.length,
+    multiVisitJobCount: jobs.filter(function(j) { return j.is_multi_visit_day; }).length
+  };
+}
+
+function maidsParseMoney(v) {
+  if (v == null || v === '') return null;
+  var n = parseFloat(String(v).replace(/[$,]/g, ''));
+  return isNaN(n) ? null : n;
+}
+function maidsParseInt(v) {
+  if (v == null || v === '') return null;
+  var n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
+}
+// "9:00 AM" / "09:00" / "9:00" -> "HH:MM" 24h, or null if unparseable.
+function maidsParseTime(v) {
+  var s = String(v || '').trim();
+  if (!s) return null;
+  var m = s.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return null;
+  var h = parseInt(m[1], 10), min = m[2];
+  if (m[3]) {
+    var ap = m[3].toUpperCase();
+    if (ap === 'PM' && h !== 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+  }
+  if (h < 0 || h > 23) return null;
+  return String(h).padStart(2, '0') + ':' + min;
+}
+
+// Builds the final RPC payload once every 'confirm' (70-89%) row has a
+// decision ('match'|'new') from the manager. `decisions` is a
+// key->'match'|'new' map from the preview UI.
+function maidsBuildPayload(preview, decisions, mode, csvTypesUploaded) {
+  var clientsUpdate = [], clientsCreate = [];
+
+  function pushUpdate(entry) {
+    clientsUpdate.push({
+      id: entry.pentaId,
+      external_id: String(entry.match.client.id),
+      address: entry.addr.street || null,
+      city: entry.addr.city || null,
+      zip_code: entry.addr.zip || null,
+      frequency: maidsMapFrequency(entry.rows_frequency),
+      tags: entry.tags
+    });
+  }
+  function pushCreate(entry) {
+    // Always this row's OWN Customer ID (entry.key is the real Maids
+    // Customer ID whenever the row had one) -- never entry.match.client,
+    // which for a 'confirm'-tier row Tom rejected is a DIFFERENT,
+    // non-matching candidate's id, not this new client's identity.
+    clientsCreate.push({
+      external_id: entry.key,
+      first_name: entry.name.first || entry.name.last || 'Unknown',
+      last_name: entry.name.last || '-',
+      address: entry.addr.street || null,
+      city: entry.addr.city || null,
+      zip_code: entry.addr.zip || null,
+      frequency: maidsMapFrequency(entry.rows_frequency),
+      tags: entry.tags,
+      status: entry.status
+    });
+  }
+
+  preview.autoRows.forEach(function(entry) {
+    if (entry.match.tier === 'auto' && entry.match.client) pushUpdate(entry);
+    else pushCreate(entry);
+  });
+  preview.confirmRows.forEach(function(entry) {
+    var decision = decisions[entry.key];
+    if (decision === 'match') pushUpdate(entry);
+    else pushCreate(entry); // decision === 'new', or unresolved defaults safe-side to create
+  });
+  preview.newRows.forEach(function(entry) { pushCreate(entry); });
+
+  var jobsPayload = preview.jobs.map(function(j) {
+    return {
+      client_external_id: j.client_external_id,
+      date: j.date,
+      scheduled_start_time: j._parsedStart || maidsParseTime(j.start_time_raw),
+      scheduled_end_time: maidsParseTime(j.end_time_raw),
+      team: j.team,
+      team_code_raw: j.team_code_raw,
+      price: j.price,
+      balance_due: j.balance_due,
+      quoted_minutes: j.quoted_minutes,
+      actual_minutes: j.actual_minutes,
+      status: j.status,
+      cancel_reason: j.cancel_reason,
+      cancellation_type: j.cancellation_type,
+      is_multi_visit_day: !!j.is_multi_visit_day
+    };
+  });
+
+  return {
+    p_mode: mode,
+    p_csv_types: csvTypesUploaded,
+    p_clients_update: clientsUpdate,
+    p_clients_create: clientsCreate,
+    p_jobs: jobsPayload
+  };
+}
+
+// Calls the migration-087 RPC (one Postgres transaction: client
+// upserts, job upserts/wipe, derived-stat recompute, review-flag
+// sweep, import_runs row) and re-hydrates the in-memory facades so the
+// rest of the app reflects the import immediately, no reload needed.
+async function maidsCommitImport(payload) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) throw new Error('maidsCommitImport: no Supabase client');
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!bid) throw new Error('maidsCommitImport: tenant not resolved');
+  var res = await sb.rpc('import_maids_data', {
+    p_business_id: bid,
+    p_mode: payload.p_mode,
+    p_csv_types: payload.p_csv_types,
+    p_clients_update: payload.p_clients_update,
+    p_clients_create: payload.p_clients_create,
+    p_jobs: payload.p_jobs
+  });
+  if (res.error) throw res.error;
+  try { if (window.PentaClients && window.PentaClients.refreshFromSupabase) await window.PentaClients.refreshFromSupabase(); } catch (e) { console.warn('[MaidsImport] client cache refresh failed', e); }
+  try { if (window.PentaJobs && window.PentaJobs._hydrate) await window.PentaJobs._hydrate(); } catch (e) { console.warn('[MaidsImport] job cache refresh failed', e); }
+  return res.data;
+}
+
+// ── Maids Import UI ─────────────────────────────────────────────────
+var MAIDS_CSV_LABELS = { '2026_recurring': '2026 Recurring', '2026_oms': '2026 OMS', '2025_combined': '2025 Combined' };
+var _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false };
+
+function openMaidsImportModal() {
+  _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false };
+  document.getElementById('maids-import-modal').style.display = 'block';
+  renderMaidsUploadStep();
+}
+function closeMaidsImportModal() {
+  document.getElementById('maids-import-modal').style.display = 'none';
+}
+
+function renderMaidsUploadStep() {
+  var body = document.getElementById('maids-import-body');
+  var rowsHtml = Object.keys(MAIDS_CSV_LABELS).map(function(type) {
+    var loaded = _maidsState.csvRows[type];
+    return '<div style="margin-bottom:16px">'
+      + '<div style="font-size:13px;font-weight:600;margin-bottom:6px">' + MAIDS_CSV_LABELS[type] + '</div>'
+      + '<label style="display:flex;align-items:center;gap:10px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px 14px;cursor:pointer">'
+      + '<span style="font-size:18px">📄</span>'
+      + '<span style="flex:1;font-size:13px;color:var(--muted)">' + (loaded ? (loaded.length + ' rows parsed') : 'Choose CSV file…') + '</span>'
+      + '<input type="file" accept=".csv,text/csv" style="display:none" onchange="maidsHandleFileUpload(\'' + type + '\',this)">'
+      + '</label></div>';
+  }).join('');
+  var anyLoaded = Object.keys(_maidsState.csvRows).length > 0;
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);margin-bottom:18px">Upload up to 3 Maids exports. At least one is required.</div>'
+    + rowsHtml
+    + '<div id="maids-upload-error" style="color:var(--red);font-size:13px;margin-bottom:12px;min-height:18px"></div>'
+    + '<button id="maids-preview-btn" onclick="maidsRunPreview()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;opacity:' + (anyLoaded ? '1' : '0.5') + '">Preview Import</button>';
+}
+
+function maidsHandleFileUpload(type, inputEl) {
+  var file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var rows = maidsParseCSV(e.target.result);
+      if (!rows.length) throw new Error('No data rows found');
+      _maidsState.csvRows[type] = rows;
+      renderMaidsUploadStep();
+    } catch (err) {
+      document.getElementById('maids-upload-error').textContent = 'Could not parse ' + MAIDS_CSV_LABELS[type] + ': ' + (err.message || err);
+    }
+  };
+  reader.onerror = function() {
+    document.getElementById('maids-upload-error').textContent = 'Could not read file for ' + MAIDS_CSV_LABELS[type];
+  };
+  reader.readAsText(file);
+}
+
+function maidsRunPreview() {
+  try {
+    var existingClients = (window.PentaClients && window.PentaClients.list) ? window.PentaClients.list() : [];
+    var preview = maidsBuildPreview(_maidsState.csvRows, existingClients);
+    _maidsState.preview = preview;
+    _maidsState.decisions = {};
+    renderMaidsPreviewStep();
+  } catch (e) {
+    console.error('[MaidsImport] preview build failed', e);
+    var el = document.getElementById('maids-upload-error');
+    if (el) el.textContent = 'Preview failed: ' + (e.message || e);
+  }
+}
+
+function _maidsAllConfirmRowsResolved() {
+  var p = _maidsState.preview;
+  if (!p) return false;
+  return p.confirmRows.every(function(entry) { return !!_maidsState.decisions[entry.key]; });
+}
+
+function renderMaidsPreviewStep() {
+  var p = _maidsState.preview;
+  var body = document.getElementById('maids-import-body');
+  var warningsHtml = p.warnings.length
+    ? p.warnings.slice(0, 50).map(function(w) {
+        return '<div style="font-size:12px;color:var(--amber);padding:4px 0;border-bottom:1px solid var(--border)">⚠️ ' + escapeHtml(w.client) + ' — ' + escapeHtml(w.detail) + '</div>';
+      }).join('') + (p.warnings.length > 50 ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">+' + (p.warnings.length - 50) + ' more warnings</div>' : '')
+    : '<div style="font-size:12px;color:var(--muted)">No warnings.</div>';
+
+  var confirmHtml = p.confirmRows.length ? p.confirmRows.map(function(entry) {
+    var decision = _maidsState.decisions[entry.key];
+    var cand = entry.match.client;
+    return '<div style="background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px;margin-bottom:8px">'
+      + '<div style="font-size:13px;font-weight:600">' + escapeHtml(entry.name.last + ', ' + entry.name.first) + ' <span style="color:var(--muted);font-weight:400">— ' + escapeHtml(entry.addr.street) + '</span></div>'
+      + '<div style="font-size:12px;color:var(--muted);margin:4px 0">Possible match (' + entry.match.percent + '%): ' + escapeHtml((cand.ln || '') + ', ' + (cand.fn || '')) + ' — ' + escapeHtml(cand.addr || '') + '</div>'
+      + '<div style="display:flex;gap:8px;margin-top:8px">'
+      + '<button onclick="maidsResolveConfirmRow(\'' + entry.key.replace(/'/g, "\\'") + '\',\'match\')" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:' + (decision === 'match' ? 'var(--green)' : 'var(--surface2)') + ';color:' + (decision === 'match' ? '#000' : 'var(--text)') + ';border:1px solid var(--border)">✓ Same client</button>'
+      + '<button onclick="maidsResolveConfirmRow(\'' + entry.key.replace(/'/g, "\\'") + '\',\'new\')" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:' + (decision === 'new' ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (decision === 'new' ? '#fff' : 'var(--text)') + ';border:1px solid var(--border)">+ New client</button>'
+      + '</div></div>';
+  }).join('') : '<div style="font-size:12px;color:var(--muted)">None — every row matched with high confidence or is a new client.</div>';
+
+  var allResolved = _maidsAllConfirmRowsResolved();
+
+  body.innerHTML = ''
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">'
+    +   _maidsStatCard('Rows parsed', p.rowsParsed)
+    +   _maidsStatCard('Unique clients', p.uniqueClients)
+    +   _maidsStatCard('Auto-matched', p.autoRows.filter(function(e){return e.match.tier==='auto' && e.match.client;}).length)
+    +   _maidsStatCard('New clients', p.newRows.length + p.autoRows.filter(function(e){return !e.match.client;}).length)
+    +   _maidsStatCard('Needs your review', p.confirmRows.length)
+    +   _maidsStatCard('Jobs to import', p.jobs.length)
+    + '</div>'
+    + (p.multiVisitJobCount ? '<div style="background:rgba(108,143,255,0.1);border:1px solid rgba(108,143,255,0.3);border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:16px">📅 ' + p.multiVisitJobCount + ' jobs flagged as same-day multi-visit — review in the "Double-billed clients" tab after import, not auto-merged.</div>' : '')
+    + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Warnings</div>'
+    + '<div style="max-height:160px;overflow-y:auto;margin-bottom:20px">' + warningsHtml + '</div>'
+    + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Needs Your Confirmation (' + p.confirmRows.length + ')</div>'
+    + '<div style="margin-bottom:20px">' + confirmHtml + '</div>'
+    + '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:12px;margin-bottom:20px">'
+    +   '<label style="display:flex;align-items:center;gap:10px;cursor:pointer">'
+    +     '<input type="checkbox" id="maids-wipe-toggle" onchange="_maidsState.wipeMode=this.checked" style="width:18px;height:18px;accent-color:var(--red)">'
+    +     '<span style="font-size:13px;font-weight:600;color:var(--red)">⚠️ Wipe existing jobs before import (danger zone — first-run only)</span>'
+    +   '</label>'
+    +   '<div style="font-size:11px;color:var(--muted);margin-top:6px">Off by default. Every subsequent import stays in upsert mode: matched jobs update, new jobs are added, anything not in this CSV set is left untouched.</div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px">'
+    +   '<button onclick="renderMaidsUploadStep()" style="flex:1;background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:14px;border-radius:12px;cursor:pointer">Back</button>'
+    +   '<button id="maids-commit-btn" onclick="maidsRunCommit()" ' + (allResolved ? '' : 'disabled') + ' style="flex:2;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;opacity:' + (allResolved ? '1' : '0.5') + '">Confirm and Import</button>'
+    + '</div>'
+    + (!allResolved && p.confirmRows.length ? '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">Resolve all rows above to continue</div>' : '');
+}
+
+function _maidsStatCard(label, value) {
+  return '<div style="background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px;text-align:center">'
+    + '<div style="font-size:20px;font-weight:800;color:var(--accent)">' + value + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + label + '</div></div>';
+}
+
+function maidsResolveConfirmRow(key, decision) {
+  _maidsState.decisions[key] = decision;
+  renderMaidsPreviewStep();
+}
+
+async function maidsRunCommit() {
+  if (!_maidsAllConfirmRowsResolved()) return;
+  var btn = document.getElementById('maids-commit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+  try {
+    var csvTypes = Object.keys(_maidsState.csvRows);
+    var payload = maidsBuildPayload(_maidsState.preview, _maidsState.decisions, _maidsState.wipeMode ? 'wipe' : 'upsert', csvTypes);
+    var result = await maidsCommitImport(payload);
+    renderMaidsSummaryStep(result);
+  } catch (e) {
+    console.error('[MaidsImport] commit failed', e);
+    alert('Import failed: ' + (e.message || e));
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirm and Import'; }
+  }
+}
+
+function renderMaidsSummaryStep(result) {
+  var body = document.getElementById('maids-import-body');
+  body.innerHTML = '<div style="text-align:center;padding:20px 0 30px">'
+    + '<div style="font-size:44px;margin-bottom:10px">✅</div>'
+    + '<div style="font-size:18px;font-weight:700">Import complete</div>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px">'
+    +   _maidsStatCard('Clients created', result.clients_created)
+    +   _maidsStatCard('Clients updated', result.clients_updated)
+    +   _maidsStatCard('Flagged for review', result.clients_flagged_review)
+    +   _maidsStatCard('Jobs created', result.jobs_created)
+    +   _maidsStatCard('Jobs updated', result.jobs_updated)
+    +   _maidsStatCard('Multi-visit jobs', result.jobs_flagged_multi_visit)
+    + '</div>'
+    + '<div id="maids-enrich-status" style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:14px">🏠 Looking up square footage for clients missing it in the background — safe to close this screen.</div>'
+    + '<button onclick="closeMaidsImportModal()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer">Done</button>';
+  // Fire-and-forget — not awaited, so "Done" is never blocked on ~300
+  // sequential free-API lookups. See maidsEnrichMissingSqft's own
+  // comment for the cap/pacing rationale.
+  maidsEnrichMissingSqft();
+}
+
+// sqft/bathroom lookup for a single address. Deliberately its OWN,
+// smaller cascade rather than reusing the Claire compute_quote tool's
+// full one (geocode -> MassGIS -> book-average-by-city -> state-median
+// fallback): those last two fallbacks synthesize a PLAUSIBLE estimate
+// for a one-time quote calculation, which is fine there but wrong to
+// silently write into a permanent client record as if it were the
+// client's real square footage. Only a real MassGIS parcel match is
+// written; anything else is left null and flagged for manual entry.
+// Bathrooms: MassGIS doesn't return a bath count at all (confirmed in
+// the PR #78 diagnosis) -- left null here too, never hardcoded.
+async function maidsLookupSqft(addr, city, zip) {
+  if (!window.PentaGeocode || !window.PentaGeocode.geocodeAddress) return null;
+  var geo = await window.PentaGeocode.geocodeAddress(addr, city, zip);
+  if (geo.status !== 'ok' || geo.lat == null || geo.lng == null) return null;
+  try {
+    var mgUrl = 'https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/Massachusetts_Property_Tax_Parcels/FeatureServer/0/query'
+      + '?geometry=' + encodeURIComponent('{"x":' + geo.lng + ',"y":' + geo.lat + ',"spatialReference":{"wkid":4326}}')
+      + '&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects'
+      + '&outFields=RES_AREA,BLD_AREA&returnGeometry=false&f=json';
+    var resp = await fetch(mgUrl);
+    var data = await resp.json();
+    if (!data.features || !data.features.length) return null;
+    var attrs = data.features[0].attributes || {};
+    var resArea = parseFloat(attrs.RES_AREA) || 0;
+    var bldArea = parseFloat(attrs.BLD_AREA) || 0;
+    if (resArea > 0) return { sqft: Math.round(resArea), source: 'massgis_res_area' };
+    if (bldArea > 0) return { sqft: Math.round(bldArea * 0.7), source: 'massgis_bld_area_estimate' };
+    return null;
+  } catch (e) {
+    console.warn('[MaidsImport] sqft lookup failed', e);
+    return null;
+  }
+}
+
+// Best-effort background pass over every client missing sqft (new
+// imports AND pre-existing clients that never had it) — capped at 100
+// per run and paced 300ms apart to stay a good citizen of the free
+// Nominatim/MassGIS endpoints (no API key, no SLA). Re-running the
+// importer, or a future manual "retry enrichment" action, picks up
+// whatever's left via the same "sqft IS NULL" scan. Writes go straight
+// through supabase-js, bypassing PentaClients.setField -- its
+// _transformRowForWrite doesn't map sqft/bathrooms/review_flags yet,
+// so setField would silently no-op (empty payload) rather than error.
+async function maidsEnrichMissingSqft() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid || !window.PentaClients || !window.PentaClients.list) return;
+  var candidates = window.PentaClients.list().filter(function(c) { return c.sqft == null && c.addr; }).slice(0, 100);
+  var enriched = 0, flagged = 0;
+  for (var i = 0; i < candidates.length; i++) {
+    var c = candidates[i];
+    var result = await maidsLookupSqft(c.addr, c.city, c.zip);
+    try {
+      if (result && result.sqft) {
+        await sb.from('clients').update({ sqft: result.sqft }).eq('id', c.uuid).eq('business_id', bid);
+        enriched++;
+      } else {
+        var current = await sb.from('clients').select('review_flags').eq('id', c.uuid).maybeSingle();
+        var flags = (current.data && current.data.review_flags) || [];
+        if (flags.indexOf('needs_address_details') === -1) {
+          await sb.from('clients').update({ review_flags: flags.concat(['needs_address_details']) }).eq('id', c.uuid).eq('business_id', bid);
+        }
+        flagged++;
+      }
+    } catch (e) { console.warn('[MaidsImport] enrich write failed for', c.id, e); }
+    var statusEl = document.getElementById('maids-enrich-status');
+    if (statusEl) statusEl.textContent = '🏠 Address lookups: ' + (i + 1) + '/' + candidates.length + ' (' + enriched + ' found, ' + flagged + ' flagged for manual entry)';
+    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+  }
+  try { if (window.PentaClients && window.PentaClients.refreshFromSupabase) await window.PentaClients.refreshFromSupabase(); } catch (e) {}
+}
+
+async function openMaidsPastImports() {
+  document.getElementById('maids-past-imports-modal').style.display = 'flex';
+  var body = document.getElementById('maids-past-imports-body');
+  body.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:13px;padding:24px 0">Loading…</div>';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) { body.innerHTML = '<div style="color:var(--muted);font-size:13px">Tenant not resolved.</div>'; return; }
+    var res = await sb.from('import_runs').select('*').eq('business_id', bid).order('run_at', { ascending: false }).limit(25);
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    if (!rows.length) { body.innerHTML = '<div style="color:var(--muted);font-size:13px">No imports yet.</div>'; return; }
+    body.innerHTML = rows.map(function(r) {
+      var when = new Date(r.run_at).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+      return '<div style="background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px;margin-bottom:8px">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+        +   '<span style="font-size:13px;font-weight:600">' + escapeHtml(when) + '</span>'
+        +   '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:8px;background:' + (r.mode === 'wipe' ? 'rgba(239,68,68,0.15);color:var(--red)' : 'rgba(52,211,153,0.15);color:var(--green)') + '">' + escapeHtml(r.mode.toUpperCase()) + '</span>'
+        + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px">'
+        +   '<span>👥 +' + r.clients_created + ' / ~' + r.clients_updated + '</span>'
+        +   '<span>📋 +' + r.jobs_created + ' / ~' + r.jobs_updated + '</span>'
+        +   '<span>🔍 ' + r.clients_flagged_review + ' flagged</span>'
+        +   '<span>📅 ' + r.jobs_flagged_multi_visit + ' multi-visit</span>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    console.error('[MaidsImport] past imports load failed', e);
+    body.innerHTML = '<div style="color:var(--red);font-size:13px">Could not load import history.</div>';
+  }
+}
+function closeMaidsPastImports() {
+  document.getElementById('maids-past-imports-modal').style.display = 'none';
+}
+
 // GPS-stop-to-client geofence matcher. Mirrors migration 084's
 // resolve_job_from_gps_stop tiering (200ft / 400ft) in the browser, so
 // Live Tracking's "possible lunch/break" flagging doesn't depend on the
@@ -30515,6 +31348,134 @@ async function openClientActivityLog(clientId) {
   if (bodyEl) _wireAuditDrill(bodyEl);
 }
 
+// PR #78 — Service History section on the client card. Collapsible,
+// sortable table over ALL of a client's jobs (past AND future — status
+// column distinguishes them), separate from the existing "Past Cleans"
+// summary list above it, which stays as-is for its own purpose (quick
+// glance, not an audit table).
+var _svcHistorySort = { clientId: null, col: 'date', dir: 'desc' };
+
+function _svcHistoryFmtDate(j) {
+  if (!j.date) return '—';
+  if (j.date.includes('/')) return j.date;
+  var p = j.date.split('-');
+  return p.length === 3 ? (p[1] + '/' + p[2] + '/' + p[0]) : j.date;
+}
+function _svcHistoryFmtTime(t) {
+  if (!t) return '—';
+  var p = t.split(':'), h = parseInt(p[0], 10), m = parseInt(p[1] || 0, 10);
+  var ap = h >= 12 ? 'PM' : 'AM'; if (h > 12) h -= 12; if (h === 0) h = 12;
+  return h + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+function _svcHistoryStatusBadge(j) {
+  if (j.cancelled) {
+    var reasonLabel = j.cancellationType === 'company_closure' ? 'Company holiday' : (j.cancellationType === 'client_initiated' ? 'Client' : (j.cancelReason || ''));
+    return '<span style="font-size:10px;background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-weight:700" title="' + escapeHtml(reasonLabel) + '">CANCELLED</span>'
+      + (reasonLabel ? '<div style="font-size:10px;color:var(--muted);margin-top:1px">' + escapeHtml(reasonLabel) + '</div>' : '');
+  }
+  if (j.done) return '<span style="font-size:10px;background:var(--green);color:#000;padding:1px 6px;border-radius:4px;font-weight:700">DONE</span>';
+  return '<span style="font-size:10px;background:var(--surface);color:var(--muted);padding:1px 6px;border-radius:4px;font-weight:700;border:1px solid var(--border)">SCHEDULED</span>';
+}
+
+var SVC_HISTORY_COLS = [
+  { key: 'date', label: 'Date' },
+  { key: 'team', label: 'Team' },
+  { key: 'quoted', label: 'Quoted' },
+  { key: 'actual', label: 'Actual' },
+  { key: 'inout', label: 'In/Out' },
+  { key: 'price', label: 'Price' },
+  { key: 'status', label: 'Status' }
+];
+
+function _svcHistorySortValue(j, col) {
+  if (col === 'date') return String(j.date || '');
+  if (col === 'team') return String(j.team || '');
+  if (col === 'quoted') return j.quotedMin != null ? j.quotedMin : -1;
+  if (col === 'actual') return j.actualMin != null ? j.actualMin : -1;
+  if (col === 'price') return j.price !== '' && j.price != null ? Number(j.price) : -1;
+  if (col === 'status') return j.cancelled ? 2 : (j.done ? 0 : 1);
+  return '';
+}
+
+function _svcHistoryRatioHeader(jobs) {
+  var ratios = jobs
+    .filter(function(j) { return j.done && j.actualMin != null && j.quotedMin; })
+    .map(function(j) { return j.actualMin / j.quotedMin; })
+    .sort(function(a, b) { return a - b; });
+  if (!ratios.length) return '';
+  var mid = Math.floor(ratios.length / 2);
+  var median = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+  var pct = Math.round(median * 100);
+  var color = pct > 115 ? 'var(--red)' : (pct < 85 ? 'var(--amber)' : 'var(--green)');
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Median actual/quoted: <span style="font-weight:700;color:' + color + '">' + pct + '%</span></div>';
+}
+
+function _svcHistoryRows(jobs) {
+  var sorted = jobs.slice().sort(function(a, b) {
+    var av = _svcHistorySortValue(a, _svcHistorySort.col), bv = _svcHistorySortValue(b, _svcHistorySort.col);
+    var cmp = av < bv ? -1 : (av > bv ? 1 : 0);
+    return _svcHistorySort.dir === 'asc' ? cmp : -cmp;
+  });
+  if (!sorted.length) return '<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--muted);font-size:12px">No jobs on file.</td></tr>';
+  return sorted.map(function(j) {
+    var inOut = (j.time || j.endTime) ? (_svcHistoryFmtTime(j.time) + ' – ' + _svcHistoryFmtTime(j.endTime)) : '—';
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + _svcHistoryFmtDate(j) + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + escapeHtml(j.team || '—') + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + (j.quotedMin != null ? j.quotedMin + 'm' : '—') + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + (j.actualMin != null ? j.actualMin + 'm' : '—') + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + inOut + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + (j.price !== '' && j.price != null ? '$' + j.price : '—') + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px">' + _svcHistoryStatusBadge(j) + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function _svcHistorySectionHtml(clientId, allJobs) {
+  if (!allJobs.length) return '';
+  var headerCells = SVC_HISTORY_COLS.map(function(c) {
+    var active = _svcHistorySort.clientId === clientId && _svcHistorySort.col === c.key;
+    var arrow = active ? (_svcHistorySort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return '<th onclick="_svcHistorySortBy(\'' + clientId + '\',\'' + c.key + '\')" style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:' + (active ? 'var(--accent)' : 'var(--muted)') + ';text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;user-select:none">' + c.label + arrow + '</th>';
+  }).join('');
+  return '<div style="margin-bottom:20px">'
+    + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">'
+    +   '<span>Service History <span style="color:var(--text);font-weight:600">(' + allJobs.length + ')</span></span>'
+    +   '<button onclick="(function(b){var p=document.getElementById(\'svc-history-wrap-' + clientId + '\');var open=p.style.display!==\'none\';p.style.display=open?\'none\':\'block\';b.textContent=open?\'Show\':\'Hide\';})(this)" style="background:none;border:1px solid var(--border);color:var(--accent);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;cursor:pointer">Show</button>'
+    + '</div>'
+    + '<div id="svc-history-wrap-' + clientId + '" style="display:none">'
+    +   _svcHistoryRatioHeader(allJobs)
+    +   '<div style="overflow-x:auto;background:var(--surface2);border-radius:12px">'
+    +     '<table style="width:100%;border-collapse:collapse;min-width:520px"><thead><tr>' + headerCells + '</tr></thead>'
+    +     '<tbody id="svc-history-tbody-' + clientId + '">' + _svcHistoryRows(allJobs) + '</tbody></table>'
+    +   '</div>'
+    + '</div>'
+    + '</div>';
+}
+
+function _svcHistorySortBy(clientId, col) {
+  if (_svcHistorySort.clientId === clientId && _svcHistorySort.col === col) {
+    _svcHistorySort.dir = _svcHistorySort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _svcHistorySort = { clientId: clientId, col: col, dir: col === 'date' ? 'desc' : 'asc' };
+  }
+  var allJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(function(j) { return j.clientId === clientId; });
+  var tbody = document.getElementById('svc-history-tbody-' + clientId);
+  if (tbody) tbody.innerHTML = _svcHistoryRows(allJobs);
+  // Re-render header arrows/colors without rebuilding the whole card.
+  var wrap = document.getElementById('svc-history-wrap-' + clientId);
+  if (wrap) {
+    var thead = wrap.querySelector('thead tr');
+    if (thead) {
+      thead.innerHTML = SVC_HISTORY_COLS.map(function(c) {
+        var active = _svcHistorySort.col === c.key;
+        var arrow = active ? (_svcHistorySort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+        return '<th onclick="_svcHistorySortBy(\'' + clientId + '\',\'' + c.key + '\')" style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:' + (active ? 'var(--accent)' : 'var(--muted)') + ';text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;user-select:none">' + c.label + arrow + '</th>';
+      }).join('');
+    }
+  }
+}
+
 function openClientEdit(clientId) {
   const c = PentaClients.getClient(clientId);
   if (!c) return;
@@ -30829,6 +31790,8 @@ function openClientEdit(clientId) {
         </div>`;
       }).join('')}
     </div>` : ''}
+
+    ${_svcHistorySectionHtml(c.id, _allClientJobs)}
 
     <!-- Date/Price picker sheet -->
     <div id="ce-picker-sheet" style="display:none;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.7);align-items:flex-end" onclick="if(event.target===this)closePicker()">
@@ -47403,6 +48366,28 @@ function _p3dPage(dir) {
   </div>
 </div>
 
+<!-- MAIDS CSV IMPORTER — PR #78 -->
+<div id="maids-import-modal" style="display:none;position:fixed;inset:0;z-index:10070;background:var(--surface);overflow-y:auto;-webkit-overflow-scrolling:touch">
+  <div style="max-width:700px;margin:0 auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div style="font-size:17px;font-weight:700">🗂️ Maids Import</div>
+      <button onclick="closeMaidsImportModal()" style="background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="padding:16px 20px 60px" id="maids-import-body"></div>
+  </div>
+</div>
+
+<!-- MAIDS IMPORT — PAST RUNS HISTORY -->
+<div id="maids-past-imports-modal" style="display:none;position:fixed;inset:0;z-index:10070;background:rgba(0,0,0,0.6);align-items:flex-end" onclick="if(event.target===this)closeMaidsPastImports()">
+  <div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">
+      <div style="font-size:17px;font-weight:700">Past Imports</div>
+      <button onclick="closeMaidsPastImports()" style="background:var(--input-bg);border:1px solid var(--input-border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="padding:16px 20px 40px" id="maids-past-imports-body"></div>
+  </div>
+</div>
+
 <!-- HOURS DAY PICKER MODAL -->
 <div id="hours-day-picker" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.8);align-items:flex-end" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;padding:20px 20px 40px;border-top:1px solid var(--border2)">
@@ -47931,6 +48916,17 @@ function _p3dPage(dir) {
         <button onclick="openOfficesSettings()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🏢 Manage offices</button>
       </div>
       <div id="admin-offices-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- Maids CSV Importer — PR #78. Always-visible, owner/admin/manager
+         only (gated the same way as import_maids_data's RPC role check,
+         not via the granular data-permission toggle system). -->
+    <div class="admin-sec" id="admin-maids-import-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Maids Import</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openMaidsImportModal()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🗂️ Import from Maids</button>
+        <button onclick="openMaidsPastImports()" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🕐 Past imports</button>
+      </div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.
