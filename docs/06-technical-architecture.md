@@ -467,6 +467,20 @@ Verified: 2 new Node assertions (extraction-based) confirming `_scheduleMapDayJo
 
 ---
 
+## 8ao. Desktop mouse drag-and-drop on the schedule board (PR #92)
+
+Tom reported he couldn't grab-and-drag jobs on the schedule on desktop. Diagnosis: this was never a regression — the job-square drag-to-reschedule/reassign-team gesture (`jobDragStart`/`jobDragMove`/`jobDragEnd`) was built **touch-only** from day one (`git log` traced it to 2026-04-15/16, commit messages explicitly mobile-focused — "Drag was fighting with scrolling on mobile," haptics via `navigator.vibrate`). It reads coordinates via raw `e.touches[0].clientX`/`e.changedTouches[0].clientX`, wired only via `ontouchstart`/`ontouchmove`/`ontouchend` inline attributes. No `mousedown`/`mousemove`/`mouseup` or native HTML5 `draggable`/`dragstart`/`dragover`/`drop` implementation has ever existed anywhere in this codebase's history (`git log -S` on both patterns returns nothing) — a genuine desktop mouse click-and-drag on a job square only ever fired the element's `onclick` (opens the job card), never touched the drag logic at all. No device-detection branching exists either (`isMobile`/`ontouchstart in window`/etc. — none found) — there simply was no desktop code path, not a misrouted one.
+
+Employees have **no drag interaction on any platform** — team/day reassignment is a tap-to-open-picker modal (`editEmployeeAssignment` → `confirmTeamAssign`), unaffected by this bug and already working identically on desktop and mobile.
+
+**Fix**: added `_dragPoint(e)`, a small helper that normalizes coordinate extraction across `touchstart`/`touchmove` (`e.touches[0]`), `touchend` (`e.changedTouches[0]`), and mouse events (`e.clientX`/`e.clientY` directly) — `jobDragStart`/`Move`/`End` now call it instead of accessing `e.touches[0]` directly, so the exact same drag logic (250ms long-press-to-activate, 15px/10px move-cancel thresholds, live time-snap label, team-row drop target highlighting, `recalcTeamTimes` cascade) drives both input types unchanged. Added `onmousedown="jobDragStart(event,this)"` to the job-square markup alongside the existing `ontouch*` attributes. The one real cross-device wrinkle: `touchmove`/`touchend` keep firing on the origin element as a finger moves, but `mousemove`/`mouseup` only fire on whatever element is currently under the cursor — so `jobDragStart` now attaches `mousemove`/`mouseup` listeners to `document` for the duration of a mouse-originated drag (checked via `e.type === 'mousedown'`, never attached for touch), and `jobDragEnd` always removes them (a harmless no-op on a touch-originated end, since they were never added).
+
+Verified: 4 new Node assertions (extraction-based) for `_dragPoint()` covering all four event shapes (touchstart/touchmove, touchend, mousedown, mouseup); grepped the whole file to confirm this is the only draggable-job markup site (the week-grid view's `.wg-job` mini pills are click-only navigation, never had drag) and that no other schedule surface has its own independent drag implementation needing the same fix.
+
+**Deferred, not in this PR**: Tom's paired "Draft OMS jobs should show on the schedule map" request. Neither of the two named example clients/jobs ("Bonano Zoo," "Jean Grealish") could be found in the database — the real Katherine Bonano's actual job today is already `status='scheduled'`, not draft — and `jobs.status` has no `'draft'` value in its 3-value enum (`scheduled`/`completed`/`cancelled`) anywhere in the schema. Rather than invent a new status value and a visual-distinction feature for data that can't be located or verified, this is held for Tom to point at a specific real example or confirm he wants a new `draft` status added.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.

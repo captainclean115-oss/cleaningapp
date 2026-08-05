@@ -16118,6 +16118,7 @@ function renderCal() {
 
           bodyHtml += '<div id="sqjob_'+safeId+'" data-jid="'+safeId+'" data-team="'+team+'" data-time="'+(j.time||'')+'"'
             +' ontouchstart="jobDragStart(event,this)" ontouchmove="jobDragMove(event)" ontouchend="jobDragEnd(event)"'
+            +' onmousedown="jobDragStart(event,this)"'
             +' onclick="jobSquareTap(event,this)"'
             +' style="position:absolute;left:'+blockL+'px;top:4px;bottom:4px;width:'+blockW+'px;'
             +'background:'+(isCancelled?'rgba(248,113,113,0.08)':(isOMS?'#34C759':'var(--surface)'))+';border:1px solid '+(isCancelled?'rgba(248,113,113,0.3)':(isDone?'var(--green)':tc+'44'))+';border-top:3px solid '+(isCancelled?'var(--red)':tc)+';'
@@ -42649,13 +42650,37 @@ function jobSquareTap(e, el) {
   openCalJobCard(el);
 }
 
+// PR #92 — desktop mouse support. This drag gesture was built
+// touch-only from the start (ontouchstart/move/end, raw e.touches[0]
+// access) -- there was never a desktop mousedown/mousemove/mouseup
+// equivalent, not a regression. _dragPoint() normalizes coordinate
+// extraction across touchstart/touchmove (e.touches), touchend
+// (e.changedTouches), and mouse events (e.clientX/Y directly) so the
+// same jobDragStart/Move/End functions drive both input types.
+function _dragPoint(e) {
+  if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+  return { x: e.clientX, y: e.clientY };
+}
+
 function jobDragStart(e, el) {
   _dragMoved = false;
-  _dragStartX = e.touches[0].clientX;
-  _dragStartY = e.touches[0].clientY;
+  var _dp = _dragPoint(e);
+  _dragStartX = _dp.x;
+  _dragStartY = _dp.y;
   _dragJob = null;
   _dragEl = el;
   _dragActive = false;
+  // Unlike touchmove/touchend, mousemove/mouseup only fire on whatever
+  // element is currently under the cursor -- not the one mousedown
+  // started on -- so a mouse drag needs document-level listeners for
+  // the gesture's duration. Touch keeps using its inline attributes;
+  // this only attaches for an actual mousedown, and jobDragEnd always
+  // removes it (harmless no-op if it was never added).
+  if (e.type === 'mousedown') {
+    document.addEventListener('mousemove', jobDragMove);
+    document.addEventListener('mouseup', jobDragEnd);
+  }
   // Long press threshold: 250ms (shorter for quicker pickup)
   _dragTimer = setTimeout(function() {
     _dragActive = true;
@@ -42683,15 +42708,16 @@ function jobDragStart(e, el) {
 
 function jobDragMove(e) {
   if (!_dragTimer && !_dragActive) return;
-  var dx = Math.abs(e.touches[0].clientX - _dragStartX);
-  var dy = Math.abs(e.touches[0].clientY - _dragStartY);
+  var _dp = _dragPoint(e);
+  var dx = Math.abs(_dp.x - _dragStartX);
+  var dy = Math.abs(_dp.y - _dragStartY);
   // Cancel if moved vertically before hold fires — let browser scroll
   if (!_dragActive && dy > 10) {
     clearTimeout(_dragTimer);
     _dragTimer = null;
     return;
   }
-  // Allow small horizontal movement during hold (finger isn't perfectly still)
+  // Allow small horizontal movement during hold (finger/cursor isn't perfectly still)
   if (!_dragActive && dx > 15) {
     clearTimeout(_dragTimer);
     _dragTimer = null;
@@ -42699,8 +42725,8 @@ function jobDragMove(e) {
   }
   if (!_dragActive) return;
   e.preventDefault();
-  var tx = e.touches[0].clientX;
-  var ty = e.touches[0].clientY;
+  var tx = _dp.x;
+  var ty = _dp.y;
   if (_dragClone) {
     _dragClone.style.left = (tx - _dragOffsetX) + 'px';
     _dragClone.style.top = (ty - _dragOffsetY) + 'px';
@@ -42731,6 +42757,10 @@ function jobDragMove(e) {
 }
 
 function jobDragEnd(e) {
+  // Always remove -- harmless no-op if this end came from a touchend
+  // (which never attached them) or if they were already removed.
+  document.removeEventListener('mousemove', jobDragMove);
+  document.removeEventListener('mouseup', jobDragEnd);
   clearTimeout(_dragTimer);
   _dragTimer = null;
   document.body.style.overflow = '';
@@ -42739,8 +42769,9 @@ function jobDragEnd(e) {
     if (_dragEl) _dragEl.style.opacity = '';
     return;
   }
-  var tx = e.changedTouches[0].clientX;
-  var ty = e.changedTouches[0].clientY;
+  var _dp = _dragPoint(e);
+  var tx = _dp.x;
+  var ty = _dp.y;
 
   // Timeline constants (must match renderCal)
   var TL_START = 7 * 60;
