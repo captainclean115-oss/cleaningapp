@@ -29071,11 +29071,19 @@ function maidsCancellationType(dateStr) {
 
 // jobs.status CHECK only allows scheduled|completed|cancelled. Anything
 // else surfaces as a preview warning rather than failing the whole row.
+// "Closed" added after the header-parsing fix let real Job Status
+// values through for the first time: it's Maids' own term for a
+// finished job (confirmed against real rows — actual_minutes/price
+// populated same as "Completed" rows) and was, before this fix, the
+// SINGLE MOST COMMON status in Tom's real export (~2,900 of ~6,400
+// rows in one file alone) — every one of those would have silently
+// defaulted to "scheduled" and never counted toward completion stats,
+// health scoring, or team performance ratios.
 function maidsMapStatus(raw) {
   var s = String(raw || '').trim().toLowerCase();
   if (s === 'scheduled') return { status: 'scheduled', warning: null };
   if (s === 'cancelled' || s === 'canceled') return { status: 'cancelled', warning: null };
-  if (s === 'complete' || s === 'completed') return { status: 'completed', warning: null };
+  if (s === 'complete' || s === 'completed' || s === 'closed') return { status: 'completed', warning: null };
   return { status: 'scheduled', warning: 'Unrecognized Job Status "' + raw + '" — defaulted to scheduled, please verify' };
 }
 
@@ -29109,6 +29117,52 @@ function maidsMapFrequency(raw) {
 // are exactly the kind of field that has both). The app-wide
 // parseCSV() helper does neither -- built fresh rather than reused, per
 // the diagnosis this session's PR #78 report flagged.
+// Header cells and our own expected-column names are normalized the
+// SAME way before ever being compared: lowercase, strip every
+// non-alphanumeric character (spaces, slashes, punctuation, parens).
+// "Customer Name / Company Name" and "Customer ID" both collapse to
+// "customernamecompanyname" / "customerid" regardless of exact
+// spacing/punctuation, so a header-text change that's cosmetic (an
+// extra space, a slash vs. no slash) can't silently break every field
+// lookup the way it did before this fix.
+function maidsNormalizeHeaderKey(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// The columns this importer actually reads. Used both to build the
+// data-row objects' keys AND to warn (once per file, at parse time) if
+// any of them can't be found in the detected header row — a future
+// Maids format change surfaces immediately instead of every field
+// silently reading undefined the way the original PR #78 bug did.
+var MAIDS_REQUIRED_COLUMNS = [
+  { key: 'customerid', label: 'Customer ID' },
+  { key: 'customernamecompanyname', label: 'Customer Name / Company Name' },
+  { key: 'joblocation', label: 'Job Location' },
+  { key: 'frequency', label: 'Frequency' },
+  { key: 'jobstatus', label: 'Job Status' },
+  { key: 'quotedinhomemin', label: 'Quoted InHome Min' },
+  { key: 'actualinhomemin', label: 'Actual InHome Min' },
+  { key: 'team', label: 'Team' },
+  { key: 'date', label: 'Date' },
+  { key: 'starttime', label: 'Start Time' },
+  { key: 'endtime', label: 'End Time' },
+  { key: 'jobtotal', label: 'Job Total' },
+  { key: 'balancedue', label: 'Balance Due' }
+];
+
+// Returns { rows: [...], headerWarnings: [...] }. Root-cause fix for
+// the "1 unique client / all statuses undefined" bug: Maids exports
+// prepend a variable-length title + date-range preamble ("Export Job
+// List" / "01/01/2026 - 12/31/2026") before the REAL header row, so
+// row 0 can never be trusted blindly the way the original
+// implementation did. The real header is detected instead by scanning
+// the first few rows (capped at 10 — real exports never bury it
+// deeper) for the one containing a normalized "customerid" cell: the
+// one column guaranteed present, non-blank, and unique to the actual
+// header across every export shape seen in Tom's real files (some pad
+// the preamble rows with trailing commas, some don't; some have a
+// 13-column header, some 17 — this detection works for both, since it
+// only looks for one anchor column, not a fixed shape).
 function maidsParseCSV(text) {
   var rows = [];
   var row = [];
@@ -29138,13 +29192,35 @@ function maidsParseCSV(text) {
   if (field.length || row.length) { row.push(field); rows.push(row); }
   // Drop trailing fully-empty rows (common at EOF).
   while (rows.length && rows[rows.length - 1].every(function(f) { return f === ''; })) rows.pop();
-  if (!rows.length) return [];
-  var header = rows[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
-  return rows.slice(1).map(function(r) {
+  if (!rows.length) return { rows: [], headerWarnings: [] };
+
+  var headerIdx = -1;
+  var scanLimit = Math.min(rows.length, 10);
+  for (var hi = 0; hi < scanLimit; hi++) {
+    var normalizedCells = rows[hi].map(maidsNormalizeHeaderKey);
+    if (normalizedCells.indexOf('customerid') !== -1) { headerIdx = hi; break; }
+  }
+  if (headerIdx === -1) {
+    throw new Error('Could not find a header row (looked for a "Customer ID" column in the first ' + scanLimit + ' rows) — this file may not be a Maids Export_Job_List export.');
+  }
+
+  var rawHeader = rows[headerIdx];
+  var header = rawHeader.map(maidsNormalizeHeaderKey);
+
+  var headerWarnings = [];
+  MAIDS_REQUIRED_COLUMNS.forEach(function(col) {
+    if (header.indexOf(col.key) === -1) {
+      headerWarnings.push('Column not found: expected "' + col.label + '" (normalized "' + col.key + '") — raw headers in file: ' + rawHeader.join(' | '));
+    }
+  });
+
+  var dataRows = rows.slice(headerIdx + 1).map(function(r) {
     var obj = {};
     header.forEach(function(h, idx) { obj[h] = (r[idx] !== undefined ? r[idx] : '').trim(); });
     return obj;
   });
+
+  return { rows: dataRows, headerWarnings: headerWarnings };
 }
 
 // "Last, First" per Tom's spec. Rows with no comma (a company name, or
@@ -29227,13 +29303,13 @@ function maidsScoreMatch(csvParsedName, csvParsedAddr, pentaClient) {
 // IDs — see PR #78 diagnosis); fuzzy scoring only runs for rows that
 // don't hit that exact match.
 function maidsMatchClient(csvRow, existingClients) {
-  var customerId = String(csvRow['customer id'] || '').trim();
+  var customerId = String(csvRow['customerid'] || '').trim();
   if (customerId) {
     var exact = existingClients.find(function(c) { return c.id && String(c.id) === customerId; });
     if (exact) return { tier: 'auto', client: exact, percent: 100 };
   }
-  var name = maidsParseName(csvRow['customer name'] || csvRow['company name']);
-  var addr = maidsParseAddress(csvRow['job location']);
+  var name = maidsParseName(csvRow['customernamecompanyname']);
+  var addr = maidsParseAddress(csvRow['joblocation']);
   var best = null, bestPercent = -1;
   for (var i = 0; i < existingClients.length; i++) {
     var scored = maidsScoreMatch(name, addr, existingClients[i]);
@@ -29253,6 +29329,23 @@ function maidsRowIsOms(row, sourceType) {
   return maidsMapFrequency(row['frequency']) === 'OMS';
 }
 
+// A totals/summary row at the bottom of a Maids export: no Customer ID
+// (every real job row has one) AND either the word "total" appears
+// somewhere in the row, or both name and date are blank too (a
+// trailing junk/blank line, same idea). Checked BEFORE the empty-date
+// skip below so a summary row (which also usually has no date) gets
+// attributed to the right count instead of miscounted as an OMS row
+// with no scheduled date.
+function maidsIsSummaryRow(row) {
+  var cid = String(row['customerid'] || '').trim();
+  if (cid) return false;
+  var joined = Object.keys(row).map(function(k) { return String(row[k] || ''); }).join(' ').toLowerCase();
+  if (joined.indexOf('total') !== -1) return true;
+  var name = String(row['customernamecompanyname'] || '').trim();
+  var date = String(row['date'] || '').trim();
+  return !name && !date;
+}
+
 // Groups every row across all uploaded CSVs by client (Customer ID when
 // present, else normalized name+street), scores each group's best
 // Penta match once (not per-row — a client with 40 recurring visits
@@ -29264,11 +29357,19 @@ function maidsRowIsOms(row, sourceType) {
 function maidsBuildPreview(sourceSets, existingClients) {
   var groups = {}; // key -> { key, rows: [{row, sourceType}], name, addr }
   var order = [];
+  var totalRowsSeen = 0;
+  var summaryRowSkipCount = 0;
+  var emptyDateSkipCount = 0;
+
   Object.keys(sourceSets).forEach(function(sourceType) {
     (sourceSets[sourceType] || []).forEach(function(row) {
-      var customerId = String(row['customer id'] || '').trim();
-      var name = maidsParseName(row['customer name'] || row['company name']);
-      var addr = maidsParseAddress(row['job location']);
+      totalRowsSeen++;
+      if (maidsIsSummaryRow(row)) { summaryRowSkipCount++; return; }
+      var date = String(row['date'] || '').trim();
+      if (!date) { emptyDateSkipCount++; return; } // OMS one-time cleans without a scheduled date yet -- skipped entirely for now, per spec
+      var customerId = String(row['customerid'] || '').trim();
+      var name = maidsParseName(row['customernamecompanyname']);
+      var addr = maidsParseAddress(row['joblocation']);
       var key = customerId || (normalizeStreet(name.last + ' ' + name.first) + '|' + normalizeStreet(addr.street));
       if (!groups[key]) { groups[key] = { key: key, rows: [], name: name, addr: addr }; order.push(key); }
       groups[key].rows.push({ row: row, sourceType: sourceType });
@@ -29276,6 +29377,12 @@ function maidsBuildPreview(sourceSets, existingClients) {
   });
 
   var warnings = [];
+  if (summaryRowSkipCount > 0) {
+    warnings.push({ type: 'summary_row', client: null, detail: 'Skipped ' + summaryRowSkipCount + ' totals/summary row(s) at the end of the file.' });
+  }
+  if (emptyDateSkipCount > 0) {
+    warnings.push({ type: 'empty_date', client: null, detail: 'Skipped ' + emptyDateSkipCount + ' rows with empty dates (likely one-time cleans).' });
+  }
   var autoRows = [], confirmRows = [], newRows = [];
 
   order.forEach(function(key) {
@@ -29319,10 +29426,10 @@ function maidsBuildPreview(sourceSets, existingClients) {
   var jobs = [];
   order.forEach(function(key) {
     var g = groups[key];
-    var groupExternalId = String(g.rows[0].row['customer id'] || '').trim() || key;
+    var groupExternalId = String(g.rows[0].row['customerid'] || '').trim() || key;
     g.rows.forEach(function(r) {
       var row = r.row;
-      var statusMap = maidsMapStatus(row['job status']);
+      var statusMap = maidsMapStatus(row['jobstatus']);
       if (statusMap.warning) warnings.push({ type: 'status', client: g.name.last + ', ' + g.name.first, detail: statusMap.warning });
       var teamMap = maidsMapTeam(row['team']);
       if (!teamMap.mapped && teamMap.raw) warnings.push({ type: 'team', client: g.name.last + ', ' + g.name.first, detail: 'Unmapped team code "' + teamMap.raw + '" — flagged unassigned' });
@@ -29331,16 +29438,16 @@ function maidsBuildPreview(sourceSets, existingClients) {
       jobs.push({
         client_external_id: groupExternalId,
         date: date,
-        start_time_raw: row['start time'],
-        end_time_raw: row['end time'],
+        start_time_raw: row['starttime'],
+        end_time_raw: row['endtime'],
         team: teamMap.team,
         team_code_raw: teamMap.mapped ? null : teamMap.raw,
-        price: maidsParseMoney(row['job total']),
-        balance_due: maidsParseMoney(row['balance due']),
-        quoted_minutes: maidsParseInt(row['quoted inhome min']),
-        actual_minutes: maidsParseInt(row['actual inhome min']),
+        price: maidsParseMoney(row['jobtotal']),
+        balance_due: maidsParseMoney(row['balancedue']),
+        quoted_minutes: maidsParseInt(row['quotedinhomemin']),
+        actual_minutes: maidsParseInt(row['actualinhomemin']),
         status: statusMap.status,
-        cancel_reason: statusMap.status === 'cancelled' ? (row['job summary'] || null) : null,
+        cancel_reason: statusMap.status === 'cancelled' ? (row['jobsummary'] || null) : null,
         cancellation_type: cancellationType,
         frequency: row['frequency']
       });
@@ -29368,7 +29475,13 @@ function maidsBuildPreview(sourceSets, existingClients) {
   return {
     autoRows: autoRows, confirmRows: confirmRows, newRows: newRows,
     jobs: jobs, warnings: warnings,
-    rowsParsed: order.reduce(function(n, k) { return n + groups[k].rows.length; }, 0),
+    // Total rows actually read from the CSVs -- NOT just the ones that
+    // made it into a group -- so this keeps matching "row count is
+    // right" regardless of how many got skipped as summary/empty-date
+    // rows below it.
+    rowsParsed: totalRowsSeen,
+    summaryRowSkipCount: summaryRowSkipCount,
+    emptyDateSkipCount: emptyDateSkipCount,
     uniqueClients: order.length,
     multiVisitJobCount: jobs.filter(function(j) { return j.is_multi_visit_day; }).length
   };
@@ -29518,9 +29631,11 @@ function renderMaidsUploadStep() {
       + '<div style="font-size:13px;font-weight:600;margin-bottom:6px">' + MAIDS_CSV_LABELS[type] + '</div>'
       + '<label style="display:flex;align-items:center;gap:10px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;padding:12px 14px;cursor:pointer">'
       + '<span style="font-size:18px">📄</span>'
-      + '<span style="flex:1;font-size:13px;color:var(--muted)">' + (loaded ? (loaded.length + ' rows parsed') : 'Choose CSV file…') + '</span>'
+      + '<span style="flex:1;font-size:13px;color:var(--muted)">' + (loaded ? (loaded.rows.length + ' rows parsed') : 'Choose CSV file…') + '</span>'
       + '<input type="file" accept=".csv,text/csv" style="display:none" onchange="maidsHandleFileUpload(\'' + type + '\',this)">'
-      + '</label></div>';
+      + '</label>'
+      + (loaded && loaded.headerWarnings.length ? '<div style="font-size:11px;color:var(--amber);margin-top:4px">⚠️ ' + loaded.headerWarnings.length + ' expected column(s) not found — see warnings after preview</div>' : '')
+      + '</div>';
   }).join('');
   var anyLoaded = Object.keys(_maidsState.csvRows).length > 0;
   body.innerHTML = '<div style="font-size:13px;color:var(--muted);margin-bottom:18px">Upload up to 3 Maids exports. At least one is required.</div>'
@@ -29535,9 +29650,9 @@ function maidsHandleFileUpload(type, inputEl) {
   var reader = new FileReader();
   reader.onload = function(e) {
     try {
-      var rows = maidsParseCSV(e.target.result);
-      if (!rows.length) throw new Error('No data rows found');
-      _maidsState.csvRows[type] = rows;
+      var parsed = maidsParseCSV(e.target.result); // { rows, headerWarnings }
+      if (!parsed.rows.length) throw new Error('No data rows found');
+      _maidsState.csvRows[type] = parsed;
       renderMaidsUploadStep();
     } catch (err) {
       document.getElementById('maids-upload-error').textContent = 'Could not parse ' + MAIDS_CSV_LABELS[type] + ': ' + (err.message || err);
@@ -29552,7 +29667,16 @@ function maidsHandleFileUpload(type, inputEl) {
 function maidsRunPreview() {
   try {
     var existingClients = (window.PentaClients && window.PentaClients.list) ? window.PentaClients.list() : [];
-    var preview = maidsBuildPreview(_maidsState.csvRows, existingClients);
+    var sourceSets = {};
+    var headerWarnings = [];
+    Object.keys(_maidsState.csvRows).forEach(function(type) {
+      sourceSets[type] = _maidsState.csvRows[type].rows;
+      _maidsState.csvRows[type].headerWarnings.forEach(function(w) {
+        headerWarnings.push({ type: 'header', client: null, detail: MAIDS_CSV_LABELS[type] + ': ' + w });
+      });
+    });
+    var preview = maidsBuildPreview(sourceSets, existingClients);
+    preview.warnings = headerWarnings.concat(preview.warnings); // surface column-mapping issues first
     _maidsState.preview = preview;
     _maidsState.decisions = {};
     renderMaidsPreviewStep();
@@ -29574,7 +29698,7 @@ function renderMaidsPreviewStep() {
   var body = document.getElementById('maids-import-body');
   var warningsHtml = p.warnings.length
     ? p.warnings.slice(0, 50).map(function(w) {
-        return '<div style="font-size:12px;color:var(--amber);padding:4px 0;border-bottom:1px solid var(--border)">⚠️ ' + escapeHtml(w.client) + ' — ' + escapeHtml(w.detail) + '</div>';
+        return '<div style="font-size:12px;color:var(--amber);padding:4px 0;border-bottom:1px solid var(--border)">⚠️ ' + (w.client ? escapeHtml(w.client) + ' — ' : '') + escapeHtml(w.detail) + '</div>';
       }).join('') + (p.warnings.length > 50 ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">+' + (p.warnings.length - 50) + ' more warnings</div>' : '')
     : '<div style="font-size:12px;color:var(--muted)">No warnings.</div>';
 
