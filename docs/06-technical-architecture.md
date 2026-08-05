@@ -365,6 +365,16 @@ Verified against real data: `!oms_only` (Recurring) = 460 clients, `oms_only` (O
 
 ---
 
+## 8ah. Backfill: 22 stale `scheduled` jobs past their date (PR #85, migration 090)
+
+Follow-up to PR #83 (revenue clock now correctly counts only `status='completed'` jobs) — 22 real jobs for Manna were still stuck at `status='scheduled'` despite their date already being in the past (earliest 2025-01-10, latest 2026-08-03, including the exact Jane Mahle job flagged in the PR #83 diagnosis, $317). These reflect the Maids export's status *at export time* — the export ran before some scheduled cleans had happened yet, and nothing in this app auto-transitions a job's status as its date passes.
+
+**One-time data backfill, not a new ongoing rule**: `UPDATE jobs SET status='completed' WHERE business_id=<manna> AND status='scheduled' AND date < CURRENT_DATE`. Deliberately does not touch today/future `scheduled` jobs or any `cancelled` job, and does not add an auto-completion trigger — a job whose date passes still requires an explicit status change going forward. (PR #86's realized-vs-projected revenue split handles today/future differently at the *display* layer instead, without ever mutating `status` automatically — see below.)
+
+Verified: 0 jobs remain `scheduled` with a past date for Manna post-backfill; 2026-08-03 now sums to exactly $5,620.36 across 20 completed jobs, matching Tom's real recorded revenue for that day almost exactly (the $0.36 gap is rounding in Tom's own manual total).
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
@@ -883,6 +893,7 @@ The Activity Log surfaces in two places: the global Updates tab (`renderActivity
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **090** — Backfill stale `scheduled` jobs (§8ah). One-time data fix, no schema change: `UPDATE jobs SET status='completed' WHERE business_id=<manna> AND status='scheduled' AND date < CURRENT_DATE` — 22 rows, $2,608.
 - **089** — Maids importer batching (§8ad). Drops `import_maids_data`. Adds `import_maids_start` (wipe + client upsert + review-flag sweep + provisional `import_runs` row), `import_maids_jobs_batch` (job upsert for one batch, idempotent), `import_maids_finish` (derived-stat recompute + final `import_runs` totals). Adds the `import_runs_update` RLS policy migration 087 was missing.
 - **088** — Maids importer "Option D" (§8ac). `jobs` gains `scheduled_start_time_adjusted boolean` and `scheduled_start_time_original time`. New `maids_import_duplicates` table (business_id, import_run_id [FK `DEFERRABLE INITIALLY DEFERRED`], job_id, client_id, service_date, original/adjusted start time, adjustment_minutes, kept_original_time) + RLS (owner/admin/manager only). `import_maids_data` RPC updated (same signature) to persist the two new job columns and write `maids_import_duplicates` rows for same-time duplicate groups; return jsonb gains `duplicates_detected`/`duplicates`.
 - **087** — Maids CSV importer (§8aa). `jobs` gains `scheduled_start_time`/`scheduled_end_time` (time), `balance_due`, `actual_minutes`, `cancellation_type` (CHECK'd `company_closure`/`client_initiated`), `team_code_raw`, `is_multi_visit_day`, and a partial unique index `(business_id, client_id, date, scheduled_start_time)` (the upsert dedup key). `clients` gains `first_service_date`, `historical_cancellation_count`, `historical_completion_count`, `team_performance` (jsonb), `current_price`, `tags text[]`, `review_flags text[]` (both GIN-indexed). New `import_runs` table + RLS (owner/admin/manager only). New `import_maids_data(p_business_id, p_mode, p_csv_types, p_clients_update, p_clients_create, p_jobs)` RPC, `SECURITY INVOKER` — one transaction covering optional job wipe, client upsert, job upsert (dedup on the new unique index), an untouched-client `review_flags` sweep, and a full derived-stat recompute over every client with jobs on file.
