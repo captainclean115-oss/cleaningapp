@@ -14625,8 +14625,12 @@ function renderHistoryJobsTab() {
   var today = new Date(); today.setHours(23,59,59,999);
   var clientJobs = (typeof jobs !== 'undefined' ? jobs : [])
     .filter(function(j){ return j.clientId === _historyClient.id; })
-    .filter(function(j){ var jd = new Date(j.date); return jd <= today; })
-    .sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+    // j.date is a bare 'YYYY-MM-DD' string -- new Date(j.date) parses as
+    // UTC midnight, which .toLocaleDateString() (and any local-time
+    // comparison) then rolls back a day in any timezone behind UTC.
+    // Anchor to local midnight explicitly.
+    .filter(function(j){ var jd = new Date(j.date + 'T00:00:00'); return jd <= today; })
+    .sort(function(a,b){ return new Date(b.date + 'T00:00:00') - new Date(a.date + 'T00:00:00'); });
 
   if (clientJobs.length === 0) {
     pane.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--text-on-light-soft)">' +
@@ -14639,7 +14643,7 @@ function renderHistoryJobsTab() {
 
   var html = '';
   clientJobs.forEach(function(j){
-    var jd = new Date(j.date);
+    var jd = new Date(j.date + 'T00:00:00');
     var dateStr = jd.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
     var statusBadge = j.cancelled
       ? '<span style="background:var(--red);color:#fff;font-size:10px;padding:3px 8px;border-radius:10px;font-weight:700;text-transform:uppercase">Cancelled</span>'
@@ -14701,7 +14705,13 @@ async function fetchTeamDayStops(team, dateStr) {
   // PR2 of Geotab strategy: auth + session are server-side via the
   // geotab-call EF; the in-browser gpsAuthenticate path is retired.
   if (typeof _geotabCall !== 'function') throw new Error('GPS API unavailable');
-  var date = new Date(dateStr);
+  // dateStr is a bare 'YYYY-MM-DD' job date -- new Date(dateStr) parses
+  // as UTC midnight, which rolls back a day in any timezone behind UTC
+  // once startOfDay/endOfDay below apply LOCAL setHours(). That poisoned
+  // the whole day's Trip search window (and _resolveTeamDevice's date
+  // key) to the day BEFORE the clean actually happened, surfacing as a
+  // false "No GPS records matched this clean." Anchor to local midnight.
+  var date = new Date(dateStr + 'T00:00:00');
   var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
   var resolved = await _resolveTeamDevice(devices, team, date);
   var device = resolved.device;
