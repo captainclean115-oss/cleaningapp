@@ -4680,6 +4680,17 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
          these is selected). -->
     <div id="client-type-segment" style="padding:0 16px 10px;display:flex;gap:6px;overflow-x:auto"></div>
     <div id="client-status-segment" style="padding:0 16px 10px;display:flex;gap:6px;overflow-x:auto"></div>
+    <!-- PR #93: shown only while the "Missing Geocode" chip is active
+         (see _renderGeocodeBatchBar). -->
+    <div id="geocode-batch-bar" style="display:none;padding:0 16px 10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;flex-wrap:wrap">
+        <div id="geocode-batch-label" style="font-size:12px;font-weight:600;color:var(--text)">—</div>
+        <button id="geocode-batch-btn" onclick="batchReGeocodeMissing()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;padding:6px 12px;border-radius:16px;cursor:pointer;white-space:nowrap">Re-geocode all missing</button>
+      </div>
+      <div id="geocode-batch-progress-wrap" style="display:none;margin-top:6px;background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+        <div id="geocode-batch-progress-fill" style="width:0%;height:100%;background:var(--accent);transition:width .2s"></div>
+      </div>
+    </div>
     <div class="list-wrap">
       <div class="list-inner" id="client-list"></div>
     </div>
@@ -6360,6 +6371,54 @@ window.PentaGeocode = (function() {
     geocodeAddress: geocodeAddress,
     batchBackfill: batchBackfill
   };
+})();
+
+// =====================================================================
+// window.PentaGeocodeHistory — PR #93: audit trail for every geocode
+// call made from the Clients tab (per-client button + missing-geocode
+// batch flow). Separate from PentaGeocode itself, which only resolves
+// one address and knows nothing about Supabase/tenant/auth. Mirrors
+// PentaJobIssues' _sb()/_bid()/_resolveCallerUserId() pattern.
+// Failures here are swallowed -- a logging hiccup must never block the
+// actual re-geocode UX (the lat/lng write already happened by the time
+// this runs).
+// =====================================================================
+window.PentaGeocodeHistory = (function() {
+  function _sb() { return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client) || null; }
+  function _bid() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  async function _resolveCallerUserId() {
+    var sb = _sb(); if (!sb) return null;
+    try {
+      var ses = await sb.auth.getSession();
+      var authUid = ses && ses.data && ses.data.session && ses.data.session.user && ses.data.session.user.id;
+      if (!authUid) return null;
+      var res = await sb.from('users').select('id').eq('auth_user_id', authUid).maybeSingle();
+      if (res.error) return null;
+      return (res.data && res.data.id) || null;
+    } catch (e) { return null; }
+  }
+  async function log(client, result) {
+    try {
+      var sb = _sb(); if (!sb) return;
+      var bid = _bid(); if (!bid) return;
+      var calledBy = await _resolveCallerUserId();
+      var addr = [client && client.addr, client && client.city, client && client.zip].filter(Boolean).join(', ');
+      var row = {
+        business_id: bid,
+        client_id: (client && client.uuid) || null,
+        called_by: calledBy,
+        address_at_time: addr || null,
+        result_lat: (result && result.status === 'ok') ? result.lat : null,
+        result_lng: (result && result.status === 'ok') ? result.lng : null,
+        result_status: (result && result.status) || 'failed'
+      };
+      var res = await sb.from('geocode_history').insert(row);
+      if (res.error) console.warn('[PentaGeocodeHistory] log failed', res.error);
+    } catch (e) { console.warn('[PentaGeocodeHistory] log error', e); }
+  }
+  return { log: log };
 })();
 
 
@@ -14127,6 +14186,11 @@ function buildFilters() {
     {id:'import_review', label:'Import Review'},
     {id:'needs_address', label:'Needs Address Details'},
     {id:'multi_visit', label:'Double-Billed'},
+    // PR #93 — Re-geocode batch flow. Distinct from 'needs_address'
+    // above (which flags a data-entry review_flag) -- this one is
+    // purely lat/lng presence, matching Tom's literal spec ("lat IS
+    // NULL OR lng IS NULL").
+    {id:'missing_geocode', label:'📍 Missing Geocode'},
   ];
   
   [...special].forEach(f => {
@@ -14360,6 +14424,8 @@ function applyFilters(force) {
       if (f === 'import_review' && !(c.review_flags || []).includes('not_in_maids_import')) return false;
       if (f === 'needs_address' && !(c.review_flags || []).includes('needs_address_details')) return false;
       if (f === 'multi_visit' && !_maidsClientHasMultiVisitJob(c.id)) return false;
+      // PR #93.
+      if (f === 'missing_geocode' && !(c.lat == null || c.lng == null)) return false;
       if (f.startsWith('freq:')) {
         const fl = f.slice(5);
         const cl = FREQ_LABEL[c.fc] || c.freq;
@@ -14371,6 +14437,7 @@ function applyFilters(force) {
   }), clientSortOrder);
   renderClientTypeSegment();
   renderClientStatusSegment();
+  _renderGeocodeBatchBar();
   render(force);
 }
 
@@ -14467,6 +14534,7 @@ function render(force) {
           <button class="action-btn" style="background:var(--muted);color:#fff;border:none" onclick="event.stopPropagation();openClientHistory('${c.id}')">📋 Activity</button>
           <button class="action-btn" style="background:var(--text);color:#fff;border:none" onclick="event.stopPropagation();openClientEdit('${c.id}')">✏ Edit</button>
           ${(!c.status || c.status === 'active') ? `<button class="action-btn" style="background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.35)" onclick="event.stopPropagation();openCancelClientModal('${c.id}')">🚫 Cancel Client</button>` : ''}
+          <button class="action-btn" style="background:var(--surface2);color:var(--text);border:1px solid var(--border)" ${_geocodingInFlight.has(c.id) ? 'disabled' : ''} onclick="event.stopPropagation();reGeocodeClient('${c.id}')">${_geocodingInFlight.has(c.id) ? '⏳ Geocoding…' : '📍 Re-geocode'}</button>
         </div>
         ${c.bal > 0 ? `<div onclick="event.stopPropagation()" style="margin-top:8px">
           <button class="payment-btn" onclick="event.stopPropagation();recordPayment('${c.id}',event)">
@@ -14507,6 +14575,115 @@ function render(force) {
       ${detail}
     </div>`;
   }).join('');
+}
+
+// =====================================================================
+// PR #93 — per-client + batch re-geocode UI.
+// =====================================================================
+
+// Tracks clients currently mid-geocode so the action-row button can
+// show a disabled "Geocoding…" state instead of allowing a double-tap.
+var _geocodingInFlight = new Set();
+
+async function reGeocodeClient(clientId) {
+  if (_geocodingInFlight.has(clientId)) return;
+  var c = PentaClients.getClient(clientId);
+  if (!c) return;
+  if (!c.addr || !String(c.addr).trim()) {
+    if (typeof showToast === 'function') showToast('No address on file for this client', 'error');
+    return;
+  }
+  _geocodingInFlight.add(clientId);
+  render(true);
+  try {
+    var result = await window.PentaGeocode.geocodeAddress(c.addr, c.city, c.zip);
+    var nowIso = new Date().toISOString();
+    if (result.status === 'ok') {
+      await PentaClients.updateClient(clientId, { lat: result.lat, lng: result.lng, geocode_status: 'ok', geocoded_at: nowIso });
+      if (typeof showToast === 'function') showToast('📍 Address located for ' + cleanName(c), 'success');
+    } else if (result.status === 'rate_limited') {
+      if (typeof showToast === 'function') showToast('Geocoding service is rate-limited — try again in a moment', 'error');
+    } else {
+      await PentaClients.updateClient(clientId, { geocode_status: 'failed', geocoded_at: nowIso });
+      if (typeof showToast === 'function') showToast('⚠️ Could not locate that address — check for typos', 'error');
+    }
+    if (window.PentaGeocodeHistory) window.PentaGeocodeHistory.log(c, result);
+  } catch (e) {
+    console.warn('[reGeocodeClient] error', e);
+    if (typeof showToast === 'function') showToast('Geocoding failed — try again', 'error');
+  } finally {
+    _geocodingInFlight.delete(clientId);
+    applyFilters(true);
+  }
+}
+
+// Shown/hidden purely off the 'missing_geocode' chip's active state.
+// Label/button reflect the CURRENT filter view (`filtered`, already
+// scoped by search + segment + every other active chip) so "N missing"
+// always matches what's actually on screen -- not a global count.
+var _geocodeBatchRunning = false;
+function _renderGeocodeBatchBar() {
+  var bar = document.getElementById('geocode-batch-bar');
+  if (!bar) return;
+  var active = activeFilters.has('missing_geocode');
+  bar.style.display = active ? 'block' : 'none';
+  if (!active || _geocodeBatchRunning) return;
+  var label = document.getElementById('geocode-batch-label');
+  var btn = document.getElementById('geocode-batch-btn');
+  var progWrap = document.getElementById('geocode-batch-progress-wrap');
+  if (label) label.textContent = filtered.length + (filtered.length === 1 ? ' client is' : ' clients are') + ' missing a geocoded address';
+  if (btn) { btn.disabled = filtered.length === 0; btn.textContent = 'Re-geocode all missing (' + filtered.length + ')'; }
+  if (progWrap) progWrap.style.display = 'none';
+}
+
+async function batchReGeocodeMissing() {
+  if (_geocodeBatchRunning) return;
+  // Snapshot the current filter view at click time -- these are live
+  // references into PentaClients' cache (filterClients/list don't
+  // clone), so c.addr/city/zip stay correct even as earlier entries in
+  // the loop get their lat/lng written.
+  var targets = filtered.slice();
+  if (!targets.length) return;
+  _geocodeBatchRunning = true;
+  var btn = document.getElementById('geocode-batch-btn');
+  var label = document.getElementById('geocode-batch-label');
+  var progWrap = document.getElementById('geocode-batch-progress-wrap');
+  var progFill = document.getElementById('geocode-batch-progress-fill');
+  if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+  if (progWrap) progWrap.style.display = 'block';
+  var ok = 0, failed = 0, rateLimited = 0;
+  for (var i = 0; i < targets.length; i++) {
+    var c = targets[i];
+    if (label) label.textContent = 'Geocoding ' + (i + 1) + ' of ' + targets.length + '… (' + cleanName(c) + ')';
+    if (progFill) progFill.style.width = Math.round((i / targets.length) * 100) + '%';
+    try {
+      var result = await window.PentaGeocode.geocodeAddress(c.addr, c.city, c.zip);
+      var nowIso = new Date().toISOString();
+      if (result.status === 'ok') {
+        await PentaClients.updateClient(c.id, { lat: result.lat, lng: result.lng, geocode_status: 'ok', geocoded_at: nowIso });
+        ok++;
+      } else if (result.status === 'rate_limited') {
+        rateLimited++;
+      } else {
+        await PentaClients.updateClient(c.id, { geocode_status: 'failed', geocoded_at: nowIso });
+        failed++;
+      }
+      if (window.PentaGeocodeHistory) window.PentaGeocodeHistory.log(c, result);
+    } catch (e) {
+      console.warn('[batchReGeocodeMissing] failed for', c.id, e);
+      failed++;
+    }
+    // Nominatim ToS is 1 req/sec (per PentaGeocode.batchBackfill's own
+    // comment) -- Tom's spec suggested ~200ms, but that risks 429s
+    // against the documented limit, so this paces identically to the
+    // app's one other bulk-geocode loop instead of the literal ask.
+    await new Promise(function(r) { setTimeout(r, 1100); });
+  }
+  if (progFill) progFill.style.width = '100%';
+  _geocodeBatchRunning = false;
+  var summary = 'Re-geocoded ' + ok + ' of ' + targets.length + (failed ? ' — ' + failed + ' failed' : '') + (rateLimited ? ' — ' + rateLimited + ' rate-limited (retry later)' : '');
+  if (typeof showToast === 'function') showToast(summary, (failed || rateLimited) ? 'error' : 'success');
+  applyFilters(true);
 }
 
 function saveClientNote(clientId, text) {
