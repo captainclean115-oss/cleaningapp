@@ -6496,6 +6496,19 @@ window.PentaGeocode = (function() {
     await load();
   }
 
+  // PR #90 — Team Color feature. Direct write, no RPC: teams_update RLS
+  // (auth_belongs_to_business, no extra role check) already permits
+  // this the same way rename()'s plain write does. Auditable via
+  // migration 093's audit_teams_capture trigger, no manual log insert.
+  async function updateColor(teamId, color) {
+    var sb = SB();
+    var res = await sb.from('teams')
+      .update({ color: color, updated_at: new Date().toISOString() })
+      .eq('id', teamId);
+    if (res.error) throw res.error;
+    await load();
+  }
+
   async function remove(teamId, reassignToTeamId) {
     var sb = SB();
     if (reassignToTeamId) {
@@ -6550,7 +6563,7 @@ window.PentaGeocode = (function() {
 
   window.PentaTeams = {
     load: load, listSync: listSync, isLoaded: isLoaded,
-    create: create, rename: rename, remove: remove,
+    create: create, rename: rename, remove: remove, updateColor: updateColor,
     getById: getById, getByName: getByName,
     _diag: _diag,
     get _cache() { return _cache.slice(); },
@@ -36438,6 +36451,48 @@ async function renderStaffTeamsList() {
   }).join('');
 }
 
+// PR #90 — Team Color. 10 visually-distinct presets + a native
+// <input type=color> for anything else. Selected swatch gets a ring
+// + checkmark; color itself is never the only team indicator anywhere
+// in the app -- the team code/name is always rendered alongside it,
+// here and on every other surface.
+var TEAM_COLOR_PRESETS = ['#EF4444','#F97316','#F59E0B','#10B981','#14B8A6','#06B6D4','#3B82F6','#6366F1','#A855F7','#EC4899'];
+
+function _teamColorPickerHtml(currentColor, team, teamId) {
+  var cur = String(currentColor || '').toLowerCase();
+  var presetSet = {};
+  TEAM_COLOR_PRESETS.forEach(function(h) { presetSet[h.toLowerCase()] = true; });
+  var isCustom = !!cur && !presetSet[cur];
+  var swBtn = function(hex, selected, content, extraStyle) {
+    return '<button type="button" onclick="_selectTeamColor(\'' + team + '\',\'' + (teamId || '') + '\',\'' + hex + '\')" title="' + hex + '" '
+      + 'style="width:28px;height:28px;border-radius:50%;background:' + hex + ';border:' + (selected ? '3px solid var(--text)' : '2px solid transparent') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;' + (extraStyle || '') + '">'
+      + (selected ? '<span style="color:#fff;font-size:13px;font-weight:900;text-shadow:0 1px 2px rgba(0,0,0,0.6)">✓</span>' : content || '')
+      + '</button>';
+  };
+  var swatches = TEAM_COLOR_PRESETS.map(function(hex) { return swBtn(hex, cur === hex.toLowerCase()); }).join('');
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:18px">'
+    + swatches
+    + '<label title="Custom color" style="width:28px;height:28px;border-radius:50%;border:' + (isCustom ? '3px solid var(--text)' : '2px dashed var(--border)') + ';cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:' + (isCustom ? currentColor : 'var(--surface2)') + ';position:relative;font-size:12px;color:var(--muted)">'
+    +   (isCustom ? '<span style="color:#fff;font-size:13px;font-weight:900;text-shadow:0 1px 2px rgba(0,0,0,0.6);pointer-events:none">✓</span>' : '<span style="pointer-events:none">🎨</span>')
+    +   '<input type="color" value="' + (cur || '#3b82f6') + '" onchange="_selectTeamColor(\'' + team + '\',\'' + (teamId || '') + '\',this.value)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">'
+    + '</label>'
+    + '</div>';
+}
+
+async function _selectTeamColor(team, teamId, hex) {
+  if (!teamId) { alert('Could not resolve this team in Team Builder — try reopening.'); return; }
+  try {
+    await window.PentaTeams.updateColor(teamId, hex);
+  } catch (e) {
+    alert('Could not update team color: ' + (e.message || e));
+    return;
+  }
+  var overlay = document.getElementById('staff-team-detail-overlay');
+  if (overlay) overlay.remove();
+  openStaffTeamDetailModal(team);
+  try { renderStaffTeamsList(); } catch (e) {}
+}
+
 async function openStaffTeamDetailModal(team) {
   var roster = getUnifiedRoster().filter(_staffTeamIsActive);
   var members = roster.filter(function(e){ return e.defaultTeam === team; });
@@ -36449,6 +36504,12 @@ async function openStaffTeamDetailModal(team) {
   try { resolved = await _resolveTeamDevice(devices, team, new Date()); } catch (e) {}
 
   var color = _pentaTeamColor(team, '#6b7280');
+  // PR #90 — Team Color needs the PentaTeams row id (color lives on
+  // `teams`, keyed by id; this whole modal is keyed by the legacy
+  // string team code). Same name-based lookup _pentaTeamColor already
+  // relies on, so it resolves for all 8 active legacy codes today.
+  var teamRow = (window.PentaTeams && window.PentaTeams.getByName) ? window.PentaTeams.getByName(team) : null;
+  var teamId = teamRow ? teamRow.id : null;
   var overlay = document.createElement('div');
   overlay.id = 'staff-team-detail-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
@@ -36458,6 +36519,8 @@ async function openStaffTeamDetailModal(team) {
     +     '<div style="font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px"><span style="width:10px;height:10px;border-radius:50%;background:' + color + '"></span>' + team + '</div>'
     +     '<button type="button" onclick="document.getElementById(\'staff-team-detail-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
     +   '</div>'
+    +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Team Color</div>'
+    +   _teamColorPickerHtml(color, team, teamId)
     +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Employees</div>'
     +   '<div id="staff-team-detail-members" style="margin-bottom:12px">'
     +     (members.length ? members.map(function(emp) {
