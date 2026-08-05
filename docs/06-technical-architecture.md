@@ -393,6 +393,16 @@ Verified: 8 new Node assertions (extraction-based against the real `getDayRevenu
 
 ---
 
+## 8aj. Clients tab: Active badge counted the whole business, not the Recurring tab (PR #87)
+
+Tom reported the Recurring tab showing "Active (562)" when the real active-recurring count is ~374. Diagnosis: the actual card list (`applyFilters`'s predicate) was already correctly excluding `oms_only` clients on the Recurring tab — verified directly by reading the filter code, not just its output. The bug was isolated to `renderClientStatusSegment()` (the Active/Paused/Inactive/All badges from migration 008, PR #84): its counts iterated `PentaClients.list()` — all 893 clients — instead of the same Recurring-tab-scoped set the list beneath it uses. 562 is exactly the active-client count across the *entire* business (verified via SQL); this segment is only ever shown while `clientTypeFilter === 'recurring'` (`renderClientTypeSegment` hides it for OMS/Inactive), so its badge should have matched that scope from the start.
+
+Also checked and ruled out per Tom's alternate hypotheses: no client has both `oms_only` and `recurring` tags (mutually exclusive by the importer's own tagging logic, confirmed live: 460 recurring + 433 OMS = 893 = total); every `oms_only` client has `frequency='OMS'` cleanly, no accidental recurring-frequency mapping from import.
+
+**Fix**: `renderClientStatusSegment()` now skips `oms_only`-tagged clients when tallying, matching the Recurring tab's own filter. Verified against real data: Active 374 / Inactive 86 / Paused 0 / All 460 (this tenant has zero paused clients).
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
