@@ -403,6 +403,24 @@ Also checked and ruled out per Tom's alternate hypotheses: no client has both `o
 
 ---
 
+## 8ak. Client cancellation flow (PR #88, migration 092)
+
+New "🚫 Cancel Client" button on active client cards (client-list action row, next to Activity/Edit — hidden once a client is already paused/inactive). Two-step modal: preset reason (9 options, required) + free-text notes (optional), then — only if the client has future scheduled jobs — a second step ("This client has N future jobs. Cancel all? [Yes] [Review each]", Tom's Option C) before committing.
+
+**Diagnosis first**: `clients.status` is a 3-value Postgres enum (`active`/`paused`/`inactive`), no CHECK beyond the enum. The only existing path to `inactive` was manual, via the Edit Client modal's status dropdown — a plain field write with no cascade, no reason capture, and no semantic audit action (fell into `audit_clients_capture`'s generic `'updated'` bucket). `jobsForDate`/`getDayRevenue` already exclude any job belonging to a paused/inactive client, so flipping status alone already hides a cancelled client's future jobs from the schedule and projected revenue *immediately* — the future-jobs question is about DB hygiene/audit correctness, not an immediate visual bug either way. Inactive clients stay fully in the dataset (a separate `deleted_at` soft-delete already exists, untouched by status) and are already reachable via the Inactive tab (PR #84) for churn/marketing purposes, satisfying "should cancelled clients still appear in historical views."
+
+**Schema**: `clients.cancellation_reason` (CHECK'd against the 9 preset values), `cancellation_notes`, `cancelled_at`, `cancelled_by` (→ `users.id`). `audit_log_capture()` gained a `clients` branch mirroring the one `jobs` already has: `cancelled_at` going NULL→non-NULL auto-labels the audit row `action_type='cancelled'` — no separate manual `audit_log` insert needed, since the trigger's existing full-row `to_jsonb(NEW)` snapshot already carries the reason/notes.
+
+**Two facade write-mapping gaps found and fixed while building this** (same bug class as [[feedback-read-priority-field-not-updated-by-write]] — a write path silently missing a field the read path already knows about): `PentaClients._transformRowForWrite` had no mapping for the four new columns at all — `updateClient()`'s optimistic local-cache merge (`Object.assign`) would have made the UI *look* like it worked while the DB write silently dropped every one of them. `PentaJobs._transformRowForWrite` was separately missing `cancellationType` → `cancellation_type` (the read side, `_transformRow`, already mapped it) — needed for auto-cancelling a client's future jobs with `cancellation_type='client_initiated'`. Both fixed by extending the existing mapping functions, not by adding a new write path.
+
+**Future-jobs cascade** ("Yes, cancel all"): dual-write, matching `saveClientEdit`'s existing team-cascade pattern exactly — mutate the global `jobs[]` array directly + `saveJobs()` (every schedule/revenue read path reads `jobs[]` synchronously) first, then fire `PentaJobs.update()` per job async to persist to Supabase and keep `PentaJobs`' own cache in sync. "Future" = `date >= today` (today counts — hasn't happened yet), excludes already-done/cancelled jobs and auto-generated projections (which stop projecting forward the moment `buildSchedule` sees the client's `paused`/`inactive` status, so there's nothing to explicitly cancel there).
+
+No new RPC — `clients_update`/`jobs_update` RLS (`auth_belongs_to_business`, no extra role check beyond `jobs_update`'s existing owner/admin/manager/dispatcher gate) already permit these writes via the same plain `PentaClients.updateClient()`/`PentaJobs.update()` paths every other client/job field edit already uses.
+
+Verified: 5 new Node assertions (extraction-based, dates relative to the real system clock) for the future-jobs filter and the reason-list/CHECK-constraint match; a full rolled-back live-transaction test (client cancel + cascade job cancel against a real client with 22 future jobs) confirmed the client row, the cascaded job cancellations, and the auto-labeled `action_type='cancelled'` audit_log row all land correctly; confirmed the CHECK constraint rejects an invalid reason string.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
@@ -921,6 +939,7 @@ The Activity Log surfaces in two places: the global Updates tab (`renderActivity
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **092** — Client cancellation flow (§8ak). Adds `clients.cancellation_reason` (CHECK'd against 9 preset values), `cancellation_notes`, `cancelled_at`, `cancelled_by` (→ `users.id`). Extends `audit_log_capture()` with a `clients` `cancelled_at` NULL→non-NULL branch (mirrors the existing `jobs` one) so cancellations auto-label `action_type='cancelled'`.
 - **091** — GPS Verification start date scaffolding (§8ai). Adds `businesses.gps_verification_start_date date` (nullable). Column only — the cross-check logic that will read it is separate, deferred future work.
 - **090** — Backfill stale `scheduled` jobs (§8ah). One-time data fix, no schema change: `UPDATE jobs SET status='completed' WHERE business_id=<manna> AND status='scheduled' AND date < CURRENT_DATE` — 22 rows, $2,608.
 - **089** — Maids importer batching (§8ad). Drops `import_maids_data`. Adds `import_maids_start` (wipe + client upsert + review-flag sweep + provisional `import_runs` row), `import_maids_jobs_batch` (job upsert for one batch, idempotent), `import_maids_finish` (derived-stat recompute + final `import_runs` totals). Adds the `import_runs_update` RLS policy migration 087 was missing.
