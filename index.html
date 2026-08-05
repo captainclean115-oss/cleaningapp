@@ -13886,7 +13886,11 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
 const FREQ_CLASS = {'RMS - WEK':'f-wek','RMS - ETW':'f-etw','RMS - EOW':'f-eow','RMS - EFW':'f-efw','RMS - MON':'f-mon','OMS':'f-oms'};
 const FREQ_LABEL = {'RMS - WEK':'Weekly','RMS - ETW':'Every 3wk','RMS - EOW':'Every 2wk','RMS - EFW':'Monthly+','RMS - MON':'Monthly','OMS':'One-time'};
 // Sprint 7 polish: short codes for the freq-chip in client list (40×40 chip)
-const FREQ_SHORT = {'RMS - WEK':'WEK','RMS - ETW':'ETW','RMS - EOW':'EOW','RMS - EFW':'EFW','RMS - MON':'MON','OMS':'CUST'};
+// PR #96: was 'CUST' -- Tom flagged it as confusing (misread as a
+// data-quality/customer-service marker rather than a frequency
+// category). The Schedule board's own frequencyBadge() already showed
+// 'OMS' correctly for the same case; this just matches it.
+const FREQ_SHORT = {'RMS - WEK':'WEK','RMS - ETW':'ETW','RMS - EOW':'EOW','RMS - EFW':'EFW','RMS - MON':'MON','OMS':'OMS'};
 
 // Client-list sort: cadence expressed as a day-interval so "most/least
 // frequent" is a plain numeric compare. OMS (one-time) is deliberately a
@@ -30321,7 +30325,29 @@ function maidsBuildPreview(sourceSets, existingClients) {
     // current_frequency comes from the chronologically-latest row in
     // this client's group, not just whichever CSV happened to list
     // them first.
-    var latestRow = g.rows.slice().sort(function(a, b) {
+    //
+    // PR #96: for a client who has ANY row in the 2026_recurring file
+    // (hasRecurring2026, same signal the 'recurring' tag above already
+    // uses), exclude OMS-categorized rows from the "latest" pick. The
+    // 2025_combined file "mixes both categories" (maidsRowIsOms's own
+    // comment) -- a genuinely recurring client can have a one-off
+    // OMS-flagged add-on visit dated LATER than their last true
+    // recurring row (2025_combined dates can interleave with 2026
+    // ones across files), which was overwriting their frequency to
+    // 'OMS' even though 'recurring' was correctly in their tags the
+    // whole time -- the badge (driven by frequency) disagreed with
+    // the tab they'd actually show up under (driven by tags). Found
+    // live: 13 clients tagged 'recurring' with frequency='OMS',
+    // including Debbie Hoffman and Amanda Kane. If every row happens
+    // to be OMS-categorized despite hasRecurring2026 (shouldn't occur
+    // given hasRecurring2026 implies at least one non-OMS row by
+    // definition, but guarded anyway), fall back to the original
+    // latest-overall behavior rather than crashing on an empty pick.
+    var freqCandidates = hasRecurring2026
+      ? g.rows.filter(function(r) { return !maidsRowIsOms(r.row, r.sourceType); })
+      : g.rows;
+    if (!freqCandidates.length) freqCandidates = g.rows;
+    var latestRow = freqCandidates.slice().sort(function(a, b) {
       return String(a.row['date'] || '').localeCompare(String(b.row['date'] || ''));
     }).pop().row;
 
