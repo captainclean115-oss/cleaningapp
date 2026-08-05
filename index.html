@@ -14260,6 +14260,14 @@ function renderClientStatusSegment() {
   const all = PentaClients.list();
   let nA = 0, nP = 0, nI = 0;
   for (var i = 0; i < all.length; i++) {
+    // PR #87: this segment is only ever shown while clientTypeFilter
+    // === 'recurring' (renderClientTypeSegment hides it for OMS/
+    // Inactive), but its counts iterated ALL clients including
+    // OMS-only ones -- "Active" showed 562 (the whole business) instead
+    // of the ~374 real active recurring clients, since the card list
+    // below it was already correctly excluding oms_only. Scope the
+    // count to match what's actually being browsed.
+    if ((all[i].tags || []).includes('oms_only')) continue;
     var s = all[i].status || 'active';
     if (s === 'paused') nP++;
     else if (s === 'inactive') nI++;
