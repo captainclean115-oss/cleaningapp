@@ -497,6 +497,31 @@ Verified: 15 Node assertions (extraction-based against the real source — filte
 
 ---
 
+## 8aq. Audit log CAPTURE completeness sweep (PR #94, migration 095)
+
+Separate from the Activity Log **display** bug (still open, deferred — see below): Tom asked for a full audit of whether `audit_log` *capture* itself (triggers, snapshots, actor/tenant correctness) is complete across every write path, independent of the display layer built on top of it.
+
+**All 10 tables Tom named explicitly** (`clients`, `jobs`, `employees`, `teams`, `daily_assignments`, `payments`, `chat_messages`, `incidents`, `job_issues`, `client_requests`) already had `audit_log_capture()` triggers — no gap. Snapshot completeness confirmed live: every row's `old_values`/`new_values` has been a **full-row** `to_jsonb(OLD)`/`to_jsonb(NEW)` since the trigger's first version (migration 043) — 100% of `client`-entity rows carry `first_name`/`last_name` in their snapshot, confirmed by query, not sampling. There's no `changed_fields` column and none is needed — a full before/after pair supports computing any diff later, which is strictly more capable than pre-computing one at write time.
+
+**Swept the other 100+ `business_id`-scoped tables** for ones with a real, currently-exercised write path in `index.html` (most have zero rows and zero `.insert()`/`.update()` call sites — dead schema, not gaps) and found 6:
+
+- `users` — role/permission changes, settings, soft-delete-on-departure. Security-relevant; no trigger existed.
+- `team_device_assignments` — the GPS vehicle-assignment save path (PR #89's picker).
+- `employee_invites` — who invited whom, revocations.
+- `reward_ledger` / `reward_submissions` / `reward_redemptions` — the employee rewards system's points/approval/fulfillment actions.
+
+Two tables checked and confirmed **not** gaps: `client_keys` has zero write call sites anywhere in the app (read-only from the client today — `PentaClientKeys` only ever `.select()`s it), and `client_cancellations` (794 rows) is a historical Maids-import-populated table with no `user_id`/actor column at all — not a live app write path, nothing to capture.
+
+**Fix**: `migration 095` adds triggers for all 6 gap tables, extends `audit_log`'s `entity_type` CHECK constraint with `user`/`team_device_assignment`/`reward_ledger`/`reward_submission`/`reward_redemption`/`employee_invite`, and reuses the *existing* `action_type` vocabulary (no new values needed) — generic `created`/`updated`/`deleted`/`restored` cover most of it (the existing table-agnostic `deleted_at` NULL↔NOT-NULL branches automatically cover `users`/`reward_submissions`/`reward_redemptions`, which all already have a `deleted_at` column), plus two new semantic branches mirroring the existing `forms` status-approval pattern: `reward_submissions.status`/`reward_redemptions.status` → `'approved'`/`'rejected'`, and `reward_redemptions.status = 'fulfilled'` → the existing `'resolved'` action type (same pending-to-done semantics as job_issue/incident resolution). Status strings confirmed against the literal values the app writes (`PentaRewards.approveSubmission`/`rejectSubmission`/`fulfillRedemption`), not guessed.
+
+**Actor/tenant correctness, confirmed live** (role-simulated transactions as Manna's real owner, all rolled back): `team_device_assignments` UPDATE → correct `entity_type`/`action_type`/`business_id`/resolved `user_id`; `reward_submissions` status→`'approved'` → `action_type='approved'`; `users` UPDATE → `action_type='updated'` with the actor's own name present in the snapshot, and a true no-op update (`role = role`, nothing but `updated_at` would differ) correctly produced **no** audit row — the existing noise filter applies unchanged to the new tables. A regression check on `clients` (untouched by this migration) confirmed the reconstructed trigger function still behaves identically to before.
+
+**Checked whether any write path bypasses the trigger via a different execution context** — the `claire-chat` Edge Function (the only EF that touches Claire's tool-driven writes) is a pure pass-through proxy to Anthropic's Messages API; it performs no database writes itself. Every `CLAIRE_TOOLS` write (`schedule_clean`, `cancel_clean`, etc.) executes client-side through the same authenticated Supabase session Tom is already in, so `auth.uid()` resolves correctly and actor capture for Claire-initiated actions is accurate today — they're just not *distinguishable* from Tom's own manual actions (both show as Tom), which is a display/filter concern, already flagged and explicitly deferred. `accept-invite`/`set-employee-password` write to `employee_invites`/`users` via `service_role` before the invitee has an authenticated session — `auth.uid()` correctly resolves to `NULL` there (System actor), which is the accurate semantic, not a gap: there genuinely is no acting user yet at that point in the flow.
+
+**Deferred, not in this PR** (per Tom's explicit instruction): the Activity Log **display** bug diagnosed in the prior turn — `_audClientName()`/`_audEmpName()` do a live-cache-only lookup keyed by the wrong id shape for `client`-entity rows (`row.entity_id` is the `clients.id` UUID; `PentaClients.getClient()` keys off `external_id`), so the lookup misses 100% of the time and a truthy placeholder string (`'(deleted client)'`) suppresses the snapshot-based fallback that's already written right next to it. That's a rendering fix over data that (per this PR) is now confirmed complete and correct — no capture-side blocker to shipping it whenever filter UI / Claire tools work resumes. Also deferred: the `query_activity` Claire tool and all filter/pagination/grouping-count UI work.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
@@ -1015,6 +1040,7 @@ The Activity Log surfaces in two places: the global Updates tab (`renderActivity
 
 Tenant-relevant migrations (most recent first; full list under `/migrations`):
 
+- **095** — Audit log capture sweep (§8aq). Adds `audit_log_capture()` triggers to 6 previously-uncovered tables with real write paths (`users`, `team_device_assignments`, `employee_invites`, `reward_ledger`, `reward_submissions`, `reward_redemptions`). Extends `audit_log.entity_type`'s CHECK constraint with 6 new values. No new `action_type` values — reuses the existing vocabulary plus two new `forms`-style status-transition branches for reward approve/reject/fulfill.
 - **094** — Geocode audit trail (§8ap). New append-only `geocode_history` table (`business_id`, `client_id` → `clients.id`, `called_at`, `called_by` → `users.id`, `address_at_time`, `result_lat`/`result_lng`/`result_status`), SELECT+INSERT-only RLS mirroring `job_issues` (migration 047). No new columns on `clients` — `lat`/`lng`/`geocode_status`/`geocoded_at` were already fully wired (migration 018).
 - **093** — Team Color (§8am). `teams.color` gets a `#3B82F6` DEFAULT, a `teams_color_format_check` CHECK (`^#[0-9A-Fa-f]{6}$`), and a sequential-preset backfill for any row still missing a color. Adds `teams`' first-ever audit trigger (`audit_teams_capture` + `'teams' → 'team'` in `audit_log_capture()`).
 - **092** — Client cancellation flow (§8ak). Adds `clients.cancellation_reason` (CHECK'd against 9 preset values), `cancellation_notes`, `cancelled_at`, `cancelled_by` (→ `users.id`). Extends `audit_log_capture()` with a `clients` `cancelled_at` NULL→non-NULL branch (mirrors the existing `jobs` one) so cancellations auto-label `action_type='cancelled'`.
