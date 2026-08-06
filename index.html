@@ -30722,6 +30722,75 @@ async function maidsRunCommitBatched(onProgress) {
   return finishRes.data;
 }
 
+// PR #98 — audit-only staging. Takes whatever CSVs are currently
+// loaded into _maidsState.csvRows and inserts the RAW parsed rows
+// (no matching, no client/job writes, no dedup, no multi-visit
+// handling -- none of maidsBuildPreview's logic runs at all) into
+// maids_import_staging, batched the same way job commits are (500/
+// batch, same statement-timeout rationale). Every staging run gets
+// its own run_id so a re-upload doesn't collide with a prior one.
+async function maidsStageForAudit(onProgress) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) throw new Error('maidsStageForAudit: no Supabase client');
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!bid) throw new Error('maidsStageForAudit: tenant not resolved');
+  var csvTypes = Object.keys(_maidsState.csvRows);
+  if (!csvTypes.length) throw new Error('maidsStageForAudit: no CSVs loaded');
+
+  var runId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID()
+    : ('stage-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+  var totalRows = csvTypes.reduce(function(n, t){ return n + _maidsState.csvRows[t].rows.length; }, 0);
+  var staged = 0;
+
+  for (var ti = 0; ti < csvTypes.length; ti++) {
+    var type = csvTypes[ti];
+    var batches = maidsChunkArray(_maidsState.csvRows[type].rows, MAIDS_JOB_BATCH_SIZE);
+    for (var bi = 0; bi < batches.length; bi++) {
+      var payload = batches[bi].map(function(row) {
+        return {
+          business_id: bid,
+          run_id: runId,
+          source_type: type,
+          customer_id: String(row['customerid'] || '').trim() || null,
+          raw_name: row['customernamecompanyname'] || null,
+          raw_address: row['joblocation'] || null,
+          raw_date: row['date'] || null,
+          raw_frequency: row['frequency'] || null,
+          raw: row
+        };
+      });
+      var res = await sb.from('maids_import_staging').insert(payload);
+      if (res.error) throw res.error;
+      staged += payload.length;
+      if (onProgress) onProgress(staged, totalRows);
+    }
+  }
+  return { runId: runId, totalStaged: staged };
+}
+
+async function maidsRunStageForAudit() {
+  var body = document.getElementById('maids-import-body');
+  if (!body) return;
+  body.innerHTML = '<div style="text-align:center;padding:40px 0"><div style="font-size:14px;color:var(--muted)" id="maids-stage-progress">Staging 0 rows…</div></div>';
+  try {
+    var result = await maidsStageForAudit(function(done, total) {
+      var p = document.getElementById('maids-stage-progress');
+      if (p) p.textContent = 'Staging ' + done + ' of ' + total + ' rows…';
+    });
+    body.innerHTML = '<div style="text-align:center;padding:24px 0">'
+      + '<div style="font-size:32px;margin-bottom:12px">✅</div>'
+      + '<div style="font-size:15px;font-weight:700;margin-bottom:8px">Staged ' + result.totalStaged + ' rows for audit</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">No clients or jobs were created or changed.</div>'
+      + '<div style="font-size:11px;color:var(--muted);font-family:monospace;margin-bottom:20px">Run ID: ' + result.runId + '</div>'
+      + '<button onclick="closeMaidsImportModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:10px 20px;border-radius:10px;cursor:pointer">Close</button>'
+      + '</div>';
+  } catch (err) {
+    console.error('[maidsRunStageForAudit] failed', err);
+    body.innerHTML = '<div style="color:var(--red);font-size:13px;padding:20px 0">Staging failed: ' + ((err && err.message) || err) + '</div>'
+      + '<button onclick="renderMaidsUploadStep()" style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:12px;border-radius:12px;cursor:pointer;margin-top:12px">Back</button>';
+  }
+}
+
 // ── Maids Import UI ─────────────────────────────────────────────────
 var MAIDS_CSV_LABELS = { '2026_recurring': '2026 Recurring', '2026_oms': '2026 OMS', '2025_combined': '2025 Combined' };
 var _maidsState = { csvRows: {}, preview: null, decisions: {}, wipeMode: false, commit: null };
@@ -30753,7 +30822,11 @@ function renderMaidsUploadStep() {
   body.innerHTML = '<div style="font-size:13px;color:var(--muted);margin-bottom:18px">Upload up to 3 Maids exports. At least one is required.</div>'
     + rowsHtml
     + '<div id="maids-upload-error" style="color:var(--red);font-size:13px;margin-bottom:12px;min-height:18px"></div>'
-    + '<button id="maids-preview-btn" onclick="maidsRunPreview()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;opacity:' + (anyLoaded ? '1' : '0.5') + '">Preview Import</button>';
+    + '<button id="maids-preview-btn" onclick="maidsRunPreview()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;opacity:' + (anyLoaded ? '1' : '0.5') + '">Preview Import</button>'
+    // PR #98 — audit-only path: stages the raw CSV rows for comparison
+    // against Penta's current client list. Never creates/updates a
+    // client or job, never runs the match algorithm.
+    + '<button id="maids-stage-btn" onclick="maidsRunStageForAudit()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:12px;border-radius:12px;cursor:pointer;margin-top:8px;opacity:' + (anyLoaded ? '1' : '0.5') + '">🔍 Stage for Audit (no import — creates or changes nothing)</button>';
 }
 
 function maidsHandleFileUpload(type, inputEl) {
