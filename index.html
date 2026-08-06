@@ -9,6 +9,21 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="My Clients">
 <meta name="theme-color" content="#FFFFFF">
+<!-- PR #99: this is a single static index.html with no build step and
+     no service worker -- an already-open tab keeps running whatever
+     JS was loaded when it was opened, forever, with no prompt to
+     reload, and GitHub Pages' default Cache-Control (short but
+     nonzero max-age) can still serve a stale copy on a fresh load
+     for a few minutes after a deploy. These meta tags are the
+     strongest lever available from inside the HTML itself (no
+     server/proxy config exists in this repo to set real Cache-
+     Control response headers) -- they don't fix an already-open tab,
+     only a NEW load of the page, so "hard refresh / reopen the tab"
+     is still the real fix whenever a shipped change doesn't seem to
+     be there. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>My Clients</title>
 <script>
 // Synchronous auth-flash suppression: decide which auth screen (if any) to
@@ -30765,7 +30780,17 @@ async function maidsStageForAudit(onProgress) {
       if (onProgress) onProgress(staged, totalRows);
     }
   }
-  return { runId: runId, totalStaged: staged };
+  // PR #99: read the rows back rather than trusting the absence of an
+  // .insert() error alone as proof they landed -- an already-open
+  // browser tab running pre-this-feature JS is the likelier failure
+  // mode we actually hit (see the diagnosis in docs), not a silent
+  // write failure, but this closes the gap either way and gives an
+  // unmistakable, DB-confirmed number instead of an assumption.
+  var verifyRes = await sb.from('maids_import_staging')
+    .select('id', { count: 'exact', head: true })
+    .eq('run_id', runId);
+  var verifiedCount = (verifyRes && !verifyRes.error && typeof verifyRes.count === 'number') ? verifyRes.count : null;
+  return { runId: runId, totalStaged: staged, verifiedCount: verifiedCount };
 }
 
 async function maidsRunStageForAudit() {
@@ -30777,10 +30802,22 @@ async function maidsRunStageForAudit() {
       var p = document.getElementById('maids-stage-progress');
       if (p) p.textContent = 'Staging ' + done + ' of ' + total + ' rows…';
     });
+    // PR #99: verifiedCount is a fresh read-back from the DB, not just
+    // "the insert calls didn't throw" -- if it doesn't match what we
+    // tried to stage, say so plainly instead of showing a false ✅.
+    var mismatch = (result.verifiedCount !== null && result.verifiedCount !== result.totalStaged);
+    var icon = mismatch ? '⚠️' : '✅';
+    var headline = mismatch
+      ? 'Staged ' + result.totalStaged + ' rows, but only ' + result.verifiedCount + ' are actually readable back — something is wrong'
+      : 'Staged ' + result.totalStaged + ' rows for audit';
+    var verifyLine = (result.verifiedCount !== null)
+      ? '<div style="font-size:11px;color:' + (mismatch ? 'var(--red)' : 'var(--muted)') + ';margin-bottom:4px">Confirmed by reading it back: ' + result.verifiedCount + ' row(s) in the database under this run.</div>'
+      : '<div style="font-size:11px;color:var(--amber);margin-bottom:4px">Could not confirm by reading it back — check the Supabase table directly.</div>';
     body.innerHTML = '<div style="text-align:center;padding:24px 0">'
-      + '<div style="font-size:32px;margin-bottom:12px">✅</div>'
-      + '<div style="font-size:15px;font-weight:700;margin-bottom:8px">Staged ' + result.totalStaged + ' rows for audit</div>'
+      + '<div style="font-size:32px;margin-bottom:12px">' + icon + '</div>'
+      + '<div style="font-size:15px;font-weight:700;margin-bottom:8px">' + headline + '</div>'
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">No clients or jobs were created or changed.</div>'
+      + verifyLine
       + '<div style="font-size:11px;color:var(--muted);font-family:monospace;margin-bottom:20px">Run ID: ' + result.runId + '</div>'
       + '<button onclick="closeMaidsImportModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:10px 20px;border-radius:10px;cursor:pointer">Close</button>'
       + '</div>';
@@ -30823,10 +30860,19 @@ function renderMaidsUploadStep() {
     + rowsHtml
     + '<div id="maids-upload-error" style="color:var(--red);font-size:13px;margin-bottom:12px;min-height:18px"></div>'
     + '<button id="maids-preview-btn" onclick="maidsRunPreview()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;padding:14px;border-radius:12px;cursor:pointer;opacity:' + (anyLoaded ? '1' : '0.5') + '">Preview Import</button>'
-    // PR #98 — audit-only path: stages the raw CSV rows for comparison
-    // against Penta's current client list. Never creates/updates a
-    // client or job, never runs the match algorithm.
-    + '<button id="maids-stage-btn" onclick="maidsRunStageForAudit()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:12px;border-radius:12px;cursor:pointer;margin-top:8px;opacity:' + (anyLoaded ? '1' : '0.5') + '">🔍 Stage for Audit (no import — creates or changes nothing)</button>';
+    // PR #98/#99 — audit-only path: stages the raw CSV rows for
+    // comparison against Penta's current client list. Never
+    // creates/updates a client or job, never runs the match algorithm.
+    // Separated visually from "Preview Import" with a divider + its
+    // own label — PR #99 root-caused an empty staging table to Tom
+    // most likely never having reloaded the page since this button
+    // shipped (a same-tab SPA keeps running whatever JS it had loaded
+    // when opened), not a defect in this button once it's actually
+    // clicked, but making the two buttons harder to conflate/miss is
+    // still a real improvement regardless of that root cause.
+    + '<div style="display:flex;align-items:center;gap:10px;margin:16px 0 10px"><div style="flex:1;height:1px;background:var(--border)"></div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Or, audit only</div><div style="flex:1;height:1px;background:var(--border)"></div></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Loads the CSV rows into a comparison table for Claude to review against Penta — does not touch any client or job.</div>'
+    + '<button id="maids-stage-btn" onclick="maidsRunStageForAudit()" ' + (anyLoaded ? '' : 'disabled') + ' style="width:100%;background:var(--surface2);border:2px solid var(--accent);color:var(--accent);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:13px;border-radius:12px;cursor:pointer;opacity:' + (anyLoaded ? '1' : '0.5') + '">🔍 Stage for Audit (no import)</button>';
 }
 
 function maidsHandleFileUpload(type, inputEl) {
