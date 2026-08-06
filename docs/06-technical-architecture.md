@@ -590,6 +590,26 @@ Explicitly temporary, per Tom's own framing — no automatic cleanup job. Staged
 
 ---
 
+## 8av. Diagnosing an empty staging table (PR #99)
+
+Tom staged the 3 CSVs for §8au's audit path and got zero rows. Diagnosis, in order:
+
+**Server side — proven working, not the cause.** `maids_import_staging`'s schema and RLS policies (checked live against `information_schema`/`pg_policy`) exactly match what `maidsStageForAudit()` sends. Ran the actual insert the JS performs, as Tom's real authenticated identity, in a role-simulated transaction: rows landed and were readable back, no errors, both a same-tenant and (separately, already covered in §8au) cross-tenant case behave correctly. `import_runs` shows no second import ran either — the CSVs weren't accidentally committed for real, Tom's live client/job data is untouched.
+
+**Code review — no swallowed errors.** `maidsStageForAudit()`'s only Supabase call is a single `.insert()` per batch; any error throws immediately and `maidsRunStageForAudit()`'s `catch` block displays it (`err.message`) rather than failing silently. Nothing in the path swallows a failure quietly.
+
+**Most likely actual cause: stale/already-open page, not a code defect.** This is a single static `index.html` with no build step, no service worker, and (confirmed by grep) no cache-busting mechanism anywhere in the repo — an already-open browser tab keeps running whatever JS it loaded when it was first opened, indefinitely, with nothing prompting a reload. If Tom's Maids Import tab was already open from earlier in the day (very plausible — today shipped PR #92 through #98 in rapid succession), it would still be running pre-#98 code: the "Stage for Audit" button, and the two functions behind it, simply wouldn't exist on that page instance. Clicking whatever *was* on screen wouldn't error (there'd be nothing new to error) and wouldn't write anywhere — consistent with "zero rows, no visible error." A secondary, lower-probability contributor: GitHub Pages' default `Cache-Control` can still serve a short-lived stale copy on a genuinely fresh load for a few minutes post-deploy.
+
+**Fix, three parts, none of them "the staging code was broken" (it wasn't):**
+
+1. Added `Cache-Control: no-cache, no-store, must-revalidate` / `Pragma: no-cache` / `Expires: 0` `<meta>` tags to `<head>` — the strongest lever available from inside the HTML itself, since this repo has no server/proxy config to set real HTTP response headers. Documented plainly in the code comment that this does **not** fix an already-open tab (only a fresh load) — the real fix in that case is still "hard refresh or reopen the tab."
+2. `maidsStageForAudit()` no longer trusts "no `.insert()` error" as proof the rows landed — it reads them back (`SELECT count(*) ... WHERE run_id = X`) immediately after and returns `verifiedCount` alongside `totalStaged`. `maidsRunStageForAudit()` shows a `⚠️` and an explicit mismatch message instead of a `✅` if those two numbers disagree, so a future silent-failure mode (even one this specific diagnosis didn't anticipate) can't present as a false success.
+3. Visually separated the "Stage for Audit" button from "Preview Import" — a divider, an "Or, audit only" label, an explanatory line, and a distinct accent-outlined style — since even without a stale-cache explanation, two similarly-styled stacked buttons doing very different things is worth making harder to conflate.
+
+Verified: 3 Node assertions against the real extracted `maidsStageForAudit` (matching read-back → no mismatch; deliberately mismatched read-back → surfaces the true lower count, not the attempted one) plus a fresh live round-trip (insert 2 rows, read `count(*)` back, matches). `node --check` clean.
+
+---
+
 ## 8z. Client-list "Sort:" dropdown leaking onto the Employee portal and Staff tab
 
 Tom reported `#client-sort-row` (the Clients tab's "Sort: Last name A→Z" dropdown) rendering at the top of two surfaces it shouldn't: the Employee portal (above the "Good evening" greeting) and the manager Staff tab.
