@@ -13192,6 +13192,23 @@ function _enrichJobFromCache(row) {
   });
 }
 
+// v11.0.7: renderCal() does a full innerHTML teardown/rebuild of the whole
+// day view (schedule-board-drag-shake, PR #100) -- calling it once per
+// PentaJobs.onChange notification storms the DOM when a single drag/drop
+// cascades several row writes (the moved job + every downstream job
+// recalcTeamTimes shifts). Each row's dual-write echoes back over the
+// PentaJobs realtime channel to THIS same tab (Supabase does not suppress
+// self-originated postgres_changes events), so a 4-job cascade fires 4
+// separate onChange notifications in a burst shortly AFTER the already-
+// rendered local optimistic update -- each one re-triggering a full
+// rebuild plus its own pair of scroll-reset timers. That's the shake that
+// PR #100 (which only removed a same-tick synchronous duplicate call)
+// didn't touch. Debounce just the render -- not the jobs[] data sync,
+// which should stay immediately fresh -- so a burst collapses into one
+// repaint after it settles. Same 200ms debounce idiom as
+// MgrRewards._scheduleRerender (search that name), used there for the
+// identical "realtime cascade" problem.
+var _pentaJobsMirrorRenderTimer = null;
 function _mirrorPentaJobsToInMemory() {
   if (typeof jobs === 'undefined') return;
   if (!window.PentaJobs || !window.PentaJobs.isReady || !window.PentaJobs.isReady()) return;
@@ -13203,7 +13220,11 @@ function _mirrorPentaJobsToInMemory() {
   // loads. Symmetric with Phase 3f's saveDailyAssignments() in the
   // assignments mirror.
   try { if (typeof saveJobs === 'function') saveJobs(); } catch (e) { console.warn('[Phase 4] saveJobs failed:', e); }
-  try { if (typeof renderCal === 'function') renderCal(); } catch (e) { console.warn('[PentaJobs] phase4 mirror renderCal failed', e); }
+  if (_pentaJobsMirrorRenderTimer) clearTimeout(_pentaJobsMirrorRenderTimer);
+  _pentaJobsMirrorRenderTimer = setTimeout(function() {
+    _pentaJobsMirrorRenderTimer = null;
+    try { if (typeof renderCal === 'function') renderCal(); } catch (e) { console.warn('[PentaJobs] phase4 mirror renderCal failed', e); }
+  }, 200);
 }
 
 (function pentaPhase4MirrorHydrate() {
@@ -13219,14 +13240,22 @@ function _mirrorPentaJobsToInMemory() {
     // hydrate completes sees the empty-state and stays there even after
     // jobs arrive — the mirror updates localStorage but renderSchedule
     // doesn't re-run on its own.
+    // v11.0.7: same debounce as the mirror's renderCal() above, and for
+    // the same reason -- a multi-row cascade otherwise fires renderSchedule
+    // once per echoed row.
+    var _pentaJobsEmpSchedRenderTimer = null;
     window.PentaJobs.onChange(function() {
-      try {
-        if (typeof renderSchedule === 'function'
-            && document.body.classList.contains('in-portal')) {
-          var schedTab = document.getElementById('tab-schedule');
-          if (schedTab && schedTab.offsetParent !== null) renderSchedule();
-        }
-      } catch (e) {}
+      if (_pentaJobsEmpSchedRenderTimer) clearTimeout(_pentaJobsEmpSchedRenderTimer);
+      _pentaJobsEmpSchedRenderTimer = setTimeout(function() {
+        _pentaJobsEmpSchedRenderTimer = null;
+        try {
+          if (typeof renderSchedule === 'function'
+              && document.body.classList.contains('in-portal')) {
+            var schedTab = document.getElementById('tab-schedule');
+            if (schedTab && schedTab.offsetParent !== null) renderSchedule();
+          }
+        } catch (e) {}
+      }, 200);
     });
   }
   window.PentaJobs.ready().then(function() {
