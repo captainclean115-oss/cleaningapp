@@ -24076,10 +24076,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (input.to_date) job2.date = input.to_date;
     if (input.time) { job2.time = input.time; job2.flexible = false; }
     if (input.team) job2.team = input.team.toUpperCase();
-    saveJobs(); renderCal();
+    saveJobs();
     // Sprint 10 Phase 3c: dual-write Claire move_clean to Supabase. Only
     // patch fields that actually changed. recalcTeamTimes (called below)
-    // dual-writes the cascade for downstream jobs on the destination team.
+    // dual-writes the cascade for downstream jobs on the destination team,
+    // and is now the single render point for this move (it always renders
+    // exactly once) -- an extra renderCal() here used to double-render.
     if (window.PentaJobs) {
       var _movePatch = {};
       if (input.to_date) _movePatch.date = job2.date;
@@ -43710,9 +43712,13 @@ function jobDragEnd(e) {
   _dragJob = null;
   _dragEl = null;
   _dragSnappedMins = null;
-  renderCal();
 
-  // Recalculate subsequent job times based on drive time
+  // Recalculate subsequent job times based on drive time. recalcTeamTimes
+  // always renders exactly once synchronously (even when it no-ops on the
+  // cascade) -- an extra renderCal() here used to fire back-to-back with
+  // that one in the same tick, doubling the full-day rebuild and stacking
+  // duplicate scroll-position timers, which is what caused the visible
+  // shake/jump after every drag-drop. See PR fixing schedule-board shake.
   recalcTeamTimes(_movedTeam, _movedDate, _movedId);
 }
 
@@ -43843,7 +43849,11 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
   }).sort(function(a,b) {
     return (jobStartMins(a)||0) - (jobStartMins(b)||0);
   });
-  if (teamJobs.length < 2) return;
+  // Always render exactly once, even when there's no cascade to compute --
+  // callers (jobDragEnd, Claire's move_clean) rely on this function being
+  // the single render point for the move, instead of also rendering
+  // themselves right before calling in (which used to double-render).
+  if (teamJobs.length < 2) { renderCal(); return; }
 
   // Find the moved job's index — only adjust jobs AFTER it
   var startIdx = 0;
