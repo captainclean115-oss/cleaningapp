@@ -32840,13 +32840,205 @@ function _svcHistoryStatusBadge(j) {
   return '<span style="font-size:10px;background:var(--surface);color:var(--muted);padding:1px 6px;border-radius:4px;font-weight:700;border:1px solid var(--border)">SCHEDULED</span>';
 }
 
+// Cache of businesses.gps_verification_start_date (the per-tenant
+// cutover between CSV-backed historical jobs.actual_minutes and
+// GPS-trigger-computed post-cutover jobs.actual_minutes -- see
+// migrations 099/100). Fetched once per boot. Defaults to null (=
+// treat every job as pre-cutover) until loaded -- correct today since
+// no tenant has a cutover set, and self-corrects once the fetch lands.
+var _svcHistoryGpsCutoverDate = null;
+(function _svcHistoryPrimeGpsCutover() {
+  function kick() {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if (!sb || !bid) return;
+    sb.from('businesses').select('gps_verification_start_date').eq('id', bid).single()
+      .then(function(res) {
+        if (res && res.data && res.data.gps_verification_start_date) {
+          _svcHistoryGpsCutoverDate = res.data.gps_verification_start_date;
+        }
+      })
+      .catch(function(e) { console.warn('[SvcHistory] cutover date fetch failed', e); });
+  }
+  var tries = 0;
+  var iv = setInterval(function() {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+    if ((sb && bid) || ++tries > 100) { clearInterval(iv); if (sb && bid) kick(); }
+  }, 100);
+})();
+
+function _svcHistoryIsPostCutover(j) {
+  return !!(_svcHistoryGpsCutoverDate && j.date && j.date >= _svcHistoryGpsCutoverDate);
+}
+
+// Date-aware team average pay rate, for post-cutover Gross Profit.
+// getTeamEmployees(team, dateStr) reads the SAME historically-accurate
+// dailyAssignments-backed roster as the server-side compute_job_actual_
+// minutes() trigger (migration 100) -- deliberately NOT "today's active
+// roster", which was the bug PR #102/#103 fixed on the old GPS-detail
+// card. Its entries don't carry payRate directly (getUnifiedRoster's
+// facade rows only have id/uuid/name/defaultTeam/role) -- cross-
+// reference each member's uuid against PentaEmployees.get() for the
+// rate. Returns null (don't guess) if no member has a resolvable rate.
+function _svcHistoryTeamAvgPayRate(team, dateStr) {
+  if (!team || !dateStr) return null;
+  var members = (typeof getTeamEmployees === 'function') ? getTeamEmployees(team, dateStr) : [];
+  if (!members.length) return null;
+  var rates = [];
+  members.forEach(function(m) {
+    var emp = (window.PentaEmployees && window.PentaEmployees.get) ? window.PentaEmployees.get(m.uuid || m.id) : null;
+    var rate = parseFloat(emp && emp.payRate != null ? emp.payRate : m.payRate);
+    if (!isNaN(rate) && rate > 0) rates.push(rate);
+  });
+  if (!rates.length) return null;
+  return rates.reduce(function(s, r) { return s + r; }, 0) / rates.length;
+}
+
+// Gross profit = revenue - labor cost.
+//  - Pre-cutover (or cutover unset): labor cost = actual_minutes/60 x
+//    $17/hr flat rate. No per-employee historical pay-rate data exists
+//    for jobs backfilled from the Maids CSV, so a flat rate is the only
+//    honest number here -- Tom's spec.
+//  - Post-cutover: labor cost = actual_minutes/60 x that team's average
+//    pay rate on that job's specific date.
+// Returns null (render as "—") rather than guessing when a required
+// input is missing: no price, no actual_minutes, or (post-cutover only)
+// no team/no resolvable pay rate for that date.
+var SVC_HISTORY_HISTORICAL_RATE_PER_HR = 17;
+function _svcHistoryGrossProfit(j) {
+  if (j.actualMin == null || j.price === '' || j.price == null) return null;
+  var revenue = parseFloat(String(j.price).replace(/[^0-9.]/g, ''));
+  if (!revenue || isNaN(revenue)) return null;
+  var hourlyRate, basis;
+  if (_svcHistoryIsPostCutover(j)) {
+    hourlyRate = _svcHistoryTeamAvgPayRate(j.team, j.date);
+    if (hourlyRate == null) return null;
+    basis = 'team avg pay rate for ' + _svcHistoryFmtDate(j);
+  } else {
+    hourlyRate = SVC_HISTORY_HISTORICAL_RATE_PER_HR;
+    basis = '$' + SVC_HISTORY_HISTORICAL_RATE_PER_HR + '/hr flat rate (historical, no pay-rate history)';
+  }
+  var laborCost = (j.actualMin / 60) * hourlyRate;
+  var profit = revenue - laborCost;
+  var marginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
+  var color = marginPct > 30 ? 'var(--green)' : (marginPct >= 15 ? 'var(--amber)' : 'var(--red)');
+  return { profit: profit, marginPct: marginPct, color: color, hourlyRate: hourlyRate, basis: basis };
+}
+
+// Prefers the real GPS/manual clock time (actual_start_at/actual_end_at,
+// an ISO timestamptz) and falls back to the scheduled time (a Postgres
+// `time` column, e.g. "09:00:00") when no clock time was ever recorded.
+function _svcHistoryFmtClockOrSched(actualIso, schedTimeStr) {
+  if (actualIso) {
+    var d = new Date(actualIso);
+    if (!isNaN(d.getTime())) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+  if (schedTimeStr) return _svcHistoryFmtTime(schedTimeStr.slice(0, 5));
+  return '—';
+}
+
+// Synchronous notes (already on the in-memory job object -- no fetch
+// needed): manager notes and the cancellation reason.
+function _svcHistoryNotesSyncHtml(j) {
+  var parts = [];
+  if ((j.notes || '').trim()) {
+    parts.push('<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Manager Notes</div><div style="font-size:12px;color:var(--text);white-space:pre-wrap">' + escapeHtml(j.notes) + '</div></div>');
+  }
+  if (j.cancelled && (j.cancelReason || j.cancellationType)) {
+    var reasonText = j.cancellationType === 'company_closure' ? 'Company holiday' : (j.cancellationType === 'client_initiated' ? 'Client-initiated' : (j.cancelReason || 'Cancelled'));
+    parts.push('<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Cancellation Reason</div><div style="font-size:12px;color:var(--text)">' + escapeHtml(reasonText) + '</div></div>');
+  }
+  return parts.join('');
+}
+
+// Async notes: job_issues, incidents, and this job's own audit_log
+// entries (entity_type='job', entity_id=the job's real uuid). Reuses
+// the SAME context builder + row renderer as the Activity Log feature
+// (_buildAuditContext / _renderAuditRowHtml) rather than reformatting
+// audit rows a second way.
+//
+// NOT included, and not fabricated as a fuzzy approximation: "client
+// SMS about the job" and "client calls". Neither the messages table
+// (client SMS, via conversations) nor the calls table has a job_id (or
+// even a client_id) column -- only conversation_id, which chains to
+// contacts.id, a separate identity from clients. There is no reliable
+// way to attribute a specific message/call to a specific job without
+// either a schema change (add job_id to messages/calls) or a fuzzy
+// date-proximity heuristic that could misattribute -- flagging this
+// rather than guessing. Also not included: a distinct "team member
+// notes" source -- no such field/table exists separately from the
+// manager-facing jobs.notes above; job_issues (included) is the
+// closest real equivalent (issues are frequently filed by TLs).
+function _svcHistoryLoadNotes(j, targetEl) {
+  if (!targetEl) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  var dbId = j.db_id || null; // job_issues/incidents/audit_log key on the real jobs.id uuid, not the legacy in-memory id
+  if (!sb || !bid || !dbId) {
+    targetEl.innerHTML = '<div style="font-size:11px;color:var(--muted);font-style:italic">Additional history unavailable (no synced record for this job).</div>';
+    return;
+  }
+  var _sections = [];
+  Promise.all([
+    sb.from('job_issues').select('issue_type, notes, resolution_note, reported_at')
+      .eq('business_id', bid).eq('job_id', dbId).order('reported_at', { ascending: false }),
+    sb.from('incidents').select('incident_type, description, resolution_note, reported_at')
+      .eq('business_id', bid).eq('job_id', dbId).order('reported_at', { ascending: false }),
+    sb.from('audit_log').select('id, user_id, action_type, entity_type, entity_id, old_values, new_values, created_at')
+      .eq('business_id', bid).eq('entity_type', 'job').eq('entity_id', dbId)
+      .order('created_at', { ascending: false }).limit(50)
+  ]).then(function(results) {
+    var issuesRes = results[0], incRes = results[1], logRes = results[2];
+    ((issuesRes && issuesRes.data) || []).forEach(function(r) {
+      var text = [r.notes, r.resolution_note].filter(Boolean).join(' — Resolution: ');
+      if (text) _sections.push({ label: 'Job Issue' + (r.issue_type ? ' (' + escapeHtml(r.issue_type) + ')' : ''), text: text });
+    });
+    ((incRes && incRes.data) || []).forEach(function(r) {
+      var text = [r.description, r.resolution_note].filter(Boolean).join(' — Resolution: ');
+      if (text) _sections.push({ label: 'Incident' + (r.incident_type ? ' (' + escapeHtml(r.incident_type) + ')' : ''), text: text });
+    });
+    var logRows = (logRes && logRes.data) || [];
+    var sectionsHtml = _sections.map(function(s) {
+      return '<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">' + s.label + '</div><div style="font-size:12px;color:var(--text);white-space:pre-wrap">' + escapeHtml(s.text) + '</div></div>';
+    }).join('');
+    if (!logRows.length) {
+      targetEl.innerHTML = sectionsHtml || '<div style="font-size:11px;color:var(--muted);font-style:italic">No additional history for this job.</div>';
+      return;
+    }
+    return _buildAuditContext(logRows, sb).then(function(ctx) {
+      var logHtml = '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 4px">Activity Log</div>'
+        + logRows.map(function(row) { return _renderAuditRowHtml(row, ctx, { fullTime: true }); }).join('');
+      targetEl.innerHTML = (sectionsHtml || '') + logHtml;
+    });
+  }).catch(function(e) {
+    console.warn('[SvcHistory] notes load failed', e);
+    targetEl.innerHTML = '<div style="font-size:11px;color:var(--red)">Additional history failed to load.</div>';
+  });
+}
+
+function _svcHistoryToggleRow(clientId, jobId) {
+  var row = document.getElementById('svc-hist-expand-' + clientId + '-' + jobId);
+  if (!row) return;
+  var opening = row.style.display === 'none';
+  row.style.display = opening ? '' : 'none';
+  if (opening && !row.__loaded) {
+    row.__loaded = true;
+    var j = (typeof jobs !== 'undefined' ? jobs : []).find(function(x) { return x.id === jobId; });
+    var target = row.querySelector('.svc-hist-notes-async');
+    if (j && target) _svcHistoryLoadNotes(j, target);
+  }
+}
+
 var SVC_HISTORY_COLS = [
   { key: 'date', label: 'Date' },
   { key: 'team', label: 'Team' },
   { key: 'quoted', label: 'Quoted' },
   { key: 'actual', label: 'Actual' },
-  { key: 'inout', label: 'In/Out' },
+  { key: 'timein', label: 'Time In' },
+  { key: 'timeout', label: 'Time Out' },
   { key: 'price', label: 'Price' },
+  { key: 'profit', label: 'Profit' },
   { key: 'status', label: 'Status' }
 ];
 
@@ -32855,7 +33047,10 @@ function _svcHistorySortValue(j, col) {
   if (col === 'team') return String(j.team || '');
   if (col === 'quoted') return j.quotedMin != null ? j.quotedMin : -1;
   if (col === 'actual') return j.actualMin != null ? j.actualMin : -1;
+  if (col === 'timein') return j.actual_start_at || j.scheduledStartTime || '';
+  if (col === 'timeout') return j.actual_end_at || j.scheduledEndTime || '';
   if (col === 'price') return j.price !== '' && j.price != null ? Number(j.price) : -1;
+  if (col === 'profit') { var gp = _svcHistoryGrossProfit(j); return gp ? gp.profit : -Infinity; }
   if (col === 'status') return j.cancelled ? 2 : (j.done ? 0 : 1);
   return '';
 }
@@ -32873,23 +33068,37 @@ function _svcHistoryRatioHeader(jobs) {
   return '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Median actual/quoted: <span style="font-weight:700;color:' + color + '">' + pct + '%</span></div>';
 }
 
-function _svcHistoryRows(jobs) {
+function _svcHistoryRows(clientId, jobs) {
   var sorted = jobs.slice().sort(function(a, b) {
     var av = _svcHistorySortValue(a, _svcHistorySort.col), bv = _svcHistorySortValue(b, _svcHistorySort.col);
     var cmp = av < bv ? -1 : (av > bv ? 1 : 0);
     return _svcHistorySort.dir === 'asc' ? cmp : -cmp;
   });
-  if (!sorted.length) return '<tr><td colspan="7" style="padding:14px;text-align:center;color:var(--muted);font-size:12px">No jobs on file.</td></tr>';
+  if (!sorted.length) return '<tr><td colspan="9" style="padding:14px;text-align:center;color:var(--muted);font-size:12px">No jobs on file.</td></tr>';
   return sorted.map(function(j) {
-    var inOut = (j.time || j.endTime) ? (_svcHistoryFmtTime(j.time) + ' – ' + _svcHistoryFmtTime(j.endTime)) : '—';
-    return '<tr style="border-bottom:1px solid var(--border)">'
+    var timeIn = _svcHistoryFmtClockOrSched(j.actual_start_at, j.scheduledStartTime);
+    var timeOut = _svcHistoryFmtClockOrSched(j.actual_end_at, j.scheduledEndTime);
+    var gp = _svcHistoryGrossProfit(j);
+    var profitCell = gp
+      ? '<span style="color:' + gp.color + ';font-weight:700" title="' + escapeHtml(gp.basis + ' ($' + gp.hourlyRate.toFixed(2) + '/hr)') + '">$' + gp.profit.toFixed(2) + ' (' + gp.marginPct.toFixed(0) + '%)</span>'
+      : '—';
+    var rowId = clientId + '-' + j.id;
+    return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_svcHistoryToggleRow(\'' + clientId + '\',\'' + j.id + '\')">'
       + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + _svcHistoryFmtDate(j) + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + escapeHtml(j.team || '—') + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + (j.quotedMin != null ? j.quotedMin + 'm' : '—') + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + (j.actualMin != null ? j.actualMin + 'm' : '—') + '</td>'
-      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + inOut + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + timeIn + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + timeOut + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + (j.price !== '' && j.price != null ? '$' + j.price : '—') + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + profitCell + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + _svcHistoryStatusBadge(j) + '</td>'
+      + '</tr>'
+      + '<tr id="svc-hist-expand-' + rowId + '" style="display:none;background:var(--surface)">'
+      +   '<td colspan="9" style="padding:12px 16px">'
+      +     _svcHistoryNotesSyncHtml(j)
+      +     '<div class="svc-hist-notes-async" style="font-size:11px;color:var(--muted);font-style:italic">Loading additional history…</div>'
+      +   '</td>'
       + '</tr>';
   }).join('');
 }
@@ -32908,9 +33117,10 @@ function _svcHistorySectionHtml(clientId, allJobs) {
     + '</div>'
     + '<div id="svc-history-wrap-' + clientId + '" style="display:none">'
     +   _svcHistoryRatioHeader(allJobs)
+    +   '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">Click a row for notes, issues, incidents &amp; activity log</div>'
     +   '<div style="overflow-x:auto;background:var(--surface2);border-radius:12px">'
-    +     '<table style="width:100%;border-collapse:collapse;min-width:520px"><thead><tr>' + headerCells + '</tr></thead>'
-    +     '<tbody id="svc-history-tbody-' + clientId + '">' + _svcHistoryRows(allJobs) + '</tbody></table>'
+    +     '<table style="width:100%;border-collapse:collapse;min-width:760px"><thead><tr>' + headerCells + '</tr></thead>'
+    +     '<tbody id="svc-history-tbody-' + clientId + '">' + _svcHistoryRows(clientId, allJobs) + '</tbody></table>'
     +   '</div>'
     + '</div>'
     + '</div>';
@@ -32924,7 +33134,7 @@ function _svcHistorySortBy(clientId, col) {
   }
   var allJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(function(j) { return j.clientId === clientId; });
   var tbody = document.getElementById('svc-history-tbody-' + clientId);
-  if (tbody) tbody.innerHTML = _svcHistoryRows(allJobs);
+  if (tbody) tbody.innerHTML = _svcHistoryRows(clientId, allJobs);
   // Re-render header arrows/colors without rebuilding the whole card.
   var wrap = document.getElementById('svc-history-wrap-' + clientId);
   if (wrap) {
