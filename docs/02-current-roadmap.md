@@ -89,6 +89,76 @@ Verified end-to-end against the Manna Maids Test and Test Business Two tenants �
 
 Done as of 2026-05-10. PentaRewards facade + Supabase-backed rewards schema (Migration 027), peer-to-peer gifting (Migration 029), teammate display RPC (Migration 030). Three UI surfaces: Manager Rewards (Leaderboard/Queue/Grant/Settings/Ledger) for approval+grant workflow, EmpRewards employee UI (balance+rank, submit photo, send gift, redeem, leaderboard, recent activity), and the legacy localStorage demo retired to thin delegates. Auto-rewards (rules engine: clock-in attendance, 5-star reviews, referrals, etc.) deferred to Sprint 11.6 Phase 2.
 
+## Financial Intelligence and Adaptive Operations Layer (Future Features)
+
+Captured from a strategy session (2026-08-10). **Not being built now.** Current active work — audit_log foundation, Sync Report Phase 1 — continues as planned. This section exists so the ideas aren't lost and so the build sequence is clear when it's time to pick this up.
+
+### Group 1: Financial Intelligence Layer (Premium tier)
+
+**Cash flow forecast dashboard.** Shows daily and weekly projected cash position based on scheduled jobs, projected labor costs, Plaid recurring expenses, and known obligations. Highlights tight spots visually. Includes breakeven indicators per day/week. Extends to a 30-day forward view. Data sources: schedule, employee pay rates, in-home minutes, drive times, Plaid transactions, tax rates. Depends on Plaid integration.
+
+**Labor optimization recommendations.** Multiple sub-features:
+- Team sizing recommendations based on revenue per labor hour
+- Overtime prevention with specific job reassignment suggestions
+- Under-capacity detection with call-off suggestions weighted by employee preference and retention risk
+- Weekly cross-team rebalancing to level hours and eliminate overtime
+- Right-sizing recommendations by job type (2-person handles this efficiently, 3-person is overstaffed)
+- Pay rate optimization recommendations for high performers
+- Underperforming team pattern intervention
+
+**Per-client profitability with margin tier.** Live view showing revenue, cost, and margin per client. Flags clients below margin targets with suggested price adjustments. Extends to per-team and geographic profitability views.
+
+**Debt deployment recommendations.** When the cash flow forecast shows surplus weeks, Claire recommends optimal debt paydown or investment based on interest rates and cash flow security.
+
+### Group 2: Adaptive Operations Layer (Premium/Full Stack tier)
+
+**Client health scoring engine.** Composite score from ratings trend, complaint frequency, payment behavior, communication sentiment, last-minute cancellations, response to previous reschedules, price change reactions, time since last complaint. Display on client cards. Used by other features to drive recommendations.
+
+**Employee profile enrichment.** Add fields: availability pattern with exceptions, default team assignments, capabilities array (driver, team leader, trained skills, languages), incompatible employees list, incompatible clients list, physical constraints, preferences (preferred hours, wants overtime, wants time off).
+
+**Intelligent team assembly.** One-click auto-assemble teams for a date range. Claire reads default teams, availability, PTO, callouts, job requirements. Suggests team compositions with reasoning. Operator reviews and approves. Learns compatibility patterns over time. Suggest-and-approve pattern, not auto-assign.
+
+**Adaptive schedule triage.** When callouts happen (any size from single person to major staffing crisis), Claire produces triage plans that combine operational capacity with client health scoring. Ranks options by which clients can be safely rescheduled vs which must be protected. Drafts appropriate outreach based on client health tier. Operator reviews and approves.
+
+### Group 3: Role-Based Dashboards (Late-stage feature)
+
+Two distinct dashboard experiences based on user role.
+
+**Owner dashboard:** business health at a glance. Cash position, weekly profit trajectory, team status rollup, client health summary, cash flow forecast peek, employee health indicators, pipeline status, monthly targets. Green/yellow/red status indicators. Glanceable, not readable. Tap to drill in.
+
+**Manager dashboard:** operational pulse. Today's schedule status with team progress, team callouts, urgent client communications, job issues in flight, revenue trajectory for the day, tomorrow's prep needs, applications needing review.
+
+Both dashboards feature an "Ask Claire" prompt for conversational queries. Same Claire, different response depth based on role.
+
+**Build only after underlying data feeds are live** (cash flow forecast, per-client profitability, client health scoring, labor optimization). Empty dashboard shells before data flows in creates rework.
+
+### Group 4: Schedule Enhancement (Near-term tactical)
+
+Real-time team progress indicators on the schedule. Grey out completed jobs. Highlight current job per team. Progress bar per team showing on-time status (green/yellow/red). Team status header showing all teams at a glance for manager view. Tap any team indicator for drill-down.
+
+Smaller in scope than the other groups — could ship earlier as a schedule improvement, before the full adaptive operations layer.
+
+### Build sequence
+
+1. Complete current work: audit_log foundation, Sync Report Phase 1
+2. Ship first paying customer
+3. Credentials architecture block (Claire + Geotab + Weather to Edge Functions)
+4. Plaid integration foundation
+5. Cash flow forecast on top of Plaid
+6. Labor optimization sub-features (some can ship early, some need more data)
+7. Real-time schedule progress indicators (can ship early if wanted)
+8. Client health scoring engine
+9. Employee profile enrichment
+10. Intelligent team assembly
+11. Adaptive schedule triage (the crown jewel that ties everything together)
+12. Role-based dashboards last (once all data feeds exist)
+
+### Design principles
+
+- **Information appears where decisions happen.** Dashboards are the exception — they're the bird's-eye pulse-check when nothing specific needs attention.
+- **Claire is a single AI entity across all features.** No named specialist assistants. Different modes and depths of reasoning based on what's being asked.
+- **Data foundation reminder:** the audit_log currently being built must capture all operational events (ratings, complaints, responses, communications, schedule changes, team assignments) so that when client health scoring and other features ship, they have historical data ready.
+
 ## Mid-Term (3-6 months)
 
 ### Sprint 11.6 — Auto-rewards (rules engine)
@@ -187,3 +257,4 @@ Don't do it now. Wait for 12-18 months and 30+ Maids franchisees on Penta with o
 - Voice receptionist locked as Full Stack tier driver
 - Financial intelligence layer foundational (not premium add-on)
 - Don't use ElevenLabs Conversational AI bundle — keep architecture decoupled
+- August 10, 2026: Strategy session captured the Financial Intelligence and Adaptive Operations Layer as a future-features section (cash flow forecasting, labor optimization, client health scoring, employee profile enrichment, intelligent team assembly, adaptive schedule triage, role-based dashboards, real-time schedule progress indicators). Not being built now — current active work (audit_log foundation, Sync Report Phase 1) continues unchanged. Build sequence and design principles documented for when it's picked up.
