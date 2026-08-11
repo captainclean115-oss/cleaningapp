@@ -14963,6 +14963,32 @@ function renderHistoryActivityTab() {
 function renderHistoryJobsTab() {
   if (!_historyClient) return;
   var pane = document.getElementById('ch-pane-jobs');
+  if (!pane) return;
+
+  // Hydration-race guard. jobs[] is populated asynchronously by
+  // PentaJobs._hydrate() -- on a freshly loaded/reopened page this pane
+  // can render before that completes, filtering an empty array down to
+  // zero and showing "No past jobs yet" for a client with real history.
+  // Confirmed live: Beth Ahern's Job History appeared correctly on a
+  // second tap once PentaJobs finished loading. Show a loading state
+  // instead of misreporting "no jobs", and re-render once ready.
+  if (window.PentaJobs && typeof window.PentaJobs.isReady === 'function' && !window.PentaJobs.isReady()) {
+    pane.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--text-on-light-soft)">' +
+      '<div style="font-size:48px;margin-bottom:12px">⏳</div>' +
+      '<div style="font-size:16px;font-weight:600;color:var(--text)">Loading job history…</div>' +
+    '</div>';
+    var _pendingClientId = _historyClient.id;
+    window.PentaJobs.ready().then(function() {
+      // Only re-render if this pane is still showing the SAME client --
+      // the user may have switched clients or closed the panel by the
+      // time hydration finishes.
+      if (_historyClient && _historyClient.id === _pendingClientId && document.getElementById('ch-pane-jobs')) {
+        renderHistoryJobsTab();
+      }
+    });
+    return;
+  }
+
   var today = new Date(); today.setHours(23,59,59,999);
   var clientJobs = (typeof jobs !== 'undefined' ? jobs : [])
     .filter(function(j){ return j.clientId === _historyClient.id; })
@@ -33104,13 +33130,34 @@ function _svcHistoryRows(clientId, jobs) {
 }
 
 function _svcHistorySectionHtml(clientId, allJobs) {
+  var containerId = 'svc-history-section-' + clientId;
+
+  // Hydration-race guard, same root cause and fix pattern as
+  // renderHistoryJobsTab (the Activity -> Job History tab): jobs[] is
+  // populated asynchronously by PentaJobs._hydrate(), and this function
+  // is called synchronously while building the client card, so on a
+  // freshly loaded/reopened page allJobs can still be empty here even
+  // for a client with real history -- allJobs.length is 0, so the whole
+  // section (including its header) used to vanish silently. Show a
+  // loading placeholder instead, and swap in the real content once
+  // PentaJobs finishes hydrating.
+  if (window.PentaJobs && typeof window.PentaJobs.isReady === 'function' && !window.PentaJobs.isReady()) {
+    window.PentaJobs.ready().then(function() {
+      var el = document.getElementById(containerId);
+      if (!el) return; // card closed / re-rendered for a different client since
+      var freshJobs = (typeof jobs !== 'undefined' ? jobs : []).filter(function(j) { return j.clientId === clientId; });
+      el.outerHTML = _svcHistorySectionHtml(clientId, freshJobs);
+    });
+    return '<div id="' + containerId + '" style="margin-bottom:20px;font-size:12px;color:var(--muted);text-align:center;padding:14px 0">⏳ Loading service history…</div>';
+  }
+
   if (!allJobs.length) return '';
   var headerCells = SVC_HISTORY_COLS.map(function(c) {
     var active = _svcHistorySort.clientId === clientId && _svcHistorySort.col === c.key;
     var arrow = active ? (_svcHistorySort.dir === 'asc' ? ' ▲' : ' ▼') : '';
     return '<th onclick="_svcHistorySortBy(\'' + clientId + '\',\'' + c.key + '\')" style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:' + (active ? 'var(--accent)' : 'var(--muted)') + ';text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;user-select:none">' + c.label + arrow + '</th>';
   }).join('');
-  return '<div style="margin-bottom:20px">'
+  return '<div id="' + containerId + '" style="margin-bottom:20px">'
     + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">'
     +   '<span>Service History <span style="color:var(--text);font-weight:600">(' + allJobs.length + ')</span></span>'
     +   '<button onclick="(function(b){var p=document.getElementById(\'svc-history-wrap-' + clientId + '\');var open=p.style.display!==\'none\';p.style.display=open?\'none\':\'block\';b.textContent=open?\'Show\':\'Hide\';})(this)" style="background:none;border:1px solid var(--border);color:var(--accent);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;cursor:pointer">Show</button>'
