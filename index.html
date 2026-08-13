@@ -27721,6 +27721,10 @@ function addLunch(team, dayIdx) {
   weekHours[team].lunch[dayIdx] = { time: lunchDate, duration: parseInt(dur), manual: true };
   // Save to localStorage
   saveLunchEdits();
+  // PR #113 — a manually-set lunch must change the hours total too, not
+  // just the displayed badge (same single-source-of-truth rule as the
+  // GPS-detected case in loadWeekHours).
+  _reconcileHoursWithLunch();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
 }
 
@@ -27736,6 +27740,12 @@ function editLunch(team, dayIdx) {
     weekHours[team].lunch[dayIdx] = null;
   } else return;
   saveLunchEdits();
+  // PR #113 — same reconciliation as addLunch: an edited or deleted
+  // lunch value must change the hours total too. Deleting falls back to
+  // the standard 30-min-over-6h rule (handled inside
+  // _reconcileHoursWithLunch when lunch[dayIdx] is null), matching "no
+  // real lunch value on record" everywhere else in the app.
+  _reconcileHoursWithLunch();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
 }
 
@@ -28184,18 +28194,56 @@ function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinM
   return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
 }
 
-// Neither automatic hours source below (time_entries clock span, or the
-// Geotab true-start/true-end span) deducted a lunch break -- a GPS-
-// detected lunch stop was recorded and shown as a display badge only,
-// never subtracted from the actual hours total, so a 9-hour clocked day
-// showed as 9.0h worked. Standard rule: 30 min off any shift over 6
-// hours. Applies ONLY to this automatic computation -- the manual
-// override modal (calcHoursFromTimes / showEmpDayDetail) already has
-// its own explicit, admin-typed lunch-minutes field and is unaffected.
+// Fallback ONLY for when GPS couldn't confirm a real lunch stop at all
+// (time_entries clock spans never even attempt detection; a Geotab day
+// with no matching lunch candidate falls back here too). Standard
+// rule: 30 min off any shift over 6 hours. Whenever a REAL lunch value
+// exists -- GPS-detected or admin-edited -- _reconcileHoursWithLunch
+// below uses THAT exact value instead; this flat rule never overrides
+// a real one (PR #113). Applies ONLY to the automatic computation --
+// the manual override modal (calcHoursFromTimes / showEmpDayDetail)
+// already has its own explicit, admin-typed lunch-minutes field.
 var AUTO_LUNCH_DEDUCTION_HRS = 0.5;
 var AUTO_LUNCH_THRESHOLD_HRS = 6;
 function _applyStandardLunchDeduction(hrs) {
   return hrs > AUTO_LUNCH_THRESHOLD_HRS ? Math.max(0, hrs - AUTO_LUNCH_DEDUCTION_HRS) : hrs;
+}
+
+// PR #113 — single source of truth: whatever lunch duration ends up
+// DISPLAYED (GPS-detected during loadWeekHours, or a manual edit via
+// addLunch/editLunch, same-session or from a prior session's saved
+// lunch_edits) is EXACTLY what gets subtracted from the raw
+// start-to-end span. Previously the initial calc always applied the
+// flat 30-min rule regardless of what was actually detected -- Tom's
+// example: a real 37-min lunch showed correctly as "Lunch: 37m" but
+// the hours total still subtracted a flat 30, showing "6.7h" instead
+// of the correct 6.5833h (displays as "6.6h" -- 1 decimal place is a
+// DISPLAY-only round; this function and its caller keep full precision).
+// Call this AFTER lunch detection AND loadLunchEdits() have both run,
+// so a saved manual edit from a prior session is reconciled too, not
+// just same-session GPS detection. Only touches days with a computed
+// Geotab starts/ends entry -- time_entries-authoritative team-days
+// never get one (see loadWeekHours's `!_teHadData` gate), so they're
+// correctly left alone; time_entries has no lunch-detection concept,
+// matching "the 30-min rule stays for cases where GPS doesn't detect a
+// lunch stop."
+function _reconcileHoursWithLunch() {
+  Object.keys(weekHours).forEach(function(team) {
+    var wh = weekHours[team];
+    if (!wh || !wh.starts || !wh.days) return;
+    wh.starts.forEach(function(start, dayIdx) {
+      var end = wh.ends && wh.ends[dayIdx];
+      if (!start || !end) return;
+      var totalHrs = (new Date(end) - new Date(start)) / 3600000;
+      var lunchEntry = wh.lunch && wh.lunch[dayIdx];
+      var newHrs = (lunchEntry && lunchEntry.duration != null)
+        ? Math.max(0, totalHrs - lunchEntry.duration / 60)
+        : _applyStandardLunchDeduction(totalHrs);
+      var oldHrs = wh.days[dayIdx] || 0;
+      wh.days[dayIdx] = newHrs;
+      wh.total = (wh.total || 0) - oldHrs + newHrs;
+    });
+  });
 }
 
 async function loadWeekHours() {
@@ -28515,6 +28563,7 @@ async function loadWeekHours() {
     });
 
     loadLunchEdits();
+    _reconcileHoursWithLunch();
 
     // Save weekHours to localStorage so employee portal can access it
     try {
