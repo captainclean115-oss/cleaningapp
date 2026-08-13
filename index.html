@@ -31260,77 +31260,6 @@ function setGPSDateToday() {
   picker.value = y + '-' + m + '-' + d;
 }
 
-// v11.0.24 — day-boundary window for Live GPS Tracking. Mirrors the
-// v11.0.23 algorithm in loadWeekHours (SUSTAINED_AWAY_MIN_MIN=90) so
-// the live timeline excludes overnight depot stays and pre-7am idle
-// bounces — both of which leaked in before this when Geotab's Trip
-// fetch ran with includeOverlappedTrips=true and no post-filter.
-//
-// Returns {trueStart, trueEnd} for the displayed `day`, or null when
-// the device has no real work that day (idle, weekend, missing data).
-// Callers should treat null as "show empty timeline."
-function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
-  if (!deviceTrips || deviceTrips.length === 0) return null;
-  const dayStart = new Date(day); dayStart.setHours(0,0,0,0);
-  const dayEnd   = new Date(day); dayEnd.setHours(23,59,59,999);
-  const dayTrips = deviceTrips.filter(function(t){
-    const ts = new Date(t.start);
-    return ts >= dayStart && ts <= dayEnd;
-  }).sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
-  if (dayTrips.length === 0) return null;
-
-  const SUSTAINED_AWAY_MIN_MIN = 90;
-
-  const _isDepotStop = function(t){
-    var sa = t.stopAddress || t.stopLocation || '';
-    return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
-  };
-
-  // v11.0.26: REMOVED the previous `validTrips = filter(t.start >= 7am)`
-  // pre-shift guard. setHours(7,0,0,0) anchors to BROWSER-local time —
-  // for a PDT-based viewer of an EDT business, 7am PDT is 10am EDT,
-  // which silently excluded the first 1-3 trips of the work day. The
-  // SUSTAINED_AWAY=90 logic below is the real blip filter; the 7am
-  // pre-filter only added value when viewer TZ == business TZ.
-  // Idle blips at e.g. 4am may now leak into the timeline as one extra
-  // stop row, but that's a noise problem, not a data-loss problem —
-  // worth the trade vs. dropping real client visits for cross-TZ users.
-  const validTrips = dayTrips;
-  if (validTrips.length === 0) return null;
-
-  // v11.0.32: was two separate loops here (a primary pass gated on
-  // _isDepotStart -- always empty, Geotab never returns trip.startPoint
-  // /startAddress -- plus a v11.0.29 fallback that scanned every trip
-  // regardless of where it started). Unified into
-  // _findTrueDepotDepartureTrip, shared with loadWeekHours, which had
-  // silently fallen behind without the v11.0.29 fix at all. See that
-  // function's comment for the full history.
-  const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
-  const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
-  const trueStartTrip = _depotResult.trueStartTrip;
-  const trueStart = trueStartTrip
-    ? new Date(trueStartTrip.start)
-    : new Date(validTrips[0].start);
-
-  const lateDepotArrivals = depotArrivalsAsc.filter(function(a){ return new Date(a.stop) > trueStart; });
-  let trueEnd = null;
-  if (lateDepotArrivals.length > 0) {
-    trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
-  } else {
-    const allStops = validTrips.filter(function(t){ return t.stop; })
-      .sort(function(a,b){ return new Date(b.stop) - new Date(a.stop); });
-    if (allStops.length > 0) {
-      trueEnd = new Date(allStops[0].stop);
-    } else if (isToday) {
-      // In-progress shift, no stops recorded yet — let everything up to
-      // "now" through.
-      trueEnd = new Date();
-    }
-  }
-  if (!trueEnd) return null;
-  return { trueStart: trueStart, trueEnd: trueEnd };
-}
-
 
 // ─────────────────────────────────────────
 // MYGEOTAB GPS INTEGRATION
@@ -31461,13 +31390,14 @@ async function loadGPSData() {
 
     // Activity window: "Last 24 hours" (default, #gps-activity-window)
     // keeps the existing single-calendar-day behavior driven by the
-    // date picker -- best quality, since _computeGPSDayWindow's
-    // depot-aware start/end trimming only makes sense for "one team's
-    // one-day route." 3d/7d/30d are a genuinely different mode: a
-    // ROLLING window ending now, spanning multiple calendar days, for
-    // cases that aren't "today's route" at all (verifying employee
-    // hours, investigating a client issue, matching Coast fuel card
-    // transactions -- Tom's explicit examples).
+    // date picker. 3d/7d/30d are a genuinely different mode: a ROLLING
+    // window ending now, spanning multiple calendar days, for cases
+    // that aren't "today's route" at all (verifying employee hours,
+    // investigating a client issue, matching Coast fuel card
+    // transactions -- Tom's explicit examples). PR #111 removed the
+    // depot-aware start/end trimming this comment used to reference --
+    // see buildDeviceEntry's comment for why (it silently dropped real
+    // stops, e.g. team B3's 111 Star St on Aug 3).
     const selectedDate = getGPSDate();
     const isToday = selectedDate.toDateString() === new Date().toDateString();
     const now = new Date();
@@ -31537,22 +31467,23 @@ async function loadGPSData() {
       const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
         new Date(b.start) - new Date(a.start));
 
-      // v11.0.24 — filter to the v11.0.23 day-boundary window so overnight
-      // depot stays and pre-7am idle bounces don't leak into the timeline.
-      // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
-      // what causes the leak; this is the post-filter that closes it.
-      // Skipped entirely in rolling multi-day mode -- "reconstruct one
-      // team's one-day route" doesn't generalize across calendar days;
-      // show every trip in the fetched window verbatim instead.
-      const _window = (!isRollingWindow && team) ? _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday) : null;
-      const deviceTrips = isRollingWindow
-        ? allDeviceTrips
-        : (_window
-            ? allDeviceTrips.filter(function(t){
-                const ts = new Date(t.start);
-                return ts >= _window.trueStart && ts <= _window.trueEnd;
-              })
-            : (team ? [] : allDeviceTrips));
+      // PR #111 — REMOVED the v11.0.24 day-boundary trim that used to
+      // filter deviceTrips down to [_computeGPSDayWindow's trueStart,
+      // trueEnd]. That window is the "sustained >=90min away from
+      // depot" payroll start/end calc (shared with loadWeekHours) --
+      // correct for computing shift hours, but using it here to decide
+      // which trips even APPEAR in Today's Activity silently dropped
+      // any real stop outside that narrow band with NO fallback row at
+      // all (not even an "unscheduled" one) -- e.g. team B3's 111 Star
+      // St stop on Aug 3, confirmed in Geotab but invisible in Penta.
+      // "Today's Activity" is a raw activity feed, not a payroll
+      // summary -- it should show every real stop, same as the other
+      // raw GPS stops-list views elsewhere in the app (showEmpStops
+      // etc.), which are intentionally unfiltered for exactly this
+      // reason. Depot stops still render clearly labeled "Office" via
+      // isDepot below, so an overnight park doesn't read as mysterious
+      // noise -- it just reads as a (possibly long) Office stop.
+      const deviceTrips = allDeviceTrips;
 
       let totalDriveMin = 0;
       deviceTrips.forEach(t => {
@@ -31925,6 +31856,13 @@ function renderGPS() {
         const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
         const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
         const maybeLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
+        // PR #111 — a stop with NO client match at all (not just "real
+        // client, no job today" -- genuinely no record at this address)
+        // used to render as a bare, unlabeled address row, indistinguishable
+        // from any other line. Give it the same visibility Tom expects
+        // parity with UNSCHEDULED for -- e.g. team B3's 111 Star St stop,
+        // a confirmed real Geotab stop with no client on file anywhere.
+        const isUnknownLocation = !s.isDepot && !_match && !maybeLunch;
 
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${includeDriveInfo ? driveInfo : ''}
@@ -31932,6 +31870,7 @@ function renderGPS() {
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
             ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
+            ${isUnknownLocation ? `<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">📍 Unrecognized stop — no client on file here</div>` : ''}
             ${clientName && !maybeLunch ? (_match && _match.id
               ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
               : `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
