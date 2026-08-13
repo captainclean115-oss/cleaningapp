@@ -28123,92 +28123,65 @@ function isNearDepot(lat, lng, team) {
 function isDepotAddress(address, team) { return window.PentaOffices.isDepotAddress(address, team); }
 function isDepotPoint(point, team)    { return window.PentaOffices.isDepotPoint(point, team); }
 
-// PR #110 — shared true-day-start/end detector, used by BOTH
-// loadWeekHours (Hours Report) and _computeGPSDayWindow (Live
-// Tracking). Supersedes the old _findTrueDepotDepartureTrip (kept as a
-// single shared function for the same reason that one was extracted in
-// the first place -- see feedback_verify_copied_guards_not_assumed_
-// working memory: two independent call sites of the SAME logic
-// had already silently diverged once before; a fix here must not land
-// in only one of them again).
-//
-// The old algorithm's spec was "true start = the LAST depot DEPARTURE
-// before a sustained away-from-depot stretch" -- and it correctly
-// implemented that spec. But it produced the wrong number for Etelvina
-// Cabral, Mon Aug 3: her real stop sequence was an overnight depot park
-// (Fri->Mon), a 45-min pre-shift depot idle (5:33-6:18 AM), then a
-// depart-at-6:18-AM / arrive-at-6:28-AM drive to her first real job
-// (111 Star St). "Last depot departure before sustained away" correctly
-// picked the 6:18 AM departure -- but Tom wants the 6:28 AM ARRIVAL at
-// the actual work stop, one hop further. This isn't a bug in the old
-// code so much as a spec change: away from "last depot departure" and
-// toward "arrival at the first stop that survives an explicit
-// ignore-list" (overnight/multi-hour parking, stops with no confirmed
-// same-day arrival, and early-morning depot warmup).
+// v11.0.32 — shared depot-departure / true-day-start detector, used by
+// BOTH loadWeekHours (Hours Report) and _computeGPSDayWindow (Live
+// Tracking). These two "mirrored" copies had silently diverged:
+// _computeGPSDayWindow got the v11.0.29 fallback-loop fix, loadWeekHours
+// never did. Extracting one shared implementation means a future fix
+// here can't land in only one of the two call sites again (see
+// feedback_verify_copied_guards_not_assumed_working memory).
 //
 // Geotab's Trip API never returns trip.startPoint or trip.startAddress
-// -- confirmed live, for EVERY trip (see
+// -- confirmed live, for EVERY trip, not just the first (see
 // project_geotab_trip_startpoint_never_returned memory) -- so a trip's
-// OWN start-side fields can never identify where it departed from. Each
-// stop's address/location is read from the trip that ARRIVES there
-// (t.stopAddress/t.stopPoint), matching the existing raw stops-list UIs
-// (showEmpStops etc., which are display-only and intentionally NOT
-// touched by this fix -- they show every stop unfiltered for human
-// review, which is exactly how Tom found this bug).
-const STOP_IGNORE_DURATION_MIN = 240; // 4 hours -- parking/overnight, not a job
-const DEPOT_EARLY_MORNING_CUTOFF_HR = 9; // before 9 AM at the depot = warmup/pre-shift, not the day's real start
+// own start-side fields can never confirm "this trip departed the
+// depot." A trip's start is always physically the PREVIOUS trip's
+// stop, and stopPoint/stopAddress ARE reliable, so departure is
+// inferred from the preceding trip's stop instead.
+//
+// This replaces two previously-broken approaches:
+//   1. loadWeekHours (pre-fix): filtered candidates to
+//      validTrips.filter(_isDepotStart), which is ALWAYS empty (see
+//      above) -- so it never found any candidate and fell straight to
+//      `validTrips[0].start` with NO sustained-away check at all. Since
+//      that's "day start = first GPS ping of the day," it's exactly
+//      the naive algorithm Tom's spec explicitly rejects, and exactly
+//      what picked 8:18am over the real 9:11am departure for Ines:
+//      whatever her vehicle's first trip of the day was (even an
+//      unrelated pre-work errand) always won, regardless of the
+//      SUSTAINED_AWAY_MIN_MIN threshold, because that threshold was
+//      only ever checked inside the dead depotDepartures loop.
+//   2. _computeGPSDayWindow's v11.0.29 fallback: scanned ALL trips
+//      (ignoring where each one started) for the first one not
+//      followed by a quick depot return. That over-corrected -- an
+//      early trip completely unrelated to the depot (leaving from
+//      home, a personal stop) could still get crowned "the start"
+//      merely because nothing routed through the depot again soon
+//      after it, which is the same failure mode by a different path.
+function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinMin) {
+  const depotArrivalsAsc = validTrips.filter(function(t){ return t.stop && _isDepotStop(t); })
+    .sort(function(a,b){ return new Date(a.stop) - new Date(b.stop); });
 
-// Builds the day's stop sequence from ITS OWN day-bucketed trips only
-// (no lookback into other days' trips). arrival:null on the very first
-// entry mirrors the existing raw stops-list convention (its true
-// arrival is outside this day's own trip data -- unknown, and possibly
-// a prior day) and is exactly what makes it get excluded below.
-function _buildDayStopSequence(dayTrips) {
-  var stops = [];
-  if (!dayTrips.length) return stops;
-  stops.push({ arrival: null, departure: new Date(dayTrips[0].start), address: dayTrips[0].startAddress || '', stopPoint: null });
-  dayTrips.forEach(function(t, i) {
-    stops.push({
-      arrival: t.stop ? new Date(t.stop) : null,
-      departure: dayTrips[i + 1] ? new Date(dayTrips[i + 1].start) : null,
-      address: t.stopAddress || t.stopLocation || '',
-      stopPoint: t.stopPoint || null
-    });
-  });
-  return stops;
-}
-
-// Tom's 3 ignore rules. isToday matters only for judging duration on a
-// still-open (no recorded departure yet) final stop -- for a past,
-// fully-fetched day with no departure on record, there's no data to
-// judge duration against, so this rule doesn't exclude it on that basis
-// alone (the previous-day-arrival and depot-warmup rules still apply).
-function _isIgnorableGPSStop(stop, team, day, isToday) {
-  if (!stop.arrival || stop.arrival.toDateString() !== day.toDateString()) return true; // unknown / previous-day arrival
-  var effectiveDeparture = stop.departure || (isToday ? new Date() : null);
-  if (effectiveDeparture) {
-    var durationMin = (effectiveDeparture - stop.arrival) / 60000;
-    if (durationMin > STOP_IGNORE_DURATION_MIN) return true; // parked/overnight
+  let trueStartTrip = null;
+  for (let i = 0; i < validTrips.length; i++) {
+    const trip = validTrips[i];
+    const prev = i > 0 ? validTrips[i - 1] : null;
+    // No same-day prior trip to confirm this one departed the depot --
+    // NOT auto-disqualifying (the very first trip of the day often IS
+    // a real depot departure, e.g. the vehicle was parked at the depot
+    // overnight) but not auto-confirming either. Left for the
+    // last-resort fallback below rather than evaluated here, so an
+    // unconfirmed first trip never outranks a later, confirmed
+    // candidate the way the old "always try validTrips[0] first"
+    // fallback did.
+    if (!prev || !_isDepotStop(prev)) continue;
+    const depTs = new Date(trip.start);
+    const nextReturn = depotArrivalsAsc.find(function(a){ return new Date(a.stop) > depTs; });
+    if (!nextReturn) { trueStartTrip = trip; break; }
+    const awayMin = (new Date(nextReturn.stop) - depTs) / 60000;
+    if (awayMin >= sustainedAwayMinMin) { trueStartTrip = trip; break; }
   }
-  var atDepot = isDepotAddress(stop.address, team) || (stop.stopPoint && isDepotPoint(stop.stopPoint, team));
-  if (atDepot) {
-    var hr = stop.arrival.getHours() + stop.arrival.getMinutes() / 60;
-    if (hr < DEPOT_EARLY_MORNING_CUTOFF_HR) return true; // pre-shift depot warmup
-  }
-  return false;
-}
-
-// true start = arrival (In) at the first non-ignored stop of the day.
-// true end   = departure (Out) from the last non-ignored stop, falling
-// back to that stop's own arrival if it has no recorded departure yet
-// (an in-progress/open stop at the edge of the fetched data).
-function _computeTrueShiftWindow(dayTrips, team, day, isToday) {
-  var stops = _buildDayStopSequence(dayTrips);
-  var realStops = stops.filter(function(s) { return !_isIgnorableGPSStop(s, team, day, isToday); });
-  if (!realStops.length) return { trueStart: null, trueEnd: null };
-  var first = realStops[0];
-  var last = realStops[realStops.length - 1];
-  return { trueStart: first.arrival, trueEnd: last.departure || last.arrival };
+  return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
 }
 
 // Neither automatic hours source below (time_entries clock span, or the
@@ -28396,14 +28369,86 @@ async function loadWeekHours() {
 
         if (dayTrips.length === 0) return;
 
-        // PR #110 — see _computeTrueShiftWindow's comment (shared with
-        // _computeGPSDayWindow / Live Tracking) for the full spec and
-        // the Etelvina Cabral case that prompted it.
-        const isThisDayToday = day.toDateString() === new Date().toDateString();
-        const _shiftWindow = _computeTrueShiftWindow(dayTrips, team, day, isThisDayToday);
-        const trueStart = _shiftWindow.trueStart;
-        const trueEnd = _shiftWindow.trueEnd;
-        if (!trueStart || !trueEnd) return;
+        const depot = getDepotForTeam(team);
+
+        // v11.0.28: TRUE start = last depot departure before a sustained
+        // away-from-depot stretch (see SUSTAINED_AWAY logic below). TRUE
+        // end = last depot arrival. The previous `validTrips = filter(
+        // t.start >= 7am LOCAL)` pre-guard anchored 7 AM to the BROWSER's
+        // timezone — for a PDT-based viewer of an EDT business it shifted
+        // to 10 AM EDT and silently excluded the team's real 9 AM start
+        // (same bug PR #42 fixed in _computeGPSDayWindow for the Live
+        // tab). SUSTAINED_AWAY below is the real anti-blip filter; the
+        // 7 AM coarse pre-filter only had value when viewer TZ ==
+        // business TZ, which isn't a safe assumption.
+        let trueStart = null;
+        let trueEnd = null;
+
+        const validTrips = dayTrips;
+        if (validTrips.length === 0) return;
+
+        // v11.0.23 — TRUE START redefinition.
+        //
+        // Spec from Tom: "the last time they left the office before
+        // starting their day." Teams often make quick depot bounces in
+        // the morning (gas, forgot supplies) — those don't count as the
+        // start. The real day-start is the LAST depot-departure before a
+        // sustained away-from-depot stretch.
+        //
+        // Algorithm: walk depot-departures in chronological order; the
+        // first one whose next return-to-depot is ≥ SUSTAINED_AWAY min
+        // (or never returns) is the start.
+        //
+        // Quick-bounce filter: depot → gas → depot → first job.
+        //   depot-departures: 7:15 (gas), 8:00 (first job)
+        //   7:15 → next return 7:45 (30 min) — too short, skip
+        //   8:00 → next return 4:30pm — sustained, pick this  ✓
+        //
+        // Mid-day re-launch filter: depot → first job (long away) →
+        // depot (forgot supplies) → second job.
+        //   depot-departures: 8:00 (first job), 11:30 (resupply)
+        //   8:00 → next return 11:00 (3 hrs) — sustained, pick this  ✓
+        const SUSTAINED_AWAY_MIN_MIN = 90;
+        const _isDepotStop = function(t) {
+          var sa = t.stopAddress || t.stopLocation || '';
+          return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+        };
+        const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
+        const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+        const trueStartTrip = _depotResult.trueStartTrip;
+        if (trueStartTrip) {
+          trueStart = new Date(trueStartTrip.start);
+        } else {
+          // Last resort: no trip all day was confirmed as a depot
+          // departure (vehicle never touched the depot today, or depot
+          // detection failed entirely -- offices table incomplete or
+          // misconfigured). Fall back to the first trip of the day.
+          const firstTrip = validTrips[0];
+          if (firstTrip) trueStart = new Date(firstTrip.start);
+        }
+        if (!trueStart) return;
+
+        // v11.0.23 — TRUE END = LAST arrival at depot after trueStart.
+        // If they went out again mid-day and came back, the latest depot
+        // return is the real end — even if a later non-depot trip exists
+        // (van went home with the driver and they ran personal errands).
+        const lateDepotArrivals = depotArrivalsAsc.filter(a => new Date(a.stop) > trueStart);
+        if (lateDepotArrivals.length > 0) {
+          trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+        }
+        if (!trueEnd) {
+          // Fallback: no depot return today (worked off-site, drove straight
+          // home, or depot detection failed). Use the latest trip stop
+          // anywhere — and if today is in-progress, "now" for current shifts.
+          const allStops = validTrips.filter(t => t.stop)
+            .sort((a,b) => new Date(b.stop) - new Date(a.stop));
+          if (allStops.length > 0) {
+            trueEnd = new Date(allStops[0].stop);
+          } else if (day.toDateString() === new Date().toDateString()) {
+            trueEnd = new Date();
+          }
+        }
+        if (!trueEnd) return;
 
         // Total hours = true start to true end
         const totalMs = trueEnd - trueStart;
@@ -31215,42 +31260,6 @@ function setGPSDateToday() {
   picker.value = y + '-' + m + '-' + d;
 }
 
-// v11.0.24 — day-boundary window for Live GPS Tracking. Shares
-// _computeTrueShiftWindow (PR #110) with loadWeekHours so the live
-// timeline excludes overnight/multi-hour parked stops, stops without a
-// confirmed same-day arrival, and early-morning depot warmup — see that
-// function's comment for the full spec.
-//
-// Returns {trueStart, trueEnd} for the displayed `day`, or null when
-// the device has no real work that day (idle, weekend, missing data).
-// Callers should treat null as "show empty timeline."
-function _computeGPSDayWindow(deviceTrips, team, day, isToday) {
-  if (!deviceTrips || deviceTrips.length === 0) return null;
-  const dayStart = new Date(day); dayStart.setHours(0,0,0,0);
-  const dayEnd   = new Date(day); dayEnd.setHours(23,59,59,999);
-  const dayTrips = deviceTrips.filter(function(t){
-    const ts = new Date(t.start);
-    return ts >= dayStart && ts <= dayEnd;
-  }).sort(function(a,b){ return new Date(a.start) - new Date(b.start); });
-  if (dayTrips.length === 0) return null;
-
-  // PR #110 — see _computeTrueShiftWindow's comment (shared with
-  // loadWeekHours / Hours Report) for the full spec.
-  const _shiftWindow = _computeTrueShiftWindow(dayTrips, team, day, isToday);
-  const trueStart = _shiftWindow.trueStart;
-  let trueEnd = _shiftWindow.trueEnd;
-  if (!trueStart) return null;
-  if (!trueEnd) {
-    if (isToday) {
-      // In-progress shift, no stops recorded yet — let everything up to
-      // "now" through.
-      trueEnd = new Date();
-    }
-  }
-  if (!trueEnd) return null;
-  return { trueStart: trueStart, trueEnd: trueEnd };
-}
-
 
 // ─────────────────────────────────────────
 // MYGEOTAB GPS INTEGRATION
@@ -31381,13 +31390,14 @@ async function loadGPSData() {
 
     // Activity window: "Last 24 hours" (default, #gps-activity-window)
     // keeps the existing single-calendar-day behavior driven by the
-    // date picker -- best quality, since _computeGPSDayWindow's
-    // depot-aware start/end trimming only makes sense for "one team's
-    // one-day route." 3d/7d/30d are a genuinely different mode: a
-    // ROLLING window ending now, spanning multiple calendar days, for
-    // cases that aren't "today's route" at all (verifying employee
-    // hours, investigating a client issue, matching Coast fuel card
-    // transactions -- Tom's explicit examples).
+    // date picker. 3d/7d/30d are a genuinely different mode: a ROLLING
+    // window ending now, spanning multiple calendar days, for cases
+    // that aren't "today's route" at all (verifying employee hours,
+    // investigating a client issue, matching Coast fuel card
+    // transactions -- Tom's explicit examples). PR #111 removed the
+    // depot-aware start/end trimming this comment used to reference --
+    // see buildDeviceEntry's comment for why (it silently dropped real
+    // stops, e.g. team B3's 111 Star St on Aug 3).
     const selectedDate = getGPSDate();
     const isToday = selectedDate.toDateString() === new Date().toDateString();
     const now = new Date();
@@ -31457,22 +31467,23 @@ async function loadGPSData() {
       const allDeviceTrips = (tripsByDevice[d.id] || []).sort((a,b) =>
         new Date(b.start) - new Date(a.start));
 
-      // v11.0.24 — filter to the v11.0.23 day-boundary window so overnight
-      // depot stays and pre-7am idle bounces don't leak into the timeline.
-      // Geotab's Get Trip uses includeOverlappedTrips=true above, which is
-      // what causes the leak; this is the post-filter that closes it.
-      // Skipped entirely in rolling multi-day mode -- "reconstruct one
-      // team's one-day route" doesn't generalize across calendar days;
-      // show every trip in the fetched window verbatim instead.
-      const _window = (!isRollingWindow && team) ? _computeGPSDayWindow(allDeviceTrips, team, selectedDate, isToday) : null;
-      const deviceTrips = isRollingWindow
-        ? allDeviceTrips
-        : (_window
-            ? allDeviceTrips.filter(function(t){
-                const ts = new Date(t.start);
-                return ts >= _window.trueStart && ts <= _window.trueEnd;
-              })
-            : (team ? [] : allDeviceTrips));
+      // PR #111 — REMOVED the v11.0.24 day-boundary trim that used to
+      // filter deviceTrips down to [_computeGPSDayWindow's trueStart,
+      // trueEnd]. That window is the "sustained >=90min away from
+      // depot" payroll start/end calc (shared with loadWeekHours) --
+      // correct for computing shift hours, but using it here to decide
+      // which trips even APPEAR in Today's Activity silently dropped
+      // any real stop outside that narrow band with NO fallback row at
+      // all (not even an "unscheduled" one) -- e.g. team B3's 111 Star
+      // St stop on Aug 3, confirmed in Geotab but invisible in Penta.
+      // "Today's Activity" is a raw activity feed, not a payroll
+      // summary -- it should show every real stop, same as the other
+      // raw GPS stops-list views elsewhere in the app (showEmpStops
+      // etc.), which are intentionally unfiltered for exactly this
+      // reason. Depot stops still render clearly labeled "Office" via
+      // isDepot below, so an overnight park doesn't read as mysterious
+      // noise -- it just reads as a (possibly long) Office stop.
+      const deviceTrips = allDeviceTrips;
 
       let totalDriveMin = 0;
       deviceTrips.forEach(t => {
@@ -31845,6 +31856,13 @@ function renderGPS() {
         const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
         const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
         const maybeLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
+        // PR #111 — a stop with NO client match at all (not just "real
+        // client, no job today" -- genuinely no record at this address)
+        // used to render as a bare, unlabeled address row, indistinguishable
+        // from any other line. Give it the same visibility Tom expects
+        // parity with UNSCHEDULED for -- e.g. team B3's 111 Star St stop,
+        // a confirmed real Geotab stop with no client on file anywhere.
+        const isUnknownLocation = !s.isDepot && !_match && !maybeLunch;
 
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${includeDriveInfo ? driveInfo : ''}
@@ -31852,6 +31870,7 @@ function renderGPS() {
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
             ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
+            ${isUnknownLocation ? `<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">📍 Unrecognized stop — no client on file here</div>` : ''}
             ${clientName && !maybeLunch ? (_match && _match.id
               ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
               : `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
