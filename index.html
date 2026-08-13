@@ -26070,6 +26070,7 @@ function quickAssign(empId, team, dateStr) {
   // Sprint 10 Phase 3f: dual-write quickAssign to Supabase.
   try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, empId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); renderTeamManager(); }); } catch(e){}
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
+  _hrsMaybeRefreshForDate(dateStr); // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
 }
 
 async function promptDefaultTeam(empId) {
@@ -26486,6 +26487,7 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
   recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
   if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+  _hrsMaybeRefreshForDate(dateStr); // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
 
   writePromise.catch(function() {
     // assignEmployee already rolled back the optimistic write and
@@ -26493,6 +26495,7 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
     renderTeamManager();
     recalcTeamTimes(oldTeam, dateStr);
     if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+    _hrsMaybeRefreshForDate(dateStr);
   });
 }
 
@@ -27970,6 +27973,38 @@ function hoursWeekMove(dir) {
   loadWeekHours();
 }
 
+// PR #109 Item 3 — retroactive team-assignment recalc. The Schedule ->
+// Teams tab (confirmTeamAssign / quickAssign) and the Live tab's own
+// hours table (weekHours / window._empHoursMap / renderHoursTable) are
+// separate views with no existing cross-invalidation: editing Monday's
+// assignment there never touched the Live tab's already-rendered hours,
+// which kept showing the OLD team's GPS data until the Live tab was
+// manually reloaded (gpsInit) or the week was re-navigated.
+//
+// Fix is a cheap in-memory re-render, not a Geotab refetch. Confirmed
+// safe because per-day team attribution is already resolved live inside
+// renderHoursTable via getEmployeeTeam(empId, dateStr), which reads the
+// SAME dailyAssignments object assignEmployee() just updated
+// synchronously (dailyAssignments[key] = team runs before assignEmployee's
+// first await) -- and weekHours already holds every team's GPS/time_entries
+// data for the whole displayed week (loadWeekHours fetches ALL teams via
+// _pentaTeamNames(), not just currently-assigned ones), so no re-fetch is
+// needed for a date within the week already on screen. Only re-renders when
+// the edited date falls in the week currently loaded (hoursWeekOffset) AND
+// the Live tab's hours table has actually been rendered at least once this
+// session -- otherwise there's nothing stale to fix, and hitting Geotab
+// again here would be wasted/rate-limit-risky for a view the user isn't on.
+function _hrsMaybeRefreshForDate(dateStr) {
+  try {
+    if (typeof weekHours === 'undefined' || !weekHours || !Object.keys(weekHours).length) return;
+    if (!document.getElementById('hours-table')) return;
+    var days = getWeekDates(hoursWeekOffset);
+    var inLoadedWeek = days.some(function(d) { return dateKey(d) === dateStr; });
+    if (!inLoadedWeek) return; // a different week is loaded; its own next loadWeekHours() will pick this up naturally
+    renderHoursTable(days, ['Mon','Tue','Wed','Thu','Fri']);
+  } catch (e) { console.warn('[hours] refresh after assignment edit failed', e); }
+}
+
 function distKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = (lat2-lat1)*Math.PI/180;
@@ -28149,6 +28184,20 @@ function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinM
   return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
 }
 
+// Neither automatic hours source below (time_entries clock span, or the
+// Geotab true-start/true-end span) deducted a lunch break -- a GPS-
+// detected lunch stop was recorded and shown as a display badge only,
+// never subtracted from the actual hours total, so a 9-hour clocked day
+// showed as 9.0h worked. Standard rule: 30 min off any shift over 6
+// hours. Applies ONLY to this automatic computation -- the manual
+// override modal (calcHoursFromTimes / showEmpDayDetail) already has
+// its own explicit, admin-typed lunch-minutes field and is unaffected.
+var AUTO_LUNCH_DEDUCTION_HRS = 0.5;
+var AUTO_LUNCH_THRESHOLD_HRS = 6;
+function _applyStandardLunchDeduction(hrs) {
+  return hrs > AUTO_LUNCH_THRESHOLD_HRS ? Math.max(0, hrs - AUTO_LUNCH_DEDUCTION_HRS) : hrs;
+}
+
 async function loadWeekHours() {
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
@@ -28216,7 +28265,7 @@ async function loadWeekHours() {
 
             var openShift = !row.clock_out_at;
             var outAt = openShift ? _now : new Date(row.clock_out_at);
-            var hrs = Math.max(0, (outAt - inAt) / 3600000);
+            var hrs = _applyStandardLunchDeduction(Math.max(0, (outAt - inAt) / 3600000));
 
             // Per-team aggregate (keeps existing renderer + export shape).
             if (!weekHours[team]) {
@@ -28405,15 +28454,18 @@ async function loadWeekHours() {
         const totalMs = trueEnd - trueStart;
         const totalHrs = totalMs / 3600000;
 
-        // Sanity check: between 2 and 15 hours
+        // Sanity check: between 2 and 15 hours (on the RAW clocked span --
+        // lunch deduction below is a separate concern from "is this a
+        // plausible workday length").
         if (totalHrs >= 2 && totalHrs <= 15) {
+          const payableHrs = _applyStandardLunchDeduction(totalHrs);
           // v11.0.19: only overwrite days/starts/ends/total when this team
           // has no time_entries data; otherwise time_entries is authoritative.
           if (!_teHadData) {
-            weekHours[team].days[dayIdx] = totalHrs;
+            weekHours[team].days[dayIdx] = payableHrs;
             weekHours[team].starts[dayIdx] = trueStart;
             weekHours[team].ends[dayIdx] = trueEnd;
-            weekHours[team].total += totalHrs;
+            weekHours[team].total += payableHrs;
           }
 
           // Detect likely lunch break
@@ -29211,9 +29263,16 @@ function renderHoursTable(days, dayNames) {
     const data = weekHours[team];
     const color = _pentaTeamColor(team, '#6b7280');
 
-    // v11.0.21 strict per-day membership.
+    // PR #109 Item 1 — each employee shows ONCE, under their DEFAULT team
+    // (emp.defaultTeam, sourced from employees.team_id), not once per
+    // team they touched this week. The old `days.some(getEmployeeTeam
+    // (...) === team)` membership test was per-CARD, so an employee who
+    // worked B1 on Mon/Tue and B3 on Wed-Fri passed that test for BOTH
+    // teams and got a fully separate row rendered under each team's
+    // card. Still require they worked at least one day this week (any
+    // team) so employees with zero activity don't get an all-dash row.
     const teamEmployees = getUnifiedRoster().filter(e => {
-      return days.some(d => getEmployeeTeam(e.id, dateKey(d)) === team);
+      return e.defaultTeam === team && days.some(d => !!getEmployeeTeam(e.id, dateKey(d)));
     });
     if (!data && teamEmployees.length === 0) return;
 
@@ -29226,34 +29285,34 @@ function renderHoursTable(days, dayNames) {
       let empWeekTotal = 0;
       let empHasOpenShift = false;
 
-      // Build the 5-day breakdown for this employee.
+      // Build the 5-day breakdown for this employee. Each day resolves
+      // its OWN real team via getEmployeeTeam (may differ from this
+      // card's team on days the employee worked elsewhere) so the
+      // weekly total combines ALL teams worked, not just this card's.
       const dayCells = days.map(function(d, i) {
         const dk = dateKey(d);
-        const onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
-        const override = getEmpHours(emp.id, dk);
-        const teCell = empMap[dk] || null;
-        const teamH = (data && Array.isArray(data.days)) ? (data.days[i] || 0) : 0;
-        const teamSrc = data && data.source;
-        const empH = !onThisTeamToday ? 0
-          : (override ? override.hours
-              : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH)));
-        empWeekTotal += empH;
-        const isOpen = onThisTeamToday && !!(teCell && teCell.openShift) && !override;
-        if (isOpen) empHasOpenShift = true;
+        const dayTeam = getEmployeeTeam(emp.id, dk);
         const isToday = d.toDateString() === today.toDateString();
 
-        // Day pill content
-        let inner = '';
-        if (!onThisTeamToday) {
-          // Off this team that day. Try to show where they were.
-          const whereTeam = getEmployeeTeam(emp.id, dk);
-          const whereLabel = whereTeam || 'OFF';
-          inner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+        if (!dayTeam) {
+          // Genuinely off / unassigned that day (not just "off THIS team").
+          const inner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
             + '<div class="hrs-day-num">' + d.getDate() + '</div>'
             + '<div class="hrs-day-hrs is-dash">&#8212;</div>'
-            + '<div class="hrs-day-time" style="color:var(--muted)">' + _audEsc(whereLabel) + '</div>';
+            + '<div class="hrs-day-time" style="color:var(--muted)">OFF</div>';
           return '<div class="hrs-day is-off' + (isToday ? ' is-today' : '') + '">' + inner + '</div>';
         }
+
+        const dayData = weekHours[dayTeam];
+        const override = getEmpHours(emp.id, dk);
+        const teCell = empMap[dk] || null;
+        const teamH = (dayData && Array.isArray(dayData.days)) ? (dayData.days[i] || 0) : 0;
+        const teamSrc = dayData && dayData.source;
+        const empH = override ? override.hours
+          : (teCell ? teCell.hours : (teamSrc === 'time_entries' ? 0 : teamH));
+        empWeekTotal += empH;
+        const isOpen = !!(teCell && teCell.openShift) && !override;
+        if (isOpen) empHasOpenShift = true;
 
         let sStr = '', eStr = '';
         if (override) {
@@ -29263,23 +29322,28 @@ function renderHoursTable(days, dayNames) {
           if (teCell.start) sStr = _hrsFmt12(teCell.start);
           if (teCell.end) eStr = _hrsFmt12(teCell.end);
         } else if (teamSrc !== 'time_entries') {
-          if (data && data.starts && data.starts[i]) sStr = _hrsFmt12(data.starts[i]);
-          if (data && data.ends && data.ends[i]) eStr = _hrsFmt12(data.ends[i]);
+          if (dayData && dayData.starts && dayData.starts[i]) sStr = _hrsFmt12(dayData.starts[i]);
+          if (dayData && dayData.ends && dayData.ends[i]) eStr = _hrsFmt12(dayData.ends[i]);
         }
         const lunchMin = override ? (override.lunch || 0)
-          : (data && data.lunch && data.lunch[i] ? data.lunch[i].duration : 0);
+          : (dayData && dayData.lunch && dayData.lunch[i] ? dayData.lunch[i].duration : 0);
 
         const hrsHtml = empH > 0
           ? '<div class="hrs-day-hrs">' + _hrsFmtHrs(empH) + '<span style="font-size:9px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
           : '<div class="hrs-day-hrs is-dash">&#8212;</div>';
-        const timeHtml =
-            (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
+        // Cross-team day tag -- visible marker (not a duplicate row) when
+        // this specific day's real team differs from the card's team.
+        const teamTag = dayTeam !== team
+          ? '<div class="hrs-day-time" style="color:' + _pentaTeamColor(dayTeam, '#6b7280') + ';font-weight:700">' + _audEsc(dayTeam) + '</div>'
+          : '';
+        const timeHtml = teamTag
+          + (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
           + ((!isOpen && eStr) ? '<div class="hrs-day-time hrs-day-time-end">' + _audEsc(eStr) + '</div>' : '')
           + (lunchMin ? '<div class="hrs-day-time" style="color:#f59e0b">&#127828; ' + lunchMin + 'm</div>' : '')
           + (override ? '<div class="hrs-day-edited">EDITED</div>' : '')
           + (isOpen ? '<div class="hrs-day-live">live</div>' : '');
 
-        const onclick = 'showEmpDayDetail(\'' + emp.id + '\',\'' + _audEsc(emp.name).replace(/'/g,"\\'") + '\',\'' + team + '\',' + d.getTime() + ')';
+        const onclick = 'showEmpDayDetail(\'' + emp.id + '\',\'' + _audEsc(emp.name).replace(/'/g,"\\'") + '\',\'' + dayTeam + '\',' + d.getTime() + ')';
         return '<div class="hrs-day' + (isToday ? ' is-today' : '') + '" onclick="' + onclick + '">'
           + '<div class="hrs-day-label">' + dayNames[i] + '</div>'
           + '<div class="hrs-day-num">' + d.getDate() + '</div>'
