@@ -15008,32 +15008,87 @@ function renderHistoryJobsTab() {
   }
 
   // Single source of truth for job history (consolidated off the old
-  // client-card "Service History" section, PR #106 -> this tab). Reuses
-  // the SAME table + helpers (SVC_HISTORY_COLS / _svcHistoryRows /
-  // _svcHistorySortBy / _svcHistoryGrossProfit / _svcHistoryIsDuration
-  // Anomaly / _svcHistoryNotesSyncHtml) that the client card used, so
-  // gross margin, duration-anomaly flags, and notes aggregation are
-  // computed in exactly one place instead of two independently-
-  // diverging copies. The old card UI here (toggleJobHistRow /
-  // getJobHistoryMetrics / renderJobHistoryDetail) computed labor cost
-  // from `pentaEmployees`, a global that's never populated (always []),
-  // so laborCost was always 0 whenever GPS matched a stop -- the same
-  // "0 cost -> 100% margin" bug as PR #106, via a separate, dead-roster
-  // code path. That whole implementation is replaced here, not patched.
+  // client-card "Service History" section, PR #106 -> this tab). Vertical
+  // card-per-job layout (PR #108) instead of the wide horizontal-
+  // scrolling table PR #107 shipped -- Tom wanted the original card feel
+  // back, fits phone width with no horizontal scroll. Still built on the
+  // SAME shared helpers (_svcHistoryGrossProfit / _svcHistoryIsDuration
+  // Anomaly / _svcHistoryNotesSyncHtml / _svcHistoryLoadNotes /
+  // _svcHistoryToggleRow) as the table version and the old client-card
+  // Service History section, so gross margin, duration-anomaly flags,
+  // and notes aggregation stay computed in exactly one place.
   var clientId = _historyClient.id;
-  var headerCells = SVC_HISTORY_COLS.map(function(c) {
-    var active = _svcHistorySort.clientId === clientId && _svcHistorySort.col === c.key;
-    var arrow = active ? (_svcHistorySort.dir === 'asc' ? ' ▲' : ' ▼') : '';
-    return '<th onclick="_svcHistorySortBy(\'' + clientId + '\',\'' + c.key + '\')" style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:' + (active ? 'var(--accent)' : 'var(--muted)') + ';text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;user-select:none">' + c.label + arrow + '</th>';
-  }).join('');
+  var clientMedianMin = _svcHistoryMedianMinutes(
+    clientJobs.filter(function(j) { return j.done && j.actualMin != null && j.actualMin > 0; })
+              .map(function(j) { return j.actualMin; })
+  );
+  var sortedJobs = clientJobs.slice().sort(function(a, b) { return new Date(b.date + 'T00:00:00') - new Date(a.date + 'T00:00:00'); });
 
-  pane.innerHTML = ''
-    + _svcHistoryRatioHeader(clientJobs)
-    + '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">Click a row for notes, issues, incidents &amp; activity log</div>'
-    + '<div style="overflow-x:auto;background:var(--surface2);border-radius:12px">'
-    +   '<table style="width:100%;border-collapse:collapse;min-width:760px"><thead><tr>' + headerCells + '</tr></thead>'
-    +   '<tbody id="svc-history-tbody-' + clientId + '">' + _svcHistoryRows(clientId, clientJobs) + '</tbody></table>'
-    + '</div>';
+  pane.innerHTML = sortedJobs.map(function(j) { return _svcHistoryJobCardHtml(j, clientId, clientMedianMin); }).join('');
+}
+
+// Single job card for the Job History tab (PR #108). Closed view is one
+// wrapping flex row (date / team / actual min / time in -> out / margin
+// badge, with a red flag at the left when anomalous) that wraps onto
+// additional lines on narrow screens instead of scrolling horizontally.
+// Expanded view (tap to open, via the SAME _svcHistoryToggleRow /
+// _svcHistoryLoadNotes used by the old table) adds the quoted-vs-actual
+// comparison, the duration-anomaly callout + aggregated notes (both via
+// _svcHistoryNotesSyncHtml, unchanged from PR #106/#107), and the Send
+// Invoice button that PR #107 dropped when it deleted the old card UI --
+// restored here since Tom uses it.
+function _svcHistoryJobCardHtml(j, clientId, clientMedianMin) {
+  var isAnomaly = _svcHistoryIsDurationAnomaly(j, clientMedianMin);
+  var timeIn = _svcHistoryFmtClockOrSched(j.actual_start_at, j.scheduledStartTime);
+  var timeOut = _svcHistoryFmtClockOrSched(j.actual_end_at, j.scheduledEndTime);
+  var gp = _svcHistoryGrossProfit(j);
+  var marginBadge;
+  if (gp && gp.tooLow) {
+    var tooLowReason = gp.actualMin != null ? (gp.actualMin + ' min') : 'no time recorded';
+    marginBadge = '<span title="Actual time too low to calculate accurate margin (' + escapeHtml(tooLowReason) + ')" style="font-size:11px;font-weight:700;color:var(--muted);white-space:nowrap;cursor:help">🚩 N/A</span>';
+  } else if (gp) {
+    marginBadge = '<span style="font-size:11px;font-weight:700;color:' + gp.color + ';white-space:nowrap" title="' + escapeHtml(gp.basis + ' ($' + gp.hourlyRate.toFixed(2) + '/hr)') + '">' + gp.marginPct.toFixed(0) + '%</span>';
+  } else {
+    marginBadge = '<span style="font-size:11px;color:var(--muted)">—</span>';
+  }
+  var anomalyFlag = isAnomaly
+    ? '<span title="Actual time significantly below this client\'s average — possible incomplete clean" style="color:var(--red);flex-shrink:0;cursor:help">🚩</span>'
+    : '';
+  var dateStr = j.date ? new Date(j.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+  var rowId = clientId + '-' + j.id;
+
+  return '<div class="hist-job-card" style="background:#FFFFFF;border:1px solid rgba(42,40,64,0.08);border-radius:12px;margin-bottom:10px;overflow:hidden">'
+    + '<button onclick="_svcHistoryToggleRow(\'' + clientId + '\',\'' + j.id + '\')" style="width:100%;display:flex;align-items:center;gap:8px;padding:12px 14px;background:none;border:none;cursor:pointer;text-align:left;font-family:\'DM Sans\',sans-serif">'
+    +   anomalyFlag
+    +   '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:1;min-width:0;font-size:12px;color:var(--text)">'
+    +     '<span style="font-weight:700;font-size:13px;white-space:nowrap">' + dateStr + '</span>'
+    +     '<span style="color:var(--muted);white-space:nowrap">' + escapeHtml(j.team || '—') + '</span>'
+    +     '<span style="white-space:nowrap">' + (j.actualMin != null ? j.actualMin + ' min' : '—') + '</span>'
+    +     '<span style="white-space:nowrap;color:var(--muted)">' + timeIn + ' → ' + timeOut + '</span>'
+    +     marginBadge
+    +   '</div>'
+    +   '<svg class="hist-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-on-light-soft)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>'
+    + '</button>'
+    + '<div id="svc-hist-expand-' + rowId + '" style="display:none;padding:0 14px 14px;border-top:0.5px solid rgba(42,40,64,0.08)">'
+    +   (j.quotedMin != null ? '<div style="padding:10px 0 0;font-size:12px;color:var(--muted)">Quoted: <strong style="color:var(--text)">' + j.quotedMin + ' min</strong> · Actual: <strong style="color:var(--text)">' + (j.actualMin != null ? j.actualMin + ' min' : '—') + '</strong></div>' : '')
+    +   '<div style="padding-top:10px">' + _svcHistoryNotesSyncHtml(j, clientMedianMin) + '</div>'
+    +   '<div class="svc-hist-notes-async" style="font-size:11px;color:var(--muted);font-style:italic">Loading additional history…</div>'
+    +   '<button onclick="sendInvoiceFromHistory(\'' + clientId + '\')" style="width:100%;margin-top:12px;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:\'DM Sans\',sans-serif">✉ Send Invoice</button>'
+    + '</div>'
+  + '</div>';
+}
+
+function sendInvoiceFromHistory(clientId) {
+  closeClientHistory();
+  setTimeout(function(){
+    if (typeof openContactSheet === 'function') openContactSheet(clientId);
+    setTimeout(function(){
+      var chips = document.querySelectorAll('#contact-msg-types .msg-type');
+      chips.forEach(function(chip){
+        if (chip.textContent.toLowerCase().indexOf('balance') !== -1) chip.click();
+      });
+    }, 200);
+  }, 250);
 }
 
 const MESSAGES = {
@@ -32905,6 +32960,11 @@ function _svcHistoryToggleRow(clientId, jobId) {
   if (!row) return;
   var opening = row.style.display === 'none';
   row.style.display = opening ? '' : 'none';
+  // Card layout (PR #108) only -- the toggle button immediately precedes
+  // the expand div and carries a .hist-chevron icon; the old table row
+  // layout has no such sibling, so this is a harmless no-op there.
+  var chev = row.previousElementSibling ? row.previousElementSibling.querySelector('.hist-chevron') : null;
+  if (chev) chev.style.transform = opening ? 'rotate(180deg)' : 'rotate(0deg)';
   if (opening && !row.__loaded) {
     row.__loaded = true;
     var j = (typeof jobs !== 'undefined' ? jobs : []).find(function(x) { return x.id === jobId; });
