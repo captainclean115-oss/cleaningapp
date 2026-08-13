@@ -29214,7 +29214,12 @@ function formatHrs(hrs) {
 
 function fmt12(date) {
   if (!date) return '—';
-  return date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+  // PR #112 -- same missing-timeZone bug as _hrsFmt12 (fell back to
+  // browser-local instead of the business's TZ). Used by the raw GPS
+  // stops-list modals (showDayHistory, showEmpStops, openHoursRouteDetail)
+  // -- exactly the views someone would open to verify a suspicious Hours
+  // Report number, so it needs to agree with _hrsFmt12/business time too.
+  return date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:_pentaBusinessTimezone()});
 }
 
 // v11.0.22 — track which employees have their day breakdown expanded.
@@ -29245,7 +29250,15 @@ function _hrsFmt12(date) {
   }
   if (!(date instanceof Date)) date = new Date(date);
   if (isNaN(date.getTime())) return '';
-  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  // PR #112 -- was missing timeZone, so this fell back to the VIEWER's
+  // browser-local TZ instead of the business's. Same bug class already
+  // fixed once in this codebase for GPS live-tracking (the "GPS 3h-drift
+  // chase," PRs #41-47) but not applied here: a manager in Pacific time
+  // viewing an Eastern-time business would see every Hours Report start
+  // time 3 hours early -- e.g. a real 9:00 AM ET departure rendering as
+  // 6:00 AM, systematically wrong every single day (not a data/algorithm
+  // bug -- the underlying trueStart Date object was already correct).
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: _pentaBusinessTimezone() });
 }
 
 function renderHoursTable(days, dayNames) {
@@ -31814,6 +31827,29 @@ function renderGPS() {
         });
       });
 
+      // PR #112 — "Today's Activity" (single-day/24h mode only; the
+      // rolling 3d/7d/30d view intentionally groups multiple real
+      // calendar days under date headers, so it's excluded below) should
+      // never show a stop that belongs wholly to a PREVIOUS day. PR #111
+      // removed the old payroll-window trim here because it was dropping
+      // REAL same-day stops (team B3's 111 Star St) -- but with no
+      // trim at all, Geotab's includeOverlappedTrips:true now lets a
+      // stop that started the prior evening (and just happens to still
+      // be parked when the fetch window opens) leak in too, e.g. a
+      // multi-hour overnight depot stay showing as the first "activity"
+      // of the day. Fix is narrower than the old trim: exclude only a
+      // stop with NO evidence of touching the selected day at all --
+      // the synthetic first row (arrival unknown) is judged by its
+      // departure instead, since that's the only timestamp it has.
+      if (!_isRollingView) {
+        const _selDate = getGPSDate();
+        stopList = stopList.filter(function(s, si) {
+          if (si === 0 && s.inTime == null) return s.outTime && s.outTime.toDateString() === _selDate.toDateString();
+          if (s.inTime == null) return true; // still-open/current stop -- no data to judge, keep it
+          return s.inTime.toDateString() === _selDate.toDateString();
+        });
+      }
+
       // Use shared matchStopToClientGeo function
 
       const _tz = _pentaBusinessTimezone();
@@ -32853,7 +32889,9 @@ function _svcHistoryGrossProfit(j) {
 function _svcHistoryFmtClockOrSched(actualIso, schedTimeStr) {
   if (actualIso) {
     var d = new Date(actualIso);
-    if (!isNaN(d.getTime())) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    // PR #112 -- same missing-timeZone bug as _hrsFmt12/fmt12: this real
+    // GPS/manual clock timestamp needs the business's TZ, not the viewer's.
+    if (!isNaN(d.getTime())) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: _pentaBusinessTimezone() });
   }
   if (schedTimeStr) return _svcHistoryFmtTime(schedTimeStr.slice(0, 5));
   return '—';
@@ -41685,8 +41723,11 @@ function renderHoursData(data) {
     const dk = portalDays[i] ? portalDays[i].toISOString().split('T')[0] : '';
     const s = data.starts && data.starts[i] ? new Date(data.starts[i]) : null;
     const e = data.ends && data.ends[i] ? new Date(data.ends[i]) : null;
-    const sStr = s ? s.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
-    const eStr = e ? e.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+    // PR #112 -- same missing-timeZone bug as _hrsFmt12: an employee
+    // viewing their own portal in a different device TZ than the
+    // business's would see their own start/end times shifted.
+    const sStr = s ? s.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaBusinessTimezone()}) : '';
+    const eStr = e ? e.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:_pentaBusinessTimezone()}) : '';
     const netHrs = h || 0;
     totalHrs += netHrs;
     const hh = Math.floor(netHrs);
