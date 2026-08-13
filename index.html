@@ -32921,6 +32921,26 @@ function _svcHistoryTeamAvgPayRate(team, dateStr) {
   return rates.reduce(function(s, r) { return s + r; }, 0) / rates.length;
 }
 
+// Below this, actual_minutes is too low to trust for a labor-cost calc
+// at ANY hourly rate -- no real cleaning job finishes in single-digit
+// minutes. This is what actually catches the "0 minutes -> 100% margin"
+// bug: labor cost divides by actual_minutes, so a job with
+// actual_minutes = 0 (a completed job with a real price but a GPS
+// capture failure or no-show, NOT the same as actual_minutes being
+// genuinely NULL, which was already guarded) computed laborCost = 0,
+// profit = revenue, margin = 100% -- technically the math the formula
+// asked for, but not a real number. Confirmed live: dozens of real
+// completed jobs with actual_minutes = 0 and real (non-zero) prices,
+// all showing a green 100% margin before this fix.
+var SVC_HISTORY_MIN_MINUTES_FOR_MARGIN = 15;
+
+function _svcHistoryMedianMinutes(values) {
+  if (!values.length) return null;
+  var sorted = values.slice().sort(function(a, b) { return a - b; });
+  var mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 // Gross profit = revenue - labor cost.
 //  - Pre-cutover (or cutover unset): labor cost = actual_minutes/60 x
 //    $17/hr flat rate. No per-employee historical pay-rate data exists
@@ -32928,14 +32948,21 @@ function _svcHistoryTeamAvgPayRate(team, dateStr) {
 //    honest number here -- Tom's spec.
 //  - Post-cutover: labor cost = actual_minutes/60 x that team's average
 //    pay rate on that job's specific date.
-// Returns null (render as "—") rather than guessing when a required
-// input is missing: no price, no actual_minutes, or (post-cutover only)
-// no team/no resolvable pay rate for that date.
+// Returns null (render as "—") when there's no price to compute against
+// at all -- genuinely nothing to show.
+// Returns { tooLow: true, actualMin } -- NOT null, NOT a computed
+// result -- when actual_minutes is missing, zero, or below the 15-min
+// floor above. Distinct from the null case so the row renderer can
+// show an explicit "too low to trust" flag instead of a bare "—",
+// which would look identical to "no price on file".
 var SVC_HISTORY_HISTORICAL_RATE_PER_HR = 17;
 function _svcHistoryGrossProfit(j) {
-  if (j.actualMin == null || j.price === '' || j.price == null) return null;
+  if (j.price === '' || j.price == null) return null;
   var revenue = parseFloat(String(j.price).replace(/[^0-9.]/g, ''));
   if (!revenue || isNaN(revenue)) return null;
+  if (j.actualMin == null || j.actualMin < SVC_HISTORY_MIN_MINUTES_FOR_MARGIN) {
+    return { tooLow: true, actualMin: j.actualMin };
+  }
   var hourlyRate, basis;
   if (_svcHistoryIsPostCutover(j)) {
     hourlyRate = _svcHistoryTeamAvgPayRate(j.team, j.date);
@@ -32965,9 +32992,20 @@ function _svcHistoryFmtClockOrSched(actualIso, schedTimeStr) {
 }
 
 // Synchronous notes (already on the in-memory job object -- no fetch
-// needed): manager notes and the cancellation reason.
-function _svcHistoryNotesSyncHtml(j) {
+// needed): the anomaly callout (when applicable), manager notes, and
+// the cancellation reason. clientMedianMin is that client's median
+// actual_minutes across their completed jobs, precomputed once per
+// _svcHistoryRows() call -- passed in rather than recomputed per row.
+function _svcHistoryNotesSyncHtml(j, clientMedianMin) {
   var parts = [];
+  if (_svcHistoryIsDurationAnomaly(j, clientMedianMin)) {
+    var actualStr = j.actualMin != null ? (j.actualMin + ' min') : 'no time recorded';
+    parts.push('<div style="margin-bottom:8px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:8px 10px">'
+      + '<div style="font-size:10px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">🚩 Duration Anomaly</div>'
+      + '<div style="font-size:12px;color:var(--text)">This clean ran ' + escapeHtml(actualStr) + ' vs this client\'s average of ' + Math.round(clientMedianMin) + ' min.</div>'
+      + '<div style="font-size:12px;color:var(--red);font-weight:600;margin-top:2px">Investigate — was this actually completed?</div>'
+      + '</div>');
+  }
   if ((j.notes || '').trim()) {
     parts.push('<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Manager Notes</div><div style="font-size:12px;color:var(--text);white-space:pre-wrap">' + escapeHtml(j.notes) + '</div></div>');
   }
@@ -32976,6 +33014,15 @@ function _svcHistoryNotesSyncHtml(j) {
     parts.push('<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">Cancellation Reason</div><div style="font-size:12px;color:var(--text)">' + escapeHtml(reasonText) + '</div></div>');
   }
   return parts.join('');
+}
+
+// A completed job (never a cancelled one -- 0 actual minutes on a
+// cancelled job is correct, not anomalous) whose actual_minutes is
+// less than half this client's own median across their completed jobs.
+// Tom's spec threshold. Requires at least one other completed job with
+// real minutes to compare against (clientMedianMin is null otherwise).
+function _svcHistoryIsDurationAnomaly(j, clientMedianMin) {
+  return !!(j.done && clientMedianMin != null && (j.actualMin == null || j.actualMin < clientMedianMin * 0.5));
 }
 
 // Async notes: job_issues, incidents, and this job's own audit_log
@@ -33076,7 +33123,7 @@ function _svcHistorySortValue(j, col) {
   if (col === 'timein') return j.actual_start_at || j.scheduledStartTime || '';
   if (col === 'timeout') return j.actual_end_at || j.scheduledEndTime || '';
   if (col === 'price') return j.price !== '' && j.price != null ? Number(j.price) : -1;
-  if (col === 'profit') { var gp = _svcHistoryGrossProfit(j); return gp ? gp.profit : -Infinity; }
+  if (col === 'profit') { var gp = _svcHistoryGrossProfit(j); return (gp && !gp.tooLow) ? gp.profit : -Infinity; }
   if (col === 'status') return j.cancelled ? 2 : (j.done ? 0 : 1);
   return '';
 }
@@ -33095,6 +33142,16 @@ function _svcHistoryRatioHeader(jobs) {
 }
 
 function _svcHistoryRows(clientId, jobs) {
+  // This client's own median actual_minutes across their completed jobs
+  // (cancelled jobs excluded -- 0 minutes there is correct, not
+  // anomalous). Computed once per render, not per row. Used both for
+  // the per-row duration-anomaly flag below and passed through to the
+  // expanded view's anomaly callout.
+  var clientMedianMin = _svcHistoryMedianMinutes(
+    jobs.filter(function(j) { return j.done && j.actualMin != null && j.actualMin > 0; })
+        .map(function(j) { return j.actualMin; })
+  );
+
   var sorted = jobs.slice().sort(function(a, b) {
     var av = _svcHistorySortValue(a, _svcHistorySort.col), bv = _svcHistorySortValue(b, _svcHistorySort.col);
     var cmp = av < bv ? -1 : (av > bv ? 1 : 0);
@@ -33105,12 +33162,22 @@ function _svcHistoryRows(clientId, jobs) {
     var timeIn = _svcHistoryFmtClockOrSched(j.actual_start_at, j.scheduledStartTime);
     var timeOut = _svcHistoryFmtClockOrSched(j.actual_end_at, j.scheduledEndTime);
     var gp = _svcHistoryGrossProfit(j);
-    var profitCell = gp
-      ? '<span style="color:' + gp.color + ';font-weight:700" title="' + escapeHtml(gp.basis + ' ($' + gp.hourlyRate.toFixed(2) + '/hr)') + '">$' + gp.profit.toFixed(2) + ' (' + gp.marginPct.toFixed(0) + '%)</span>'
-      : '—';
+    var profitCell;
+    if (gp && gp.tooLow) {
+      var tooLowReason = gp.actualMin != null ? (gp.actualMin + ' min') : 'no time recorded';
+      profitCell = '<span title="Actual time too low to calculate accurate margin (' + escapeHtml(tooLowReason) + ')" style="color:var(--muted);cursor:help">🚩 N/A</span>';
+    } else if (gp) {
+      profitCell = '<span style="color:' + gp.color + ';font-weight:700" title="' + escapeHtml(gp.basis + ' ($' + gp.hourlyRate.toFixed(2) + '/hr)') + '">$' + gp.profit.toFixed(2) + ' (' + gp.marginPct.toFixed(0) + '%)</span>';
+    } else {
+      profitCell = '—';
+    }
+    var isAnomaly = _svcHistoryIsDurationAnomaly(j, clientMedianMin);
+    var anomalyIcon = isAnomaly
+      ? '<span title="Actual time significantly below this client\'s average — possible incomplete clean" style="color:var(--red);cursor:help;margin-right:4px">🚩</span>'
+      : '';
     var rowId = clientId + '-' + j.id;
     return '<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_svcHistoryToggleRow(\'' + clientId + '\',\'' + j.id + '\')">'
-      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + _svcHistoryFmtDate(j) + '</td>'
+      + '<td style="padding:8px 10px;font-size:12px;white-space:nowrap">' + anomalyIcon + _svcHistoryFmtDate(j) + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + escapeHtml(j.team || '—') + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + (j.quotedMin != null ? j.quotedMin + 'm' : '—') + '</td>'
       + '<td style="padding:8px 10px;font-size:12px">' + (j.actualMin != null ? j.actualMin + 'm' : '—') + '</td>'
@@ -33122,7 +33189,7 @@ function _svcHistoryRows(clientId, jobs) {
       + '</tr>'
       + '<tr id="svc-hist-expand-' + rowId + '" style="display:none;background:var(--surface)">'
       +   '<td colspan="9" style="padding:12px 16px">'
-      +     _svcHistoryNotesSyncHtml(j)
+      +     _svcHistoryNotesSyncHtml(j, clientMedianMin)
       +     '<div class="svc-hist-notes-async" style="font-size:11px;color:var(--muted);font-style:italic">Loading additional history…</div>'
       +   '</td>'
       + '</tr>';
