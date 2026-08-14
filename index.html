@@ -28300,39 +28300,50 @@ function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinM
   return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
 }
 
-// Fallback ONLY for when GPS couldn't confirm a real lunch stop at all
-// (time_entries clock spans never even attempt detection; a Geotab day
-// with no matching lunch candidate falls back here too). Standard
-// rule: 30 min off any shift over 6 hours. Whenever a REAL lunch value
-// exists -- GPS-detected or admin-edited -- _reconcileHoursWithLunch
-// below uses THAT exact value instead; this flat rule never overrides
-// a real one (PR #113). Applies ONLY to the automatic computation --
-// the manual override modal (calcHoursFromTimes / showEmpDayDetail)
-// already has its own explicit, admin-typed lunch-minutes field.
-var AUTO_LUNCH_DEDUCTION_HRS = 0.5;
-var AUTO_LUNCH_THRESHOLD_HRS = 6;
-function _applyStandardLunchDeduction(hrs) {
-  return hrs > AUTO_LUNCH_THRESHOLD_HRS ? Math.max(0, hrs - AUTO_LUNCH_DEDUCTION_HRS) : hrs;
-}
+// PR #116 — REMOVED. This used to apply a flat 30-min-over-6h
+// deduction whenever no real lunch was detected/recorded (PR #109's
+// "standard rule" fallback). Tom's definitive rule: lunch is deducted
+// ONLY when GPS actually detects a lunch stop -- no default, no
+// minimum, no flat rule of any kind. No GPS lunch detected = 0 lunch
+// deducted, period. Confirmed live: an employee's real 5-day week
+// (raw spans 4.43h/3.43h/6.22h/6.02h/10.00h = 30.10h) was showing
+// 29.1h -- 60 min silently deducted with no corresponding GPS lunch
+// stop anywhere to explain it, purely from this flat rule firing on
+// the 6h+ days. _reconcileHoursWithLunch (below), the time_entries
+// automatic path, and the Geotab automatic path all called this; all
+// three now use the raw span unmodified when no real lunch entry
+// exists, instead of calling a fallback function at all -- there is
+// no automatic lunch rule left anywhere in this codebase. The manual
+// override modal (calcHoursFromTimes / showEmpDayDetail) was never
+// affected by this function and is unchanged -- it already only
+// subtracts a lunch value an admin explicitly types in.
 
 // PR #113 — single source of truth: whatever lunch duration ends up
 // DISPLAYED (GPS-detected during loadWeekHours, or a manual edit via
 // addLunch/editLunch, same-session or from a prior session's saved
 // lunch_edits) is EXACTLY what gets subtracted from the raw
-// start-to-end span. Previously the initial calc always applied the
-// flat 30-min rule regardless of what was actually detected -- Tom's
+// start-to-end span. Previously the initial calc always applied a flat
+// 30-min rule regardless of what was actually detected -- Tom's
 // example: a real 37-min lunch showed correctly as "Lunch: 37m" but
 // the hours total still subtracted a flat 30, showing "6.7h" instead
 // of the correct 6.5833h (displays as "6.6h" -- 1 decimal place is a
 // DISPLAY-only round; this function and its caller keep full precision).
 // Call this AFTER lunch detection AND loadLunchEdits() have both run,
 // so a saved manual edit from a prior session is reconciled too, not
-// just same-session GPS detection. Only touches days with a computed
-// Geotab starts/ends entry -- time_entries-authoritative team-days
-// never get one (see loadWeekHours's `!_teHadData` gate), so they're
-// correctly left alone; time_entries has no lunch-detection concept,
-// matching "the 30-min rule stays for cases where GPS doesn't detect a
-// lunch stop."
+// just same-session GPS detection.
+//
+// PR #116 — REMOVED the flat-rule fallback entirely (was: apply
+// _applyStandardLunchDeduction when no real lunch entry exists). Tom's
+// definitive rule: NO automatic lunch deduction of any kind without a
+// real, GPS-detected (or admin-edited) lunch value -- no minimum, no
+// default, no "X min off shifts over Y hours." No lunch entry now means
+// exactly zero deduction: newHrs = totalHrs, unmodified. Correcting a
+// stale claim in this comment's prior revision: this function does NOT
+// skip time_entries-authoritative team-days -- the time_entries primary
+// path (see loadWeekHours) sets starts[dayIdx]/ends[dayIdx] too (lines
+// setting weekHours[team].starts/.ends from inAt/outAt), so those days
+// were ALSO being hit by the flat rule here, on top of time_entries'
+// own (now also removed) automatic deduction -- see that block's fix.
 function _reconcileHoursWithLunch() {
   Object.keys(weekHours).forEach(function(team) {
     var wh = weekHours[team];
@@ -28344,7 +28355,7 @@ function _reconcileHoursWithLunch() {
       var lunchEntry = wh.lunch && wh.lunch[dayIdx];
       var newHrs = (lunchEntry && lunchEntry.duration != null)
         ? Math.max(0, totalHrs - lunchEntry.duration / 60)
-        : _applyStandardLunchDeduction(totalHrs);
+        : totalHrs;
       var oldHrs = wh.days[dayIdx] || 0;
       wh.days[dayIdx] = newHrs;
       wh.total = (wh.total || 0) - oldHrs + newHrs;
@@ -28635,7 +28646,12 @@ async function loadWeekHours() {
 
             var openShift = !row.clock_out_at;
             var outAt = openShift ? _now : new Date(row.clock_out_at);
-            var hrs = _applyStandardLunchDeduction(Math.max(0, (outAt - inAt) / 3600000));
+            // PR #116 — was _applyStandardLunchDeduction(...): time_entries
+            // clock spans have zero lunch-detection capability (no GPS stop
+            // analysis happens for this source at all), so under Tom's rule
+            // ("no GPS lunch detected = 0 lunch deducted") this can never
+            // have a real lunch to subtract -- raw span, unmodified.
+            var hrs = Math.max(0, (outAt - inAt) / 3600000);
 
             // Per-team aggregate (keeps existing renderer + export shape).
             if (!weekHours[team]) {
@@ -28828,14 +28844,20 @@ async function loadWeekHours() {
         // lunch deduction below is a separate concern from "is this a
         // plausible workday length").
         if (totalHrs >= 2 && totalHrs <= 15) {
-          const payableHrs = _applyStandardLunchDeduction(totalHrs);
+          // PR #116 — was payableHrs = _applyStandardLunchDeduction(totalHrs).
+          // This value is only ever a placeholder anyway -- _reconcileHoursWithLunch
+          // (called once at the end of loadWeekHours, after _detectDayLunch
+          // below has run for every team/day) always overwrites days[dayIdx]
+          // with the real, final lunch-aware value. Storing the flat-rule
+          // result here was redundant even before Tom's rule change; now
+          // it's also wrong, so store the raw span unmodified.
           // v11.0.19: only overwrite days/starts/ends/total when this team
           // has no time_entries data; otherwise time_entries is authoritative.
           if (!_teHadData) {
-            weekHours[team].days[dayIdx] = payableHrs;
+            weekHours[team].days[dayIdx] = totalHrs;
             weekHours[team].starts[dayIdx] = trueStart;
             weekHours[team].ends[dayIdx] = trueEnd;
-            weekHours[team].total += payableHrs;
+            weekHours[team].total += totalHrs;
           }
 
           // PR #114 — see _detectDayLunch's comment: this now uses the
