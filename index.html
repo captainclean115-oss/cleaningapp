@@ -8754,6 +8754,112 @@ window.PentaAssignments = (function() {
 
 
 // =====================================================================
+// PentaLunchFlags — PR #115. Per-stop manager overrides for GPS
+// lunch-break auto-detection (_detectDayLunch, PR #114). Simple facade,
+// same cache/_byKey/listSync/onChange shape as PentaAssignments above,
+// but scoped by team+date+stop_key (a plain text triple, no employee-id
+// resolution needed -- see migration 101's comment for why this is
+// team-scoped, not employee-scoped: GPS stops belong to a team's
+// vehicle, not an individual crew member). No legacy predecessor to
+// bridge/mirror, unlike PentaAssignments -- this is the single source
+// of truth from day one.
+// =====================================================================
+window.PentaLunchFlags = (function() {
+  var _cache = [];
+  var _byKey = {};
+  var _ready = false;
+  var _hydrating = null;
+  var _listeners = [];
+
+  function _key(team, dateStr, stopKey) { return team + '|' + dateStr + '|' + stopKey; }
+
+  function _rebuildIndex() {
+    _byKey = {};
+    _cache.forEach(function(r) { _byKey[_key(r.team, r.date, r.stop_key)] = r; });
+  }
+
+  function _notify() { _listeners.forEach(function(fn) { try { fn(); } catch (e) { console.warn('[PentaLunchFlags] listener threw', e); } }); }
+
+  function _businessId() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _client() {
+    return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  }
+
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    _hydrating = (async function() {
+      var sb = _client(), bid = _businessId();
+      if (!sb || !bid) { _ready = true; return false; }
+      try {
+        var res = await sb.from('lunch_flag_overrides')
+          .select('id, team, date, stop_key, override_type, stop_address, stop_duration_min, created_at')
+          .eq('business_id', bid);
+        if (res.error) { console.warn('[PentaLunchFlags] hydrate query error', res.error); }
+        else if (Array.isArray(res.data)) { _cache = res.data; _rebuildIndex(); }
+      } catch (e) { console.warn('[PentaLunchFlags] hydrate threw', e); }
+      _ready = true;
+      _notify();
+      return true;
+    })();
+    return _hydrating;
+  }
+
+  function isReady() { return _ready; }
+  function ready() { return _hydrate(); }
+  function onChange(fn) { _listeners.push(fn); }
+
+  function getOverride(team, dateStr, stopKey) {
+    return _byKey[_key(team, dateStr, stopKey)] || null;
+  }
+  // All overrides for a team+day -- used by _detectDayLunch's 'include'
+  // pass, which needs to find overrides regardless of whether the stop
+  // naturally qualified (an 'exclude' override is looked up per-stop via
+  // getOverride instead, since it only ever applies to a natural candidate).
+  function listForTeamDate(team, dateStr) {
+    return _cache.filter(function(r) { return r.team === team && r.date === dateStr; });
+  }
+
+  async function setOverride(team, dateStr, stopKey, overrideType, extra) {
+    var sb = _client(), bid = _businessId();
+    if (!sb || !bid) throw new Error('Not connected');
+    var row = Object.assign({
+      business_id: bid, team: team, date: dateStr, stop_key: stopKey,
+      override_type: overrideType, updated_at: new Date().toISOString()
+    }, extra || {});
+    var res = await sb.from('lunch_flag_overrides')
+      .upsert(row, { onConflict: 'business_id,team,date,stop_key' })
+      .select().single();
+    if (res.error) throw res.error;
+    _cache = _cache.filter(function(r) { return !(r.team === team && r.date === dateStr && r.stop_key === stopKey); });
+    _cache.push(res.data);
+    _rebuildIndex();
+    _notify();
+    return res.data;
+  }
+
+  async function clearOverride(team, dateStr, stopKey) {
+    var sb = _client(), bid = _businessId();
+    if (!sb || !bid) throw new Error('Not connected');
+    var res = await sb.from('lunch_flag_overrides').delete()
+      .eq('business_id', bid).eq('team', team).eq('date', dateStr).eq('stop_key', stopKey);
+    if (res.error) throw res.error;
+    _cache = _cache.filter(function(r) { return !(r.team === team && r.date === dateStr && r.stop_key === stopKey); });
+    _rebuildIndex();
+    _notify();
+  }
+
+  _hydrate();
+
+  return {
+    isReady: isReady, ready: ready, onChange: onChange,
+    getOverride: getOverride, listForTeamDate: listForTeamDate,
+    setOverride: setOverride, clearOverride: clearOverride
+  };
+})();
+
+// =====================================================================
 // PentaRewards — Sprint 11.5: Supabase-backed rewards system v1.
 // Five tables: reward_events_config (earn catalog), reward_catalog
 // (redemption catalog), reward_ledger (immutable point history),
@@ -28246,6 +28352,128 @@ function _reconcileHoursWithLunch() {
   });
 }
 
+// PR #115 — extracted from loadWeekHours (was inline there only) so
+// _adjustWeekHoursLunch (the "not lunch" button's immediate, no-refetch
+// in-memory update) can write the SAME cache shape the employee portal
+// reads, instead of a second copy that would inevitably diverge from
+// this one (the exact bug class PR #114 just fixed for lunch-detection
+// itself). Callers must have already run _reconcileHoursWithLunch (or
+// otherwise updated weekHours) before calling this -- it only persists
+// whatever's currently in memory, it doesn't recompute anything itself.
+function _writeWeekHoursCache(days) {
+  try {
+    var cacheData = {};
+    Object.keys(weekHours).forEach(function(team) {
+      var d = weekHours[team];
+      var entry = {
+        days: d.days,
+        starts: d.starts ? d.starts.map(function(s){ return s ? s.toISOString() : null; }) : [],
+        ends: d.ends ? d.ends.map(function(s){ return s ? s.toISOString() : null; }) : [],
+        lunch: d.lunch,
+        total: d.total
+      };
+      cacheData[team] = entry;
+      // Sprint 6.10: also alias-write under the team's current PentaTeams name
+      // (covers renames — legacy 'B1' jobs keep their cache, but if PentaTeams
+      // has a team named 'B1', we'd also key under its current name).
+      if (window.PentaTeams && typeof window.PentaTeams.getByName === 'function') {
+        var pt = window.PentaTeams.getByName(team);
+        if (pt && pt.name && pt.name !== team) {
+          cacheData[pt.name] = entry;
+        }
+      }
+    });
+    localStorage.setItem('weekHours_cache', JSON.stringify(cacheData));
+
+    // Archive this week's data with week key for history
+    var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[4]);
+    localStorage.setItem(weekKey, JSON.stringify(cacheData));
+
+    // Save per-employee overrides into a format the portal can read
+    var empCache = {};
+    EMPLOYEE_ROSTER.forEach(function(emp) {
+      days.forEach(function(d, i) {
+        var dk = dateKey(d);
+        var override = getEmpHours(emp.id, dk);
+        if (override) {
+          if (!empCache[emp.id]) empCache[emp.id] = {};
+          empCache[emp.id][dk] = override;
+        }
+      });
+    });
+    localStorage.setItem('empHours_cache', JSON.stringify(empCache));
+
+    // Track archived weeks
+    var archived = JSON.parse(localStorage.getItem('weekHours_archived') || '[]');
+    if (archived.indexOf(weekKey) === -1) {
+      archived.push(weekKey);
+      // Keep last 26 weeks (6 months)
+      if (archived.length > 26) archived = archived.slice(-26);
+      localStorage.setItem('weekHours_archived', JSON.stringify(archived));
+    }
+  } catch (e2) { console.warn('[hours] _writeWeekHoursCache failed', e2); }
+}
+
+// PR #115 — applies a lunch-override toggle to the ALREADY-LOADED
+// weekHours in memory, without a live Geotab refetch (loadWeekHours is
+// expensive -- a real API round-trip -- and the underlying trip data
+// hasn't changed, only which stop counts as lunch). Only touches the
+// Hours Report if the toggled date falls within the week currently
+// loaded there (same "is this even the visible week" guard as PR #109's
+// _hrsMaybeRefreshForDate) -- otherwise there's nothing in memory to
+// patch, and the persisted override (already saved server-side by the
+// caller) is what guarantees correctness the next time that week's
+// loadWeekHours() actually runs, from any device/session.
+function _adjustWeekHoursLunch(team, dateStr, deltaMinutes) {
+  try {
+    if (typeof weekHours === 'undefined' || !weekHours[team]) return;
+    var days = getWeekDates(hoursWeekOffset);
+    var dayIdx = days.findIndex(function(d) { return dateKey(d) === dateStr; });
+    if (dayIdx < 0) return;
+    var wh = weekHours[team];
+    wh.lunch = wh.lunch || [];
+    var existing = wh.lunch[dayIdx];
+    var newDuration = Math.max(0, (existing ? existing.duration : 0) + deltaMinutes);
+    wh.lunch[dayIdx] = newDuration > 0 ? Object.assign({}, existing, { duration: newDuration }) : null;
+    _reconcileHoursWithLunch();
+    _writeWeekHoursCache(days);
+    if (document.getElementById('hours-table')) {
+      renderHoursTable(days, ['Mon','Tue','Wed','Thu','Fri']);
+    }
+  } catch (e) { console.warn('[lunch override] in-memory hours adjust failed', e); }
+}
+
+// PR #115 — the "✕ Not lunch" / "🍔 Mark as lunch" button handler on
+// Today's Activity's lunch-flagged rows. action is 'exclude' (tap "Not
+// lunch" on a flagged stop) or 'reverse' (tap "Mark as lunch" to undo a
+// previous exclude -- just deletes the override, reverting to whatever
+// natural detection already said, which is "lunch" or it wouldn't have
+// had an exclude override to reverse in the first place).
+async function _toggleLunchOverride(team, dateStr, stopKey, action, addr, durationMin) {
+  try {
+    if (action === 'exclude') {
+      await PentaLunchFlags.setOverride(team, dateStr, stopKey, 'exclude', {
+        stop_address: addr, stop_duration_min: durationMin
+      });
+      _adjustWeekHoursLunch(team, dateStr, -durationMin);
+      _auditSupplement('manual_override', 'system', null, {
+        description: 'Tom marked "' + addr + '" not-lunch on ' + dateStr,
+        team: team, date: dateStr, stop_address: addr, duration_min: durationMin, lunch_override: 'exclude'
+      });
+    } else {
+      await PentaLunchFlags.clearOverride(team, dateStr, stopKey);
+      _adjustWeekHoursLunch(team, dateStr, durationMin);
+      _auditSupplement('manual_override', 'system', null, {
+        description: 'Tom marked "' + addr + '" as lunch again on ' + dateStr,
+        team: team, date: dateStr, stop_address: addr, duration_min: durationMin, lunch_override: 'reversed'
+      });
+    }
+    if (typeof renderGPS === 'function') renderGPS();
+  } catch (e) {
+    alert('Could not update lunch flag: ' + (e.message || e));
+  }
+}
+
 // PR #114 — previously loadWeekHours had its OWN, separately-diverged
 // lunch-detection heuristic from the one that flags "🍔❓ Possible lunch
 // / break" rows in Today's Activity (_renderGPSStopRow's maybeLunch):
@@ -28266,8 +28494,18 @@ function _reconcileHoursWithLunch() {
 // Returns null when no candidate qualifies that day; otherwise
 // {time, duration, lat, lng} with duration = SUM of every qualifying
 // stop's minutes (not just the first).
-function _detectDayLunch(dayTrips, team, todayTeamJobs) {
-  var lunchCandidates = dayTrips.filter(function(t) {
+//
+// PR #115 — dateStr param added so this can consult PentaLunchFlags
+// (manager per-stop overrides, migration 101), keyed by team+date+
+// stop_key (the stop's own ISO arrival timestamp -- same identity
+// _renderGPSStopRow's "not lunch" button computes, so a toggle there
+// and a lookup here always agree on which stop they mean). An
+// 'exclude' override removes a naturally-qualifying stop from the
+// total; an 'include' override (no UI yet -- Tom's spec explicitly
+// says to leave this door open, not build it now) would add in a stop
+// that didn't naturally qualify.
+function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr) {
+  var naturalCandidates = dayTrips.filter(function(t) {
     if (!t.stop) return false;
     var stopTime = new Date(t.stop);
     var nextTrip = dayTrips.find(function(t2) { return new Date(t2.start) > stopTime; });
@@ -28284,6 +28522,27 @@ function _detectDayLunch(dayTrips, team, todayTeamJobs) {
     if (_match) return false; // ANY client match (scheduled or not) disqualifies -- same as maybeLunch's !_match
     return true;
   });
+
+  var naturalKeys = {};
+  var lunchCandidates = naturalCandidates.filter(function(t) {
+    var key = new Date(t.stop).toISOString();
+    naturalKeys[key] = true;
+    if (!window.PentaLunchFlags || !dateStr) return true;
+    var ov = window.PentaLunchFlags.getOverride(team, dateStr, key);
+    return !(ov && ov.override_type === 'exclude');
+  });
+
+  // 'include' pass -- forces in a real trip whose stop wasn't a natural
+  // candidate but has a saved 'include' override. No UI writes this
+  // override type yet; this only matters once one does.
+  if (window.PentaLunchFlags && dateStr) {
+    window.PentaLunchFlags.listForTeamDate(team, dateStr).forEach(function(ov) {
+      if (ov.override_type !== 'include' || naturalKeys[ov.stop_key]) return;
+      var t = dayTrips.find(function(tt) { return tt.stop && new Date(tt.stop).toISOString() === ov.stop_key; });
+      if (t) lunchCandidates.push(t);
+    });
+  }
+
   if (!lunchCandidates.length) return null;
   var totalLunchMin = 0;
   var firstLunchTime = null, firstLunchLat = null, firstLunchLng = null;
@@ -28302,6 +28561,14 @@ function _detectDayLunch(dayTrips, team, todayTeamJobs) {
 }
 
 async function loadWeekHours() {
+  // PR #115 — ensure manager lunch overrides are hydrated before
+  // _detectDayLunch runs; otherwise a page freshly loaded straight to
+  // the Live tab could momentarily compute lunch as if no overrides
+  // existed (harmless -- self-corrects on the next call -- but avoid it).
+  if (window.PentaLunchFlags && typeof window.PentaLunchFlags.ready === 'function') {
+    try { await window.PentaLunchFlags.ready(); } catch (e) { console.warn('[hours] PentaLunchFlags ready failed', e); }
+  }
+
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
   const fri = days[4];
@@ -28581,7 +28848,7 @@ async function loadWeekHours() {
           // real lunch candidate, a divergence in the OPPOSITE direction.
           const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team && !jj.cancelled; });
 
-          const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs);
+          const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs, todayKey);
           if (_dayLunch) {
             weekHours[team].lunch = weekHours[team].lunch || [];
             weekHours[team].lunch[dayIdx] = _dayLunch;
@@ -28592,59 +28859,7 @@ async function loadWeekHours() {
 
     loadLunchEdits();
     _reconcileHoursWithLunch();
-
-    // Save weekHours to localStorage so employee portal can access it
-    try {
-      var cacheData = {};
-      Object.keys(weekHours).forEach(function(team) {
-        var d = weekHours[team];
-        var entry = {
-          days: d.days,
-          starts: d.starts ? d.starts.map(function(s){ return s ? s.toISOString() : null; }) : [],
-          ends: d.ends ? d.ends.map(function(s){ return s ? s.toISOString() : null; }) : [],
-          lunch: d.lunch,
-          total: d.total
-        };
-        cacheData[team] = entry;
-        // Sprint 6.10: also alias-write under the team's current PentaTeams name
-        // (covers renames — legacy 'B1' jobs keep their cache, but if PentaTeams
-        // has a team named 'B1', we'd also key under its current name).
-        if (window.PentaTeams && typeof window.PentaTeams.getByName === 'function') {
-          var pt = window.PentaTeams.getByName(team);
-          if (pt && pt.name && pt.name !== team) {
-            cacheData[pt.name] = entry;
-          }
-        }
-      });
-      localStorage.setItem('weekHours_cache', JSON.stringify(cacheData));
-
-      // Archive this week's data with week key for history
-      var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[4]);
-      localStorage.setItem(weekKey, JSON.stringify(cacheData));
-
-      // Save per-employee overrides into a format the portal can read
-      var empCache = {};
-      EMPLOYEE_ROSTER.forEach(function(emp) {
-        days.forEach(function(d, i) {
-          var dk = dateKey(d);
-          var override = getEmpHours(emp.id, dk);
-          if (override) {
-            if (!empCache[emp.id]) empCache[emp.id] = {};
-            empCache[emp.id][dk] = override;
-          }
-        });
-      });
-      localStorage.setItem('empHours_cache', JSON.stringify(empCache));
-
-      // Track archived weeks
-      var archived = JSON.parse(localStorage.getItem('weekHours_archived') || '[]');
-      if (archived.indexOf(weekKey) === -1) {
-        archived.push(weekKey);
-        // Keep last 26 weeks (6 months)
-        if (archived.length > 26) archived = archived.slice(-26);
-        localStorage.setItem('weekHours_archived', JSON.stringify(archived));
-      }
-    } catch(e2) {}
+    _writeWeekHoursCache(days);
 
     renderHoursTable(days, DAYS_SHORT);
 
@@ -31451,6 +31666,11 @@ async function gpsConnect() {
 }
 
 async function loadGPSData() {
+  // PR #115 — ensure manager lunch overrides are hydrated before
+  // Today's Activity renders its lunch flags off them.
+  if (window.PentaLunchFlags && typeof window.PentaLunchFlags.ready === 'function') {
+    try { await window.PentaLunchFlags.ready(); } catch (e) { console.warn('[gps] PentaLunchFlags ready failed', e); }
+  }
   // Monotonic guard: the background address-refinement pass (below)
   // checks this before applying its results, so a slow geocode from a
   // load that's since been superseded (user clicked Refresh again,
@@ -31968,21 +32188,39 @@ function renderGPS() {
         const _match = s.isDepot ? null : matchStopToClientGeo(s.lat, s.lng, s.addr, teamJobs, v.team);
         const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
         const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
-        const maybeLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
+        // PR #115 — "naturally" is what the heuristic alone would flag;
+        // "maybeLunch" (used for the actual render below) also respects
+        // a manager's per-stop override, same identity (team+date+the
+        // stop's own ISO arrival timestamp) that _detectDayLunch checks,
+        // so the Activity flag and the weekly-card total can't disagree
+        // about which stops are excluded.
+        const naturallyLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
+        const _stopKey = s.inTime ? s.inTime.toISOString() : null;
+        const _stopDateStr = s.inTime ? dateKey(s.inTime) : null;
+        const _lunchOv = (naturallyLunch && _stopKey && _stopDateStr && window.PentaLunchFlags)
+          ? window.PentaLunchFlags.getOverride(v.team, _stopDateStr, _stopKey) : null;
+        const _isExcluded = !!(_lunchOv && _lunchOv.override_type === 'exclude');
+        const maybeLunch = naturallyLunch && !_isExcluded;
         // PR #111 — a stop with NO client match at all (not just "real
         // client, no job today" -- genuinely no record at this address)
         // used to render as a bare, unlabeled address row, indistinguishable
         // from any other line. Give it the same visibility Tom expects
         // parity with UNSCHEDULED for -- e.g. team B3's 111 Star St stop,
         // a confirmed real Geotab stop with no client on file anywhere.
-        const isUnknownLocation = !s.isDepot && !_match && !maybeLunch;
+        const isUnknownLocation = !s.isDepot && !_match && !naturallyLunch;
+        const _escAddr = (s.addr || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const _lunchToggleBtn = (maybeLunch && _stopKey && _stopDateStr)
+          ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${v.team}','${_stopDateStr}','${_stopKey}','exclude','${_escAddr}',${dur||0})" title="Mark this stop as not lunch" style="background:none;border:1px solid rgba(217,119,6,0.4);color:var(--amber);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">✕ Not lunch</button>`
+          : (naturallyLunch && _isExcluded && _stopKey && _stopDateStr)
+          ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${v.team}','${_stopDateStr}','${_stopKey}','reverse','${_escAddr}',${dur||0})" title="Mark this stop as lunch again" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">🍔 Mark as lunch</button>`
+          : '';
 
         const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
         return `${includeDriveInfo ? driveInfo : ''}
         <div class="tvc-stop-row" style="align-items:flex-start${maybeLunch ? ';background:rgba(251,191,36,0.06);border-radius:6px;margin:0 -4px;padding:4px' : ''}">
           <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
           <div style="flex:1;min-width:0">
-            ${maybeLunch ? `<div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break</div>` : ''}
+            ${maybeLunch || (naturallyLunch && _isExcluded) ? `<div style="display:flex;align-items:center;font-size:11px;font-weight:700;color:${maybeLunch ? 'var(--amber)' : 'var(--muted)'};margin-bottom:1px">${maybeLunch ? '🍔❓ Possible lunch / break' : '✕ Marked not-lunch'}${_lunchToggleBtn}</div>` : ''}
             ${isUnknownLocation ? `<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">📍 Unrecognized stop — no client on file here</div>` : ''}
             ${clientName && !maybeLunch ? (_match && _match.id
               ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
