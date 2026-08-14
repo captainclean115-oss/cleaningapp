@@ -28246,6 +28246,61 @@ function _reconcileHoursWithLunch() {
   });
 }
 
+// PR #114 — previously loadWeekHours had its OWN, separately-diverged
+// lunch-detection heuristic from the one that flags "🍔❓ Possible lunch
+// / break" rows in Today's Activity (_renderGPSStopRow's maybeLunch):
+// this one required a 10am-4pm window, a 5-minute floor, an
+// address-string-only client match (matchStopToClient), and only ever
+// counted the FIRST qualifying stop of the day -- while maybeLunch has
+// no time window, no floor, uses the geo-first matchStopToClientGeo,
+// and (being a per-row render) effectively flags EVERY qualifying stop.
+// Result (Keyshla, Fri Aug 7): Activity correctly flagged two real
+// stops (3 min + 26 min = 29 min total) that this code either couldn't
+// see (3 min < the 5-min floor) or attributed differently, while
+// separately finding its own single 52-min candidate nobody could see
+// or verify anywhere else. Tom's principle: whatever gets subtracted
+// from hours must be visible in the activity breakdown. Extracted here
+// (was inline in loadWeekHours) so it's directly testable and so both
+// "the value Activity flags" and "the value subtracted from hours" are
+// now the same computation, not two copies that can re-diverge.
+// Returns null when no candidate qualifies that day; otherwise
+// {time, duration, lat, lng} with duration = SUM of every qualifying
+// stop's minutes (not just the first).
+function _detectDayLunch(dayTrips, team, todayTeamJobs) {
+  var lunchCandidates = dayTrips.filter(function(t) {
+    if (!t.stop) return false;
+    var stopTime = new Date(t.stop);
+    var nextTrip = dayTrips.find(function(t2) { return new Date(t2.start) > stopTime; });
+    if (!nextTrip) return false;
+    var stopDurMin = (new Date(nextTrip.start) - stopTime) / 60000;
+    if (!(stopDurMin > 0 && stopDurMin < 60)) return false;
+    var stopAddr = t.stopAddress || t.stopLocation || '';
+    if (isDepotAddress(stopAddr, team) || isDepotPoint(t.stopPoint, team)) return false;
+    var _match = matchStopToClientGeo(
+      t.stopPoint ? t.stopPoint.y : null,
+      t.stopPoint ? t.stopPoint.x : null,
+      stopAddr, todayTeamJobs, team
+    );
+    if (_match) return false; // ANY client match (scheduled or not) disqualifies -- same as maybeLunch's !_match
+    return true;
+  });
+  if (!lunchCandidates.length) return null;
+  var totalLunchMin = 0;
+  var firstLunchTime = null, firstLunchLat = null, firstLunchLng = null;
+  lunchCandidates.forEach(function(lt, idx) {
+    var stopTime = new Date(lt.stop);
+    var nextTrip = dayTrips.find(function(t2) { return new Date(t2.start) > stopTime; });
+    var stopDurMin = nextTrip ? Math.round((new Date(nextTrip.start) - stopTime) / 60000) : 0;
+    totalLunchMin += stopDurMin;
+    if (idx === 0) {
+      firstLunchTime = stopTime;
+      firstLunchLat = lt.stopPoint ? lt.stopPoint.y : null;
+      firstLunchLng = lt.stopPoint ? lt.stopPoint.x : null;
+    }
+  });
+  return { time: firstLunchTime, duration: totalLunchMin, lat: firstLunchLat, lng: firstLunchLng };
+}
+
 async function loadWeekHours() {
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
@@ -28516,47 +28571,20 @@ async function loadWeekHours() {
             weekHours[team].total += payableHrs;
           }
 
-          // Detect likely lunch break
-          // Criteria: stop is NOT at office, NOT a scheduled client,
-          // lasted under 60 min, between 10am-4pm
-          const tenAM = new Date(day); tenAM.setHours(10,0,0,0);
-          const fourPM = new Date(day); fourPM.setHours(16,0,0,0);
+          // PR #114 — see _detectDayLunch's comment: this now uses the
+          // exact same criteria as Today's Activity's lunch flagging,
+          // instead of an independently-diverged heuristic.
           const todayKey = dateKey(day);
-          const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team; });
+          // !jj.cancelled matches Today's Activity's teamJobs exactly (see
+          // that render's own comment) -- a cancelled job was previously
+          // still eligible to mark a stop "scheduled" here and suppress a
+          // real lunch candidate, a divergence in the OPPOSITE direction.
+          const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team && !jj.cancelled; });
 
-          const lunchCandidates = dayTrips.filter(t => {
-            if (!t.stop) return false;
-            const stopTime = new Date(t.stop);
-            if (stopTime < tenAM || stopTime > fourPM) return false;
-            const nextTrip = dayTrips.find(t2 => new Date(t2.start) > stopTime);
-            if (!nextTrip) return false;
-            const stopDurMin = (new Date(nextTrip.start) - stopTime) / 60000;
-            if (stopDurMin < 5 || stopDurMin >= 60) return false;
-            // Not at office
-            const stopAddr = t.stopAddress || t.stopLocation || '';
-            if (isDepotAddress(stopAddr, team)) return false;
-            // Not a scheduled client for today
-            const clientMatch = matchStopToClient(stopAddr, todayTeamJobs);
-            const isScheduled = clientMatch && todayTeamJobs.some(function(tj) {
-              var c = PentaClients.getClient(tj.clientId);
-              return c && clientMatch.includes(c.fn) && clientMatch.includes(c.ln);
-            });
-            if (isScheduled) return false;
-            return true;
-          });
-
-          if (lunchCandidates.length > 0) {
-            const lt = lunchCandidates[0];
-            const stopTime = new Date(lt.stop);
-            const nextTrip = dayTrips.find(t2 => new Date(t2.start) > stopTime);
-            const stopDurMin = nextTrip ? Math.round((new Date(nextTrip.start) - stopTime) / 60000) : 0;
+          const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs);
+          if (_dayLunch) {
             weekHours[team].lunch = weekHours[team].lunch || [];
-            weekHours[team].lunch[dayIdx] = {
-              time: stopTime,
-              duration: stopDurMin,
-              lat: lt.stopPoint.y,
-              lng: lt.stopPoint.x
-            };
+            weekHours[team].lunch[dayIdx] = _dayLunch;
           }
         }
       });
