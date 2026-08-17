@@ -26169,14 +26169,38 @@ async function setTeamDeviceAssignment(team, dateStr) {
   try { renderTeamManager(); } catch (e) {}
 }
 
+// PR #118 — was a hand-rolled duplicate of assignEmployee's write logic:
+// set dailyAssignments[key] optimistically, dual-write to Supabase via
+// PentaAssignments.assign() WITHOUT awaiting it, and on failure only
+// console.warn (no rollback of the optimistic value, no toast). If that
+// write silently failed -- cold cache, transient network error, a
+// not-yet-hydrated employee facade -- this tab kept showing the new
+// team as if it had saved, while Supabase never actually got the row.
+// Any other session/device (or this one after a reload) would then
+// correctly read the true, never-persisted state and fall back to the
+// employee's default team -- "moved employees, came back later, they
+// were back on default" (Tom's report). assignEmployee already has the
+// fix for this exact failure mode (awaited write + rollback + toast,
+// v10.5.23) -- delegate instead of keeping a second write path that
+// could silently diverge from it again (same remediation already
+// applied to promptDefaultTeam -> _setEmployeeDefaultTeam, PR #74).
 function quickAssign(empId, team, dateStr) {
-  const key = dateStr + '_' + empId;
-  dailyAssignments[key] = team;
-  localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
-  // Sprint 10 Phase 3f: dual-write quickAssign to Supabase.
-  try { if (window.PentaAssignments) window.PentaAssignments.assign(dateStr, team, empId).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); renderTeamManager(); }); } catch(e){}
+  var oldTeam = getEmployeeTeam(empId, dateStr);
+  var writePromise = assignEmployee(empId, team, dateStr);
+
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
+  recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
+  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
   _hrsMaybeRefreshForDate(dateStr); // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
+
+  writePromise.catch(function() {
+    // assignEmployee already rolled back the optimistic write and
+    // toasted the failure -- reflect that revert visually.
+    renderTeamManager();
+    recalcTeamTimes(oldTeam, dateStr);
+    if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+    _hrsMaybeRefreshForDate(dateStr);
+  });
 }
 
 async function promptDefaultTeam(empId) {
