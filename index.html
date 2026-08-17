@@ -28300,6 +28300,91 @@ function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinM
   return { trueStartTrip: trueStartTrip, depotArrivalsAsc: depotArrivalsAsc };
 }
 
+// PR #117 — job-crossref start/end detector. The sustained-away rule
+// above (_findTrueDepotDepartureTrip) structurally excludes trip 0 (the
+// very first trip of the day) from ever winning -- it requires a
+// confirmed prior depot stop, and trip 0 has no `prev` to check. That
+// was deliberate: PR #110 tried letting trip 0 win unconditionally and
+// got burned by unrelated morning errands (an 8:18am errand beat a
+// real 9:11am departure for a different employee). But it also means a
+// REAL first-thing depot departure followed by a brief office bounce
+// can never be picked, even when real scheduled client work happened
+// in between -- an 8:32am departure (real client work 8:32-10:46) lost
+// to a 10:46am departure (just an errand-run window that happened to
+// be a longer sustained-away stretch), because 8:32 was never even
+// evaluated.
+//
+// Fix: cross-reference each trip's STOP against today's scheduled jobs
+// (same matchStopToClientGeo machinery _detectDayLunch already uses,
+// same todayTeamJobs input) instead of relying purely on away-duration.
+// A stop that geomatches one of today's scheduled clients is
+// unambiguous proof of real work, regardless of how long the
+// away-stretch was -- no 90-minute threshold needed. Trip 0 is a
+// legitimate departure candidate here (unlike the sustained-away rule)
+// precisely because a scheduled-client hit is confirmation enough on
+// its own; it can't be fooled by an unrelated pre-work errand the way
+// "trip 0 always wins" naively could, because an unrelated errand
+// won't geomatch a scheduled client address.
+//
+// Returns { matched: false } whenever NO stop anywhere in the day's
+// trips geomatches a scheduled client (Geotab data too sparse /
+// detection failed / genuinely no scheduled jobs that day) OR the
+// scan still can't cleanly resolve both ends -- caller falls back to
+// the sustained-away rule entirely in either case, same as before
+// this PR.
+function _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team) {
+  var stopIsScheduledClient = validTrips.map(function(t) {
+    if (!t.stop) return false;
+    var stopAddr = t.stopAddress || t.stopLocation || '';
+    var m = matchStopToClientGeo(
+      t.stopPoint ? t.stopPoint.y : null,
+      t.stopPoint ? t.stopPoint.x : null,
+      stopAddr, todayTeamJobs, team
+    );
+    return !!(m && m.scheduled);
+  });
+
+  if (!stopIsScheduledClient.some(Boolean)) return { matched: false };
+
+  var depotArrivals = validTrips
+    .map(function(t, idx) { return { t: t, idx: idx }; })
+    .filter(function(x) { return x.t.stop && _isDepotStop(x.t); })
+    .sort(function(a, b) { return new Date(a.t.stop) - new Date(b.t.stop); });
+
+  // START: first office departure (trip 0, or any trip whose
+  // immediately preceding trip ended at the depot) that reaches a
+  // scheduled client stop before the next depot arrival.
+  var trueStartTrip = null;
+  for (var i = 0; i < validTrips.length; i++) {
+    var prev = i > 0 ? validTrips[i - 1] : null;
+    if (prev && !_isDepotStop(prev)) continue;
+    var depTs = new Date(validTrips[i].start);
+    var nextArrival = depotArrivals.find(function(a) { return new Date(a.t.stop) > depTs; });
+    var untilIdx = nextArrival ? nextArrival.idx : validTrips.length - 1;
+    var sawSchedule = false;
+    for (var j = i; j <= untilIdx; j++) {
+      if (stopIsScheduledClient[j]) { sawSchedule = true; break; }
+    }
+    if (sawSchedule) { trueStartTrip = validTrips[i]; break; }
+  }
+
+  // END: last depot arrival whose immediately-preceding trip's stop
+  // was a scheduled client -- excludes an arrival that's just another
+  // office idle (bounced depot-to-depot with no real work between).
+  var trueEndTrip = null;
+  depotArrivals.forEach(function(a) {
+    var precedingIdx = a.idx - 1;
+    if (precedingIdx >= 0 && stopIsScheduledClient[precedingIdx]) trueEndTrip = a.t;
+  });
+
+  return {
+    matched: !!(trueStartTrip && trueEndTrip),
+    trueStartTrip: trueStartTrip,
+    trueEndTrip: trueEndTrip,
+    depotArrivalsAsc: depotArrivals.map(function(x) { return x.t; })
+  };
+}
+
 // PR #116 — REMOVED. This used to apply a flat 30-min-over-6h
 // deduction whenever no real lunch was detected/recorded (PR #109's
 // "standard rule" fallback). Tom's definitive rule: lunch is deducted
@@ -28799,9 +28884,22 @@ async function loadWeekHours() {
           var sa = t.stopAddress || t.stopLocation || '';
           return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
         };
+        // PR #117 — cross-reference GPS stops against today's scheduled
+        // jobs first. Hoisted above the sustained-away call so both are
+        // available here; the old in-loop computation further below
+        // (lunch detection) now reuses these same values instead of
+        // recomputing them a second time.
+        const todayKey = dateKey(day);
+        // !jj.cancelled matches Today's Activity's teamJobs exactly (see
+        // that render's own comment) -- a cancelled job was previously
+        // still eligible to mark a stop "scheduled," a divergence in
+        // the opposite direction.
+        const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team && !jj.cancelled; });
+
+        const _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
         const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
-        const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
-        const trueStartTrip = _depotResult.trueStartTrip;
+        const depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
+        const trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
         if (trueStartTrip) {
           trueStart = new Date(trueStartTrip.start);
         } else {
@@ -28818,9 +28916,16 @@ async function loadWeekHours() {
         // If they went out again mid-day and came back, the latest depot
         // return is the real end — even if a later non-depot trip exists
         // (van went home with the driver and they ran personal errands).
-        const lateDepotArrivals = depotArrivalsAsc.filter(a => new Date(a.stop) > trueStart);
-        if (lateDepotArrivals.length > 0) {
-          trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+        // PR #117: when the job-crossref algorithm matched, prefer its
+        // own trueEndTrip (last arrival preceded by a real scheduled
+        // client stop, not just "last depot arrival at all").
+        if (_crossref.matched && _crossref.trueEndTrip) {
+          trueEnd = new Date(_crossref.trueEndTrip.stop);
+        } else {
+          const lateDepotArrivals = depotArrivalsAsc.filter(a => new Date(a.stop) > trueStart);
+          if (lateDepotArrivals.length > 0) {
+            trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+          }
         }
         if (!trueEnd) {
           // Fallback: no depot return today (worked off-site, drove straight
@@ -28862,14 +28967,9 @@ async function loadWeekHours() {
 
           // PR #114 — see _detectDayLunch's comment: this now uses the
           // exact same criteria as Today's Activity's lunch flagging,
-          // instead of an independently-diverged heuristic.
-          const todayKey = dateKey(day);
-          // !jj.cancelled matches Today's Activity's teamJobs exactly (see
-          // that render's own comment) -- a cancelled job was previously
-          // still eligible to mark a stop "scheduled" here and suppress a
-          // real lunch candidate, a divergence in the OPPOSITE direction.
-          const todayTeamJobs = jobs.filter(function(jj){ return jj.date === todayKey && jj.team === team && !jj.cancelled; });
-
+          // instead of an independently-diverged heuristic. todayKey/
+          // todayTeamJobs are computed once, hoisted above the
+          // start/end block (PR #117), and reused here.
           const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs, todayKey);
           if (_dayLunch) {
             weekHours[team].lunch = weekHours[team].lunch || [];
