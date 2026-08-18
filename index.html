@@ -29066,13 +29066,20 @@ function saveEmpHours(empId, date, data) {
   localStorage.setItem(getEmpHourKey(empId, date), JSON.stringify(data));
 }
 
-// PR #119 -- one-time cleanup for two confirmed-phantom overrides on
-// Blanca Payan (Aug 3 + Aug 5, this week) that were traced to this
-// storage but don't match any live Geotab trip in the fleet for either
-// day, and predate the reset-button fix above (the button existed but
-// silently failed to refresh the table, so these could never self-heal
-// via "Reset to GPS data" even though the underlying delete worked).
-// Runs once per browser via the completion flag, then no-ops forever.
+// PR #119's cleanup (below, now dead) used each employee's DB uuid as
+// the override key. It silently deleted nothing: getUnifiedRoster()
+// (the ONLY thing every override read/write in this feature is keyed
+// off of) never returns the uuid as .id -- EMPLOYEE_ROSTER is a
+// permanently-empty array (never pushed to anywhere in this file), so
+// `existsByLegacy` is always falsy and every employee is pushed via the
+// facade branch with `id: fe.legacy_roster_id || fe.id`. All 36 active
+// employees have legacy_roster_id set, so .id is ALWAYS the legacy
+// string in practice, never the uuid. PR #119's keys
+// (empHrs_c6d99a37-...) were never real; removeItem on them was a
+// silent no-op. Left in place, disabled, as a record of the mistake --
+// its completion flag is already set in production browsers so it can
+// never be "fixed" by editing it in place; a new flag below is required
+// for the corrected keys to actually run.
 (function () {
   try {
     if (localStorage.getItem('_pr119_blanca_override_cleanup_done')) return;
@@ -29082,6 +29089,40 @@ function saveEmpHours(empId, date, data) {
     ];
     staleKeys.forEach(function (k) { localStorage.removeItem(k); });
     localStorage.setItem('_pr119_blanca_override_cleanup_done', '1');
+  } catch (e) {}
+})();
+
+// PR #120 -- corrected cleanup, keyed by legacy_roster_id (confirmed via
+// live query against the employees table, not assumed):
+//   Blanca Payan   -> e_1785880510271  (Aug 3 + Aug 5 -- Aug 3 already
+//                      looked fixed after PR #119, most likely because
+//                      the reset button itself works and someone tapped
+//                      it manually, not because of that PR's cleanup;
+//                      re-targeting it here too is a harmless no-op if
+//                      it's already gone, and cheap insurance if it isn't)
+//   Analia DeSouza -> e_1778494837214  (Aug 3 only -- confirmed a
+//                      DIFFERENT employee than "Ana A" / e_1786370222916,
+//                      who is explicitly NOT touched by this cleanup)
+// Logs each key's value before removal so the before/after is visible
+// in the console even without a live debugging session.
+(function () {
+  try {
+    if (localStorage.getItem('_pr120_override_cleanup_done')) return;
+    var targets = [
+      { label: 'Blanca Payan',   key: 'empHrs_e_1785880510271_2026-08-03' },
+      { label: 'Blanca Payan',   key: 'empHrs_e_1785880510271_2026-08-05' },
+      { label: 'Analia DeSouza', key: 'empHrs_e_1778494837214_2026-08-03' }
+    ];
+    targets.forEach(function (t) {
+      var before = localStorage.getItem(t.key);
+      if (before) {
+        console.log('[PR120 cleanup] removing ' + t.label + ' override (' + t.key + '):', before);
+        localStorage.removeItem(t.key);
+      } else {
+        console.log('[PR120 cleanup] ' + t.label + ' override already absent (' + t.key + ')');
+      }
+    });
+    localStorage.setItem('_pr120_override_cleanup_done', '1');
   } catch (e) {}
 })();
 
@@ -29121,6 +29162,59 @@ function _hrsAuditOverrides() {
   rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   if (console.table) console.table(rows); else console.log(rows);
   return rows;
+}
+
+// PR #120 -- on-screen wrapper around _hrsAuditOverrides() so a manager
+// can see and clear stale/phantom overrides from the phone they're
+// already using, without a devtools console (mobile Safari has none
+// reachable without a paired Mac). Each row's "Clear" button calls the
+// same clearEmpDayHours() the modal's own "Reset to GPS data" button
+// uses, so it gets the same audit logging + guaranteed re-fetch.
+function showHoursOverrideAudit() {
+  var old = document.getElementById('hrs-override-audit-overlay');
+  if (old) old.remove();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'hrs-override-audit-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end';
+  overlay.innerHTML = '<div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
+    + '<div style="font-size:17px;font-weight:600">Hour Overrides</div>'
+    + '<button onclick="document.getElementById(\'hrs-override-audit-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">&times;</button>'
+    + '</div>'
+    + '<div id="hrs-override-audit-body" style="padding:16px 20px"></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+  _renderHoursOverrideAuditBody();
+}
+
+function _renderHoursOverrideAuditBody() {
+  var body = document.getElementById('hrs-override-audit-body');
+  if (!body) return;
+  var rows = _hrsAuditOverrides();
+  if (rows.length === 0) {
+    body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No manual hour overrides currently stored on this device.</div>';
+    return;
+  }
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">'
+    + rows.length + ' override' + (rows.length === 1 ? '' : 's') + ' stored on this device. Compare each against the day cell before clearing -- "Clear" deletes it and re-pulls live GPS immediately, same as tapping "Reset to GPS data" in that employee\'s day view.</div>'
+    + rows.map(function (r) {
+      var timeStr = (r.start || r.end) ? _audEsc((r.start || '—') + ' – ' + (r.end || '—')) : '<span style="color:var(--muted)">no start/end</span>';
+      var hoursStr = (r.hours != null) ? Number(r.hours).toFixed(1) + 'h' : '';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:14px;font-weight:600">' + _audEsc(r.employee) + '</div>'
+        + '<div style="font-size:12px;color:var(--muted)">' + _audEsc(r.date) + ' &middot; ' + timeStr + (hoursStr ? ' &middot; ' + hoursStr : '') + (r.team ? ' &middot; ' + _audEsc(r.team) : '') + '</div>'
+        + '</div>'
+        + '<button onclick="_hrsAuditClearOne(\'' + r.empId.replace(/'/g,"\\'") + '\',\'' + _audEsc(r.employee).replace(/'/g,"\\'") + '\',\'' + r.date + '\')" style="background:none;border:1px solid var(--border);border-radius:8px;color:var(--red);font-family:DM Sans,sans-serif;font-size:12px;font-weight:600;padding:8px 12px;cursor:pointer;flex-shrink:0">Clear</button>'
+        + '</div>';
+    }).join('');
+}
+
+async function _hrsAuditClearOne(empId, empName, date) {
+  await clearEmpDayHours(empId, empName, date);
+  _renderHoursOverrideAuditBody();
 }
 
 function calcHoursFromTimes(startStr, endStr, lunchMins) {
@@ -29217,13 +29311,32 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   renderEmpTasks(empId, dk);
 }
 
+// PR #120 -- showEmpStops previously wrapped its two _geotabCall()s in
+// one catch that swallowed EVERYTHING (network error, rate limit,
+// malformed response) into a generic "Could not load stops," with no
+// console output at all -- a caught 429 looked identical to a real
+// failure and there was never any record of which one actually
+// happened. This retries once on a rate limit (with a short delay,
+// since _geotabCall's own 429 handling is per-call, not per-caller) and
+// otherwise lets the error through so the caller's catch can log +
+// message it specifically.
+async function _geotabCallRetryOn429(method, params) {
+  try {
+    return await _geotabCall(method, params);
+  } catch (e) {
+    if (!e || !e.isRateLimit) throw e;
+    await new Promise(function (r) { setTimeout(r, 1500); });
+    return await _geotabCall(method, params); // let a 2nd failure propagate
+  }
+}
+
 async function showEmpStops(team, dateMs) {
   var area = document.getElementById('emp-stops-area');
   if (!area) return;
   area.innerHTML = '<div style="color:var(--muted);text-align:center;font-size:12px;padding:8px">Loading stops...</div>';
   try {
     var date = new Date(dateMs);
-    var devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
+    var devices = await _geotabCallRetryOn429('Get', { typeName: 'Device', resultsLimit: 50 });
     var resolved = await _resolveTeamDevice(devices, team, date);
     var device = resolved.device;
     if (!device) {
@@ -29234,7 +29347,7 @@ async function showEmpStops(team, dateMs) {
 
     var startOfDay = new Date(date); startOfDay.setHours(0,0,0,0);
     var endOfDay = new Date(date); endOfDay.setHours(23,59,59,999);
-    var trips = await _geotabCall('Get', {
+    var trips = await _geotabCallRetryOn429('Get', {
       typeName: 'Trip',
       search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
       resultsLimit: 100
@@ -29303,7 +29416,11 @@ async function showEmpStops(team, dateMs) {
     });
     area.innerHTML = html;
   } catch(e) {
-    area.innerHTML = '<div style="color:var(--muted);font-size:12px">Could not load stops</div>';
+    console.warn('[showEmpStops] failed for team ' + team + ' on ' + new Date(dateMs).toDateString() + ':', e);
+    var msg = (e && e.isRateLimit)
+      ? 'Rate limited by Geotab — try again in a minute'
+      : 'Could not load stops';
+    area.innerHTML = '<div style="color:var(--muted);font-size:12px">'+_audEsc(msg)+'</div>';
   }
 }
 
@@ -29964,6 +30081,10 @@ function renderHoursTable(days, dayNames) {
   }
 
   html += '<button class="hrs-export-btn" onclick="showHoursReport()">&#128202; Export Hours Report</button>';
+  // PR #120 -- was console-only (_hrsAuditOverrides), unusable on mobile
+  // Safari without a Mac + cable to reach devtools. Same button reachable
+  // from the tab a manager is already looking at.
+  html += '<button class="hrs-export-btn" style="margin-top:8px;background:rgba(108,143,255,0.1);border:1px solid rgba(108,143,255,0.25);color:var(--accent)" onclick="showHoursOverrideAudit()">&#128269; Audit Hour Overrides</button>';
 
   document.getElementById('hours-table').innerHTML = html;
 
