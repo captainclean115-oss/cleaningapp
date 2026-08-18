@@ -29065,6 +29065,64 @@ function getEmpHours(empId, date) {
 function saveEmpHours(empId, date, data) {
   localStorage.setItem(getEmpHourKey(empId, date), JSON.stringify(data));
 }
+
+// PR #119 -- one-time cleanup for two confirmed-phantom overrides on
+// Blanca Payan (Aug 3 + Aug 5, this week) that were traced to this
+// storage but don't match any live Geotab trip in the fleet for either
+// day, and predate the reset-button fix above (the button existed but
+// silently failed to refresh the table, so these could never self-heal
+// via "Reset to GPS data" even though the underlying delete worked).
+// Runs once per browser via the completion flag, then no-ops forever.
+(function () {
+  try {
+    if (localStorage.getItem('_pr119_blanca_override_cleanup_done')) return;
+    var staleKeys = [
+      'empHrs_c6d99a37-6209-4e0f-8f70-f2141194939a_2026-08-03',
+      'empHrs_c6d99a37-6209-4e0f-8f70-f2141194939a_2026-08-05'
+    ];
+    staleKeys.forEach(function (k) { localStorage.removeItem(k); });
+    localStorage.setItem('_pr119_blanca_override_cleanup_done', '1');
+  } catch (e) {}
+})();
+
+// PR #119 -- diagnostic sweep, callable from the browser console
+// (`_hrsAuditOverrides()`), since empHrs_* overrides live in localStorage
+// only and can't be enumerated from outside a real browser session.
+// Lists every currently-stored override with the employee's name
+// resolved, so a human can eyeball which ones look wrong without
+// guessing at raw employee ids and dates.
+function _hrsAuditOverrides() {
+  var rows = [];
+  try {
+    var roster = getUnifiedRoster();
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (!key || key.indexOf('empHrs_') !== 0) continue;
+      var rest = key.slice('empHrs_'.length);
+      var lastUnderscore = rest.lastIndexOf('_');
+      if (lastUnderscore < 0) continue;
+      var empId = rest.slice(0, lastUnderscore);
+      var date = rest.slice(lastUnderscore + 1);
+      var emp = roster.find(function (e) { return e.id === empId; });
+      var data = null;
+      try { data = JSON.parse(localStorage.getItem(key)); } catch (e2) {}
+      rows.push({
+        employee: emp ? emp.name : '(unknown emp id ' + empId + ')',
+        empId: empId,
+        date: date,
+        start: data && data.start,
+        end: data && data.end,
+        lunch: data && data.lunch,
+        hours: data && data.hours,
+        team: data && data.team
+      });
+    }
+  } catch (e) { console.warn('[hours] audit sweep failed', e); }
+  rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  if (console.table) console.table(rows); else console.log(rows);
+  return rows;
+}
+
 function calcHoursFromTimes(startStr, endStr, lunchMins) {
   if (!startStr || !endStr) return 0;
   var sp = startStr.split(':'), ep = endStr.split(':');
@@ -29131,9 +29189,9 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<div id="add-task-form" style="display:none;margin-bottom:14px"></div>'
     +'<div style="display:flex;gap:8px">'
     +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="flex:1;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
-    +'<button onclick="saveEmpDayHours(\''+empId+'\',\''+dk+'\')" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-family:DM Sans,sans-serif;font-size:14px;font-weight:600;cursor:pointer">Save</button>'
+    +'<button onclick="saveEmpDayHours(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+dk+'\')" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-family:DM Sans,sans-serif;font-size:14px;font-weight:600;cursor:pointer">Save</button>'
     +'</div>'
-    +(override ? '<button onclick="clearEmpDayHours(\''+empId+'\',\''+dk+'\')" style="width:100%;margin-top:8px;padding:12px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Reset to GPS data</button>' : '')
+    +(override ? '<button onclick="clearEmpDayHours(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+dk+'\')" style="width:100%;margin-top:8px;padding:12px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Reset to GPS data</button>' : '')
     +'</div></div>';
   document.body.appendChild(overlay);
   overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
@@ -29624,7 +29682,7 @@ function onEmpTeamChange(empId, dk, newTeam, dateMs) {
   }
 }
 
-function saveEmpDayHours(empId, dk) {
+function saveEmpDayHours(empId, empName, dk) {
   var s = document.getElementById('emp-hr-start').value;
   var e = document.getElementById('emp-hr-end').value;
   var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
@@ -29633,14 +29691,45 @@ function saveEmpDayHours(empId, dk) {
   var tasks = getEmpTasks(empId, dk);
   var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
   saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
+  // PR #119 -- this manual-edit path previously had NO audit trail at
+  // all (unlike Claire's edit_employee_hours tool, which already logs),
+  // so a manually-entered override could never be traced to who set it
+  // or when. logPendingUpdate matches the wording/shape Claire's tool
+  // already writes, so both paths are attributable the same way.
+  var dayLbl = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  logPendingUpdate('Hours edited: '+empName, dayLbl+' — start: '+(s||'—')+', end: '+(e||'—')+', lunch: '+l+'min');
   document.getElementById('emp-hours-overlay').remove();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
 }
 
-function clearEmpDayHours(empId, dk) {
+async function clearEmpDayHours(empId, empName, dk) {
   localStorage.removeItem(getEmpHourKey(empId, dk));
-  document.getElementById('emp-hours-overlay').remove();
-  renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
+  var overlayEl = document.getElementById('emp-hours-overlay');
+  if (overlayEl) overlayEl.remove();
+  // PR #119 -- audit parity with the manual-save path above, plus a
+  // guaranteed-correct re-render. This used to call renderHoursTable()
+  // directly against whatever was already sitting in the in-memory
+  // weekHours/window._empHoursMap globals: renderHoursTable builds every
+  // team/employee/day's HTML and only writes it to the DOM in ONE
+  // innerHTML assignment at the very end, so a throw ANYWHERE in that
+  // pass (not necessarily on this employee's own row) silently aborted
+  // the whole re-render and left the stale pre-reset numbers on screen
+  // even though the localStorage override really was gone underneath
+  // (confirmed via isolated test: the removeItem itself always works).
+  // Re-running the full loadWeekHours() pass instead of a bare re-render
+  // (a) recomputes weekHours from live GPS and calls
+  // _writeWeekHoursCache() again, so a reset can no longer leave the
+  // employee-portal's own "My Hours" cache holding the deleted override,
+  // and (b) surfaces a failure instead of swallowing it if something
+  // still goes wrong.
+  var dayLbl = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  logPendingUpdate('Hours reset to GPS: '+empName, dayLbl);
+  try {
+    await loadWeekHours();
+  } catch (e) {
+    console.error('[hours] reset re-fetch failed', e);
+    alert('The override was cleared, but refreshing the table failed. Please reload the page to see the corrected value.');
+  }
 }
 
 function formatHrs(hrs) {
