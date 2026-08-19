@@ -48406,6 +48406,14 @@ async function _geotabCall(method, params) {
   var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
   var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
   var resp;
+  // PR #121 -- fetch() has no default timeout. A stalled connection (wifi
+  // drop mid-request, a cold edge region, etc) left this awaiting forever
+  // with no error and no way for the caller's try/catch to ever run --
+  // both the GPS tab and Hours tab stay on "Loading..." with nothing to
+  // recover from. 30s is generous for a Geotab round-trip but bounds the
+  // wait to something finite and reportable.
+  var _ac = new AbortController();
+  var _timeoutId = setTimeout(function () { _ac.abort(); }, 30000);
   try {
     resp = await fetch(supaUrl + '/functions/v1/geotab-call', {
       method:  'POST',
@@ -48415,9 +48423,15 @@ async function _geotabCall(method, params) {
         'apikey':        anonKey,
       },
       body: JSON.stringify({ method: method, params: params || {} }),
+      signal: _ac.signal,
     });
   } catch (netErr) {
+    if (netErr && netErr.name === 'AbortError') {
+      throw new Error('geotab-call: timed out after 30s -- check your connection and try again');
+    }
     throw new Error('geotab-call: network ' + (netErr.message || netErr));
+  } finally {
+    clearTimeout(_timeoutId);
   }
   var raw;
   try { raw = await resp.text(); } catch (e) { raw = ''; }
