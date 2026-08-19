@@ -5298,6 +5298,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div class="gps-summary-bar" id="gps-summary"></div>
     <div id="gps-truncation-notice" style="display:none;margin:0 12px 8px;font-size:11px;color:var(--amber)"></div>
+    <!-- PR #123 -- device/team name mismatch warning. Hidden unless
+         _teamDeviceMismatches (computed in loadGPSData) is non-empty. -->
+    <div id="gps-device-mismatch-banner" style="display:none;margin:0 12px 8px;padding:10px 12px;border-radius:10px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:12px;line-height:1.5"></div>
     <div id="gps-vehicles"></div>
   </div>
   <!-- v11.0.19: Hours Worked is sibling of gps-main-section so it renders
@@ -32202,6 +32205,14 @@ async function loadGPSData() {
     const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, selectedDate);
     const usedDeviceIds = {};
 
+    // PR #123 -- surface (don't silently auto-correct) any team whose
+    // explicitly-assigned device is currently named something else in
+    // Geotab. See _resolveTeamDevice's comment for why this is a visible
+    // warning rather than an automatic name-match fallback.
+    window._teamDeviceMismatches = teamOrder
+      .filter(function(t){ return teamDeviceMap[t] && teamDeviceMap[t].mismatch; })
+      .map(function(t){ return { team: t, liveName: teamDeviceMap[t].liveName, deviceId: teamDeviceMap[t].device.id }; });
+
     const teamEntries = teamOrder.map(team => {
         const resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
         const d = resolved.device;
@@ -32408,6 +32419,20 @@ function renderGPS() {
       truncEl.style.display = '';
     } else {
       truncEl.style.display = 'none';
+    }
+  }
+
+  // PR #123 -- device/team name mismatch warning (see _resolveTeamDevice).
+  var mismatchEl = document.getElementById('gps-device-mismatch-banner');
+  if (mismatchEl) {
+    var mismatches = window._teamDeviceMismatches || [];
+    if (mismatches.length > 0) {
+      mismatchEl.innerHTML = '⚠ Device name mismatch — ' + mismatches.map(function(m){
+        return '<strong>' + _audEsc(m.team) + '</strong> is assigned device <code>' + _audEsc(m.deviceId) + '</code>, currently named "' + _audEsc(m.liveName) + '" in Geotab';
+      }).join('; ') + '. If the vehicle was renamed or reassigned, update it in Admin → Fleet Tracking.';
+      mismatchEl.style.display = '';
+    } else {
+      mismatchEl.style.display = 'none';
     }
   }
 
@@ -48482,7 +48507,18 @@ async function _resolveTeamDevice(devices, team, dateObj) {
         var assignedId = res.data[0].device_id;
         if (!assignedId) return { device: null, source: 'assignment-none', rawDeviceId: null };
         var found = (devices || []).find(function(d){ return String(d.id) === String(assignedId); });
-        return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId };
+        // PR #123 -- flags when an EXPLICIT team_device_assignments row
+        // points at a device whose CURRENT Geotab name doesn't match the
+        // team it's assigned to. Confirmed live: M1/M3 were swapped for
+        // weeks (b10B renamed to "M3", b10E to "M1", team_device_assignments
+        // never re-synced) with zero visibility until Tom independently
+        // noticed the hours looked wrong. Deliberately a visible WARNING,
+        // not a silent auto-fallback to name-matching -- the accidental
+        // self-healing that used to happen via a since-fixed RPC bug is
+        // exactly what let this go unnoticed for so long; surfacing it
+        // beats silently guessing again.
+        var mismatch = !!(found && found.name && !String(found.name).toUpperCase().includes(String(team).toUpperCase()));
+        return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId, mismatch: mismatch, liveName: found ? found.name : null };
       }
     } catch (e) { /* RPC unavailable — fall through to name-matching */ }
   }
