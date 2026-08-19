@@ -13443,6 +13443,30 @@ function _mirrorPentaAssignmentsToInMemory() {
       merged = true;
     }
   });
+  // PR #125 -- was purely additive: a key that existed locally but no
+  // longer has an active row server-side (deleted, superseded by a
+  // later write, etc) was NEVER removed, so getEmployeeTeam kept
+  // reading a stale team/OFF value forever instead of falling through
+  // to defaultTeam once the override was gone. Confirmed live via the
+  // Aug 10-14 debug trace: Katia Mejia's and Etelvina Cabral's
+  // browser-local dailyAssignments held stale entries for days that
+  // PentaAssignments.listSync() -- a full, unfiltered, business-wide,
+  // paginated snapshot (see _hydrate's fetch-everything query, capped
+  // at 50,000 rows) -- no longer contains at all. Only prune once the
+  // dual-key (uuid + legacy_roster_id) set for this pass is fully
+  // built (hasFacade); an early pass before PentaEmployees has
+  // hydrated only produces uuid-keyed entries, and pruning against
+  // that partial set would wipe legacy-keyed entries this round simply
+  // hasn't rebuilt yet (a later, complete pass re-adds them anyway --
+  // this just avoids the transient churn).
+  if (hasFacade) {
+    Object.keys(dailyAssignments).forEach(function(k) {
+      if (!(k in supabaseEntries)) {
+        delete dailyAssignments[k];
+        merged = true;
+      }
+    });
+  }
   if (typeof dailyAssignmentDetails !== 'undefined') {
     Object.keys(detailEntries).forEach(function(k) { dailyAssignmentDetails[k] = detailEntries[k]; });
   }
@@ -28972,10 +28996,16 @@ async function loadWeekHours() {
         const totalMs = trueEnd - trueStart;
         const totalHrs = totalMs / 3600000;
 
-        // Sanity check: between 2 and 15 hours (on the RAW clocked span --
+        // Sanity check: between 0.25 and 15 hours (on the RAW clocked span --
         // lunch deduction below is a separate concern from "is this a
-        // plausible workday length").
-        if (totalHrs >= 2 && totalHrs <= 15) {
+        // plausible workday length"). PR #125 -- was a 2h floor, which
+        // silently discarded real partial-day work (one job before going
+        // home, a holiday half-day) as if it never happened -- confirmed
+        // live via the Aug 10-14 debug trace (B1 0.76h, B5 1.51h, M1
+        // 1.88h all rejected). 15 min is short enough to still catch a
+        // genuine GPS glitch (a trip or two with no real work between)
+        // without throwing out a real short day.
+        if (totalHrs >= 0.25 && totalHrs <= 15) {
           // PR #116 — was payableHrs = _applyStandardLunchDeduction(totalHrs).
           // This value is only ever a placeholder anyway -- _reconcileHoursWithLunch
           // (called once at the end of loadWeekHours, after _detectDayLunch
