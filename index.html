@@ -5290,6 +5290,10 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           Show hidden
         </label>
         <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
+        <!-- PR #122-debug-v2 -- TEMPORARY, debug branch only. iPhone Safari
+             has no Web Inspector without a paired Mac, so this mirrors the
+             [TRACE] lines on-screen instead of the console. -->
+        <button class="gps-refresh-btn" style="background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.4);color:#ef4444" onclick="showHoursTraceDebug()">🔬 Debug Trace</button>
       </div>
     </div>
     <!-- Live Map -->
@@ -28713,6 +28717,11 @@ async function loadWeekHours() {
   weekHours = {};
   window._empHoursMap = {};          // { empId: { 'YYYY-MM-DD': { hours, start, end, openShift } } }
   window._hoursGeotabAvailable = false;
+  // PR #122-debug-v2 -- TEMPORARY. Mirrors every [TRACE] console.log into
+  // an on-screen array so this is readable on iPhone Safari (no Web
+  // Inspector without a paired Mac). See showHoursTraceDebug().
+  window._hoursTraceLines = [];
+  function _trace(line) { window._hoursTraceLines.push(line); console.log('[TRACE]', line); }
 
   try {
     // ── PRIMARY: time_entries from Supabase ──
@@ -28830,9 +28839,9 @@ async function loadWeekHours() {
       // PR #122-debug -- TEMPORARY trace, not a fix. Answers whether
       // Geotab returned Aug 4/6/7 trips for M3's device at all before
       // any per-day filtering happens.
-      console.log('[TRACE] loadWeekHours Trip fetch', { fromDate: _traceFromDate, toDate: _traceToDate, totalTrips: trips.length });
+      _trace('Trip fetch fromDate=' + _traceFromDate + ' toDate=' + _traceToDate + ' totalTrips=' + trips.length);
       var _traceB10ECount = trips.filter(function(t){ return t.device && String(t.device.id) === 'b10E'; }).length;
-      console.log('[TRACE] trips for device b10E specifically:', _traceB10ECount);
+      _trace('trips for device b10E specifically: ' + _traceB10ECount);
       await reverseGeocodeTrips(trips);
       trips.forEach(t => {
         const did = t.device.id;
@@ -28871,8 +28880,8 @@ async function loadWeekHours() {
         }).sort((a,b) => new Date(a.start) - new Date(b.start));
 
         // PR #122-debug -- TEMPORARY trace, not a fix. See this PR's
-        // description for what to do with the console output.
-        console.log('[TRACE]', team, dateKey(day), 'trips:', dayTrips.length, 'of', devTrips.length, 'device total');
+        // description for what to do with the trace output.
+        _trace(team + ' ' + dateKey(day) + ' trips: ' + dayTrips.length + ' of ' + devTrips.length + ' device total');
 
         if (dayTrips.length === 0) return;
 
@@ -29182,6 +29191,38 @@ function _hrsAuditOverrides() {
 // reachable without a paired Mac). Each row's "Clear" button calls the
 // same clearEmpDayHours() the modal's own "Reset to GPS data" button
 // uses, so it gets the same audit logging + guaranteed re-fetch.
+// PR #122-debug-v2 -- TEMPORARY, debug branch only. On-screen mirror of
+// the [TRACE] lines loadWeekHours collects into window._hoursTraceLines,
+// for iPhone Safari where Web Inspector needs a paired Mac. Tap the
+// "🔬 Debug Trace" button on the Live tab, screenshot this panel (scroll
+// if needed), send the screenshots back.
+function showHoursTraceDebug() {
+  var old = document.getElementById('hrs-trace-debug-overlay');
+  if (old) old.remove();
+
+  var lines = window._hoursTraceLines || [];
+  var body = lines.length
+    ? lines.map(function (l, i) { return (i + 1) + '. ' + _audEsc(l); }).join('\n')
+    : 'No trace lines yet -- open (or refresh) the Live tab first so loadWeekHours runs, then tap this button again.';
+
+  var overlay = document.createElement('div');
+  overlay.id = 'hrs-trace-debug-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end';
+  overlay.innerHTML = '<div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
+    + '<div><div style="font-size:17px;font-weight:600">🔬 Debug Trace (PR #122-debug-v2)</div>'
+    + '<div style="font-size:12px;color:var(--muted)">' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' -- screenshot this (scroll for more) and send to CC</div></div>'
+    + '<button onclick="document.getElementById(\'hrs-trace-debug-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">&times;</button>'
+    + '</div>'
+    + '<pre style="padding:16px 20px;margin:0;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:var(--text);-webkit-user-select:text;user-select:text">' + body + '</pre>'
+    + '<div style="padding:0 20px 20px">'
+    + '<button onclick="loadWeekHours().then(function(){ showHoursTraceDebug(); })" style="width:100%;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer">↻ Re-run loadWeekHours (refreshes this trace)</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+}
+
 function showHoursOverrideAudit() {
   var old = document.getElementById('hrs-override-audit-overlay');
   if (old) old.remove();
