@@ -29969,6 +29969,22 @@ function renderHoursTable(days, dayNames) {
   let grandTotal = 0;
   const expanded = window._hrsExpandedEmps || {};
 
+  // PR #130 -- runtime assertion. Every per-day cell's resolved team
+  // gets recorded here as it's built, then re-verified in one pass at
+  // the end of this function against a FRESH getEmployeeTeam() call
+  // (see the bottom of this function). This is a regression guard, not
+  // a live-bug detector for a same-tick divergence -- getEmployeeTeam
+  // is a pure synchronous read of module-level state, so a value it
+  // returns twice in the same render pass can't itself disagree with
+  // itself. Its value is catching a FUTURE refactor that starts reading
+  // a cached/stale team off the employee object (emp.team, emp.defaultTeam,
+  // a memoized lookup, etc) instead of calling getEmployeeTeam(empId,
+  // dateStr) fresh for each cell -- exactly the class of bug this file
+  // has hit repeatedly (see feedback_mirrored_algorithm_copies_diverge
+  // in project memory). If this ever fires, something stopped calling
+  // getEmployeeTeam for a cell that's actually rendered on screen.
+  var _hrsCellAssertions = [];
+
   let html = '';
 
   teams.forEach(team => {
@@ -30001,10 +30017,21 @@ function renderHoursTable(days, dayNames) {
       // its OWN real team via getEmployeeTeam (may differ from this
       // card's team on days the employee worked elsewhere) so the
       // weekly total combines ALL teams worked, not just this card's.
+      //
+      // PR #130 -- this per-day team lookup MUST use getEmployeeTeam(
+      // emp.id, dk) called fresh, right here, every cell. It must NOT be
+      // replaced with emp.team / emp.defaultTeam / a value cached from
+      // an earlier loop iteration or an earlier render pass -- those are
+      // the employee's STATIC default team (used only for which CARD
+      // this row appears under, a few lines up) and do not reflect a
+      // daily_assignments override for this specific date. The card an
+      // employee appears under is intentionally static (PR #109); what
+      // THIS cell shows for THIS date is not, and must always re-resolve.
       const dayCells = days.map(function(d, i) {
         const dk = dateKey(d);
         const dayTeam = getEmployeeTeam(emp.id, dk);
         const isToday = d.toDateString() === today.toDateString();
+        _hrsCellAssertions.push({ empId: emp.id, dk: dk, dayTeam: dayTeam });
 
         if (!dayTeam) {
           // Genuinely off / unassigned that day (not just "off THIS team").
@@ -30142,6 +30169,20 @@ function renderHoursTable(days, dayNames) {
   html += '<button class="hrs-export-btn" style="margin-top:8px;background:rgba(108,143,255,0.1);border:1px solid rgba(108,143,255,0.25);color:var(--accent)" onclick="showHoursOverrideAudit()">&#128269; Audit Hour Overrides</button>';
 
   document.getElementById('hours-table').innerHTML = html;
+
+  // PR #130 -- runtime assertion: re-verify every cell built above
+  // against a fresh getEmployeeTeam() call. See _hrsCellAssertions'
+  // declaration comment for what this catches (and doesn't).
+  (function () {
+    var mismatches = [];
+    _hrsCellAssertions.forEach(function (c) {
+      var fresh = getEmployeeTeam(c.empId, c.dk);
+      if (fresh !== c.dayTeam) mismatches.push({ empId: c.empId, dk: c.dk, rendered: c.dayTeam, freshLookup: fresh });
+    });
+    if (mismatches.length) {
+      console.warn('[hours] renderHoursTable team-lookup assertion FAILED -- a cell was built with a different team than a fresh getEmployeeTeam() call now returns. Someone likely started reading a cached/default team instead of calling getEmployeeTeam per-cell.', mismatches);
+    }
+  })();
 
   // v11.0.19 — refresh open shifts every 60s while the GPS view is active.
   // Calls loadWeekHours which re-queries time_entries and re-renders.
