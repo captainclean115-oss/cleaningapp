@@ -28716,6 +28716,28 @@ async function loadWeekHours() {
     try { await window.PentaLunchFlags.ready(); } catch (e) { console.warn('[hours] PentaLunchFlags ready failed', e); }
   }
 
+  // PR #128 — same race renderTeamManager already fixed once (see that
+  // function's comment): getEmployeeTeam reads the module-level
+  // dailyAssignments object, which only picks up real Supabase
+  // overrides via _mirrorPentaAssignmentsToInMemory -- an async merge
+  // running on its own schedule (onChange / ready() / a 1.5s backup
+  // timer), independent of when loadWeekHours happens to run.
+  // gpsInit() calls this immediately on tab load with no synchronization
+  // against that merge, so a day-of override could still be missing from
+  // dailyAssignments at read time -- and unlike renderTeamManager, this
+  // was never re-triggered once the merge caught up later, so the wrong
+  // (default-team) render just stuck. Confirmed live: Elvia Tonato's
+  // 2026-08-18 override to B5 was present in PentaAssignments.listSync()
+  // and in dailyAssignments by the time the assignment-race debug panel
+  // was checked, but her Hours-tab cell had already rendered (once, on
+  // page load) with the override missing and never refreshed.
+  if (window.PentaAssignments && typeof window.PentaAssignments.ready === 'function') {
+    try {
+      await window.PentaAssignments.ready();
+      if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
+    } catch (e) { console.warn('[hours] PentaAssignments ready/mirror failed', e); }
+  }
+
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
   const fri = days[4];
