@@ -25917,9 +25917,15 @@ async function renderTeamManager(opts) {
   // normal merge -- they aren't racing an in-flight write of their own.
   if (!(opts && opts.skipMirror)) {
     try {
-      if (window.PentaAssignments && window.PentaAssignments.ready) {
-        await window.PentaAssignments.ready();
-      }
+      // PR #133 -- was PentaAssignments.ready() only. The legacy_roster_id
+      // -keyed half of the mirror's dual-write needs PentaEmployees
+      // hydrated too (see _mirrorPentaAssignmentsToInMemory's hasFacade
+      // check); this card had the same latent gap as loadWeekHours,
+      // just not one that had shown up here yet.
+      var _tmReadyWaits = [];
+      if (window.PentaAssignments && window.PentaAssignments.ready) _tmReadyWaits.push(window.PentaAssignments.ready());
+      if (window.PentaEmployees && window.PentaEmployees.ready) _tmReadyWaits.push(window.PentaEmployees.ready());
+      if (_tmReadyWaits.length) await Promise.all(_tmReadyWaits);
       if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
     } catch (e) { console.warn('[TeamMgr] assignments readiness/merge failed', e); }
   }
@@ -28731,11 +28737,28 @@ async function loadWeekHours() {
   // and in dailyAssignments by the time the assignment-race debug panel
   // was checked, but her Hours-tab cell had already rendered (once, on
   // page load) with the override missing and never refreshed.
+  // PR #133 — PR #128 only awaited PentaAssignments.ready(), not
+  // PentaEmployees.ready() too. _mirrorPentaAssignmentsToInMemory needs
+  // BOTH: it writes a dailyAssignments entry keyed by uuid unconditionally,
+  // but the legacy_roster_id-keyed entry (what getEmployeeTeam actually
+  // reads, since emp.id from getUnifiedRoster() IS the legacy id, never
+  // the uuid) only gets written when window.PentaEmployees.getById(...)
+  // can resolve the row -- i.e. only once PentaEmployees has hydrated.
+  // hasFacade there only checks the FUNCTION exists, not that the cache
+  // is populated, so a mirror forced before PentaEmployees is ready
+  // silently produces a uuid-only entry. Confirmed live: Elvia Tonato's
+  // 2026-08-18 override showed up correctly on the uuid-keyed lookup but
+  // never made it into dailyAssignments under her legacy id, which is
+  // the only key the render loop ever consults.
   if (window.PentaAssignments && typeof window.PentaAssignments.ready === 'function') {
     try {
-      await window.PentaAssignments.ready();
+      var _readyWaits = [window.PentaAssignments.ready()];
+      if (window.PentaEmployees && typeof window.PentaEmployees.ready === 'function') {
+        _readyWaits.push(window.PentaEmployees.ready());
+      }
+      await Promise.all(_readyWaits);
       if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
-    } catch (e) { console.warn('[hours] PentaAssignments ready/mirror failed', e); }
+    } catch (e) { console.warn('[hours] PentaAssignments/PentaEmployees ready or mirror failed', e); }
   }
 
   const days = getWeekDates(hoursWeekOffset);
@@ -29969,20 +29992,27 @@ function renderHoursTable(days, dayNames) {
   let grandTotal = 0;
   const expanded = window._hrsExpandedEmps || {};
 
-  // PR #130 -- runtime assertion. Every per-day cell's resolved team
-  // gets recorded here as it's built, then re-verified in one pass at
-  // the end of this function against a FRESH getEmployeeTeam() call
-  // (see the bottom of this function). This is a regression guard, not
-  // a live-bug detector for a same-tick divergence -- getEmployeeTeam
-  // is a pure synchronous read of module-level state, so a value it
-  // returns twice in the same render pass can't itself disagree with
-  // itself. Its value is catching a FUTURE refactor that starts reading
-  // a cached/stale team off the employee object (emp.team, emp.defaultTeam,
-  // a memoized lookup, etc) instead of calling getEmployeeTeam(empId,
-  // dateStr) fresh for each cell -- exactly the class of bug this file
-  // has hit repeatedly (see feedback_mirrored_algorithm_copies_diverge
-  // in project memory). If this ever fires, something stopped calling
-  // getEmployeeTeam for a cell that's actually rendered on screen.
+  // PR #130/#133 -- runtime assertion. Every per-day cell's resolved
+  // team gets recorded here as it's built, then re-verified in one pass
+  // at the end of this function two ways (see the bottom of this
+  // function):
+  //   (a) against a FRESH getEmployeeTeam() call -- a regression guard
+  //       for a FUTURE refactor that starts reading a cached/stale team
+  //       off the employee object instead of calling getEmployeeTeam
+  //       fresh per cell. Can't catch a same-tick divergence by itself
+  //       (getEmployeeTeam is a pure sync read; two calls in the same
+  //       pass can't disagree) -- that's what (b) is for.
+  //   (b) against PentaAssignments.listSync() -- the actual server-
+  //       confirmed source of truth, keyed by uuid (emp.uuid), cross-
+  //       checked independently of dailyAssignments/getEmployeeTeam
+  //       entirely. THIS is what would have caught the real PR #133 bug:
+  //       dailyAssignments' legacy_roster_id-keyed entry can silently
+  //       never get written (if PentaEmployees wasn't hydrated when the
+  //       mirror ran) while the uuid-keyed entry and PentaAssignments'
+  //       own cache are both correct -- getEmployeeTeam(legacy_id, ...)
+  //       has no way to know that, since it only ever reads
+  //       dailyAssignments. Comparing against PentaAssignments directly
+  //       sidesteps which key format dailyAssignments happened to get.
   var _hrsCellAssertions = [];
 
   let html = '';
@@ -30031,7 +30061,7 @@ function renderHoursTable(days, dayNames) {
         const dk = dateKey(d);
         const dayTeam = getEmployeeTeam(emp.id, dk);
         const isToday = d.toDateString() === today.toDateString();
-        _hrsCellAssertions.push({ empId: emp.id, dk: dk, dayTeam: dayTeam });
+        _hrsCellAssertions.push({ empId: emp.id, empUuid: emp.uuid, dk: dk, dayTeam: dayTeam, defaultTeam: emp.defaultTeam });
 
         if (!dayTeam) {
           // Genuinely off / unassigned that day (not just "off THIS team").
@@ -30170,17 +30200,38 @@ function renderHoursTable(days, dayNames) {
 
   document.getElementById('hours-table').innerHTML = html;
 
-  // PR #130 -- runtime assertion: re-verify every cell built above
-  // against a fresh getEmployeeTeam() call. See _hrsCellAssertions'
-  // declaration comment for what this catches (and doesn't).
+  // PR #130/#133 -- runtime assertion: re-verify every cell built above
+  // two ways. See _hrsCellAssertions' declaration comment for what each
+  // catches (and doesn't).
   (function () {
     var mismatches = [];
+    var pentaAssignmentRows = null;
+    try {
+      if (window.PentaAssignments && typeof window.PentaAssignments.isReady === 'function' && window.PentaAssignments.isReady()) {
+        pentaAssignmentRows = window.PentaAssignments.listSync();
+      }
+    } catch (e) {}
+
     _hrsCellAssertions.forEach(function (c) {
       var fresh = getEmployeeTeam(c.empId, c.dk);
-      if (fresh !== c.dayTeam) mismatches.push({ empId: c.empId, dk: c.dk, rendered: c.dayTeam, freshLookup: fresh });
+      if (fresh !== c.dayTeam) {
+        mismatches.push({ kind: 'stale-vs-fresh-getEmployeeTeam', empId: c.empId, dk: c.dk, rendered: c.dayTeam, freshLookup: fresh });
+      }
+
+      // Cross-check (b): compare against PentaAssignments' own cache
+      // directly, keyed by uuid -- independent of which key format
+      // dailyAssignments happened to end up with. This is the check
+      // that actually catches a dual-key desync in the mirror step.
+      if (pentaAssignmentRows && c.empUuid) {
+        var authRow = pentaAssignmentRows.find(function (r) { return r.employee_id === c.empUuid && r.date === c.dk; });
+        var authTeam = authRow ? (authRow.team === 'OFF' ? null : authRow.team) : c.defaultTeam;
+        if (authTeam !== c.dayTeam) {
+          mismatches.push({ kind: 'dailyAssignments-vs-PentaAssignments', empId: c.empId, empUuid: c.empUuid, dk: c.dk, rendered: c.dayTeam, authoritative: authTeam, authRow: authRow || null });
+        }
+      }
     });
     if (mismatches.length) {
-      console.warn('[hours] renderHoursTable team-lookup assertion FAILED -- a cell was built with a different team than a fresh getEmployeeTeam() call now returns. Someone likely started reading a cached/default team instead of calling getEmployeeTeam per-cell.', mismatches);
+      console.warn('[hours] renderHoursTable team-lookup assertion FAILED -- a rendered cell disagrees with either a fresh getEmployeeTeam() call or PentaAssignments\' own cache (the actual server-confirmed source of truth). See mismatch kind for which.', mismatches);
     }
   })();
 
