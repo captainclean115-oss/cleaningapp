@@ -93,5 +93,37 @@ check(
   'B1'
 );
 
+// Case 6/7 (PR #133) -- static regression guard, not a runtime call.
+// The real bug wasn't in getEmployeeTeam (cases 1-5 above already
+// proved that function correct in isolation) -- it was that
+// _mirrorPentaAssignmentsToInMemory's legacy_roster_id-keyed dual-write
+// depends on PentaEmployees having hydrated (see that function's
+// hasFacade check), and both loadWeekHours and renderTeamManager only
+// awaited PentaAssignments.ready() before forcing a mirror pass, never
+// PentaEmployees.ready(). Source-level check so a future edit that
+// drops the PentaEmployees.ready() await (e.g. someone "simplifying"
+// the guard) fails this test instead of silently reintroducing the
+// exact race that caused the Elvia Tonato Aug 18 bug.
+function checkGuardAwaitsBothReady(label, guardStartMarker) {
+  const idx = src.indexOf(guardStartMarker);
+  if (idx === -1) {
+    fail++; console.log('  FAIL ' + label + ' -- could not find guard marker in index.html (may have moved/been refactored)');
+    return;
+  }
+  const windowText = src.slice(idx, idx + 4500);
+  const awaitsAssignments = /PentaAssignments\.ready\(\)/.test(windowText);
+  const awaitsEmployees = /PentaEmployees\.ready\(\)/.test(windowText);
+  check(label, { awaitsAssignments: awaitsAssignments, awaitsEmployees: awaitsEmployees }, { awaitsAssignments: true, awaitsEmployees: true });
+}
+
+checkGuardAwaitsBothReady(
+  'loadWeekHours guard awaits both PentaAssignments.ready() and PentaEmployees.ready()',
+  'async function loadWeekHours() {'
+);
+checkGuardAwaitsBothReady(
+  'renderTeamManager guard awaits both PentaAssignments.ready() and PentaEmployees.ready()',
+  'async function renderTeamManager(opts) {'
+);
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail > 0 ? 1 : 0);
