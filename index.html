@@ -28816,15 +28816,23 @@ async function loadWeekHours() {
       teamDevices = teamOrder
         .filter(t => teamDeviceMap[t] && teamDeviceMap[t].device)
         .map(t => ({ ...teamDeviceMap[t].device, team: t }));
+      var _traceFromDate = days[0].toISOString();
+      var _traceToDate = new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59).toISOString();
       trips = await _geotabCall('Get', {
         typeName: 'Trip',
         search: {
-          fromDate: days[0].toISOString(),
-          toDate: new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59).toISOString(),
+          fromDate: _traceFromDate,
+          toDate: _traceToDate,
           includeOverlappedTrips: true
         },
         resultsLimit: 2000
       });
+      // PR #122-debug -- TEMPORARY trace, not a fix. Answers whether
+      // Geotab returned Aug 4/6/7 trips for M3's device at all before
+      // any per-day filtering happens.
+      console.log('[TRACE] loadWeekHours Trip fetch', { fromDate: _traceFromDate, toDate: _traceToDate, totalTrips: trips.length });
+      var _traceB10ECount = trips.filter(function(t){ return t.device && String(t.device.id) === 'b10E'; }).length;
+      console.log('[TRACE] trips for device b10E specifically:', _traceB10ECount);
       await reverseGeocodeTrips(trips);
       trips.forEach(t => {
         const did = t.device.id;
@@ -28861,6 +28869,10 @@ async function loadWeekHours() {
           const ts = new Date(t.start);
           return ts >= dayStart && ts <= dayEnd;
         }).sort((a,b) => new Date(a.start) - new Date(b.start));
+
+        // PR #122-debug -- TEMPORARY trace, not a fix. See this PR's
+        // description for what to do with the console output.
+        console.log('[TRACE]', team, dateKey(day), 'trips:', dayTrips.length, 'of', devTrips.length, 'device total');
 
         if (dayTrips.length === 0) return;
 
