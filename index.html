@@ -24649,15 +24649,43 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (window.PentaEmployees && window.PentaEmployees.getByName) ehEmp = window.PentaEmployees.getByName(input.employee || '');
     if (!ehEmp) ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
     if (!ehEmp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'Couldn\'t find that employee.'); return; }
+    // PR #134 -- window.PentaEmployees.getByName returns the raw facade
+    // object, whose .id is the Supabase uuid (this bypasses
+    // getUnifiedRoster(), which is what wraps .id to legacy_roster_id).
+    // Every other empHrs_* reader/writer (renderHoursTable,
+    // showEmpDayDetail, the employee portal) keys off getUnifiedRoster()
+    // -style ids -- legacy_roster_id when the employee has one, which
+    // matches production data 1:1 (documented in project memory as a
+    // repeat trap: feedback_legacy_roster_id_vs_uuid_keyspace). Writing
+    // under ehEmp.id (uuid) silently wrote to a key nothing else ever
+    // read -- a live, confirmed bug, not a hypothetical one.
+    var ehKeyId = ehEmp.legacy_roster_id || ehEmp.id;
     var ehDate = input.date || dateKey(new Date());
-    var existing = getEmpHours(ehEmp.id, ehDate) || {};
+    var existing = getEmpHours(ehKeyId, ehDate) || {};
     if (input.start) existing.start = input.start;
     if (input.end) existing.end = input.end;
     if (input.lunch) existing.lunch = parseInt(input.lunch) || 0;
     if (existing.start && existing.end) {
       existing.hours = calcHoursFromTimes(existing.start, existing.end, existing.lunch || 0);
     }
-    saveEmpHours(ehEmp.id, ehDate, existing);
+    saveEmpHours(ehKeyId, ehDate, existing);
+    // PR #134 -- same reasoning as saveEmpDayHours: a Claire-written
+    // override wasn't visible in the manager's Hours tab OR the
+    // employee portal until an unrelated later loadWeekHours() refresh.
+    // Only safe to do here if the currently-loaded weekHours actually
+    // covers ehDate's week -- Claire's tool can run without the Hours
+    // tab ever having been opened this session, and writing a cache
+    // blob for a week weekHours doesn't actually hold data for would
+    // overwrite a correct archived entry with wrong/empty data.
+    try {
+      if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined') {
+        var _ehWeekDays = getWeekDates(hoursWeekOffset);
+        var _ehDateObj = new Date(ehDate + 'T00:00:00');
+        if (_ehDateObj >= _ehWeekDays[0] && _ehDateObj <= _ehWeekDays[4] && Object.keys(weekHours).length > 0) {
+          _writeWeekHoursCache(_ehWeekDays);
+        }
+      }
+    } catch (e) {}
     var dayL3 = new Date(ehDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     var changes = [];
     if (input.start) changes.push('start: '+input.start);
@@ -28542,9 +28570,18 @@ function _writeWeekHoursCache(days) {
     var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[4]);
     localStorage.setItem(weekKey, JSON.stringify(cacheData));
 
-    // Save per-employee overrides into a format the portal can read
+    // Save per-employee overrides into a format the portal can read.
+    // PR #134 -- was EMPLOYEE_ROSTER.forEach(...): EMPLOYEE_ROSTER is a
+    // permanently-empty const, never pushed to anywhere in this file
+    // (documented in project memory), so this loop body never executed
+    // for any real employee -- empHours_cache was written as {} on
+    // every single call, silently. getUnifiedRoster() is the real,
+    // currently-populated roster, and its .id is the same
+    // legacy_roster_id convention every other empHrs_* reader/writer
+    // (renderHoursTable, showEmpDayDetail, the now-fixed Claire tool,
+    // and the portal's own currentEmployee.id) already uses.
     var empCache = {};
-    EMPLOYEE_ROSTER.forEach(function(emp) {
+    getUnifiedRoster().forEach(function(emp) {
       days.forEach(function(d, i) {
         var dk = dateKey(d);
         var override = getEmpHours(emp.id, dk);
@@ -29895,6 +29932,13 @@ function saveEmpDayHours(empId, empName, dk) {
   logPendingUpdate('Hours edited: '+empName, dayLbl+' — start: '+(s||'—')+', end: '+(e||'—')+', lunch: '+l+'min');
   document.getElementById('emp-hours-overlay').remove();
   renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
+  // PR #134 -- was missing (clearEmpDayHours already had this, PR #119).
+  // Without it, a saved edit showed correctly in this manager's own
+  // Hours tab immediately but stayed stale in weekHours_cache /
+  // empHours_cache -- the blobs the employee portal and PentaAssignments-
+  // aware readers on OTHER manager sessions read -- until an unrelated
+  // later loadWeekHours() happened to run.
+  _writeWeekHoursCache(getWeekDates(hoursWeekOffset));
 }
 
 async function clearEmpDayHours(empId, empName, dk) {
@@ -42371,7 +42415,27 @@ function portalWeekNav(dir) {
   renderHours();
 }
 
-function renderHours() {
+async function renderHours() {
+  // PR #134 -- same PentaAssignments/PentaEmployees hydration race
+  // PR #128/#133 fixed for the manager's Live tab, present here too:
+  // getEmployeeTeam (called below) reads dailyAssignments, which only
+  // picks up a real override via _mirrorPentaAssignmentsToInMemory --
+  // an async merge whose legacy_roster_id-keyed half specifically
+  // needs PentaEmployees hydrated (see that function's hasFacade
+  // check). All 3 call sites of renderHours() are fire-and-forget
+  // (never awaited), same as loadWeekHours() from gpsInit() -- safe to
+  // await here without changing any caller.
+  if (window.PentaAssignments && typeof window.PentaAssignments.ready === 'function') {
+    try {
+      var _rhReadyWaits = [window.PentaAssignments.ready()];
+      if (window.PentaEmployees && typeof window.PentaEmployees.ready === 'function') {
+        _rhReadyWaits.push(window.PentaEmployees.ready());
+      }
+      await Promise.all(_rhReadyWaits);
+      if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
+    } catch (e) { console.warn('[portal hours] PentaAssignments/PentaEmployees ready or mirror failed', e); }
+  }
+
   var days = getPortalWeekDates(_portalWeekOffset);
   var mon = days[0];
   var fri = days[4];
@@ -42399,56 +42463,80 @@ function renderHours() {
 
   // Find the archived week data
   var weekKey = 'weekHours_' + dateKey(mon) + '_' + dateKey(fri);
-  var teamData = null;
+  // PR #134 -- was a SINGLE teamData blob for the whole week, chosen
+  // once from currentEmployee's STATIC team/team_text/team_id -- never
+  // consulted daily_assignments, so a day-of team override (e.g. a
+  // manager moving someone to a different team for one day) was
+  // invisible here even though the manager's own Hours tab (via
+  // getEmployeeTeam, per PR #109/#130) showed it correctly. Now
+  // resolves each day independently, the same way renderHoursTable's
+  // per-cell logic does: getEmployeeTeam(employeeId, dateStr) first,
+  // falling back to the employee's default team only when there's no
+  // override AND no daily_assignments row at all for that date.
+  var composite = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], total: 0 };
 
   try {
     var weekData = _portalWeekOffset === 0
       ? localStorage.getItem('weekHours_cache')
       : localStorage.getItem(weekKey);
-    if (weekData) {
-      var data = JSON.parse(weekData);
-      // Sprint 6.10: try candidate keys — current name, legacy team_text,
-      // PentaTeams-resolved name. Covers cache keyed under any of those.
-      var _hourKeys = [];
-      if (currentEmployee.team) _hourKeys.push(currentEmployee.team);
-      if (currentEmployee.team_text && _hourKeys.indexOf(currentEmployee.team_text) === -1) {
-        _hourKeys.push(currentEmployee.team_text);
-      }
-      if (currentEmployee.team_id && window.PentaTeams) {
-        var _ptHr = window.PentaTeams.getById(currentEmployee.team_id);
-        if (_ptHr && _ptHr.name && _hourKeys.indexOf(_ptHr.name) === -1) _hourKeys.push(_ptHr.name);
-      }
-      for (var _hki = 0; _hki < _hourKeys.length; _hki++) {
-        if (data[_hourKeys[_hki]]) { teamData = data[_hourKeys[_hki]]; break; }
-      }
-      if (teamData) {
-        // Check for per-employee overrides
-        var empCache = JSON.parse(localStorage.getItem('empHours_cache') || '{}');
-        var empOverrides = empCache[currentEmployee.id] || {};
-        if (Object.keys(empOverrides).length > 0) {
-          days.forEach(function(d, i) {
-            var dk = d.toISOString().split('T')[0];
-            if (empOverrides[dk]) {
-              teamData.days[i] = empOverrides[dk].hours || 0;
-              if (empOverrides[dk].start) {
-                var sp = empOverrides[dk].start.split(':');
-                var sd = new Date(d); sd.setHours(parseInt(sp[0]),parseInt(sp[1]),0,0);
-                teamData.starts[i] = sd.toISOString();
-              }
-              if (empOverrides[dk].end) {
-                var ep = empOverrides[dk].end.split(':');
-                var ed = new Date(d); ed.setHours(parseInt(ep[0]),parseInt(ep[1]),0,0);
-                teamData.ends[i] = ed.toISOString();
-              }
-            }
-          });
-          teamData.total = teamData.days.reduce(function(s,h){ return s+(h||0); },0);
+    var data = weekData ? JSON.parse(weekData) : null;
+
+    if (data && currentEmployee && currentEmployee.id) {
+      var _resolveTeamBlob = function (teamName) {
+        if (!teamName) return null;
+        if (data[teamName]) return data[teamName];
+        // Sprint 6.10 aliasing, preserved: cache may be keyed under the
+        // team's current PentaTeams-resolved name instead of the raw
+        // team code.
+        if (window.PentaTeams && typeof window.PentaTeams.getByName === 'function') {
+          var pt = window.PentaTeams.getByName(teamName);
+          if (pt && pt.name && data[pt.name]) return data[pt.name];
         }
+        return null;
+      };
+
+      days.forEach(function (d, i) {
+        var dk = dateKey(d);
+        var dayTeam = (typeof getEmployeeTeam === 'function') ? getEmployeeTeam(currentEmployee.id, dk) : null;
+        if (!dayTeam) dayTeam = currentEmployee.team || currentEmployee.team_text || null;
+        var dayBlob = _resolveTeamBlob(dayTeam);
+        if (dayBlob) {
+          composite.days[i] = (dayBlob.days && dayBlob.days[i]) || 0;
+          composite.starts[i] = (dayBlob.starts && dayBlob.starts[i]) || null;
+          composite.ends[i] = (dayBlob.ends && dayBlob.ends[i]) || null;
+          composite.lunch[i] = (dayBlob.lunch && dayBlob.lunch[i]) || null;
+        }
+      });
+      composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
+
+      // Check for per-employee overrides -- these win over the
+      // team-aggregate GPS numbers above, same precedence
+      // renderHoursTable's own override/teCell/team fallback chain uses.
+      var empCache = JSON.parse(localStorage.getItem('empHours_cache') || '{}');
+      var empOverrides = empCache[currentEmployee.id] || {};
+      if (Object.keys(empOverrides).length > 0) {
+        days.forEach(function(d, i) {
+          var dk = dateKey(d);
+          if (empOverrides[dk]) {
+            composite.days[i] = empOverrides[dk].hours || 0;
+            if (empOverrides[dk].start) {
+              var sp = empOverrides[dk].start.split(':');
+              var sd = new Date(d); sd.setHours(parseInt(sp[0]),parseInt(sp[1]),0,0);
+              composite.starts[i] = sd.toISOString();
+            }
+            if (empOverrides[dk].end) {
+              var ep = empOverrides[dk].end.split(':');
+              var ed = new Date(d); ed.setHours(parseInt(ep[0]),parseInt(ep[1]),0,0);
+              composite.ends[i] = ed.toISOString();
+            }
+          }
+        });
+        composite.total = composite.days.reduce(function(s,h){ return s+(h||0); },0);
       }
     }
   } catch(e) {}
 
-  renderHoursData(teamData || { days: [0,0,0,0,0], starts: [], ends: [] });
+  renderHoursData(composite);
 }
 
 function getPortalWeekDates(offset) {
