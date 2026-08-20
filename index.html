@@ -42513,7 +42513,20 @@ async function renderHours() {
   // per-cell logic does: getEmployeeTeam(employeeId, dateStr) first,
   // falling back to the employee's default team only when there's no
   // override AND no daily_assignments row at all for that date.
-  var composite = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], total: 0 };
+  //
+  // PR #137 -- that "falling back to default" description was WRONG in
+  // the code below, and it's a real bug, not just an inaccurate comment:
+  // getEmployeeTeam already does its own "no row -> default team"
+  // fallback internally. It only ever returns null for ONE remaining
+  // reason: an explicit daily_assignments row with team='OFF'. The
+  // manager's own renderHoursTable treats that null as OFF unconditionally
+  // (never falls back to default) -- this file's old `if (!dayTeam)
+  // dayTeam = currentEmployee.team...` line did NOT match that, and
+  // silently replaced a real OFF day with the employee's default-team
+  // GPS hours. Confirmed live: Blanca marked OFF for Aug 10 showed no
+  // hours correctly on the manager's Live tab, but showed a full day of
+  // B-team GPS hours on her own portal login.
+  var composite = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], status: [null,null,null,null,null], total: 0 };
 
   try {
     var weekData = _portalWeekOffset === 0
@@ -42538,7 +42551,19 @@ async function renderHours() {
       days.forEach(function (d, i) {
         var dk = dateKey(d);
         var dayTeam = (typeof getEmployeeTeam === 'function') ? getEmployeeTeam(currentEmployee.id, dk) : null;
-        if (!dayTeam) dayTeam = currentEmployee.team || currentEmployee.team_text || null;
+        if (!dayTeam) {
+          // PR #137 -- null here means an explicit OFF override (see
+          // this block's declaration comment), not "no data." Match
+          // renderHoursTable's own semantics: show the off status,
+          // zero hours, no GPS fallback of any kind for this day.
+          var offInfo = (typeof getEmployeeDayOffInfo === 'function') ? getEmployeeDayOffInfo(currentEmployee.id, dk) : null;
+          var offType = offInfo && offInfo.status_type;
+          composite.status[i] = {
+            type: offType || 'off',
+            label: (offType && typeof DAY_OFF_CATEGORY_LABELS !== 'undefined' && DAY_OFF_CATEGORY_LABELS[offType]) || 'Off'
+          };
+          return;
+        }
         var dayBlob = _resolveTeamBlob(dayTeam);
         if (dayBlob) {
           composite.days[i] = (dayBlob.days && dayBlob.days[i]) || 0;
@@ -42557,6 +42582,12 @@ async function renderHours() {
       if (Object.keys(empOverrides).length > 0) {
         days.forEach(function(d, i) {
           var dk = dateKey(d);
+          // PR #137 -- an OFF day (composite.status[i] set above) must
+          // win unconditionally, matching renderHoursTable: that
+          // function's OFF branch returns before override/teCell are
+          // even read, so an OFF day is never reachable by a manual
+          // hour override there either.
+          if (composite.status[i]) return;
           if (empOverrides[dk]) {
             composite.days[i] = empOverrides[dk].hours || 0;
             if (empOverrides[dk].start) {
@@ -42702,6 +42733,12 @@ function renderHoursData(data) {
     const mm = Math.round((netHrs - hh) * 60);
     const hStr = netHrs > 0 ? `${hh}h${mm > 0 ? ' ' + mm + 'm' : ''}` : '—';
     const isToday = i === todayIdx;
+    // PR #137 -- OFF status (vacation/excused/unexcused/no-call/not-
+    // scheduled), set by renderHours() when getEmployeeTeam returned
+    // null for this date. Shown instead of a bare "—" with no
+    // explanation, and suppresses the hours-dispute button -- disputing
+    // "my hours" on a day you weren't scheduled doesn't make sense.
+    const offStatus = data.status && data.status[i];
 
     // Check for extra tasks
     var tasksHtml = '';
@@ -42724,12 +42761,12 @@ function renderHoursData(data) {
     return `<div class="hours-row" style="${isToday ? 'background:rgba(79,142,247,0.05);border-radius:8px;margin:0 -4px;padding:0 4px;' : ''}">
       <div style="flex:1">
         <div class="hours-day" style="${isToday ? 'color:var(--accent);font-weight:600' : ''}">${(daysFull[currentLang]||daysFull.en)[i]}${isToday ? ' •' : ''}</div>
-        ${sStr && eStr ? `<div class="hours-time">${sStr} → ${eStr}</div>` : ''}
+        ${offStatus ? `<div class="hours-time" style="color:var(--muted)">${offStatus.label}</div>` : (sStr && eStr ? `<div class="hours-time">${sStr} → ${eStr}</div>` : '')}
         ${tasksHtml}
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        <div class="hours-val" style="color:${netHrs > 0 ? 'var(--accent)' : 'var(--muted)'}">${hStr}</div>
-        ${(sStr || eStr) ? `<button onclick="openHoursDispute(${i},'${sStr}','${eStr}',0)" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap">?</button>` : ''}
+        <div class="hours-val" style="color:${(!offStatus && netHrs > 0) ? 'var(--accent)' : 'var(--muted)'}">${offStatus ? '—' : hStr}</div>
+        ${(!offStatus && (sStr || eStr)) ? `<button onclick="openHoursDispute(${i},'${sStr}','${eStr}',0)" style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);color:#fbbf24;font-family:'DM Sans',sans-serif;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap">?</button>` : ''}
       </div>
     </div>`;
   }).join('');

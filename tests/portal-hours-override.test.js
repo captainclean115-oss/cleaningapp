@@ -27,6 +27,12 @@ function extract(startMarker, endMarker) {
 
 const getEmployeeTeamSrc = extract('\nfunction getEmployeeTeam(employeeId, dateStr) {', '\nfunction getTeamEmployees(');
 const renderHoursSrc = extract('\nasync function renderHours() {', '\nfunction getPortalWeekDates(');
+// PR #137 -- real source for the OFF-status helpers renderHours() now
+// calls, not reimplemented (same reasoning as getEmployeeTeam above).
+const dayOffSrc = extract(
+  '\nconst DAY_OFF_CATEGORY_LABELS = {',
+  '\n// ═══════════════════════════════════════════════════════════════════════\n// Sprint 9 Phase A'
+);
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -73,8 +79,10 @@ async function runRenderHours(opts) {
     document: makeDocStub(),
     window: {},
     dailyAssignments: opts.dailyAssignments,
+    dailyAssignmentDetails: opts.dailyAssignmentDetails || {}, // PR #137 -- status_type/notes for OFF days
     getUnifiedRoster: function () { return [{ id: opts.employeeId, defaultTeam: opts.defaultTeam }]; },
     getEmployeeTeam: null, // filled in below after compiling
+    getEmployeeDayOffInfo: null, // filled in below after compiling
     currentEmployee: { id: opts.employeeId, team: opts.defaultTeam, team_text: opts.defaultTeam, team_id: null },
     currentLang: 'en',
     _portalWeekOffset: 0,
@@ -90,6 +98,7 @@ async function runRenderHours(opts) {
   sandbox._mirrorPentaAssignmentsToInMemory = function () {}; // dailyAssignments seeded directly, no real mirror needed
 
   vm.createContext(sandbox);
+  vm.runInContext(dayOffSrc, sandbox);
   vm.runInContext(getEmployeeTeamSrc, sandbox);
   vm.runInContext(renderHoursSrc, sandbox);
   await vm.runInContext('renderHours()', sandbox);
@@ -139,6 +148,48 @@ async function runRenderHours(opts) {
     days: days,
   });
   check('no override anywhere -> every day uses the default team', composite2.days, [8, 8, 8, 8, 8]);
+
+  // Case 3 (PR #137 -- THE Blanca scenario): an explicit OFF day must
+  // show zero hours and an off status, NOT the default team's GPS
+  // hours. This is exactly what PR #134 got wrong -- getEmployeeTeam
+  // returning null (OFF) was being treated the same as "no row, use
+  // default."
+  const daysB = [
+    new Date(2026, 7, 10), // Mon Aug 10 -- the OFF day
+    new Date(2026, 7, 11),
+    new Date(2026, 7, 12),
+    new Date(2026, 7, 13),
+    new Date(2026, 7, 14),
+  ];
+  const weekHoursCacheB = {
+    B3: { days: [8, 8, 8, 8, 8], starts: ['2026-08-10T13:00:00.000Z', null, null, null, null], ends: ['2026-08-10T21:00:00.000Z', null, null, null, null], lunch: [null, null, null, null, null], total: 40 },
+  };
+  const composite3 = await runRenderHours({
+    employeeId: 'blanca-legacy-id',
+    defaultTeam: 'B3',
+    dailyAssignments: { ['2026-08-10_blanca-legacy-id']: 'OFF' },
+    dailyAssignmentDetails: { ['2026-08-10_blanca-legacy-id']: { status_type: 'vacation', notes: null } },
+    localStorage: { weekHours_cache: JSON.stringify(weekHoursCacheB) },
+    days: daysB,
+  });
+  check('OFF day shows zero hours, not the default team\'s GPS hours', composite3.days[0], 0);
+  check('OFF day has no start time carried over from the default team', composite3.starts[0], null);
+  check('OFF day status is captured with its real category', composite3.status[0], { type: 'vacation', label: 'Vacation' });
+  check('non-OFF days in the same week are unaffected', composite3.days[1], 8);
+
+  // Case 4: OFF with no status_type on the row at all (a legacy/plain
+  // OFF row, or one saved before the category feature existed) must
+  // still show a generic "Off" status, not silently fall through.
+  const composite4 = await runRenderHours({
+    employeeId: 'blanca-legacy-id',
+    defaultTeam: 'B3',
+    dailyAssignments: { ['2026-08-10_blanca-legacy-id']: 'OFF' },
+    dailyAssignmentDetails: {},
+    localStorage: { weekHours_cache: JSON.stringify(weekHoursCacheB) },
+    days: daysB,
+  });
+  check('OFF with no category still shows a generic Off status, not the default team\'s hours', composite4.status[0], { type: 'off', label: 'Off' });
+  check('OFF with no category still shows zero hours', composite4.days[0], 0);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail > 0 ? 1 : 0);
