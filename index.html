@@ -13422,6 +13422,28 @@ function _mirrorPentaJobsToInMemory() {
 // resolution, and a 1.5s backup. Same belt-and-suspenders pattern as
 // Phase 4 (locked in by v10.0.7).
 // =====================================================================
+// PR #139 — Team Manager and the Live tab's Hours table both derive their
+// per-employee team display from dailyAssignments/weekHours, but this
+// mirror's realtime-triggered pass only ever re-rendered Team Manager: a
+// cross-device assignment change (e.g. moved on mobile) landed correctly
+// in dailyAssignments via PentaAssignments' existing realtime
+// subscription + this onChange listener, but the Hours table stayed
+// stale until the next full loadWeekHours() (tab switch, manual
+// refreshLiveTab, or a page reload) -- no user action ever fixed it
+// short of that. Fixed below by also doing the same cheap in-memory
+// re-render _hrsMaybeRefreshForDate already uses for LOCAL edits
+// (quickAssign/confirmTeamAssign): no Geotab refetch, just re-attribute
+// the already-loaded week's data against the now-current dailyAssignments.
+//
+// Debounced 200ms — same idiom as PentaJobs's realtime-echo fix (PR #101,
+// search _pentaJobsMirrorRenderTimer): a single assign() call produces
+// TWO realtime events (the soft-delete UPDATE, then the INSERT), each of
+// which reaches every open tab, including the one that made the write.
+// Without coalescing, that's 2 full renders of both Team Manager and the
+// Hours table per assignment change. The data merge below (dailyAssignments
+// + saveDailyAssignments) stays immediate; only the DOM rebuilds coalesce.
+var _pentaAssignmentsMirrorRenderTimer = null;
+
 function _mirrorPentaAssignmentsToInMemory() {
   if (typeof dailyAssignments === 'undefined') return;
   if (!window.PentaAssignments || !window.PentaAssignments.isReady || !window.PentaAssignments.isReady()) return;
@@ -13495,7 +13517,22 @@ function _mirrorPentaAssignmentsToInMemory() {
   }
   if (merged) {
     try { saveDailyAssignments(); } catch (e) {}
-    try { if (typeof renderTeamManager === 'function') renderTeamManager(); } catch (e) {}
+    if (_pentaAssignmentsMirrorRenderTimer) clearTimeout(_pentaAssignmentsMirrorRenderTimer);
+    _pentaAssignmentsMirrorRenderTimer = setTimeout(function() {
+      _pentaAssignmentsMirrorRenderTimer = null;
+      try { if (typeof renderTeamManager === 'function') renderTeamManager(); } catch (e) {}
+      // Live tab's Hours table -- only if it's actually been rendered
+      // this session (nothing stale to fix otherwise; same guard
+      // _hrsMaybeRefreshForDate uses) and there's a loaded week to
+      // re-attribute against.
+      try {
+        if (document.getElementById('hours-table')
+            && typeof weekHours !== 'undefined' && weekHours && Object.keys(weekHours).length
+            && typeof renderHoursTable === 'function' && typeof getWeekDates === 'function') {
+          renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
+        }
+      } catch (e) { console.warn('[hours] realtime-triggered hours refresh failed', e); }
+    }, 200);
   }
 }
 
