@@ -305,6 +305,18 @@ body {
 .btn-email { background: var(--teal); color: #fff; border: none; }
 .action-btn:active { opacity: .7; transform: scale(.97); }
 
+/* PR #140 — Move Employee / Day Off modal buttons (editEmployeeAssignment,
+   _showDayOffCategoryPicker, openDayOffPicker). These are built with inline
+   style.cssText so a class-based :active rule is additive, not a replacement.
+   Immediate visual acknowledgment on tap -- independent of whether the click
+   handler's async work is fast or slow -- so a tap that DID register never
+   looks identical to one that silently didn't (see confirmTeamAssign's
+   PR #140 comment for the failure mode this is paired with). Same
+   opacity+scale idiom as .action-btn above. transition makes the return to
+   normal state feel deliberate rather than a snap. */
+.tm-modal-btn { transition: opacity .1s ease, transform .1s ease; }
+.tm-modal-btn:active { opacity: .6; transform: scale(.96); }
+
 /* ── FREQ COLORS ── */
 .f-wek { background: var(--green); color: #fff; }
 .f-etw { background: var(--accent); color: #fff; }
@@ -16930,8 +16942,40 @@ function closeJobModal() {
 let pendingUpdates = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
 let manualTasks = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
 
-function savePending() { localStorage.setItem('cleanco_pending', JSON.stringify(pendingUpdates)); updateTaskBadge(); }
-function saveManualTasks() { localStorage.setItem('cleanco_tasks', JSON.stringify(manualTasks)); updateTaskBadge(); }
+// PR #140 — pendingUpdates has no cap (unlike cleanco_activity_log's
+// established 500-entry cap a few lines below in logActivity) and grows
+// forever: every confirmTeamAssign call (Move Employee + Day Off modal
+// buttons both funnel through it) unshifts a new entry and NEVER trims
+// old done ones automatically. Over months of real production use this
+// can exhaust localStorage's per-origin quota (5MB on Safari, tighter on
+// mobile) -- and localStorage.setItem was completely unguarded here, so
+// a QuotaExceededError thrown mid-click propagated straight out of
+// confirmTeamAssign's synchronous handler, aborting the rest of it
+// (including overlay.remove() and the optimistic re-render) with zero
+// visible feedback. Once storage is full, EVERY subsequent tap hits the
+// same throw -- explains "tap does nothing, tap again also does
+// nothing" on any browser/platform (this is a plain JS exception, not a
+// touch-event quirk). Fixed two ways: (1) cap like cleanco_activity_log,
+// keeping ALL not-yet-done items (never silently drop actionable work)
+// plus the most recent PENDING_UPDATES_DONE_CAP already-done ones; (2)
+// guard the write so a quota failure elsewhere can never throw uncaught
+// again, matching logActivity's already-hardened pattern.
+var PENDING_UPDATES_DONE_CAP = 200;
+function savePending() {
+  try {
+    var active = pendingUpdates.filter(function(p) { return !p.done; });
+    var done = pendingUpdates.filter(function(p) { return p.done; }).slice(0, PENDING_UPDATES_DONE_CAP);
+    if (done.length < pendingUpdates.filter(function(p) { return p.done; }).length) {
+      pendingUpdates = active.concat(done);
+    }
+    localStorage.setItem('cleanco_pending', JSON.stringify(pendingUpdates));
+  } catch (e) { console.warn('[savePending] failed (non-fatal) -- pending updates may not persist across reload', e); }
+  updateTaskBadge();
+}
+function saveManualTasks() {
+  try { localStorage.setItem('cleanco_tasks', JSON.stringify(manualTasks)); } catch (e) { console.warn('[saveManualTasks] failed (non-fatal)', e); }
+  updateTaskBadge();
+}
 
 function updateTaskBadge() {
   // v11.0.25: include pending form-submission count (DB-backed, cross-device).
@@ -23110,6 +23154,7 @@ document.addEventListener('click', function(e) {
   function isIgnored(el) {
     while (el && el !== document.body) {
       if (!el.classList) { el = el.parentElement; continue; }
+      if (el.id === 'tm-assign-overlay') return true; // PR #140 -- don't arm the go-home swipe from inside the Move Employee / Day Off modal
       if (el.id === 'gps-map') return true;
       if (el.classList.contains('leaflet-container')) return true;
       // Home pages wrap is itself a horizontal scroller — swipes there are page flips.
@@ -23135,6 +23180,18 @@ document.addEventListener('click', function(e) {
   }
 
   function closeCurrentFeature() {
+    // PR #140 — Move Employee / Day Off modal (editEmployeeAssignment /
+    // openDayOffPicker, id tm-assign-overlay). Wasn't checked here at
+    // all before this fix: an accidental >90px horizontal drag while
+    // tapping a button inside it (thumbs aren't perfectly still) fell
+    // through every check below to the showTab('home') fallback,
+    // navigating away while the modal stayed open, unremoved, still
+    // covering the screen -- confusing regardless, and a real (if
+    // narrower than initially suspected) contributor to "tap doesn't
+    // seem to do anything." Close it and stop here, same as the other
+    // modals below.
+    var tma = document.getElementById('tm-assign-overlay');
+    if (tma) { tma.remove(); return; }
     // Quote Builder modal -- same swipe-right convention as other modals
     var qm = document.getElementById('quote-modal');
     if (qm && qm.style.display === 'flex') { closeQuoteTool(); return; }
@@ -23184,6 +23241,7 @@ document.addEventListener('click', function(e) {
   }
 
   function anyModalOpen() {
+    if (document.getElementById('tm-assign-overlay')) return true; // PR #140
     var qm = document.getElementById('quote-modal');
     if (qm && qm.style.display === 'flex') return true;
     var cf = document.getElementById('customer-form-overlay');
@@ -26438,7 +26496,16 @@ function editEmployeeAssignment(employeeId, dateStr) {
   const teams = _pentaTeamNames();
   const teamColors = teams.map(t => _pentaTeamColor(t, '#6b7280'));
 
+  // PR #140 — dedupe: if a previous open of this modal (or openDayOffPicker,
+  // which shares this same id) never got removed, drop it instead of
+  // stacking a second identical-looking overlay on top with its own,
+  // different employeeId/dateStr closure. Same pattern showEmpDayDetail
+  // already uses for #emp-hours-overlay.
+  var _tmExisting = document.getElementById('tm-assign-overlay');
+  if (_tmExisting) _tmExisting.remove();
+
   const overlay = document.createElement('div');
+  overlay.id = 'tm-assign-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
   // Build picker using DOM (avoids quote escaping issues)
   const sheet = document.createElement('div');
@@ -26463,6 +26530,7 @@ function editEmployeeAssignment(employeeId, dateStr) {
   // Team buttons
   teams.forEach(function(t, i) {
     const btn = document.createElement('button');
+    btn.className = 'tm-modal-btn';
     btn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
       'background:' + (t === currentTeam ? 'rgba(108,143,255,0.15)' : 'var(--surface2)') + ';' +
       'border:1px solid ' + (t === currentTeam ? 'var(--accent)' : 'var(--border)') + ';' +
@@ -26477,6 +26545,7 @@ function editEmployeeAssignment(employeeId, dateStr) {
   // Day Off button -- opens the category submenu instead of saving
   // directly (structured "Day off" categories, migration 086).
   const offBtn = document.createElement('button');
+  offBtn.className = 'tm-modal-btn';
   offBtn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
     'background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:10px;cursor:pointer;text-align:left';
   offBtn.innerHTML = '<span style="width:12px;height:12px;border-radius:50%;background:var(--red);flex-shrink:0"></span>' +
@@ -26488,6 +26557,7 @@ function editEmployeeAssignment(employeeId, dateStr) {
 
   // Cancel button
   const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'tm-modal-btn';
   cancelBtn.style.cssText = 'width:100%;padding:12px;background:none;border:1px solid var(--border);' +
     'border-radius:10px;cursor:pointer;font-family:DM Sans,sans-serif;font-size:14px;color:var(--muted)';
   cancelBtn.textContent = 'Cancel';
@@ -26514,6 +26584,7 @@ function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentD
   newBody.style.cssText = 'padding:12px 16px';
 
   const backRow = document.createElement('button');
+  backRow.className = 'tm-modal-btn';
   backRow.style.cssText = 'display:flex;align-items:center;gap:6px;background:none;border:none;color:var(--muted);' +
     'font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer;padding:4px 0;margin-bottom:10px';
   backRow.innerHTML = '← Back';
@@ -26540,6 +26611,7 @@ function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentD
   DAY_OFF_CATEGORIES.forEach(function(cat) {
     const isCurrent = currentDayOff && currentDayOff.status_type === cat;
     const btn = document.createElement('button');
+    btn.className = 'tm-modal-btn';
     btn.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;padding:12px 14px;margin-bottom:8px;' +
       'background:' + (isCurrent ? 'rgba(239,68,68,0.15)' : 'var(--surface2)') + ';' +
       'border:1px solid ' + (isCurrent ? 'var(--red)' : 'var(--border)') + ';' +
@@ -26554,6 +26626,7 @@ function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentD
   });
 
   const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'tm-modal-btn';
   cancelBtn.style.cssText = 'width:100%;padding:12px;background:none;border:1px solid var(--border);' +
     'border-radius:10px;cursor:pointer;font-family:DM Sans,sans-serif;font-size:14px;color:var(--muted)';
   cancelBtn.textContent = 'Cancel';
@@ -26574,7 +26647,13 @@ function _showDayOffCategoryPicker(employeeId, dateStr, overlay, sheet, currentD
 // without requiring the team-list step first. Builds its own bare
 // overlay/sheet since there's no existing picker modal to swap into.
 function openDayOffPicker(employeeId, dateStr) {
+  // PR #140 — same dedupe as editEmployeeAssignment; shares the same id
+  // since only one of these two entry points should ever be on screen.
+  var _tmExisting = document.getElementById('tm-assign-overlay');
+  if (_tmExisting) _tmExisting.remove();
+
   const overlay = document.createElement('div');
+  overlay.id = 'tm-assign-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
   const sheet = document.createElement('div');
   sheet.style.cssText = 'background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);overflow:hidden';
@@ -26722,7 +26801,18 @@ function saveRosterEmpEdit(empId, overlay) {
 // categories (migration 086) -- only meaningful when team === 'OFF'.
 function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
-  if (!emp) return;
+  if (!emp) {
+    // PR #140 — this used to be a bare silent `return`: no console
+    // trace, no toast, and (before the fix below) the modal stayed open
+    // with the tap having visibly done nothing. Employee ids are stable
+    // in normal operation (see getUnifiedRoster's legacy_roster_id/uuid
+    // derivation), so this should be rare, but "rare and silent" is
+    // exactly what makes an intermittent bug unreportable -- at minimum
+    // close the modal and leave a trace instead of a dead end.
+    console.warn('[confirmTeamAssign] employee not found for id', employeeId, '-- closing modal without saving');
+    try { overlay.remove(); } catch (e) {}
+    return;
+  }
 
   // Track old team so we can recalc its schedule
   var oldTeam = getEmployeeTeam(employeeId, dateStr);
@@ -26733,12 +26823,28 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
 
   var writePromise = assignEmployee(employeeId, team, dateStr, extra);
 
-  logPendingUpdate(emp.name + ' → ' + _offLabel, dateLabel);
+  // PR #140 — the user-visible response (closing the modal + the
+  // optimistic repaint) must happen unconditionally, before any
+  // non-essential side effect. Previously logPendingUpdate() ran FIRST,
+  // synchronously and unguarded -- its localStorage write
+  // (cleanco_pending) had no cap and could exceed the browser's quota
+  // after months of real use, throwing a QuotaExceededError that
+  // aborted the rest of this function before overlay.remove() ever ran.
+  // From the user's side that reads as "tap the team/day-off button,
+  // nothing happens" -- and since the same bloated array is still there
+  // on retry, tapping again hit the identical throw. savePending() is
+  // now hardened at its source too (see that function), but keeping the
+  // ordering here means a FUTURE exception in any of these side effects
+  // still can't reopen this exact failure mode.
   overlay.remove();
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
-  recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
-  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
-  _hrsMaybeRefreshForDate(dateStr); // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
+
+  try { logPendingUpdate(emp.name + ' → ' + _offLabel, dateLabel); } catch (e) { console.warn('[confirmTeamAssign] logPendingUpdate failed (non-fatal)', e); }
+  try {
+    recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
+    if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+  } catch (e) { console.warn('[confirmTeamAssign] recalcTeamTimes failed (non-fatal)', e); }
+  try { _hrsMaybeRefreshForDate(dateStr); } catch (e) { console.warn('[confirmTeamAssign] hours refresh failed (non-fatal)', e); } // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
 
   writePromise.catch(function() {
     // assignEmployee already rolled back the optimistic write and
