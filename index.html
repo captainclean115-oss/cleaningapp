@@ -28694,10 +28694,24 @@ async function _toggleLunchOverride(team, dateStr, stopKey, action, addr, durati
 // total; an 'include' override (no UI yet -- Tom's spec explicitly
 // says to leave this door open, not build it now) would add in a stop
 // that didn't naturally qualify.
-function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr) {
+function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr, trueStart, trueEnd) {
+  // PR #135 -- was scanning ALL of dayTrips with no relation to the
+  // actual computed workday window at all. For M teams specifically
+  // (vehicles go home with the driver instead of staying at the
+  // office), a post-workday personal stop -- drove home, stopped at a
+  // store for 30 min -- looked identical to a real lunch break to this
+  // heuristic (not at the depot, no client match, under 60 min) and
+  // got deducted from the payroll total. Confirmed live: M3 employee
+  // returned to the 910 Boston Post Rd office (true end) at 4:22 PM,
+  // a personal stop at 5:15 PM got flagged and deducted. trueStart/
+  // trueEnd bound candidates to the actual workday -- optional params
+  // so any other/future caller without that context still works,
+  // just without this protection.
   var naturalCandidates = dayTrips.filter(function(t) {
     if (!t.stop) return false;
     var stopTime = new Date(t.stop);
+    if (trueStart && stopTime < trueStart) return false;
+    if (trueEnd && stopTime > trueEnd) return false;
     var nextTrip = dayTrips.find(function(t2) { return new Date(t2.start) > stopTime; });
     if (!nextTrip) return false;
     var stopDurMin = (new Date(nextTrip.start) - stopTime) / 60000;
@@ -29109,7 +29123,10 @@ async function loadWeekHours() {
           // instead of an independently-diverged heuristic. todayKey/
           // todayTeamJobs are computed once, hoisted above the
           // start/end block (PR #117), and reused here.
-          const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs, todayKey);
+          // PR #135 — trueStart/trueEnd (computed just above) bound
+          // candidates to the actual workday; see _detectDayLunch's
+          // comment for why a post-end-time personal stop needed this.
+          const _dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs, todayKey, trueStart, trueEnd);
           if (_dayLunch) {
             weekHours[team].lunch = weekHours[team].lunch || [];
             weekHours[team].lunch[dayIdx] = _dayLunch;
