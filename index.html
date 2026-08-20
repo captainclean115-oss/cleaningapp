@@ -5289,7 +5289,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           <input type="checkbox" id="gps-show-hidden" onchange="toggleGPSShowHidden()" style="cursor:pointer">
           Show hidden
         </label>
-        <button class="gps-refresh-btn" onclick="loadGPSData()">↻ Refresh</button>
+        <button class="gps-refresh-btn" onclick="refreshLiveTab()">↻ Refresh</button>
       </div>
     </div>
     <!-- Live Map -->
@@ -28175,6 +28175,21 @@ function recordPayment(clientId, e) {
 
 let hoursWeekOffset = 0; // 0 = current week, -1 = last week, etc.
 
+// Monotonic guard for loadWeekHours -- same pattern as loadGPSData's
+// _gpsLoadToken. loadWeekHours is fired from many independent places
+// (hoursWeekMove, gpsInit -- itself invoked from 3+ separate cold-load
+// triggers, quickAssign's retroactive refresh, etc), all fire-and-forget.
+// Each call resets the SHARED weekHours/window._empHoursMap globals
+// (`weekHours = {}`) before doing slow network-bound work (Geotab Trip
+// API, time_entries query), so two overlapping calls can interleave:
+// whichever finishes last wins the final render, but its own writes may
+// have been wiped mid-flight by another call's reset. Confirmed as the
+// cause of "week A -> B -> back to A shows different missing days each
+// time" -- rapid nav clicks stack overlapping calls, and cold-load
+// triggers (settings sync, tab switch, unlock timeout) can race the
+// same way on a fresh page load.
+let _weekHoursLoadToken = 0;
+
 function getWeekDates(offset) {
   const now = new Date();
   const day = now.getDay(); // 0=Sun
@@ -28788,6 +28803,8 @@ function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr, trueStart, true
 }
 
 async function loadWeekHours() {
+  var _myWeekHoursToken = ++_weekHoursLoadToken;
+
   // PR #115 — ensure manager lunch overrides are hydrated before
   // _detectDayLunch runs; otherwise a page freshly loaded straight to
   // the Live tab could momentarily compute lunch as if no overrides
@@ -28834,6 +28851,12 @@ async function loadWeekHours() {
       if (typeof _mirrorPentaAssignmentsToInMemory === 'function') _mirrorPentaAssignmentsToInMemory();
     } catch (e) { console.warn('[hours] PentaAssignments/PentaEmployees ready or mirror failed', e); }
   }
+
+  // A newer loadWeekHours() call already started while we were awaiting
+  // the ready()/mirror above -- bail out now, before resetting the
+  // shared weekHours/window._empHoursMap globals, so we don't clobber
+  // whatever that newer call has already written.
+  if (_myWeekHoursToken !== _weekHoursLoadToken) return;
 
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
@@ -29158,6 +29181,11 @@ async function loadWeekHours() {
       });
     });
 
+    // Another loadWeekHours() call started (and by now may already have
+    // reset/rebuilt weekHours) while this call was awaiting Geotab/
+    // time_entries -- our result is stale. Don't persist or paint it.
+    if (_myWeekHoursToken !== _weekHoursLoadToken) return;
+
     loadLunchEdits();
     _reconcileHoursWithLunch();
     _writeWeekHoursCache(days);
@@ -29165,6 +29193,7 @@ async function loadWeekHours() {
     renderHoursTable(days, DAYS_SHORT);
 
   } catch(e) {
+    if (_myWeekHoursToken !== _weekHoursLoadToken) return; // superseded -- don't paint a stale error over a newer in-flight load
     document.getElementById('hours-table').innerHTML =
       `<div class="hours-loading" style="color:var(--red)">Error loading hours: ${e.message}</div>`;
   }
@@ -32250,6 +32279,28 @@ function onGPSActivityWindowChange() {
 // auto-load path rather than ReferenceError'ing.
 async function gpsConnect() {
   try { gpsInit(); } catch (e) { console.warn('[gps] gpsConnect stub threw', e); }
+}
+
+// The visible "↻ Refresh" button on the Live tab used to call
+// loadGPSData() only -- vehicle position/trip data, nothing else. It
+// never touched PentaAssignments/PentaEmployees or re-ran loadWeekHours,
+// so an assignment change made elsewhere (e.g. on mobile) never showed
+// up here no matter how many times Tom clicked Refresh.
+//
+// Worse, even calling loadWeekHours() alone wouldn't have fixed it:
+// PentaAssignments.ready()/PentaEmployees.ready() are permanent no-ops
+// once each facade's first-hydrate flips _cacheReady true, so mid-session
+// they never re-fetch -- assignment changes only reach an already-open
+// session via realtime push, which is best-effort (silently drops on a
+// backgrounded tab / network blip). _hydrate() itself has no such gate
+// (only ready() does), so calling it directly forces a real refetch --
+// same trick already used ad hoc elsewhere in this file (e.g. the
+// PentaJobs/PentaEmployees force-refresh call sites).
+async function refreshLiveTab() {
+  try { if (window.PentaAssignments && window.PentaAssignments._hydrate) await window.PentaAssignments._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaAssignments hydrate failed', e); }
+  try { if (window.PentaEmployees && window.PentaEmployees._hydrate) await window.PentaEmployees._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaEmployees hydrate failed', e); }
+  loadGPSData();
+  loadWeekHours();
 }
 
 async function loadGPSData() {
