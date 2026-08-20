@@ -5315,6 +5315,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div id="gps-device-mismatch-banner" style="display:none;margin:0 12px 8px;padding:10px 12px;border-radius:10px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;font-size:12px;line-height:1.5"></div>
     <div id="gps-vehicles"></div>
   </div>
+  <!-- PR #141 — same 👥 Teams button as the Schedule tab (#cal-view),
+       same handler (openTeamManager), same modal (#team-manager-overlay)
+       -- no duplicated modal/handler code. Only difference: this one
+       passes the Live tab's own currently-selected date instead of
+       defaulting to today. -->
+  <div style="padding:0 12px 12px">
+    <button onclick="openTeamManager(document.getElementById('gps-date-picker').value)" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
+  </div>
   <!-- v11.0.19: Hours Worked is sibling of gps-main-section so it renders
        even when MyGeotab is not connected. Data source is time_entries. -->
   <div id="hours-section" style="margin:16px 12px 0">
@@ -25942,11 +25950,16 @@ function resetTeamColors() {
   closeTeamColorEditor();
 }
 
-async function openTeamManager() {
+// PR #141 — dateStr is optional so every existing caller (Schedule tab's
+// bare openTeamManager()) keeps its exact current behavior: defaults to
+// today. The Live tab's Teams button passes its own gps-date-picker
+// value so the modal opens already showing whatever date Tom has
+// selected there, instead of always jumping back to today.
+async function openTeamManager(dateStr) {
   const overlay = document.getElementById('team-manager-overlay');
   overlay.style.display = 'flex';
   const picker = document.getElementById('team-mgr-date');
-  picker.value = new Date().toISOString().split('T')[0];
+  picker.value = dateStr || new Date().toISOString().split('T')[0];
   // v10.5.24: wait for PentaEmployees to hydrate before painting the roster.
   // EMPLOYEE_ROSTER is empty (v10.5.22), so there's no demo fallback to
   // fill in while the Supabase fetch is in flight — opening the view on
