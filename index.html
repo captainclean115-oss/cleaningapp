@@ -26151,8 +26151,11 @@ async function renderTeamManager(opts) {
       : '$' + Math.round(stats.revenue);
 
     // GPS Vehicle chip state. resolved.source: 'assignment' (explicit
-    // device chosen), 'assignment-none' (explicit no-GPS), 'name-match'
-    // / 'name-match-none' (no assignment row -> Default option).
+    // device chosen), 'assignment-none' (explicit no-GPS),
+    // 'assignment-missing' (assigned device id not in today's live
+    // Geotab list), 'no-assignment' (no team_device_assignments row
+    // covers this date at all -- PR #142 removed the name-matching
+    // guess this used to fall back to).
     // PR #89: collapsed from a separate verbose row (label text + a
     // full-width <select> + an "effective until" date + a History
     // button) into a compact "🚗 <car> ▾" chip inline in the team
@@ -26162,7 +26165,7 @@ async function renderTeamManager(opts) {
     // text via position:absolute, so a tap on the chip/arrow lands
     // directly on the native select and opens its picker exactly as
     // before. No functional change to how a vehicle gets assigned.
-    const _resolved = _teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+    const _resolved = _teamDeviceMap[team] || { device: null, source: 'no-assignment' };
     const _defaultDevice = (_gpsDevices || []).find(d => d.name && d.name.toUpperCase().includes(team));
     const _selectValue = _resolved.source === 'assignment' ? _resolved.device.id
       : _resolved.source === 'assignment-none' ? '__none__'
@@ -32629,9 +32632,10 @@ async function loadGPSData() {
       };
     }
 
-    // Resolve each team's device: explicit team_device_assignments
-    // override first (migration 080), falling back to name-matching.
-    // Iterates teams rather than devices (was: filter+map over devices)
+    // Resolve each team's device from the explicit team_device_assignments
+    // override (migration 080) -- the only source of truth as of PR #142,
+    // no name-matching fallback. Iterates teams rather than devices (was:
+    // filter+map over devices)
     // so a team with NO resolved device still gets a placeholder card
     // instead of silently vanishing from the list — Tom's explicit ask,
     // and previously a known gap (a team with no matching device just
@@ -32649,7 +32653,7 @@ async function loadGPSData() {
       .map(function(t){ return { team: t, liveName: teamDeviceMap[t].liveName, deviceId: teamDeviceMap[t].device.id }; });
 
     const teamEntries = teamOrder.map(team => {
-        const resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+        const resolved = teamDeviceMap[team] || { device: null, source: 'no-assignment' };
         const d = resolved.device;
         if (d) { usedDeviceIds[String(d.id)] = true; return buildDeviceEntry(d, team, resolved.source); }
 
@@ -32657,7 +32661,7 @@ async function loadGPSData() {
         // isn't in today's live Geotab device list at all (deactivated,
         // renamed off the account, etc) — show offline using cached
         // bookkeeping instead of silently vanishing like 'assignment-none'
-        // (deliberate no-GPS) or 'name-match-none' (nothing to match) do.
+        // (deliberate no-GPS) or 'no-assignment' (no covering row) do.
         if (resolved.source === 'assignment-missing' && resolved.rawDeviceId) {
           var bgdMissing = bgdMap[String(resolved.rawDeviceId)];
           return {
@@ -38707,10 +38711,13 @@ async function renderStaffTeamsList() {
 
   target.innerHTML = teams.map(function(team) {
     var members = roster.filter(function(e){ return e.defaultTeam === team; });
-    var resolved = teamDeviceMap[team] || { device: null, source: 'name-match-none' };
+    var resolved = teamDeviceMap[team] || { device: null, source: 'no-assignment' };
+    // PR #142 -- the third branch here used to show a name-matched
+    // device.name + '(default)'; that path no longer exists (no more
+    // name-matching fallback), so resolved.device is only ever truthy
+    // when source === 'assignment', already handled by the first branch.
     var vehicleLabel = resolved.source === 'assignment' ? _adminEsc(resolved.device ? resolved.device.name : '')
       : resolved.source === 'assignment-none' ? 'No GPS'
-      : resolved.device ? _adminEsc(resolved.device.name) + ' (default)'
       : 'No match';
     var color = _pentaTeamColor(team, '#6b7280');
     return '<div onclick="openStaffTeamDetailModal(\'' + team + '\')" style="display:flex;align-items:center;gap:10px;padding:12px 14px;margin-bottom:8px;background:var(--surface2);border-radius:12px;cursor:pointer">'
@@ -38773,7 +38780,7 @@ async function openStaffTeamDetailModal(team) {
 
   var devices = [];
   try { devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); } catch (e) {}
-  var resolved = { device: null, source: 'name-match-none' };
+  var resolved = { device: null, source: 'no-assignment' };
   try { resolved = await _resolveTeamDevice(devices, team, new Date()); } catch (e) {}
 
   var color = _pentaTeamColor(team, '#6b7280');
@@ -49004,14 +49011,35 @@ async function _geotabCall(method, params) {
 
 // ─── Device-to-team assignment resolver (browser) ───────────────────
 // Checks the explicit team_device_assignments override (get_team_device
-// RPC, migration 080) first; only falls back to the existing
-// device.name.toUpperCase().includes(team) name-matching when NO
-// assignment row exists for that team+date at all. An explicit
-// assignment with device_id = NULL ("no GPS today") is respected as-is
-// and does NOT fall through to name-matching -- that would silently
-// override a deliberate choice. get_team_device returns a TABLE (zero
-// or one row) specifically so those two cases are distinguishable —
-// see the migration's own comment for why a scalar couldn't do this.
+// RPC, migration 080). team_device_assignments is the ONLY authoritative
+// source now -- there is no name-matching fallback left anywhere in this
+// function (see PR #142). An explicit assignment with device_id = NULL
+// ("no GPS today") is respected as-is. get_team_device returns a TABLE
+// (zero or one row) so that case is distinguishable from "no row at
+// all" -- see the migration's own comment for why a scalar couldn't do
+// this.
+//
+// PR #142 -- previously, whenever get_team_device returned NO row for
+// that team+date (a genuine gap in team_device_assignments' date
+// coverage, not a deliberate "no GPS" choice) OR the RPC call itself
+// threw, this silently fell back to guessing a device by
+// name.toUpperCase().includes(team) across ALL of the tenant's live
+// Geotab devices. Confirmed live: exactly this path produced Joana
+// DeBarros's (S3) end-time bug -- team_device_assignments had a
+// coverage gap for her date, the RPC returned zero rows, and the
+// name-match fallback picked a DIFFERENT vehicle's trip data for that
+// day. Coverage gaps get backfilled after the fact (see this team's own
+// history), but by then the wrong number has already been shown and
+// cached -- there's no way to tell, after the fact, whether a given
+// name-match guess landed on the right vehicle. Removed entirely: a
+// gap now resolves to "no device" (source: 'no-assignment', same
+// downstream handling as the existing 'assignment-none'/
+// 'assignment-missing' no-device cases -- callers already show "No
+// vehicle found" rather than silently proceeding) instead of a guess
+// that can't be distinguished from a correct resolution after the
+// fact. Path B (tracked in memory) is the real fix for coverage gaps
+// themselves -- historical device-per-date snapshots so a gap can't
+// occur in the first place.
 async function _resolveTeamDevice(devices, team, dateObj) {
   var dateStr = dateKey(dateObj);
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
@@ -49032,14 +49060,17 @@ async function _resolveTeamDevice(devices, team, dateObj) {
         // not a silent auto-fallback to name-matching -- the accidental
         // self-healing that used to happen via a since-fixed RPC bug is
         // exactly what let this go unnoticed for so long; surfacing it
-        // beats silently guessing again.
+        // beats silently guessing again. PR #142 -- this part was
+        // ALREADY correct (still returns `found`, the assigned device,
+        // regardless of `mismatch`); the fallback removed by PR #142 is
+        // the separate one below, for when there's no assignment row at
+        // all.
         var mismatch = !!(found && found.name && !String(found.name).toUpperCase().includes(String(team).toUpperCase()));
         return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId, mismatch: mismatch, liveName: found ? found.name : null };
       }
-    } catch (e) { /* RPC unavailable — fall through to name-matching */ }
+    } catch (e) { /* RPC unavailable -- no assignment data to trust; fall through to "no device" below, not a name-match guess */ }
   }
-  var matched = (devices || []).find(function(d){ return d.name && d.name.toUpperCase().includes(team); });
-  return { device: matched || null, source: matched ? 'name-match' : 'name-match-none' };
+  return { device: null, source: 'no-assignment' };
 }
 
 // Batch variant: resolves every team in teamOrder in parallel. Returns
