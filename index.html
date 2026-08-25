@@ -16330,7 +16330,7 @@ function renderCal() {
             return toMins(a.flexible ? null : a.time) - toMins(b.flexible ? null : b.time);
           });
         if (!teamJobs.length) return;
-        var teamRev = teamJobs.reduce(function(sum,j){
+        var teamRev = teamJobs.filter(function(j){ return !j.cancelled; }).reduce(function(sum,j){
           var p = 0;
           if (j.price) { p = parseFloat(j.price)||0; }
           else {
