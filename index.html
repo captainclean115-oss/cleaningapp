@@ -13465,6 +13465,23 @@ function _mirrorPentaJobsToInMemory() {
 // + saveDailyAssignments) stays immediate; only the DOM rebuilds coalesce.
 var _pentaAssignmentsMirrorRenderTimer = null;
 
+// PR #144: getJobDurationMins() divides clients.estimated_minutes by
+// getTeamEmployees(team, date).length, so any team-assignment change
+// (add/remove employee) changes the divisor and therefore every affected
+// job's displayed duration. Neither this realtime mirror nor assignEmployee
+// (the shared write path for quickAssign/confirmTeamAssign/Claire's
+// move_employee/coverage-suggestion/onEmpTeamChange) previously re-rendered
+// the schedule board at all -- only renderTeamManager/renderHoursTable did --
+// so job durations went stale until an unrelated renderCal happened to fire.
+// Guarded the same way the existing post-boot/post-autogen renderCal calls
+// are (only redraw when the cal tab is actually the one showing).
+function _refreshCalIfActive() {
+  try {
+    var activeTab = sessionStorage.getItem('cc_tab') || 'home';
+    if (activeTab === 'cal' && typeof renderCal === 'function') renderCal();
+  } catch (e) {}
+}
+
 function _mirrorPentaAssignmentsToInMemory() {
   if (typeof dailyAssignments === 'undefined') return;
   if (!window.PentaAssignments || !window.PentaAssignments.isReady || !window.PentaAssignments.isReady()) return;
@@ -13553,6 +13570,8 @@ function _mirrorPentaAssignmentsToInMemory() {
           renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
         }
       } catch (e) { console.warn('[hours] realtime-triggered hours refresh failed', e); }
+      // PR #144: cross-device/cross-tab team changes change job durations too.
+      _refreshCalIfActive();
     }, 200);
   }
 }
@@ -15841,6 +15860,14 @@ function getClientQuotedMinutes(clientId) {
   return legacy || null;
 }
 
+// PR #144: this same fallback chain (client-level total labor-minutes ÷
+// live team headcount for the date) is also the input a future capacity
+// view would need -- sum getClientQuotedMinutes() across a team's jobs for
+// a day for "labor-minutes needed", compare against
+// getTeamEmployees(team, date).length * workday minutes for "capacity
+// available", flag under/over. Not building that view now -- deferred,
+// flagging so the data model isn't accidentally reshaped later in a way
+// that forecloses it.
 function getJobDurationMins(job) {
   if (job.endTime && job.time) {
     var sp = job.time.split(':'), ep = job.endTime.split(':');
@@ -27363,6 +27390,9 @@ async function assignEmployee(employeeId, team, dateStr, extra) {
     delete dailyAssignmentDetails[key];
   }
   saveDailyAssignments();
+  // PR #144: same-session instant feedback -- don't wait on the realtime
+  // round trip to see the new team headcount reflected in job durations.
+  _refreshCalIfActive();
   // Sprint 10 Phase 3f: dual-write to Supabase via PentaAssignments.
   // 'OFF' is a magic team value (employee marked off for the day) — the
   // schema's `team text NOT NULL` column accepts it as-is, and existing
@@ -27395,6 +27425,7 @@ async function assignEmployee(employeeId, team, dateStr, extra) {
     if (prevValue === undefined) delete dailyAssignments[key]; else dailyAssignments[key] = prevValue;
     if (prevDetail === undefined) delete dailyAssignmentDetails[key]; else dailyAssignmentDetails[key] = prevDetail;
     saveDailyAssignments();
+    _refreshCalIfActive();
     try {
       if (typeof showToast === 'function') {
         showToast('Assignment did not save: ' + (e && e.message ? e.message : 'unknown error'), 'error');
