@@ -4788,7 +4788,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <div style="display:flex;align-items:center;gap:10px">
-        <button onclick="openTeamManager()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
+        <button onclick="openTeamManager(dateKey(calDate))" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
 
         <button id="cal-day-rev" onclick="cycleRevMode()" style="background:none;border:none;color:#22c55e;font-size:15px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;padding:0;"></button>
       </div>
@@ -25980,11 +25980,14 @@ function resetTeamColors() {
   closeTeamColorEditor();
 }
 
-// PR #141 — dateStr is optional so every existing caller (Schedule tab's
-// bare openTeamManager()) keeps its exact current behavior: defaults to
-// today. The Live tab's Teams button passes its own gps-date-picker
-// value so the modal opens already showing whatever date Tom has
-// selected there, instead of always jumping back to today.
+// PR #141 — dateStr is optional, defaulting to today only when no caller
+// supplies one. The Live tab's Teams button passes its own gps-date-picker
+// value; the Schedule tab's Teams button passes calDate (PR #145 fix —
+// it used to open bare/defaulted-to-today, so a team change made from
+// Team Manager silently targeted today's dailyAssignments while the
+// board being looked at, and re-rendered by PR #139's live-recalc hook,
+// was any OTHER date -- the write and the visible recalc landed on two
+// different days, which looked like "the live recalc doesn't work").
 async function openTeamManager(dateStr) {
   const overlay = document.getElementById('team-manager-overlay');
   overlay.style.display = 'flex';
@@ -45177,6 +45180,18 @@ function jobDragEnd(e) {
   // Walk up to find a timeline row (position:relative div inside tl-main-scroll)
   var tlScroll = document.getElementById('tl-main-scroll');
 
+  // PR #145: capture the pre-drag start/end BEFORE either gets overwritten
+  // below, so the job's duration (not just its absolute end clock-time) can
+  // be preserved across the move. Without this, job.endTime was left at its
+  // stale pre-drag value while job.time moved to the drop point -- e.g. a
+  // 9:00-11:00 job dragged to 11:00 kept showing endTime 11:00 (zero/negative
+  // duration) instead of shifting to 13:00. getJobDurationMins() treats
+  // job.endTime && job.time as an unconditional override over the
+  // minutes/headcount calc, so a stale endTime silently corrupted the
+  // displayed duration on the very next render.
+  var _dragOrigTime = _dragJob.time;
+  var _dragOrigEndTime = _dragJob.endTime;
+
   // Use the snapped time from the drag move (matches what the label showed)
   if (_dragSnappedMins !== null) {
     var newHr = Math.floor(_dragSnappedMins / 60);
@@ -45197,6 +45212,19 @@ function jobDragEnd(e) {
     _dragJob.flexible = false;
   }
 
+  // PR #145: shift endTime by the same delta so duration survives the move.
+  // Recomputed as new-start + original-duration (not new-start + old-end),
+  // so it's correct regardless of how far the job moved.
+  if (_dragOrigEndTime && _dragOrigTime && _dragJob.time !== _dragOrigTime) {
+    var _op = _dragOrigTime.split(':'), _oe = _dragOrigEndTime.split(':');
+    var _origDurMins = (parseInt(_oe[0])*60 + parseInt(_oe[1])) - (parseInt(_op[0])*60 + parseInt(_op[1]));
+    if (_origDurMins > 0) {
+      var _np = _dragJob.time.split(':');
+      var _newEndMins = ((parseInt(_np[0])*60 + parseInt(_np[1])) + _origDurMins) % 1440;
+      _dragJob.endTime = String(Math.floor(_newEndMins/60)).padStart(2,'0') + ':' + String(_newEndMins%60).padStart(2,'0');
+    }
+  }
+
   // Also check if dropped onto a different team row
   // Walk up from drop point looking for a data-team attribute on a timeline row's parent
   var teamEl = dropEl;
@@ -45214,13 +45242,17 @@ function jobDragEnd(e) {
   var _movedDate = _dragJob.date;
   var _movedId = _dragJob.id;
   var _movedTime = _dragJob.time;
+  var _movedEndTime = _dragJob.endTime;
   var _movedFlex = _dragJob.flexible;
 
   saveJobs();
   // Sprint 10 Phase 3b: dual-write the dragged job's team/time/flexible.
+  // PR #145: endTime included too, now that jobDragEnd shifts it to
+  // preserve duration -- otherwise the corrected value only lived
+  // in-memory and reverted to the stale pre-drag endTime on next hydrate.
   // recalcTeamTimes (called below) dual-writes the cascade for downstream jobs.
   if (window.PentaJobs) window.PentaJobs.update(_movedId, {
-    team: _movedTeam, time: _movedTime, flexible: _movedFlex
+    team: _movedTeam, time: _movedTime, endTime: _movedEndTime, flexible: _movedFlex
   }).catch(function(e){ console.warn('[PentaJobs] jobDragEnd sync failed', e); });
   if (navigator.vibrate) navigator.vibrate(30);
 

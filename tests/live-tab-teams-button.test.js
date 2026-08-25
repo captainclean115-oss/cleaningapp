@@ -2,13 +2,22 @@
 // Requirement: identical to the Schedule tab's existing Teams button --
 // same modal, same handler function, no duplicated code -- just passing
 // the Live tab's own currently-selected date instead of defaulting to
-// today (which is what the Schedule tab's button still does, unchanged).
+// today.
+//
+// PR #145 update: the Schedule tab's button ALSO stopped calling
+// openTeamManager() bare -- that was the actual root cause of "PR #139's
+// live duration recalc doesn't work" (a team change made from the modal
+// wrote to today's dailyAssignments while the schedule board being looked
+// at, and re-rendered by the recalc hook, was any OTHER date). It now
+// passes dateKey(calDate), matching the Live tab's own-date pattern.
+// openTeamManager()'s no-argument default-to-today behavior is kept
+// (harmless fallback for any future bare caller) and still covered below.
 //
 // Checks structure (no duplicated modal/handler, both buttons share the
 // same styling and call the same function) by inspecting the actual
 // index.html source, then extracts the real openTeamManager() and runs
-// it in a sandbox to prove both the no-arg default (Schedule tab,
-// unchanged) and the explicit-date path (Live tab, new) work correctly.
+// it in a sandbox to prove both the no-arg default and the explicit-date
+// path work correctly.
 //
 // Run with: node tests/live-tab-teams-button.test.js
 
@@ -34,8 +43,8 @@ const openTeamManagerDefs = (src.match(/async function openTeamManager\(/g) || [
 check('exactly one openTeamManager() function definition exists (not duplicated)', openTeamManagerDefs, 1);
 
 // --- Both buttons invoke the same function ---
-const scheduleBtnMatch = src.match(/<button onclick="openTeamManager\(\)"[^>]*>👥 Teams<\/button>/);
-check('Schedule tab button still calls bare openTeamManager() -- unchanged, no regression', !!scheduleBtnMatch, true);
+const scheduleBtnMatch = src.match(/<button onclick="openTeamManager\(dateKey\(calDate\)\)"[^>]*>👥 Teams<\/button>/);
+check('Schedule tab button passes calDate (PR #145) -- no longer defaults to today regardless of the date being viewed', !!scheduleBtnMatch, true);
 
 const liveBtnMatch = src.match(/<button onclick="openTeamManager\(document\.getElementById\('gps-date-picker'\)\.value\)"[^>]*>👥 Teams<\/button>/);
 check('Live tab button calls openTeamManager(...) with the Live tab\'s own date-picker value', !!liveBtnMatch, true);
@@ -86,13 +95,14 @@ function buildSandbox() {
 }
 
 (async function () {
-  // Schedule tab's call shape: no argument -- must default to today,
-  // exactly its pre-existing behavior (no regression).
+  // No-argument call shape: kept as openTeamManager()'s own fallback even
+  // though no current caller uses it bare after PR #145 (both the Schedule
+  // and Live tab buttons now pass an explicit date).
   {
     const { sandbox, overlay, picker } = buildSandbox();
     await sandbox.openTeamManager();
     const today = new Date().toISOString().split('T')[0];
-    check('bare openTeamManager() (Schedule tab call shape) defaults to today', picker.value, today);
+    check('bare openTeamManager() still defaults to today (fallback behavior, no current caller relies on it)', picker.value, today);
     check('bare openTeamManager() opens the overlay', overlay.style.display, 'flex');
   }
 
