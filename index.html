@@ -5663,6 +5663,7 @@ window.PentaClients = (function() {
     if (H.call(src, 'geocode_status')) out.geocode_status = src.geocode_status;
     if (H.call(src, 'geocoded_at')) out.geocoded_at = src.geocoded_at;
     if (H.call(src, 'estimated_minutes')) out.estimated_minutes = (src.estimated_minutes == null || src.estimated_minutes === '') ? null : Math.round(Number(src.estimated_minutes));
+    if (H.call(src, 'current_price')) out.current_price = (src.current_price == null || src.current_price === '') ? null : Number(src.current_price);
     // PR #88 — Cancel Client flow (migration 092).
     if (H.call(src, 'cancellation_reason')) out.cancellation_reason = src.cancellation_reason == null ? null : src.cancellation_reason;
     if (H.call(src, 'cancellation_notes'))  out.cancellation_notes  = src.cancellation_notes == null ? null : src.cancellation_notes;
@@ -16583,6 +16584,8 @@ function renderCal() {
   }
   // Sprint 6.11: refresh inline schedule map whenever schedule re-renders.
   try { if (typeof renderInlineScheduleMap === 'function') renderInlineScheduleMap(); } catch (e) { console.warn('[6.11] inline map refresh failed', e); }
+  // Sprint 6.11 followup: keep the fullscreen schedule map (if open) in sync too.
+  try { if (typeof _refreshFullscreenScheduleMap === 'function') _refreshFullscreenScheduleMap(); } catch (e) { console.warn('[6.11] fullscreen map refresh failed', e); }
   // v11.0.10: paint iOS-style red badges on collapsed timeline blocks
   // for any jobs with unresolved job_issues. Fire-and-forget; one
   // listUnresolved call covers every block.
@@ -34496,7 +34499,7 @@ function openClientEdit(clientId) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Price / Clean</div>
-        <input id="ce-price" class="field-input" value="${ex.avgRev || CLIENT_PRICES[c.ln.toLowerCase()] || ''}" style="width:100%" placeholder="e.g. $180">
+        <input id="ce-price" class="field-input" value="${c.current_price != null ? c.current_price : (ex.avgRev || CLIENT_PRICES[c.ln.toLowerCase()] || '')}" style="width:100%" placeholder="e.g. $180">
       </div>
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">One-time discount (next clean only)</div>
@@ -35126,6 +35129,10 @@ function saveClientEdit(clientId) {
     estimated_minutes: (function(){
       var v = document.getElementById('ce-estimated-minutes').value;
       return v === '' ? null : Math.max(0, Math.round(Number(v)));
+    })(),
+    current_price: (function(){
+      var v = document.getElementById('ce-price').value.trim().replace(/[$,]/g,'');
+      return v === '' ? null : Number(v);
     })()
   };
   editPatch.anchor = newAnchor;
@@ -35311,8 +35318,6 @@ function saveClientEdit(clientId) {
   const ov = getClientOverrides(clientId);
   const discount = document.getElementById('ce-discount').value.trim();
   if (discount) ov.oneTimeDiscount = discount; else delete ov.oneTimeDiscount;
-  const newPrice = document.getElementById('ce-price').value.trim();
-  if (newPrice) ov.priceOverride = newPrice; else delete ov.priceOverride;
   // Persist full phone list
   ov.phones = cleanPhones;
   saveClientOverrides(clientId, ov);
@@ -45518,6 +45523,7 @@ function geocodeAddress(addr, callback) {
 function closeScheduleMap() {
   var o = document.getElementById('schedule-map-overlay');
   if (o) o.remove();
+  if (_ffScheduleMap) { try { _ffScheduleMap.remove(); } catch (e) {} _ffScheduleMap = null; }
 }
 
 // Sprint 6.11 — extracted core renderer + inline map state.
@@ -45742,6 +45748,12 @@ function _renderScheduleMapCore(containerId, opts) {
   return map;
 }
 
+// Sprint 6.11 fullscreen-map singleton -- lets _refreshFullscreenScheduleMap
+// tear down the previous map instance instead of re-initializing the same
+// #ff-map container (which Leaflet rejects) so a cancellation while the
+// overlay is open replots pins instead of going stale until close/reopen.
+var _ffScheduleMap = null;
+
 function openScheduleMap() {
   var dayJobs = _scheduleMapDayJobs();
   var DAYS2 = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -45750,6 +45762,7 @@ function openScheduleMap() {
 
   var o = document.getElementById('schedule-map-overlay');
   if (o) o.remove();
+  if (_ffScheduleMap) { try { _ffScheduleMap.remove(); } catch (e) {} _ffScheduleMap = null; }
   var d = document.createElement('div');
   d.id = 'schedule-map-overlay';
   d.style.cssText = 'position:fixed;inset:0;z-index:9998;background:var(--bg);display:flex;flex-direction:column';
@@ -45761,8 +45774,26 @@ function openScheduleMap() {
     +'<div id="ff-map-status" style="position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:8px 16px;border-radius:20px;font-size:13px;display:none">Geocoding addresses...</div>';
   document.body.appendChild(d);
   setTimeout(function() {
-    _renderScheduleMapCore('ff-map', { dayJobs: dayJobs, statusId: 'ff-map-status', includeOffices: true });
+    _ffScheduleMap = _renderScheduleMapCore('ff-map', { dayJobs: dayJobs, statusId: 'ff-map-status', includeOffices: true });
   }, 200);
+}
+
+// Sprint 6.11 followup: the fullscreen map was a one-shot snapshot taken at
+// open time -- a cancellation from another tab/device/Claire while it's open
+// never replotted until the overlay was closed and reopened. renderCal()'s
+// post-render hook calls this alongside renderInlineScheduleMap() so both
+// map surfaces stay in sync with the same cancelled-filtered job list.
+function _refreshFullscreenScheduleMap() {
+  var container = document.getElementById('ff-map');
+  if (!container || !container.offsetParent) return;
+  if (_ffScheduleMap) { try { _ffScheduleMap.remove(); } catch (e) {} _ffScheduleMap = null; }
+  if (container._leaflet_id) { delete container._leaflet_id; }
+  _ffScheduleMap = _renderScheduleMapCore('ff-map', {
+    dayJobs: _scheduleMapDayJobs(),
+    statusId: 'ff-map-status',
+    includeOffices: true,
+    fitBoundsOnReady: false
+  });
 }
 
 // Sprint 6.11 Issue #1 fix — singleton inline map.
