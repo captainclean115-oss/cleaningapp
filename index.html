@@ -49312,6 +49312,64 @@ async function runGeotabPollNow() {
   }
 }
 
+// PR #146 — Admin -> Recurring Schedule Projection. Calls
+// project_recurring_jobs_now(), a SECURITY DEFINER RPC that resolves the
+// caller's own business_id/role server-side (mirrors set_job_actual_time's
+// auth pattern) -- can never target another tenant. INSERT-only on the
+// server; never touches an existing job.
+async function runRecurringProjectionNow() {
+  var st = document.getElementById('admin-recurring-projection-status');
+  if (!st) return;
+  st.style.color = 'rgba(255,255,255,0.6)';
+  st.textContent = 'Projecting…';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var res = await sb.rpc('project_recurring_jobs_now');
+    if (res.error) throw res.error;
+    var d = res.data || {};
+    var errCount = Array.isArray(d.errors) ? d.errors.length : 0;
+    st.style.color = '#34d399';
+    st.textContent = '✓ Projected through ' + d.window_end + ' — ' + d.jobs_created + ' new job(s) across '
+      + d.clients_processed + ' client(s)' + (errCount ? ', ' + errCount + ' error(s) (see console)' : '') + '.';
+    if (errCount) console.warn('[recurring projection] per-client errors', d.errors);
+  } catch (e) {
+    st.style.color = '#f87171';
+    st.textContent = 'Projection failed: ' + ((e && e.message) || e);
+  }
+}
+
+// Data-quality report -- read-only, never auto-fixes (Tom decides case by
+// case which flagged clients to update). flag_recurring_projection_issues()
+// is a plain SECURITY INVOKER function scoped by the normal clients_select
+// RLS policy, same as any other client query.
+async function loadRecurringProjectionIssues() {
+  var el = document.getElementById('admin-recurring-projection-issues');
+  if (!el) return;
+  el.textContent = 'Loading…';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var res = await sb.rpc('flag_recurring_projection_issues');
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    if (!rows.length) { el.innerHTML = '<span style="color:#34d399">✓ No data quality issues found.</span>'; return; }
+    var safeEsc = (typeof escapeHtml === 'function') ? escapeHtml : function(s){ return String(s||''); };
+    var labels = { missing_anchor_date: 'Missing anchor date', missing_frequency: 'Missing frequency', cadence_drifted: 'Cadence drifted from anchor' };
+    var byIssue = {};
+    rows.forEach(function(r){ (byIssue[r.issue] = byIssue[r.issue] || []).push(r); });
+    el.innerHTML = Object.keys(byIssue).map(function(issue){
+      var names = byIssue[issue].map(function(r){
+        var name = safeEsc(((r.first_name||'')+' '+(r.last_name||'')).trim() || r.external_id);
+        return '<a href="javascript:void(0)" onclick="openClientEdit(\''+safeEsc(String(r.external_id))+'\')" style="color:var(--accent);text-decoration:underline;cursor:pointer">'+name+'</a>';
+      }).join(', ');
+      return '<div style="margin-bottom:6px"><strong>' + safeEsc(labels[issue] || issue) + '</strong> (' + byIssue[issue].length + '): ' + names + '</div>';
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<span style="color:#f87171">Failed to load: ' + ((e && e.message) || e) + '</span>';
+  }
+}
+
 async function saveGeotabIntegrationSettings() {
   console.log('[saveGeotab] called');
   var server   = ((document.getElementById('gt-server')   || {}).value || '').trim() || 'my.geotab.com';
@@ -52127,6 +52185,23 @@ function _p3dPage(dir) {
         <button onclick="openMaidsImportModal()" style="flex:1;background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🗂️ Import from Maids</button>
         <button onclick="openMaidsPastImports()" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🕐 Past imports</button>
       </div>
+    </div>
+
+    <!-- PR #146 — rolling 12-month recurring (RMS) schedule projection.
+         project_recurring_jobs_now() is a SECURITY DEFINER RPC scoped to
+         the caller's own business (see migration 102) -- INSERT-only,
+         never touches an existing job. The nightly cron
+         (project-recurring-jobs-nightly) is registered but INACTIVE --
+         this button is the only way to run it until that's turned on. -->
+    <div class="admin-sec" id="admin-recurring-projection-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Recurring Schedule Projection</div>
+      <div style="padding:0 14px 8px;font-size:12px;color:rgba(255,255,255,0.55)">Fills in the next 12 months of cleans for RMS clients with both an anchor date and frequency set. Never modifies or duplicates an existing job. The automatic nightly run is not yet turned on — use this button to run it on demand.</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="runRecurringProjectionNow()" style="flex:1;background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#6ee7b7;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">📅 Project schedule now</button>
+        <button onclick="loadRecurringProjectionIssues()" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">⚠️ Check data quality</button>
+      </div>
+      <div id="admin-recurring-projection-status" style="padding:0 14px 8px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+      <div id="admin-recurring-projection-issues" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.75)"></div>
     </div>
 
     <!-- GPS Verification start date — PR #86 scaffolding. Owner/admin/
