@@ -5594,6 +5594,20 @@ window.PentaClients = (function() {
       tags: Array.isArray(r.tags) ? r.tags : [],
       review_flags: Array.isArray(r.review_flags) ? r.review_flags : [],
       current_price: r.current_price == null ? null : Number(r.current_price),
+      // PR #148 — sqft data-quality flag. sqft is the manager-facing value
+      // (manual entry or, when sqft_source isn't 'manual', a MassGIS
+      // auto-fill); sqft_from_records is the independent MassGIS
+      // public-records lookup stored purely for comparison and never
+      // written back into `sqft` once sqft_source is 'manual'. Previously
+      // NOT mapped here at all -- every client's in-memory .sqft was
+      // always undefined, which made maidsEnrichMissingSqft's "already
+      // has a value" check (`c.sqft == null`) always true and let it
+      // silently re-overwrite a manual entry on every re-run. Fixed
+      // alongside adding this feature, not a separate PR, since the flag
+      // logic below depends on sqft/sqft_source being real here.
+      sqft: r.sqft == null ? null : Number(r.sqft),
+      sqft_source: r.sqft_source || 'unknown',
+      sqft_from_records: r.sqft_from_records == null ? null : Number(r.sqft_from_records),
       first_service_date: r.first_service_date || null,
       historical_cancellation_count: r.historical_cancellation_count == null ? null : Number(r.historical_cancellation_count),
       historical_completion_count: r.historical_completion_count == null ? null : Number(r.historical_completion_count),
@@ -5664,6 +5678,14 @@ window.PentaClients = (function() {
     if (H.call(src, 'geocoded_at')) out.geocoded_at = src.geocoded_at;
     if (H.call(src, 'estimated_minutes')) out.estimated_minutes = (src.estimated_minutes == null || src.estimated_minutes === '') ? null : Math.round(Number(src.estimated_minutes));
     if (H.call(src, 'current_price')) out.current_price = (src.current_price == null || src.current_price === '') ? null : Number(src.current_price);
+    // PR #148 — sqft data-quality flag (migration 103). sqft_source is
+    // always sent alongside sqft by saveClientEdit's ce-sqft field
+    // (never independently), so it's not validated against the
+    // manual/auto/unknown CHECK constraint here -- the DB constraint is
+    // the backstop against any other future caller sending a bad value.
+    if (H.call(src, 'sqft')) out.sqft = (src.sqft == null || src.sqft === '') ? null : Math.round(Number(src.sqft));
+    if (H.call(src, 'sqft_source')) out.sqft_source = src.sqft_source == null || src.sqft_source === '' ? 'unknown' : src.sqft_source;
+    if (H.call(src, 'sqft_from_records')) out.sqft_from_records = (src.sqft_from_records == null || src.sqft_from_records === '') ? null : Math.round(Number(src.sqft_from_records));
     // PR #88 — Cancel Client flow (migration 092).
     if (H.call(src, 'cancellation_reason')) out.cancellation_reason = src.cancellation_reason == null ? null : src.cancellation_reason;
     if (H.call(src, 'cancellation_notes'))  out.cancellation_notes  = src.cancellation_notes == null ? null : src.cancellation_notes;
@@ -14221,6 +14243,22 @@ function prefDayPack(arr) {
   return arr.join(',');
 }
 
+// PR #148 — sqft data-quality flag. Single source of truth for the
+// mismatch formula (used by the client card badge below); the Postgres
+// report function flag_sqft_discrepancies() (migration 103) mirrors this
+// exact formula in SQL -- keep both in sync if this threshold/denominator
+// ever changes (this codebase has a documented history of mirrored-logic
+// copies drifting apart). Denominator is the MANUAL sqft (not records, not
+// an average) -- matches the spec's own worked example: manual 2100 vs
+// records 3400 -> |2100-3400|/2100 = 61.9% =~ 62%.
+function _sqftMismatchInfo(c) {
+  if (!c || c.sqft_source !== 'manual' || c.sqft == null || c.sqft_from_records == null || c.sqft <= 0) {
+    return { flagged: false, pct: null };
+  }
+  var pct = Math.abs(c.sqft - c.sqft_from_records) / c.sqft;
+  return { flagged: pct > 0.10, pct: Math.round(pct * 100) };
+}
+
 const AV_COLORS = ['av0','av1','av2','av3','av4'];
 
 let filtered = PentaClients.list();
@@ -14812,6 +14850,12 @@ function render(force) {
           <div class="detail-item"><div class="d-label">Last service</div><div class="d-val">${c.last||'—'}</div></div>
           <div class="detail-item" onclick="toggleSchedList('${schedId}')" style="cursor:pointer"><div class="d-label">Upcoming cleans</div><div class="d-val" style="color:${d!==null&&d<0?'var(--red)':d!==null&&d<=3?'var(--amber)':'var(--text)'}">${c.next||'—'}</div>${(c.anchor && c.anchor !== c.next) ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">Pattern anchor: ${c.anchor} (one-off shifted)</div>` : ''}</div>
           <div class="detail-item"><div class="d-label">Package</div><div class="d-val">${c.pkg||'—'}</div></div>
+          ${c.sqft != null ? (function(){
+            var m = _sqftMismatchInfo(c);
+            return '<div class="detail-item"><div class="d-label">Sqft</div><div class="d-val">' + c.sqft.toLocaleString()
+              + (m.flagged ? ' <span style="color:var(--red);cursor:help" title="Manual sqft (' + c.sqft.toLocaleString() + ') differs from records (' + c.sqft_from_records.toLocaleString() + ') by ' + m.pct + '%. Verify if entire home is being cleaned.">⚠️</span>' : '')
+              + '</div></div>';
+          })() : ''}
           <div class="detail-item"><div class="d-label">Margin</div><div class="d-val" style="font-family:'DM Mono',monospace;font-size:12px">${c.margin||'—'}</div></div>
           ${(()=>{
   const ex=getClientExtras(c.id);
@@ -32227,39 +32271,64 @@ async function maidsLookupSqft(addr, city, zip) {
   }
 }
 
-// Best-effort background pass over every client missing sqft (new
-// imports AND pre-existing clients that never had it) — capped at 100
-// per run and paced 300ms apart to stay a good citizen of the free
-// Nominatim/MassGIS endpoints (no API key, no SLA). Re-running the
-// importer, or a future manual "retry enrichment" action, picks up
-// whatever's left via the same "sqft IS NULL" scan. Writes go straight
-// through supabase-js, bypassing PentaClients.setField -- its
-// _transformRowForWrite doesn't map sqft/bathrooms/review_flags yet,
-// so setField would silently no-op (empty payload) rather than error.
+// Best-effort background pass over every client with an address whose
+// public-records sqft hasn't been looked up yet — capped at 100 per run
+// and paced 300ms apart to stay a good citizen of the free Nominatim/
+// MassGIS endpoints (no API key, no SLA). Re-running the importer, or a
+// future manual "retry enrichment" action, picks up whatever's left via
+// the same "sqft_from_records IS NULL" scan. Writes go straight through
+// supabase-js, bypassing PentaClients.updateClient -- it does a
+// read-modify-write on review_flags (append, not overwrite) that the
+// facade has no semantics for, and keys by clients.id (uuid) rather than
+// the facade cache's external_id lookup key, which isn't guaranteed
+// populated/unique for every imported row.
+//
+// PR #148 fix — this used to gate on `c.sqft == null`, but PentaClients
+// ._transformRow never mapped `sqft` onto the in-memory client object
+// (fixed in this same PR), so that check was ALWAYS true and this
+// function could silently re-overwrite a manually-entered sqft on every
+// re-run. Now gates on sqft_from_records instead (a value this function
+// alone is responsible for) and never writes `sqft` itself once
+// sqft_source is 'manual' -- it only records the public-records value for
+// flag_sqft_discrepancies()/the client-card badge to compare against.
 async function maidsEnrichMissingSqft() {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
   if (!sb || !bid || !window.PentaClients || !window.PentaClients.list) return;
-  var candidates = window.PentaClients.list().filter(function(c) { return c.sqft == null && c.addr; }).slice(0, 100);
-  var enriched = 0, flagged = 0;
+  var candidates = window.PentaClients.list().filter(function(c) { return c.sqft_from_records == null && c.addr; }).slice(0, 100);
+  var filled = 0, recorded = 0, flaggedMismatch = 0, flaggedNoAddr = 0;
   for (var i = 0; i < candidates.length; i++) {
     var c = candidates[i];
     var result = await maidsLookupSqft(c.addr, c.city, c.zip);
     try {
       if (result && result.sqft) {
-        await sb.from('clients').update({ sqft: result.sqft }).eq('id', c.uuid).eq('business_id', bid);
-        enriched++;
+        var patch = { sqft_from_records: result.sqft };
+        if (c.sqft_source === 'manual') {
+          // Never overwrite a manual entry -- just record the
+          // public-records value for comparison. flag_sqft_discrepancies()
+          // and the client card badge do the actual >10% flagging.
+          recorded++;
+          if (c.sqft != null && c.sqft > 0 && Math.abs(c.sqft - result.sqft) / c.sqft > 0.10) flaggedMismatch++;
+        } else {
+          // No sqft yet, or a previously auto-derived/untracked value --
+          // safe to (re)fill from the fresh lookup.
+          patch.sqft = result.sqft;
+          patch.sqft_source = 'auto';
+          filled++;
+        }
+        await sb.from('clients').update(patch).eq('id', c.uuid).eq('business_id', bid);
       } else {
         var current = await sb.from('clients').select('review_flags').eq('id', c.uuid).maybeSingle();
         var flags = (current.data && current.data.review_flags) || [];
         if (flags.indexOf('needs_address_details') === -1) {
           await sb.from('clients').update({ review_flags: flags.concat(['needs_address_details']) }).eq('id', c.uuid).eq('business_id', bid);
         }
-        flagged++;
+        flaggedNoAddr++;
       }
     } catch (e) { console.warn('[MaidsImport] enrich write failed for', c.id, e); }
     var statusEl = document.getElementById('maids-enrich-status');
-    if (statusEl) statusEl.textContent = '🏠 Address lookups: ' + (i + 1) + '/' + candidates.length + ' (' + enriched + ' found, ' + flagged + ' flagged for manual entry)';
+    if (statusEl) statusEl.textContent = '🏠 Address lookups: ' + (i + 1) + '/' + candidates.length + ' (' + filled + ' filled, ' + recorded + ' recorded for manual clients'
+      + (flaggedMismatch ? ', ' + flaggedMismatch + ' sqft mismatch' : '') + ', ' + flaggedNoAddr + ' flagged for manual entry)';
     await new Promise(function(resolve) { setTimeout(resolve, 300); });
   }
   try { if (window.PentaClients && window.PentaClients.refreshFromSupabase) await window.PentaClients.refreshFromSupabase(); } catch (e) {}
@@ -34486,12 +34555,27 @@ function openClientEdit(clientId) {
 
     <!-- SECTION: Job Sizing -->
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Job Sizing</div>
-    <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px">
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Quoted minutes (full team, in-home)</div>
         <input id="ce-estimated-minutes" type="number" min="0" step="15" class="field-input" value="${c.estimated_minutes != null ? c.estimated_minutes : ''}" placeholder="e.g. 180" style="width:100%">
       </div>
+      <div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Sqft cleaned (manual)</div>
+        <input id="ce-sqft" type="number" min="0" step="1" class="field-input" value="${c.sqft != null ? c.sqft : ''}" placeholder="e.g. 2100" style="width:100%">
+      </div>
     </div>
+    <!-- PR #148: reflects clients.sqft_from_records (independent MassGIS
+         public-records lookup) purely for context -- editing/clearing
+         ce-sqft never overwrites this value. -->
+    ${c.sqft_from_records != null ? (function(){
+      var m = _sqftMismatchInfo(c);
+      return '<div style="font-size:11px;color:' + (m.flagged ? 'var(--red)' : 'var(--muted)') + ';margin-bottom:20px">'
+        + (m.flagged ? '⚠️ ' : '')
+        + 'Public records show ' + c.sqft_from_records.toLocaleString() + ' sqft'
+        + (m.flagged ? ' — differs from manual entry by ' + m.pct + '%. Verify if the entire home is being cleaned.' : '.')
+        + '</div>';
+    })() : '<div style="height:20px"></div>'}
 
     <!-- SECTION: Service -->
     <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px">Service</div>
@@ -35170,6 +35254,18 @@ function saveClientEdit(clientId) {
     })()
   };
   editPatch.anchor = newAnchor;
+
+  // PR #148 — sqft data-quality flag. Editing this field always marks the
+  // value 'manual', protecting it from maidsEnrichMissingSqft's auto-fill
+  // going forward; clearing it releases the field back to 'unknown' so
+  // auto-enrichment is free to fill it again. sqft_from_records (the
+  // independent public-records comparison value) is never touched here --
+  // only the background enrichment job writes it.
+  (function(){
+    var v = document.getElementById('ce-sqft').value.trim();
+    editPatch.sqft = v === '' ? null : Math.max(0, Math.round(Number(v)));
+    editPatch.sqft_source = v === '' ? 'unknown' : 'manual';
+  })();
 
   // Sprint 7-map: detect address change to mark pending + trigger re-geocode.
   // Old values from cache `c`; new values already in editPatch.
@@ -49370,6 +49466,33 @@ async function loadRecurringProjectionIssues() {
   }
 }
 
+// PR #148 — Admin -> Sqft Data Quality. Calls flag_sqft_discrepancies(), a
+// plain SECURITY INVOKER RPC scoped by the normal clients_select RLS
+// policy. Report only -- never auto-fixes; Tom reviews and updates the
+// manual sqft (or leaves it, if the smaller area is correct because only
+// part of the home is cleaned) case by case.
+async function loadSqftDiscrepancies() {
+  var el = document.getElementById('admin-sqft-discrepancy-issues');
+  if (!el) return;
+  el.textContent = 'Loading…';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var res = await sb.rpc('flag_sqft_discrepancies');
+    if (res.error) throw res.error;
+    var rows = res.data || [];
+    if (!rows.length) { el.innerHTML = '<span style="color:#34d399">✓ No sqft mismatches found.</span>'; return; }
+    var safeEsc = (typeof escapeHtml === 'function') ? escapeHtml : function(s){ return String(s||''); };
+    el.innerHTML = rows.map(function(r){
+      var name = safeEsc(((r.first_name||'')+' '+(r.last_name||'')).trim() || r.external_id);
+      return '<div style="margin-bottom:6px"><a href="javascript:void(0)" onclick="openClientEdit(\''+safeEsc(String(r.external_id))+'\')" style="color:var(--accent);text-decoration:underline;cursor:pointer">'+name+'</a>'
+        + ' — manual ' + r.sqft.toLocaleString() + ' sqft vs. records ' + r.sqft_from_records.toLocaleString() + ' sqft (' + r.diff_pct + '% off)</div>';
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<span style="color:#f87171">Failed to load: ' + ((e && e.message) || e) + '</span>';
+  }
+}
+
 async function saveGeotabIntegrationSettings() {
   console.log('[saveGeotab] called');
   var server   = ((document.getElementById('gt-server')   || {}).value || '').trim() || 'my.geotab.com';
@@ -52202,6 +52325,19 @@ function _p3dPage(dir) {
       </div>
       <div id="admin-recurring-projection-status" style="padding:0 14px 8px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
       <div id="admin-recurring-projection-issues" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.75)"></div>
+    </div>
+
+    <!-- PR #148 — sqft data-quality flag. flag_sqft_discrepancies() is a
+         plain SECURITY INVOKER RPC (migration 103), scoped by the normal
+         clients_select RLS policy, same as any other client query. Never
+         auto-fixes -- report only, admin reviews case by case. -->
+    <div class="admin-sec" id="admin-sqft-discrepancy-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Sqft Data Quality</div>
+      <div style="padding:0 14px 8px;font-size:12px;color:rgba(255,255,255,0.55)">Flags clients whose manually-entered sqft differs from public records by more than 10% — often because only part of the home is cleaned. Never changes the manual value; review case by case.</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="loadSqftDiscrepancies()" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">⚠️ Check sqft mismatches</button>
+      </div>
+      <div id="admin-sqft-discrepancy-issues" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.75)"></div>
     </div>
 
     <!-- GPS Verification start date — PR #86 scaffolding. Owner/admin/

@@ -92,7 +92,7 @@ function buildSaveClientEditSandbox(domValues, existingClient) {
     'ce-addr': '42 New Ave', 'ce-city': 'Newville', 'ce-zip': '02101',
     'ce-notes': 'gate code 1234', 'ce-pkg': 'Deluxe',
     'ce-freq': 'RMS-EOW', 'ce-pref-time': 'afternoon', 'ce-anchor': '2026-09-15',
-    'ce-estimated-minutes': '240', 'ce-price': '$275',
+    'ce-estimated-minutes': '240', 'ce-price': '$275', 'ce-sqft': '2100',
   };
   const state = buildSaveClientEditSandbox(domValues, existingClient);
   check('PentaClients.updateClient is called exactly once', state.updateClientCalls.length, 1);
@@ -110,6 +110,8 @@ function buildSaveClientEditSandbox(domValues, existingClient) {
   check('pref_time reaches the write payload', patch.pref_time, 'afternoon');
   check('estimated_minutes reaches the write payload as a number (PR #139)', patch.estimated_minutes, 240);
   check('current_price reaches the write payload as a number, $ and commas stripped (PR #138)', patch.current_price, 275);
+  check('sqft reaches the write payload as a number (PR #148)', patch.sqft, 2100);
+  check('entering a sqft value marks the source manual (PR #148, protects it from auto-enrichment overwrite)', patch.sqft_source, 'manual');
 }
 
 // A blank/cleared price and estimated_minutes must write null, not be
@@ -120,12 +122,14 @@ function buildSaveClientEditSandbox(domValues, existingClient) {
   const domValues = {
     'ce-fn': 'Jane', 'ce-ln': 'Doe', 'ce-em': '', 'ce-addr': '', 'ce-city': '', 'ce-zip': '',
     'ce-notes': '', 'ce-pkg': '', 'ce-freq': 'RMS-WEK', 'ce-pref-time': '', 'ce-anchor': '',
-    'ce-estimated-minutes': '', 'ce-price': '',
+    'ce-estimated-minutes': '', 'ce-price': '', 'ce-sqft': '',
   };
   const state = buildSaveClientEditSandbox(domValues, existingClient);
   const patch = state.updateClientCalls[0].patch;
   check('clearing the price field writes null, not 0/NaN/undefined', patch.current_price, null);
   check('clearing estimated minutes writes null', patch.estimated_minutes, null);
+  check('clearing sqft writes null (PR #148)', patch.sqft, null);
+  check('clearing sqft releases the source back to unknown, re-eligible for auto-enrichment (PR #148)', patch.sqft_source, 'unknown');
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -154,6 +158,7 @@ const EDIT_PATCH_KEYS = [
   'pref_day', 'pref_time', 'estimated_minutes', 'current_price', 'anchor',
   'geocode_status', 'lat', 'lng',
   'status', 'pause_start', 'pause_end', 'pause_reason', 'status_changed_at',
+  'sqft', 'sqft_source', 'sqft_from_records',
 ];
 EDIT_PATCH_KEYS.forEach(function (key) {
   const probe = {};
