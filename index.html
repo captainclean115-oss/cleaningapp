@@ -5109,10 +5109,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone</div><input type="tel" id="main-emp-phone" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Status</div>
-        <select id="main-emp-status" onchange="toggleTermFields()" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <!-- PR #149: 'terminated' removed -- see the matching comment on
+             #staff-status. Termination is exclusively via the dedicated
+             button/modal now; #term-fields below is permanently
+             unreachable (harmless, left in place). -->
+        <select id="main-emp-status" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
-          <option value="terminated">Terminated</option>
         </select>
       </div>
       <div id="term-fields" style="display:none">
@@ -5144,9 +5147,55 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
       <div style="display:flex;gap:10px">
         <button onclick="saveMainEmp()" style="flex:1;background:var(--accent);border:none;border-radius:9px;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Save</button>
-        <button onclick="deleteMainEmp()" id="main-emp-delete" style="flex:0.4;display:none;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Delete</button>
+        <button onclick="openTerminateEmployeeModal(document.getElementById('main-emp-idx').value, 'main')" id="main-emp-delete" style="flex:0.6;display:none;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Terminate Employee</button>
       </div>
       <div id="main-emp-msg" style="margin-top:10px;text-align:center;font-size:13px;color:var(--green);min-height:20px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- PR #149 — Terminate Employee confirmation modal, shared by both the
+     main-emp and staff edit modals. Opened by openTerminateEmployeeModal
+     (idx or uuid + which source list), confirmed by confirmTerminateEmployee. -->
+<div id="terminate-employee-modal" style="display:none;position:fixed;inset:0;z-index:800;background:rgba(0,0,0,0.85);align-items:flex-end">
+  <div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);padding:20px;max-height:88vh;overflow-y:auto">
+    <div id="term-modal-title" style="font-size:18px;font-weight:700;margin-bottom:4px;color:var(--red)">Terminate Employee?</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:18px">This removes them from active views and clears future team assignments. Past history is preserved.</div>
+
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Termination reason *</div>
+      <select id="term-modal-reason" onchange="document.getElementById('term-modal-notes-required').style.display=this.value==='other'?'inline':'none'" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+        <option value="">Select reason...</option>
+        <option value="voluntary_resignation">Voluntary resignation</option>
+        <option value="termination_performance">Termination — performance</option>
+        <option value="termination_attendance">Termination — attendance</option>
+        <option value="termination_misconduct">Termination — misconduct</option>
+        <option value="layoff">Layoff</option>
+        <option value="retirement">Retirement</option>
+        <option value="job_abandonment">Job abandonment</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Termination date *</div>
+      <input type="date" id="term-modal-date" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none">
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes <span id="term-modal-notes-required" style="display:none;color:var(--red)">(required for "Other")</span></div>
+      <textarea id="term-modal-notes" rows="3" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:11px 14px;outline:none;resize:none"></textarea>
+    </div>
+    <div style="margin-bottom:18px;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:14px;color:var(--text)">Eligible for rehire</div>
+      <label style="position:relative;display:inline-block;width:44px;height:26px;cursor:pointer">
+        <input type="checkbox" id="term-modal-rehire" checked style="opacity:0;width:0;height:0">
+        <span onclick="this.previousElementSibling.click()" style="position:absolute;inset:0;background:var(--input-bg);border:1px solid var(--input-border);border-radius:13px;transition:.2s"></span>
+        <span onclick="this.parentElement.querySelector('input').click()" style="position:absolute;top:3px;left:3px;width:18px;height:18px;background:var(--muted);border-radius:50%;transition:.2s"></span>
+      </label>
+    </div>
+    <div id="term-modal-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:10px">
+      <button onclick="closeTerminateEmployeeModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Cancel</button>
+      <button onclick="confirmTerminateEmployee()" id="term-modal-confirm-btn" style="flex:1;background:var(--red);border:none;color:#fff;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;cursor:pointer">Confirm Termination</button>
     </div>
   </div>
 </div>
@@ -6811,10 +6860,17 @@ window.PentaGeocodeHistory = (function() {
     languages: 1, languages_spoken: 1,
     // schedule preference
     prefTime: 1, preferred_start_time: 1,
-    // localStorage-only / known safe drops (NOT real columns, intentionally dropped)
+    // localStorage-only / known safe drops (NOT real columns, intentionally dropped).
+    // termReason/termNotes/rehire/termDate are the OLD dead field names from
+    // the pre-PR-#149 status-dropdown termination fields (never had real
+    // columns backing them) -- left dropped here deliberately; PR #149's
+    // Terminate Employee flow uses the real column names below instead,
+    // not these.
     pin: 1, termReason: 1, termNotes: 1, rehire: 1, termDate: 1,
     docPhotos: 1, signature: 1, signedAt: 1,
-    defaultTeam: 1, fromPortal: 1
+    defaultTeam: 1, fromPortal: 1,
+    // PR #149 — employee termination/rehire (migration 104).
+    termination_reason: 1, termination_notes: 1, terminated_by: 1, eligible_for_rehire: 1
   };
 
   function _toRow(emp, opts) {
@@ -6899,7 +6955,16 @@ window.PentaGeocodeHistory = (function() {
     }
 
     if (emp.hired_at != null) row.hired_at = _normalizeDate(emp.hired_at);
-    if (emp.terminated_at != null) row.terminated_at = _normalizeDate(emp.terminated_at);
+    if (emp.terminated_at !== undefined) row.terminated_at = emp.terminated_at ? _normalizeDate(emp.terminated_at) : null;
+
+    // PR #149 — employee termination/rehire (migration 104). `!== undefined`
+    // (not `!= null`) on every field here, matching the anchor_date/lat/lng
+    // precedent above -- rehireEmployee() must be able to send an explicit
+    // null to CLEAR these on rehire, which `!= null` would silently skip.
+    if (emp.termination_reason !== undefined) row.termination_reason = emp.termination_reason || null;
+    if (emp.termination_notes !== undefined) row.termination_notes = emp.termination_notes || null;
+    if (emp.terminated_by !== undefined) row.terminated_by = emp.terminated_by || null;
+    if (emp.eligible_for_rehire !== undefined) row.eligible_for_rehire = emp.eligible_for_rehire;
 
     // photoUrl → photo_url
     if (emp.photoUrl != null) row.photo_url = emp.photoUrl;
@@ -6992,6 +7057,11 @@ window.PentaGeocodeHistory = (function() {
     if (row.status != null) emp.status = row.status;
     if (row.hired_at != null) emp.hired_at = row.hired_at;
     if (row.terminated_at != null) emp.terminated_at = row.terminated_at;
+    // PR #149 — employee termination/rehire (migration 104).
+    emp.termination_reason = row.termination_reason || null;
+    emp.termination_notes = row.termination_notes || null;
+    emp.terminated_by = row.terminated_by || null;
+    emp.eligible_for_rehire = row.eligible_for_rehire == null ? null : !!row.eligible_for_rehire;
 
     if (row.photo_url != null) {
       emp.photoUrl = row.photo_url;
@@ -8740,6 +8810,32 @@ window.PentaAssignments = (function() {
     return true;
   }
 
+  // PR #149 — employee termination. Bulk version of unassign(): soft-deletes
+  // every active assignment for one employee on/after fromDate, in one
+  // query (not a loop over unassign() per date). Past assignments
+  // (date < fromDate) are untouched -- the audit trail requirement from
+  // the termination spec. Returns the count removed.
+  async function unassignFutureForEmployee(employeeId, fromDate) {
+    var sb = SB();
+    if (!sb) throw new Error('PentaAssignments.unassignFutureForEmployee: no Supabase client');
+    var dbEmpId = await _resolveEmployeeId(employeeId);
+    if (!dbEmpId) return 0;
+    var toRemove = _cache.filter(function(r){ return r.employee_id === dbEmpId && r.date >= fromDate; });
+    if (!toRemove.length) return 0;
+    var actorId = await _currentUserId();
+    var nowIso = new Date().toISOString();
+    var res = await sb.from('daily_assignments')
+      .update({ deleted_at: nowIso, deleted_by: actorId })
+      .eq('employee_id', dbEmpId).gte('date', fromDate).is('deleted_at', null);
+    if (res.error) throw res.error;
+    var removedIds = {};
+    toRemove.forEach(function(r){ removedIds[r.id] = true; });
+    _cache = _cache.filter(function(r){ return !removedIds[r.id]; });
+    _rebuildIndex();
+    _notify();
+    return toRemove.length;
+  }
+
   // v10.2.0 Phase 5: Supabase realtime subscription. Pattern matches PentaJobs's
   // realtime block above; difference: soft-delete arrives as UPDATE with
   // deleted_at set, so the UPDATE branch routes those to cache-removal.
@@ -8783,7 +8879,7 @@ window.PentaAssignments = (function() {
   return {
     listSync: listSync, isReady: isReady, ready: ready,
     forDate: forDate, forEmployee: forEmployee, getEmployeeTeam: getEmployeeTeam,
-    assign: assign, unassign: unassign,
+    assign: assign, unassign: unassign, unassignFutureForEmployee: unassignFutureForEmployee,
     onChange: onChange, _hydrate: _hydrate, _setupRealtime: _setupRealtime,
   };
 })();
@@ -15467,6 +15563,27 @@ window.addEventListener('DOMContentLoaded', function() {
   // Supabase validates it on every API call.
 
   // Helpers (function declarations are hoisted within this handler).
+  // PR #149 — reused by both real _bootResolveEmployeeFromAuth call sites
+  // below. Reuses the exact "account isn't fully set up" error-display
+  // pattern already used for the no-employees-row case, just with
+  // termination-specific copy.
+  function _bootShowTerminatedAccountMessage() {
+    var pentaLogin = document.getElementById('penta-login-screen');
+    if (pentaLogin) {
+      pentaLogin.style.display = 'flex';
+      var msg = document.getElementById('penta-login-error');
+      if (msg) {
+        msg.textContent = 'This account is inactive. Contact your manager if you believe this is a mistake.';
+        msg.style.display = '';
+      }
+      try { pentaWireLoginForm(); } catch (e2) {}
+    }
+    try {
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (sb) sb.auth.signOut();
+    } catch (e) {}
+  }
+
   function _bootResolveEmployeeFromAuth(parsed) {
     return (async function() {
       var authId = parsed && parsed.user && parsed.user.id;
@@ -15742,7 +15859,12 @@ window.addEventListener('DOMContentLoaded', function() {
         appSelectedLang = (_userMeta.lang || 'en');
         try {
           var emp = await _bootResolveEmployeeFromAuth(_sbParsed);
-          if (emp) {
+          // PR #149: status was already fetched/returned here but never
+          // checked -- any employee with valid Supabase auth credentials
+          // could log into the portal indefinitely after termination.
+          if (emp && emp.status === 'terminated') {
+            _bootShowTerminatedAccountMessage();
+          } else if (emp) {
             appUnlockEmployee(emp);
           } else if (_isEmployee) {
             console.warn('[boot] is_employee=true but no employees row matched auth_user_id', _u.id);
@@ -15776,7 +15898,8 @@ window.addEventListener('DOMContentLoaded', function() {
         (async function(){
           try {
             var emp2 = await _bootResolveEmployeeFromAuth(_sbParsed);
-            if (emp2) appUnlockEmployee(emp2);
+            if (emp2 && emp2.status === 'terminated') _bootShowTerminatedAccountMessage();
+            else if (emp2) appUnlockEmployee(emp2);
             else appUnlockManager();
           } catch (_e) { appUnlockManager(); }
         })();
@@ -25815,12 +25938,13 @@ function renderMainEmployees() {
         <div class="emp-info">
           <div class="emp-name">${emp.name}</div>
           <div class="emp-meta">
-            ${emp.termReason ? `<span style="color:var(--red)">${emp.termReason}</span>` : ''}
-            ${emp.termDate ? `<span style="color:var(--muted)">${emp.termDate}</span>` : ''}
-            ${emp.rehire ? '<span style="color:var(--green)">✓ Rehire OK</span>' : '<span style="color:var(--red)">✗ No rehire</span>'}
+            <span style="color:var(--red)">${_terminationReasonLabel(emp.termination_reason)}</span>
+            ${emp.terminated_at ? `<span style="color:var(--muted)">${emp.terminated_at}</span>` : ''}
+            ${emp.eligible_for_rehire === false ? '<span style="color:var(--red)">✗ No rehire</span>' : '<span style="color:var(--green)">✓ Rehire OK</span>'}
           </div>
-          ${emp.termNotes ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${emp.termNotes}</div>` : ''}
+          ${emp.termination_notes ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${emp.termination_notes}</div>` : ''}
         </div>
+        <button class="emp-edit-btn" style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#34d399" onclick="event.stopPropagation();rehireEmployeeWithConfirm(${realIdx},'main')">Rehire</button>
         <button class="emp-edit-btn" onclick="openMainEmpEdit(${realIdx})">View / Edit</button>
       </div>`;
     }
@@ -26578,6 +26702,206 @@ async function _setEmployeeDefaultTeam(empId, newTeam) {
   return true;
 }
 
+// PR #149 — employee termination/rehire flow.
+//
+// Controlled vocabulary must match migration 104's termination_reason
+// CHECK constraint exactly.
+var TERMINATION_REASONS = [
+  { value: 'voluntary_resignation', label: 'Voluntary resignation' },
+  { value: 'termination_performance', label: 'Termination — performance' },
+  { value: 'termination_attendance', label: 'Termination — attendance' },
+  { value: 'termination_misconduct', label: 'Termination — misconduct' },
+  { value: 'layoff', label: 'Layoff' },
+  { value: 'retirement', label: 'Retirement' },
+  { value: 'job_abandonment', label: 'Job abandonment' },
+  { value: 'other', label: 'Other' }
+];
+
+function _terminationReasonLabel(value) {
+  var found = TERMINATION_REASONS.find(function(r){ return r.value === value; });
+  return found ? found.label : (value || 'Terminated');
+}
+
+// Deliberately does NOT reuse PentaEmployees.archive() -- archive() sets
+// deleted_at alongside status='terminated', and PentaEmployees._hydrate()
+// filters .is('deleted_at', null), which makes an archived employee
+// invisible to the facade cache entirely (not just excluded from the
+// active roster) -- including the Archived section this feature adds a
+// Rehire button to. Termination and deletion are different concepts:
+// this only ever sets status/terminated_at/termination_*/eligible_for_rehire,
+// never deleted_at. See migration 104's header comment for the full
+// finding (40 of 50 currently-terminated employees are invisible today
+// because they went through the old Delete button, which conflated the
+// two).
+async function terminateEmployee(employeeId, opts) {
+  opts = opts || {};
+  var reason = opts.reason;
+  var date = opts.date;
+  var notes = (opts.notes || '').trim();
+  var eligibleForRehire = opts.eligibleForRehire !== false; // default true
+
+  if (!TERMINATION_REASONS.some(function(r){ return r.value === reason; })) {
+    throw new Error('A termination reason is required.');
+  }
+  if (!date) {
+    throw new Error('A termination date is required.');
+  }
+  if (reason === 'other' && !notes) {
+    throw new Error('Notes are required when reason is "Other".');
+  }
+
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var currentUserId = null;
+  try {
+    if (sb) { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; }
+  } catch (e) {}
+
+  await window.PentaEmployees.update(employeeId, {
+    status: 'terminated',
+    terminated_at: date,
+    termination_reason: reason,
+    termination_notes: notes || null,
+    terminated_by: currentUserId,
+    eligible_for_rehire: eligibleForRehire
+  });
+
+  // Clear the permanent team slot going forward -- reuses the existing,
+  // dual-field-safe (team_text + team_id) unassign path.
+  try {
+    var rosterEntry = getUnifiedRoster().find(function(e){ return e.uuid === employeeId; });
+    if (rosterEntry) await _setEmployeeDefaultTeam(rosterEntry.id, '');
+  } catch (e) { console.warn('[terminateEmployee] team clear failed (non-fatal)', e); }
+
+  // Purge future daily_assignments (date >= termination date). Past rows
+  // are untouched -- audit trail preserved, per spec.
+  var removedCount = 0;
+  try {
+    if (window.PentaAssignments && window.PentaAssignments.unassignFutureForEmployee) {
+      removedCount = await window.PentaAssignments.unassignFutureForEmployee(employeeId, date);
+    }
+  } catch (e) { console.warn('[terminateEmployee] future assignment purge failed (non-fatal)', e); }
+
+  try {
+    await _auditSupplement('terminated', 'employee', employeeId, {
+      reason: reason, notes: notes || null, eligible_for_rehire: eligibleForRehire,
+      terminated_at: date, terminated_by: currentUserId, future_assignments_removed: removedCount
+    });
+  } catch (e) { console.warn('[terminateEmployee] audit log write failed (non-fatal)', e); }
+
+  return { removedCount: removedCount };
+}
+
+// Restores an employee to active. Does NOT restore daily_assignments
+// (deleted at termination, admin re-adds if needed) or the default team
+// (also cleared at termination) -- both per spec. Jobs/history/notes/
+// pay_rate were never touched by termination, so nothing to restore there.
+async function rehireEmployee(employeeId) {
+  await window.PentaEmployees.update(employeeId, {
+    status: 'active',
+    terminated_at: null,
+    termination_reason: null,
+    termination_notes: null,
+    terminated_by: null
+    // eligible_for_rehire deliberately NOT cleared -- not in the spec's
+    // "clear these fields" list; it's moot until the next termination.
+  });
+  try { await _auditSupplement('rehired', 'employee', employeeId, {}); }
+  catch (e) { console.warn('[rehireEmployee] audit log write failed (non-fatal)', e); }
+}
+
+// PR #149 — Terminate Employee modal controls. Shared by both the
+// main-emp and staff edit modals (source: 'main'|'staff'), which each
+// resolve an employee by index into their own list.
+var _terminateEmployeeCtx = null;
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function openTerminateEmployeeModal(idx, source) {
+  var list = source === 'staff' ? getStaffList() : getMainEmpList();
+  var target = list[parseInt(idx, 10)];
+  if (!target || !target.id || !UUID_RE.test(String(target.id))) {
+    alert('This employee record has no linked account yet and cannot be terminated through this flow.');
+    return;
+  }
+  _terminateEmployeeCtx = { uuid: target.id, name: target.name, source: source };
+  document.getElementById('term-modal-title').textContent = 'Terminate ' + (target.name || 'this employee') + '?';
+  document.getElementById('term-modal-reason').value = '';
+  document.getElementById('term-modal-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('term-modal-notes').value = '';
+  document.getElementById('term-modal-rehire').checked = true;
+  document.getElementById('term-modal-notes-required').style.display = 'none';
+  document.getElementById('term-modal-error').style.display = 'none';
+  document.getElementById('terminate-employee-modal').style.display = 'flex';
+}
+
+function closeTerminateEmployeeModal() {
+  var m = document.getElementById('terminate-employee-modal');
+  if (m) m.style.display = 'none';
+  _terminateEmployeeCtx = null;
+}
+
+async function confirmTerminateEmployee() {
+  if (!_terminateEmployeeCtx) return;
+  var errEl = document.getElementById('term-modal-error');
+  errEl.style.display = 'none';
+  var reason = document.getElementById('term-modal-reason').value;
+  var date = document.getElementById('term-modal-date').value;
+  var notes = document.getElementById('term-modal-notes').value.trim();
+  var eligibleForRehire = document.getElementById('term-modal-rehire').checked;
+
+  var btn = document.getElementById('term-modal-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Terminating…';
+  try {
+    await terminateEmployee(_terminateEmployeeCtx.uuid, { reason: reason, date: date, notes: notes, eligibleForRehire: eligibleForRehire });
+    var source = _terminateEmployeeCtx.source;
+    closeTerminateEmployeeModal();
+    if (source === 'staff') {
+      var sm = document.getElementById('staff-modal'); if (sm) sm.style.display = 'none';
+      if (typeof renderStaffList === 'function') renderStaffList();
+      if (typeof renderStaffSubview === 'function') renderStaffSubview();
+    } else {
+      var mm = document.getElementById('main-emp-modal'); if (mm) mm.style.display = 'none';
+      if (typeof renderMainEmployees === 'function') renderMainEmployees();
+    }
+    if (typeof showToast === 'function') showToast('Employee terminated.', 'success');
+  } catch (e) {
+    errEl.textContent = (e && e.message) || 'Termination failed — try again.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Confirm Termination';
+  }
+}
+
+// PR #149 — Rehire, called from the Archived-card "Rehire" button. Native
+// confirm() carries the eligible_for_rehire warning + notes -- Tom's spec
+// just needs "show reason/notes, require an explicit confirm to override,"
+// which confirm() satisfies without new modal markup for a single-step
+// yes/no decision.
+async function rehireEmployeeWithConfirm(idx, source) {
+  var list = source === 'staff' ? getStaffList() : getMainEmpList();
+  var target = list[parseInt(idx, 10)];
+  if (!target || !target.id || !UUID_RE.test(String(target.id))) return;
+  if (target.eligible_for_rehire === false) {
+    var msg = 'This employee was marked NOT eligible for rehire.';
+    if (target.termination_notes) msg += ' Reason: ' + target.termination_notes;
+    msg += '\n\nAre you sure you want to rehire them?';
+    if (!confirm(msg)) return;
+  }
+  try {
+    await rehireEmployee(target.id);
+    if (source === 'staff') {
+      if (typeof renderStaffList === 'function') renderStaffList();
+      if (typeof renderStaffSubview === 'function') renderStaffSubview();
+    } else {
+      if (typeof renderMainEmployees === 'function') renderMainEmployees();
+    }
+    if (typeof showToast === 'function') showToast('Employee rehired.', 'success');
+  } catch (e) {
+    alert('Rehire failed: ' + ((e && e.message) || e));
+  }
+}
+
 function editEmployeeAssignment(employeeId, dateStr) {
   const emp = getUnifiedRoster().find(e => e.id === employeeId);
   if (!emp) return;
@@ -26995,7 +27319,18 @@ const EMPLOYEE_ROSTER = [];
 // tab, which shares this same function) at all. Name-based dedup
 // removed entirely; legacy_roster_id is still a legitimate duplicate
 // guard (two facade rows genuinely can't share one legacy id).
-function getUnifiedRoster() {
+// PR #149: `asOfDate` (optional, 'YYYY-MM-DD') makes the terminated-employee
+// exclusion date-aware instead of blanket. Before this, a terminated
+// employee was invisible for EVERY date, including dates before their
+// termination -- 50 employees in production lost all historical
+// hours/team-membership data because of this, not just future
+// assignments (see migration 104's header comment for the full finding).
+// Omit asOfDate for "current roster" contexts (Team Manager's default
+// view, new-assignment dropdowns, etc.) -- there, a currently-terminated
+// employee correctly should NOT appear, matching the pre-#149 behavior
+// exactly. Pass a date for anything historical (getEmployeeTeam,
+// getTeamEmployees) so dates before termination still resolve correctly.
+function getUnifiedRoster(asOfDate) {
   var rows = EMPLOYEE_ROSTER.slice();
   if (!window.PentaEmployees || !window.PentaEmployees.listSync) return rows;
   try {
@@ -27004,7 +27339,8 @@ function getUnifiedRoster() {
       var existsByLegacy = fe.legacy_roster_id ? rows.find(function(r) {
         return r.id === fe.legacy_roster_id;
       }) : null;
-      if (!existsByLegacy && fe.status !== 'terminated') {
+      var isTerminatedAsOf = fe.status === 'terminated' && fe.terminated_at && (!asOfDate || asOfDate >= fe.terminated_at);
+      if (!existsByLegacy && !isTerminatedAsOf) {
         rows.push({
           id: fe.legacy_roster_id || fe.id,
           uuid: fe.id,
@@ -27416,12 +27752,14 @@ function getEmployeeTeam(employeeId, dateStr) {
   if (dailyAssignments[key] !== undefined) {
     return dailyAssignments[key] === 'OFF' ? null : dailyAssignments[key];
   }
-  const emp = getUnifiedRoster().find(e => e.id === employeeId);
+  // PR #149: pass dateStr through so a date before the employee's
+  // termination still resolves their historical default team.
+  const emp = getUnifiedRoster(dateStr).find(e => e.id === employeeId);
   return emp ? emp.defaultTeam : null;
 }
 
 function getTeamEmployees(team, dateStr) {
-  return getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team);
+  return getUnifiedRoster(dateStr).filter(e => getEmployeeTeam(e.id, dateStr) === team);
 }
 
 async function assignEmployee(employeeId, team, dateStr, extra) {
@@ -39328,8 +39666,9 @@ function renderStaffList() {
         <div style="width:10px;height:10px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
         <div style="flex:1;min-width:0">
           <div style="font-size:15px;font-weight:600">${emp.name}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">${emp.termReason||'Terminated'} · ${emp.termDate||''} · ${emp.rehire?'✓ Rehire OK':'✗ No rehire'}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">${_terminationReasonLabel(emp.termination_reason)} · ${emp.terminated_at||''} · ${emp.eligible_for_rehire===false?'✗ No rehire':'✓ Rehire OK'}</div>
         </div>
+        <button onclick="rehireEmployeeWithConfirm(${i},'staff')" style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#34d399;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">Rehire</button>
         <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">Edit</button>
       </div>`;
     }
@@ -45089,8 +45428,9 @@ function renderStaffSubview() {
         <div style="width:10px;height:10px;border-radius:50%;background:var(--red);flex-shrink:0"></div>
         <div style="flex:1;min-width:0">
           <div style="font-size:15px;font-weight:600">${emp.name}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">${emp.termReason||'Terminated'} · ${emp.termDate||''} · ${emp.rehire?'✓ Rehire OK':'✗ No rehire'}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">${_terminationReasonLabel(emp.termination_reason)} · ${emp.terminated_at||''} · ${emp.eligible_for_rehire===false?'✗ No rehire':'✓ Rehire OK'}</div>
         </div>
+        <button onclick="rehireEmployeeWithConfirm(${i},'staff')" style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#34d399;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">Rehire</button>
         <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
       </div>`;
     }
@@ -50530,8 +50870,21 @@ function _p3dPage(dir) {
         </div>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Status</div>
-        <select id="staff-status" onchange="document.getElementById('staff-term-fields').style.display=this.value==='terminated'?'block':'none'" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
-          <option value="active">Active</option><option value="inactive">Inactive</option><option value="terminated">Terminated</option>
+        <!-- PR #149: the 'terminated' option was removed from this dropdown --
+             termination now happens exclusively through the dedicated
+             "Terminate Employee" button/modal below, which captures a
+             termination date, validated reason, and rehire eligibility
+             that this inline dropdown-triggered flow never had. Leaving
+             'terminated' reachable here would let a save bypass all of
+             that (and the team-clear/future-assignment-purge/audit-log
+             steps terminateEmployee() does), landing an employee in a
+             status='terminated' state with no terminated_at -- which the
+             date-aware roster fix (getUnifiedRoster) can't correctly
+             exclude going forward. #staff-term-fields below is now
+             permanently unreachable (nothing can select 'terminated'
+             anymore) -- left in place rather than removed, harmless. -->
+        <select id="staff-status" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <option value="active">Active</option><option value="inactive">Inactive</option>
         </select>
       </div>
       <div id="staff-term-fields" style="display:none">
@@ -50812,7 +51165,7 @@ function _p3dPage(dir) {
 
       <div style="display:flex;gap:10px;margin-top:4px">
         <button onclick="saveStaffEmployee()" style="flex:1;background:var(--accent);border:none;border-radius:9px;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Save</button>
-        <button onclick="deleteStaffEmployee()" id="staff-delete-btn" style="display:none;flex:0.4;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Delete</button>
+        <button onclick="openTerminateEmployeeModal(document.getElementById('staff-edit-idx').value, 'staff')" id="staff-delete-btn" style="display:none;flex:0.6;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Terminate Employee</button>
       </div>
       <div id="staff-save-msg" style="margin-top:10px;text-align:center;font-size:13px;color:var(--green);min-height:20px"></div>
     </div>
