@@ -3967,6 +3967,22 @@ html.pre-auth #filter-row { display: none !important; }
 }
 .admin-switch input:checked + .admin-switch-track { background: #30D158; }
 .admin-switch input:checked + .admin-switch-track::before { transform: translateX(18px); }
+/* PR #150 — main-app-themed toggle switch (uses --input-bg/--muted CSS
+   vars, unlike .admin-switch's hardcoded dark-panel colors, since this is
+   used inside the Terminate Employee modal, not the admin panel). Native
+   label+:checked-sibling-selector semantics only -- no manual onclick
+   click-forwarding on the track/thumb. That combination (a wrapping
+   <label> PLUS a manual el.click() call on a child) double-toggles the
+   checkbox on every real click, since the browser's own label-forwarding
+   ALSO fires -- net effect, the checkbox's checked state barely ever
+   actually changes from user input. Confirmed this was exactly what broke
+   the original Eligible-for-rehire toggle (PR #149) before this fix. */
+.term-rehire-switch { position: relative; display: inline-block; width: 44px; height: 26px; flex-shrink: 0; cursor: pointer; }
+.term-rehire-switch input { opacity: 0; width: 0; height: 0; }
+.term-rehire-track { position: absolute; inset: 0; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 13px; transition: background 0.2s, border-color 0.2s; }
+.term-rehire-track::before { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: var(--muted); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+.term-rehire-switch input:checked + .term-rehire-track { background: rgba(52,211,153,0.18); border-color: rgba(52,211,153,0.45); }
+.term-rehire-switch input:checked + .term-rehire-track::before { transform: translateX(18px); background: #34d399; }
 .admin-footnote {
   font-size: 12px; color: rgba(255,255,255,0.50);
   text-align: center; padding: 14px 10px; line-height: 1.6;
@@ -5186,10 +5202,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div style="margin-bottom:18px;display:flex;align-items:center;justify-content:space-between">
       <div style="font-size:14px;color:var(--text)">Eligible for rehire</div>
-      <label style="position:relative;display:inline-block;width:44px;height:26px;cursor:pointer">
-        <input type="checkbox" id="term-modal-rehire" checked style="opacity:0;width:0;height:0">
-        <span onclick="this.previousElementSibling.click()" style="position:absolute;inset:0;background:var(--input-bg);border:1px solid var(--input-border);border-radius:13px;transition:.2s"></span>
-        <span onclick="this.parentElement.querySelector('input').click()" style="position:absolute;top:3px;left:3px;width:18px;height:18px;background:var(--muted);border-radius:50%;transition:.2s"></span>
+      <label class="term-rehire-switch">
+        <input type="checkbox" id="term-modal-rehire" checked>
+        <span class="term-rehire-track"></span>
       </label>
     </div>
     <div id="term-modal-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px"></div>
