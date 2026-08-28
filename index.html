@@ -26592,6 +26592,16 @@ async function setTeamDeviceAssignment(team, dateStr) {
       } else {
         alert('Could not update GPS vehicle assignment: ' + res.error.message);
       }
+    } else {
+      // PR #150 -- hours are always computed live from Geotab/time_entries
+      // on each load (never cached to a table), so a past-date vehicle
+      // change is automatically reflected the next time that week is
+      // viewed. If the Hours view happens to already be open (including on
+      // a past week), refresh it now instead of leaving a stale render up.
+      try {
+        var gv = document.getElementById('gps-view');
+        if (gv && gv.classList.contains('active') && typeof loadWeekHours === 'function') loadWeekHours();
+      } catch (e) {}
     }
   } catch (e) {
     alert('Could not update GPS vehicle assignment: ' + (e.message || e));
@@ -29596,19 +29606,18 @@ async function loadWeekHours() {
     // time_entries-derived weekHours and skip the GPS-verified badge.
     var trips = [];
     var tripsByDevice = {};
-    var teamDevices = [];
+    var teamOrder = [];
+    var teamDeviceMapByDay = [];
     try {
         const devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 });
-      const teamOrder = _pentaTeamNames();
-      // Best-effort supplementary annotation for the whole week — resolves
-      // against the week's first day rather than per-day-of-week (a team's
-      // vehicle assignment could technically change mid-week, but this is
-      // already a best-effort badge wrapped in try/catch, not the source
-      // of truth for hours).
-      const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, days[0]);
-      teamDevices = teamOrder
-        .filter(t => teamDeviceMap[t] && teamDeviceMap[t].device)
-        .map(t => ({ ...teamDeviceMap[t].device, team: t }));
+      teamOrder = _pentaTeamNames();
+      // PR #150: was resolved ONCE against days[0] for the whole week --
+      // a date-scoped team_device_assignments override (a one-day vehicle
+      // swap) would then apply to every day in the week, not just the day
+      // it was set for. Resolve per day instead, one map per weekday, so
+      // each day's GPS backfill uses whichever vehicle was actually
+      // assigned that specific day.
+      teamDeviceMapByDay = await Promise.all(days.map(day => _resolveTeamDeviceMap(devices, teamOrder, day)));
       trips = await _geotabCall('Get', {
         typeName: 'Trip',
         search: {
@@ -29631,8 +29640,7 @@ async function loadWeekHours() {
 
     // ── Geotab supplementary pass — adds lunch detection + back-fills
     // hours for teams without time_entries (e.g. teams using Geotab only). ──
-    teamDevices.forEach(dev => {
-      const team = dev.team;
+    teamOrder.forEach(team => {
       if (!team) return;
       // v11.0.19: only initialize from Geotab if time_entries didn't already
       // populate this team. Otherwise we'd clobber the primary data source.
@@ -29643,14 +29651,21 @@ async function loadWeekHours() {
         weekHours[team].lunch = weekHours[team].lunch || [null,null,null,null,null];
       }
 
-      const devTrips = tripsByDevice[dev.id] || [];
-
       days.forEach((day, dayIdx) => {
         const dayStart = new Date(day); dayStart.setHours(0,0,0,0);
         const dayEnd = new Date(day); dayEnd.setHours(23,59,59,999);
 
+        // PR #150: resolve THIS team's device for THIS specific day, not
+        // a single device locked in for the whole week -- so a
+        // date-scoped vehicle override (e.g. Aug 20 B1 -> S3's van) only
+        // affects hours computed for that one day.
+        const _dayResolved = (teamDeviceMapByDay[dayIdx] && teamDeviceMapByDay[dayIdx][team]) || null;
+        const _dayDeviceId = _dayResolved && _dayResolved.device && _dayResolved.device.id;
+        if (!_dayDeviceId) return;
+        const devTripsForDay = tripsByDevice[_dayDeviceId] || [];
+
         // Get trips for this day
-        const dayTrips = devTrips.filter(t => {
+        const dayTrips = devTripsForDay.filter(t => {
           const ts = new Date(t.start);
           return ts >= dayStart && ts <= dayEnd;
         }).sort((a,b) => new Date(a.start) - new Date(b.start));
@@ -49625,6 +49640,7 @@ async function _resolveTeamDevice(devices, team, dateObj) {
       var res = await sb.rpc('get_team_device', { p_business_id: bid, p_team_code: team, p_on_date: dateStr });
       if (!res.error && Array.isArray(res.data) && res.data.length > 0) {
         var assignedId = res.data[0].device_id;
+        var isOverride = !!res.data[0].is_override;
         if (!assignedId) return { device: null, source: 'assignment-none', rawDeviceId: null };
         var found = (devices || []).find(function(d){ return String(d.id) === String(assignedId); });
         // PR #123 -- flags when an EXPLICIT team_device_assignments row
@@ -49641,8 +49657,16 @@ async function _resolveTeamDevice(devices, team, dateObj) {
         // regardless of `mismatch`); the fallback removed by PR #142 is
         // the separate one below, for when there's no assignment row at
         // all.
-        var mismatch = !!(found && found.name && !String(found.name).toUpperCase().includes(String(team).toUpperCase()));
-        return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId, mismatch: mismatch, liveName: found ? found.name : null };
+        // PR #150 -- suppress the mismatch check when a date-scoped
+        // override (isOverride, migration 105) is what's resolving. A
+        // deliberate daily vehicle swap (e.g. B1 borrowing S3's van for a
+        // day) makes the resolved device's live name NOT contain "B1" on
+        // purpose -- that's not the M1/M3-style drift this warning exists
+        // to catch. The warning stays fully live for the permanent/
+        // default assignment (isOverride=false), which is the actual
+        // "silently drifted and nobody noticed" case.
+        var mismatch = !isOverride && !!(found && found.name && !String(found.name).toUpperCase().includes(String(team).toUpperCase()));
+        return { device: found || null, source: found ? 'assignment' : 'assignment-missing', rawDeviceId: assignedId, mismatch: mismatch, liveName: found ? found.name : null, isOverride: isOverride };
       }
     } catch (e) { /* RPC unavailable -- no assignment data to trust; fall through to "no device" below, not a name-match guess */ }
   }
