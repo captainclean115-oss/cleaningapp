@@ -26767,6 +26767,62 @@ function _terminationReasonLabel(value) {
   return found ? found.label : (value || 'Terminated');
 }
 
+// terminated_at is a bare DATE (no time component) -- new Date(dateStr)
+// parses as UTC midnight and can roll back a day in a negative-UTC-offset
+// viewer timezone (see feedback_mirrored_date_helpers_diverge). Force
+// local-time parsing the same way the rest of this codebase does.
+function _pentaFormatDateOnly(dateStr) {
+  if (!dateStr) return '';
+  try {
+    var d = new Date(dateStr + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch (e) { return dateStr; }
+}
+
+var _pentaUserNameCache = {};
+async function _resolveUserDisplayName(userId, sb) {
+  if (!userId) return null;
+  if (_pentaUserNameCache[userId]) return _pentaUserNameCache[userId];
+  try {
+    var res = await sb.from('users').select('first_name, last_name, email').eq('id', userId).maybeSingle();
+    var u = res && res.data;
+    var name = u ? (((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email) : null;
+    if (name) _pentaUserNameCache[userId] = name;
+    return name;
+  } catch (e) { return null; }
+}
+
+// Paints the two termination-detail fields that need a DB round-trip
+// beyond what's already on the employee row: who terminated them
+// (terminated_by is a raw users.id) and the actual moment the action was
+// taken. terminated_at is only a DATE (the employment end date Tom
+// picks, which can be backdated) -- the real "when was this recorded"
+// timestamp lives in audit_log (written by a DB trigger on the
+// employees table, action_type='terminated'), not on employees itself.
+async function _renderStaffTerminationMeta(emp) {
+  var byEl = document.getElementById('staff-view-terminated-by');
+  var tsEl = document.getElementById('staff-view-terminated-timestamp');
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) return;
+  if (byEl && emp.terminated_by) {
+    try {
+      var name = await _resolveUserDisplayName(emp.terminated_by, sb);
+      byEl.textContent = name || 'Unknown';
+    } catch (e) { byEl.textContent = 'Unknown'; }
+  }
+  if (tsEl) {
+    try {
+      var res = await sb.from('audit_log').select('created_at')
+        .eq('entity_type', 'employee').eq('entity_id', emp.id).eq('action_type', 'terminated')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle();
+      var row = res && res.data;
+      tsEl.textContent = (row && row.created_at)
+        ? new Date(row.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '—';
+    } catch (e) { tsEl.textContent = '—'; }
+  }
+}
+
 // Deliberately does NOT reuse PentaEmployees.archive() -- archive() sets
 // deleted_at alongside status='terminated', and PentaEmployees._hydrate()
 // filters .is('deleted_at', null), which makes an archived employee
@@ -39920,6 +39976,17 @@ function renderStaffView() {
       </div>
     </div>
 
+    ${emp.status === 'terminated' ? `
+    <div style="background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.25);border-radius:12px;padding:14px;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--red);margin-bottom:8px">Termination Details</div>
+      ${row('Termination date', _pentaFormatDateOnly(emp.terminated_at))}
+      ${row('Reason', _terminationReasonLabel(emp.termination_reason))}
+      ${emp.termination_notes ? `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div style="font-size:13px;color:var(--muted);margin-bottom:4px">Notes</div><div style="font-size:13px;color:var(--text);line-height:1.5">${emp.termination_notes}</div></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--muted)">Terminated by</span><span id="staff-view-terminated-by" style="font-size:13px;font-weight:500">${emp.terminated_by ? 'Loading…' : '—'}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--muted)">Eligible for rehire</span><span style="font-size:13px;font-weight:600;color:${emp.eligible_for_rehire===false?'var(--red)':'var(--green)'}">${emp.eligible_for_rehire===false?'✗ No':'✓ Yes'}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0 0"><span style="font-size:13px;color:var(--muted)">Terminated on</span><span id="staff-view-terminated-timestamp" style="font-size:13px;font-weight:500">Loading…</span></div>
+    </div>` : ''}
+
     ${section('Personal Info', [
       row('Phone', emp.phone),
       row('Email', emp.email),
@@ -40001,6 +40068,12 @@ function renderStaffView() {
   try { _renderStaffActivitySection(emp, 'staff-view-activity-host'); } catch (e) {}
   // v11.0.25: paint the Recent Forms preview.
   try { renderStaffViewFormsPreview(emp); } catch (e) {}
+  // Bug report: "termination details not visible anywhere in the UI" --
+  // the write was always correct (verified live), there was just no
+  // display for it. Paint the "terminated by" name + real action
+  // timestamp async since both need a query the synchronous render above
+  // doesn't have data for yet.
+  if (emp.status === 'terminated') { try { _renderStaffTerminationMeta(emp); } catch (e) {} }
 
   // Wire up the Penta Login section (Sprint 4 Phase 4B).
   try {
