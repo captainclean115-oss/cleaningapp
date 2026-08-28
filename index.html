@@ -27354,7 +27354,18 @@ function getUnifiedRoster(asOfDate) {
       var existsByLegacy = fe.legacy_roster_id ? rows.find(function(r) {
         return r.id === fe.legacy_roster_id;
       }) : null;
-      var isTerminatedAsOf = fe.status === 'terminated' && fe.terminated_at && (!asOfDate || asOfDate >= fe.terminated_at);
+      // PR #148: a bare call (no asOfDate -- "who's on the team right now")
+      // must exclude EVERY terminated employee, even ones whose
+      // terminated_at is unset (e.g. terminated via a pre-#144 path). The
+      // previous `fe.terminated_at &&` short-circuit let those leak into
+      // every "current roster" view (Team Manager, Move Employee, Day Off,
+      // route rosters) as if they were still active teammates -- 10+ real
+      // terminated/test employees in Manna's data have no terminated_at set.
+      // A DATED call (asOfDate provided) keeps the original "fail toward
+      // shown" behavior when terminated_at is missing, so historical hours
+      // for employees terminated before this column existed aren't
+      // retroactively hidden (see employee-termination-roster-date-aware.test.js).
+      var isTerminatedAsOf = fe.status === 'terminated' && (!asOfDate ? true : (fe.terminated_at ? asOfDate >= fe.terminated_at : false));
       if (!existsByLegacy && !isTerminatedAsOf) {
         rows.push({
           id: fe.legacy_roster_id || fe.id,
