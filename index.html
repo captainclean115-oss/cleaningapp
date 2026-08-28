@@ -26399,8 +26399,23 @@ async function renderTeamManager(opts) {
           <option value="__none__"${_selectValue==='__none__'?' selected':''}>None (no GPS coverage)</option>
         </select>
       </span>`;
-    const _untilChipHtml = `<input type="date" id="tda-until-${team}" title="Vehicle assignment effective until (optional — leave blank for open-ended)"
-        style="background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:0;width:92px;cursor:pointer">`;
+    // PR #149: was "leave blank for open-ended" -- picking a vehicle from
+    // the dropdown fires the write immediately via onchange, before Tom
+    // has any chance to type an until-date, so the ordinary "swap today's
+    // car" interaction always left this blank and silently created a
+    // permanent, forward-cascading override (confirmed live: Aug 20's
+    // one-day B1→S3 swap had effective_to=null, so every later date
+    // resolved to S3 too). Blank now defaults to a same-day-only override
+    // instead. The open-ended case is still available, but now requires
+    // deliberately checking "no end date" -- it's no longer what happens
+    // by just picking a car.
+    const _untilChipHtml = `<label style="display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);cursor:pointer" title="Leave blank: this vehicle change applies to ${dateStr} only. Set a date to extend it, or check 'no end date' to change the team's default going forward.">
+        <input type="date" id="tda-until-${team}" min="${dateStr}"
+          style="background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;padding:0;width:92px;cursor:pointer">
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap" title="Change the team's default vehicle going forward (no end date), instead of just ${dateStr}">
+        <input type="checkbox" id="tda-forever-${team}" style="margin:0;cursor:pointer">∞
+      </label>`;
 
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--border)">
@@ -26552,10 +26567,15 @@ async function renderTeamManager(opts) {
 async function setTeamDeviceAssignment(team, dateStr) {
   var sel = document.getElementById('tda-select-' + team);
   var untilEl = document.getElementById('tda-until-' + team);
+  var foreverEl = document.getElementById('tda-forever-' + team);
   if (!sel) return;
   var selectValue = sel.value;
   var deviceId = selectValue === '' ? '__default__' : (selectValue === '__none__' ? null : selectValue);
-  var effectiveTo = (untilEl && untilEl.value) ? untilEl.value : null;
+  // PR #149: blank "until" no longer means open-ended -- it means
+  // "today only" (effective_to = effective_from), matching the actual
+  // interaction (pick a car, nothing else) that used to silently cascade
+  // forward forever. Open-ended now requires explicitly checking "∞".
+  var effectiveTo = (foreverEl && foreverEl.checked) ? null : ((untilEl && untilEl.value) ? untilEl.value : dateStr);
 
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
