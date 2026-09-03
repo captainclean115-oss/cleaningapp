@@ -7354,6 +7354,16 @@ window.PentaGeocodeHistory = (function() {
   // the browser client can't delete auth.users directly, PostgREST
   // doesn't expose the auth schema) which deletes both in one
   // business-scoped, role-checked call instead.
+  //
+  // PR #158 -- the RPC also deletes the linked public.users row now
+  // (migration 109). public.users has NO foreign key to auth.users at
+  // all -- deleting auth.users didn't touch it, so it survived as a
+  // second orphan even after #157's fix. Confirmed live, real incident:
+  // an orphaned public.users row with role='owner' (correct at the time
+  // it was set, stale after the employee/auth rows were deleted) got
+  // "preserved" by accept-invite's role-carryover logic onto a BRAND NEW
+  // hire under the same email -- who should have landed as a plain
+  // employee, landed with full owner access instead.
   async function hardDelete(id) {
     if (!_cacheReady) await _hydrate();
     var sb = SB();
