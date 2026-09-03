@@ -39545,7 +39545,8 @@ async function renderApplicantsList() {
       : '';
     const headerHtml =
       shareRow +
-      '<div style="padding:0 0 12px;display:flex;justify-content:flex-end">' +
+      '<div style="padding:0 0 12px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">' +
+        (_shareUrl ? '<button onclick="openTextApplicationLinkModal()" style="background:#2A3038;color:#cbd6ff;border:1px solid #3A4048;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">📱 Text Application Link</button>' : '') +
         '<button onclick="openManagerApplication()" style="background:#5E5CE6;color:white;border:none;padding:8px 14px;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">+ New Application (in-person)</button>' +
       '</div>';
     if (!data || data.length === 0) {
@@ -39763,6 +39764,70 @@ function openManagerApplication() {
   if (homeScreen) homeScreen.style.display = 'none';
   const portalScreen = document.getElementById('portal-screen');
   if (portalScreen) portalScreen.style.display = 'none';
+}
+
+// Texts the tenant's own application link (the same one shown in the
+// "Your application link" share row -- read fresh from #apply-share-url
+// at send time, same source the Copy button already uses, rather than a
+// captured closure variable) to a phone number typed in on the spot.
+// Reuses _sendSMS(), the same helper every other SMS send in this app
+// goes through -- native-vs-RingCentral branching and rate-limit/error
+// surfacing already handled there, nothing new to duplicate.
+function openTextApplicationLinkModal() {
+  var existing = document.getElementById('text-app-link-overlay');
+  if (existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'text-app-link-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end';
+  overlay.innerHTML =
+    '<div style="background:#12161C;width:100%;border-radius:16px 16px 0 0;border-top:1px solid #2A3038;padding:20px">' +
+      '<div style="font-size:17px;font-weight:700;color:#fff;margin-bottom:4px">Text Application Link</div>' +
+      '<div style="font-size:12px;color:#888;margin-bottom:16px">Sends your application link by text so they can fill it out on their own phone.</div>' +
+      '<label style="font-size:12px;color:#888;display:block;margin-bottom:6px">Phone number</label>' +
+      '<input id="text-app-link-phone" type="tel" inputmode="tel" placeholder="(555) 555-5555" style="width:100%;background:#0F1419;border:1px solid #2A3038;border-radius:10px;color:#fff;font-family:inherit;font-size:15px;padding:12px 14px;outline:none;box-sizing:border-box;margin-bottom:8px">' +
+      '<div id="text-app-link-error" style="color:#f87171;font-size:12px;margin-bottom:8px;display:none"></div>' +
+      '<div style="display:flex;gap:10px">' +
+        '<button onclick="document.getElementById(\'text-app-link-overlay\').remove()" style="flex:1;background:#2A3038;border:none;color:#fff;border-radius:9px;font-family:inherit;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Cancel</button>' +
+        '<button id="text-app-link-send-btn" onclick="_sendApplicationLinkSms()" style="flex:1;background:#5E5CE6;border:none;color:#fff;border-radius:9px;font-family:inherit;font-size:15px;font-weight:700;padding:14px;cursor:pointer">Send</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+  var input = document.getElementById('text-app-link-phone');
+  if (input) input.focus();
+}
+
+async function _sendApplicationLinkSms() {
+  var errEl = document.getElementById('text-app-link-error');
+  var btn = document.getElementById('text-app-link-send-btn');
+  var urlEl = document.getElementById('apply-share-url');
+  if (errEl) errEl.style.display = 'none';
+  var raw = (document.getElementById('text-app-link-phone') || {}).value || '';
+  var digits = raw.replace(/\D/g, '');
+  if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+  if (digits.length !== 10) {
+    if (errEl) { errEl.textContent = 'Enter a valid 10-digit phone number.'; errEl.style.display = 'block'; }
+    return;
+  }
+  var e164 = '+1' + digits;
+  var shareUrl = urlEl ? urlEl.value : '';
+  if (!shareUrl) {
+    if (errEl) { errEl.textContent = 'No application link available — refresh and try again.'; errEl.style.display = 'block'; }
+    return;
+  }
+  var bizName = window.PentaTenant && window.PentaTenant.name ? window.PentaTenant.name() : '';
+  var msg = (bizName ? bizName + ': ' : '') + 'Please fill out our job application here: ' + shareUrl;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    await _sendSMS(e164, msg, { allowUnknown: true });
+    var overlay = document.getElementById('text-app-link-overlay');
+    if (overlay) overlay.remove();
+    if (typeof showToast === 'function') showToast('Application link texted.', 'success');
+  } catch (e) {
+    if (errEl) { errEl.textContent = (e && e.message) || 'Could not send text — try again.'; errEl.style.display = 'block'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+  }
 }
 
 function renderStaffList() {
