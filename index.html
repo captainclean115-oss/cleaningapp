@@ -4744,6 +4744,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <div style="font-size:19px;font-weight:700">👥 Staff</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <!-- Jumps to the existing "Incoming Forms" inbox under Updates
+             (built v11.0.25 -- business-wide, review-button per form) so
+             submitted forms are reachable straight from Staff, not just
+             the Updates tab. -->
+        <button onclick="showTab('tasks'); setTimeout(function(){ var el = document.getElementById('forms-inbox-section'); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }, 60)" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;display:flex;align-items:center;gap:6px">
+          📋 Forms <span id="staff-forms-shortcut-badge" style="display:none;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px"></span>
+        </button>
         <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
         <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
         <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 16px;border-radius:20px;cursor:pointer">+ Add</button>
@@ -20482,7 +20489,12 @@ function _formsInboxReviewClick(formId, employeeId) {
 function renderFormsInbox() {
   var listEl = document.getElementById('forms-inbox-list');
   var pillEl = document.getElementById('forms-inbox-pill');
-  if (!listEl) return;
+  // Staff view's "📋 Forms" shortcut badge -- kept in sync here too since
+  // this function already re-runs on every PentaForms cache change
+  // (see the PentaForms.onChange wiring), rather than adding a second,
+  // independent count computation that could drift from this one.
+  var staffShortcutBadge = document.getElementById('staff-forms-shortcut-badge');
+  if (!listEl && !staffShortcutBadge) return;
   var forms = [];
   try {
     if (window.PentaForms && window.PentaForms.listSync) forms = window.PentaForms.listSync();
@@ -20495,6 +20507,11 @@ function renderFormsInbox() {
     if (pending.length > 0) { pillEl.textContent = pending.length; pillEl.style.display = ''; }
     else { pillEl.style.display = 'none'; }
   }
+  if (staffShortcutBadge) {
+    if (pending.length > 0) { staffShortcutBadge.textContent = pending.length; staffShortcutBadge.style.display = ''; }
+    else { staffShortcutBadge.style.display = 'none'; }
+  }
+  if (!listEl) return;
   if (pending.length === 0) {
     listEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 4px">No pending forms.</div>';
     return;
@@ -22576,7 +22593,15 @@ var HOME_APPS = [
   { id: 'clients',  permKey: 'clients_icon', label: 'Clients',  grad: 'linear-gradient(135deg,#5AC8FA 0%,#007AFF 100%)',
     iconHtml: LUCIDE['users'], go: function(){ showTab('clients'); if (typeof showClientsSubview === 'function') showClientsSubview(); } },
   { id: 'staff',    permKey: 'staff_icon', label: 'Staff',    grad: 'linear-gradient(135deg,#30D158 0%,#248A3D 100%)',
-    iconHtml: LUCIDE['user-check'], go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
+    iconHtml: LUCIDE['user-check'],
+    // Pending employee-submitted forms (time off, call-out, etc.) across
+    // the whole business -- so a new submission is visible from the home
+    // screen without having to already know which employee to check.
+    badge: function(){
+      try { return (window.PentaForms && window.PentaForms.listSync ? window.PentaForms.listSync() : []).filter(function(f){ return f.status === 'pending'; }).length || 0; }
+      catch(e){ return 0; }
+    },
+    go: function(){ showTab('clients'); if (typeof showStaffView === 'function') showStaffView(); } },
   { id: 'quote',    permKey: 'quote_icon', label: 'Quote',    grad: 'linear-gradient(135deg,#FFD60A 0%,#FF9500 100%)',
     iconHtml: LUCIDE['calculator'], go: function(){ if (typeof openQuoteTool === 'function') openQuoteTool(); } },
   { id: 'payments', permKey: 'payments_icon', label: 'Payments', grad: 'linear-gradient(135deg,#34D399 0%,#047857 100%)',
@@ -22603,7 +22628,16 @@ var HOME_APPS = [
       try {
         var p = (JSON.parse(localStorage.getItem('cleanco_pending')||'[]').filter(function(x){return !x.done;}).length) || 0;
         var m = (JSON.parse(localStorage.getItem('cleanco_tasks')||'[]').filter(function(x){return !x.done;}).length) || 0;
-        return p + m;
+        // v11.0.25 added pending employee-submitted forms to the bottom-nav
+        // "Updates" label count (updateTaskBadge()) but this separate home-
+        // grid tile badge was never updated to match -- a new form
+        // submission never lit up this tile even though it's the more
+        // prominent, home-screen-visible surface. Mirrors updateTaskBadge's
+        // exact count.
+        var f = (window.PentaForms && window.PentaForms.listSync
+          ? window.PentaForms.listSync().filter(function(x){ return x && (x.status || 'pending') === 'pending'; }).length
+          : 0) || 0;
+        return p + m + f;
       } catch(e) { return 0; }
     },
     go: function(){ showTab('tasks'); } },
