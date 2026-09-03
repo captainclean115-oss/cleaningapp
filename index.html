@@ -39728,6 +39728,23 @@ async function renderApplicantsList() {
   }
 }
 
+// PR #156 -- the 'applications' storage bucket is private (correctly --
+// these are SSN cards/licenses/passports). Rows written before this PR
+// stored a full getPublicUrl() result (which always 400s for a private
+// bucket); rows written after store just the bucket-relative path. Strip
+// the public-URL prefix if present so both shapes resolve to the same
+// path createSignedUrl() needs.
+function _appDocStoragePath(value) {
+  if (!value) return null;
+  var marker = '/object/public/applications/';
+  var idx = value.indexOf(marker);
+  if (idx !== -1) return value.slice(idx + marker.length);
+  marker = '/object/sign/applications/';
+  idx = value.indexOf(marker);
+  if (idx !== -1) return value.slice(idx + marker.length).split('?')[0];
+  return value; // already a bare path
+}
+
 async function openApplicantDetail(id) {
   const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { alert('Sign in required'); return; }
@@ -39735,14 +39752,23 @@ async function openApplicantDetail(id) {
   if (error || !data) { alert('Failed to load applicant: ' + (error && error.message)); return; }
   var existing = document.getElementById('applicant-detail-overlay');
   if (existing) existing.remove();
-  var docs = [
-    { label: '🪪 License Front', url: data.driver_license_front_url },
-    { label: '🪪 License Back',  url: data.driver_license_back_url },
-    { label: '🛂 Passport',       url: data.passport_url },
-    { label: '📇 SSN Card',       url: data.ssn_card_url }
-  ].filter(function(d){ return d.url; });
-  var docHtml = docs.length === 0 ? '<div style="color:#888;font-size:13px">No documents uploaded</div>' :
-    docs.map(function(d){ return '<a href="' + d.url + '" target="_blank" rel="noopener" style="display:inline-block;margin:4px 8px 4px 0;color:#9af;text-decoration:underline">' + d.label + '</a>'; }).join('');
+  var docDefs = [
+    { label: '🪪 License Front', raw: data.driver_license_front_url },
+    { label: '🪪 License Back',  raw: data.driver_license_back_url },
+    { label: '🛂 Passport',       raw: data.passport_url },
+    { label: '📇 SSN Card',       raw: data.ssn_card_url }
+  ].filter(function(d){ return d.raw; });
+  var docs = await Promise.all(docDefs.map(async function(d){
+    var path = _appDocStoragePath(d.raw);
+    try {
+      var signed = await sb.storage.from('applications').createSignedUrl(path, 300);
+      return { label: d.label, url: (signed && signed.data && signed.data.signedUrl) || null };
+    } catch (e) { return { label: d.label, url: null }; }
+  }));
+  docs = docs.filter(function(d){ return d.url; });
+  var docHtml = docDefs.length === 0 ? '<div style="color:#888;font-size:13px">No documents uploaded</div>'
+    : docs.length === 0 ? '<div style="color:#f88;font-size:13px">Documents were uploaded but could not be loaded — try again.</div>'
+    : docs.map(function(d){ return '<a href="' + d.url + '" target="_blank" rel="noopener" style="display:inline-block;margin:4px 8px 4px 0;color:#9af;text-decoration:underline">' + d.label + '</a>'; }).join('');
   var langPretty = { en:'English', es:'Spanish', pt:'Portuguese', kr:'Korean', ko:'Korean', cv:'Kriolu' };
   var html =
     '<div id="applicant-detail-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;overflow-y:auto;padding:20px">' +
@@ -45472,12 +45498,13 @@ async function submitApplication() {
     return;
   }
 
+  var docUploadFailures = [];
   if (sb) {
     const docMap = [
-      { id: 'app-license-front', col: 'driver_license_front_url' },
-      { id: 'app-license-back',  col: 'driver_license_back_url' },
-      { id: 'app-ssn',           col: 'ssn_card_url' },
-      { id: 'app-passport',      col: 'passport_url' }
+      { id: 'app-license-front', col: 'driver_license_front_url', label: "Driver's License (front)" },
+      { id: 'app-license-back',  col: 'driver_license_back_url',  label: "Driver's License (back)" },
+      { id: 'app-ssn',           col: 'ssn_card_url',              label: 'Social Security Card' },
+      { id: 'app-passport',      col: 'passport_url',              label: 'Passport' }
     ];
     for (const d of docMap) {
       const inp = document.getElementById(d.id);
@@ -45493,14 +45520,33 @@ async function submitApplication() {
         });
         if (upErr) {
           console.error('[Sprint 4.2.B] Storage upload failed for', d.col, upErr);
+          docUploadFailures.push(d.label);
         } else {
-          const { data: pub } = sb.storage.from('applications').getPublicUrl(path);
-          docUrls[d.col] = pub && pub.publicUrl ? pub.publicUrl : path;
+          // PR #156 -- the 'applications' bucket is private (correctly:
+          // these are SSN cards, driver's licenses, passports). This used
+          // to call getPublicUrl(), which returns a URL that always
+          // 400s for a private bucket -- so a successful upload still
+          // silently never displayed for a manager viewing the
+          // application. Store the raw path instead (same convention as
+          // PentaEmployees.getSignedPhotoUrl for employee-photos, another
+          // private bucket) and generate a signed URL on demand at view
+          // time (openApplicantDetail) instead of trying to persist one.
+          docUrls[d.col] = path;
         }
       } catch (e) {
         console.error('[Sprint 4.2.B] Storage upload exception for', d.col, e);
+        docUploadFailures.push(d.label);
       }
     }
+  }
+  // PR #156 -- a document the applicant actually selected that failed to
+  // upload used to fail 100% silently (console.error only) -- the
+  // application still submitted successfully with that field just blank,
+  // no indication anything went wrong. These documents are genuinely
+  // optional (Sprint 4.2.B), so this doesn't block submission -- it just
+  // makes a real upload failure visible instead of invisible.
+  if (docUploadFailures.length) {
+    document.getElementById('app-error').textContent = 'Note: ' + docUploadFailures.join(', ') + ' could not be uploaded — you can still submit, but that document will be missing.';
   }
 
   const now = new Date();
