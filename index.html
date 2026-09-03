@@ -5394,7 +5394,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           <input type="checkbox" id="gps-show-hidden" onchange="toggleGPSShowHidden()" style="cursor:pointer">
           Show hidden
         </label>
-        <button class="gps-refresh-btn" onclick="refreshLiveTab()">↻ Refresh</button>
+        <button class="gps-refresh-btn" id="gps-refresh-btn" onclick="refreshLiveTab()">↻ Refresh</button>
       </div>
     </div>
     <!-- Live Map -->
@@ -33266,11 +33266,39 @@ async function gpsConnect() {
 // (only ready() does), so calling it directly forces a real refetch --
 // same trick already used ad hoc elsewhere in this file (e.g. the
 // PentaJobs/PentaEmployees force-refresh call sites).
+// v11.0.29 -- _gpsLoadToken/_weekHoursLoadToken (above) only guard which
+// result gets RENDERED when overlapping loads finish out of order; they
+// never stopped the underlying Geotab fetches themselves from running.
+// Each click fired a fresh full round of _geotabCall()s (device list,
+// week-wide Trip query, GetAddresses, per-team-per-day resolution) that
+// kept running to completion (or its own 30s timeout) even though the
+// result would just be discarded. Repeated clicks piled up dozens of
+// concurrent in-flight requests competing for the browser's small
+// per-host connection limit -- confirmed live: Geotab itself answered a
+// realistic week-wide Trip query in under a second when called directly,
+// and the account wasn't rate-limited, so the "stuck for a long time"
+// symptom wasn't Geotab being slow, it was the browser's own connection
+// queue backed up behind earlier still-in-flight (but already-obsolete)
+// requests. Simplest real fix: while a refresh is already running, a
+// repeat click is a no-op instead of adding another full round to the
+// pile -- the button visibly shows it's busy instead of silently queuing.
+var _refreshLiveTabInFlight = false;
 async function refreshLiveTab() {
-  try { if (window.PentaAssignments && window.PentaAssignments._hydrate) await window.PentaAssignments._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaAssignments hydrate failed', e); }
-  try { if (window.PentaEmployees && window.PentaEmployees._hydrate) await window.PentaEmployees._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaEmployees hydrate failed', e); }
-  loadGPSData();
-  loadWeekHours();
+  if (_refreshLiveTabInFlight) return;
+  _refreshLiveTabInFlight = true;
+  var btn = document.getElementById('gps-refresh-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.textContent = '↻ Refreshing…'; }
+  try {
+    try { if (window.PentaAssignments && window.PentaAssignments._hydrate) await window.PentaAssignments._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaAssignments hydrate failed', e); }
+    try { if (window.PentaEmployees && window.PentaEmployees._hydrate) await window.PentaEmployees._hydrate(); } catch (e) { console.warn('[hours] refreshLiveTab PentaEmployees hydrate failed', e); }
+    await Promise.all([
+      loadGPSData().catch(function (e) { console.warn('[refreshLiveTab] loadGPSData failed', e); }),
+      loadWeekHours().catch(function (e) { console.warn('[refreshLiveTab] loadWeekHours failed', e); }),
+    ]);
+  } finally {
+    _refreshLiveTabInFlight = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.textContent = '↻ Refresh'; }
+  }
 }
 
 async function loadGPSData() {
