@@ -7246,6 +7246,25 @@ window.PentaGeocodeHistory = (function() {
     return null;
   }
 
+  // Sync uuid lookup, mirroring PentaTeams.getById()'s contract. Several
+  // call sites (the dailyAssignments dual-key mirror's legacy_roster_id
+  // aliasing, _computeFormImpact, Claire's employee-id resolution) already
+  // called window.PentaEmployees.getById(...) assuming this existed --
+  // it never did, so `hasFacade`-style guards checking for its presence
+  // were always false and those code paths silently no-op'd. Confirmed
+  // live: this is why the dailyAssignments mirror's legacy-keyed entries
+  // (needed for the employee portal, whose currentEmployee.id is
+  // legacy_roster_id-preferred) were never actually written, even after
+  // the schedule-resolution fix (PR #160) and its re-render hook (PR #161)
+  // were both in place and correct.
+  function getById(id) {
+    if (!_cache || !id) return null;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].id === id) return _cache[i];
+    }
+    return null;
+  }
+
   function getByName(name) {
     if (!_cache || !name) return null;
     var n = String(name).trim().toLowerCase();
@@ -7441,6 +7460,7 @@ window.PentaGeocodeHistory = (function() {
     list: list,
     listSync: listSync,
     get: get,
+    getById: getById,
     getByLegacyRosterId: getByLegacyRosterId,
     getByAuthUserId: getByAuthUserId,
     getByName: getByName,
