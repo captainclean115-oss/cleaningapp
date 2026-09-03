@@ -7342,11 +7342,23 @@ window.PentaGeocodeHistory = (function() {
   // constraints already on those tables -- the UI confirmation step
   // (openDeleteEmployeeModal) is responsible for showing those counts
   // BEFORE calling this, not this function.
+  //
+  // PR #157 -- was a plain `DELETE FROM employees`. employees.auth_user_id
+  // -> auth.users.id is ON DELETE SET NULL, not cascading, so a plain
+  // delete left the employee's auth.users row (if they'd ever accepted an
+  // invite / set a password) permanently orphaned -- confirmed live: this
+  // is exactly what blocked re-inviting the same email later, since
+  // Supabase Auth enforces email uniqueness across auth.users regardless
+  // of which employees row a session cares about. Routes through the
+  // delete_employee_with_auth RPC (migration 108, SECURITY DEFINER --
+  // the browser client can't delete auth.users directly, PostgREST
+  // doesn't expose the auth schema) which deletes both in one
+  // business-scoped, role-checked call instead.
   async function hardDelete(id) {
     if (!_cacheReady) await _hydrate();
     var sb = SB();
     if (!sb) throw new Error('No Supabase client');
-    var res = await sb.from('employees').delete().eq('id', id);
+    var res = await sb.rpc('delete_employee_with_auth', { p_employee_id: id });
     if (res.error) throw res.error;
     for (var i = 0; i < _cache.length; i++) {
       if (_cache[i].id === id) { _cache.splice(i, 1); break; }
@@ -27045,7 +27057,7 @@ function openDeleteEmployeeModal(idx, source) {
   var btn = document.getElementById('del-emp-confirm-btn');
   btn.disabled = true; btn.textContent = 'Checking…'; btn.style.opacity = '0.5';
   document.getElementById('delete-employee-modal').style.display = 'flex';
-  _renderDeleteEmployeeCounts(target.id);
+  _renderDeleteEmployeeCounts(target.id, !!target.auth_user_id);
 }
 
 function closeDeleteEmployeeModal() {
@@ -27054,7 +27066,7 @@ function closeDeleteEmployeeModal() {
   _deleteEmployeeCtx = null;
 }
 
-async function _renderDeleteEmployeeCounts(uuid) {
+async function _renderDeleteEmployeeCounts(uuid, hasAuthAccount) {
   var countsEl = document.getElementById('del-emp-counts');
   var btn = document.getElementById('del-emp-confirm-btn');
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
@@ -27081,7 +27093,15 @@ async function _renderDeleteEmployeeCounts(uuid) {
     var hiredNote = hiredCount > 0
       ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--amber)">Linked to ' + hiredCount + ' job application' + (hiredCount === 1 ? '' : 's') + ' — the link will be cleared, the application itself is kept.</div>'
       : '';
-    countsEl.innerHTML = rowsHtml + hiredNote
+    // PR #157 -- deleting also removes their login account (auth.users)
+    // now, not just the employees row, so re-inviting the same email
+    // later doesn't hit a stale-identity conflict. Worth disclosing
+    // explicitly since it's a distinct kind of deletion from the app-data
+    // counts above.
+    var authNote = hasAuthAccount
+      ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--amber)">Has a login account — it will be deleted too, freeing up their email/phone for a future re-invite.</div>'
+      : '';
+    countsEl.innerHTML = rowsHtml + hiredNote + authNote
       + (totalReal === 0 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--green)">No associated activity found — looks safe to delete.</div>'
         : '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-weight:600">This employee has real associated data. Consider Terminate Employee instead unless you\'re sure this is a test record.</div>');
     btn.disabled = false; btn.textContent = 'Delete Permanently'; btn.style.opacity = '1';
