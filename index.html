@@ -5165,6 +5165,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         <button onclick="saveMainEmp()" style="flex:1;background:var(--accent);border:none;border-radius:9px;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Save</button>
         <button onclick="openTerminateEmployeeModal(document.getElementById('main-emp-idx').value, 'main')" id="main-emp-delete" style="flex:0.6;display:none;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Terminate Employee</button>
       </div>
+      <div style="text-align:center;margin-top:8px">
+        <button onclick="openDeleteEmployeeModal(document.getElementById('main-emp-idx').value, 'main')" id="main-emp-hard-delete" style="display:none;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;cursor:pointer;text-decoration:underline">🗑 Delete Employee (permanent)</button>
+      </div>
       <div id="main-emp-msg" style="margin-top:10px;text-align:center;font-size:13px;color:var(--green);min-height:20px"></div>
     </div>
   </div>
@@ -5211,6 +5214,25 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div style="display:flex;gap:10px">
       <button onclick="closeTerminateEmployeeModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Cancel</button>
       <button onclick="confirmTerminateEmployee()" id="term-modal-confirm-btn" style="flex:1;background:var(--red);border:none;color:#fff;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;cursor:pointer">Confirm Termination</button>
+    </div>
+  </div>
+</div>
+
+<!-- PR #155 — Delete Employee confirmation modal, shared by both the
+     main-emp and staff edit modals. Real, irreversible row delete (not
+     archive/terminate) -- for cleaning up test/junk employee records.
+     Opened by openDeleteEmployeeModal (idx or uuid + which source list),
+     confirmed by confirmDeleteEmployee. Shows real associated-data counts
+     before allowing the confirm button to be used. -->
+<div id="delete-employee-modal" style="display:none;position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,0.85);align-items:flex-end">
+  <div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);padding:20px;max-height:88vh;overflow-y:auto">
+    <div id="del-emp-title" style="font-size:18px;font-weight:700;margin-bottom:4px;color:var(--red)">Delete Employee?</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:18px">This permanently deletes the employee record and cannot be undone. If they have real history, use Terminate Employee instead — this is for cleaning up test/duplicate records.</div>
+    <div id="del-emp-counts" style="background:var(--surface2);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text)">Checking associated data…</div>
+    <div id="del-emp-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:10px">
+      <button onclick="closeDeleteEmployeeModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Cancel</button>
+      <button onclick="confirmDeleteEmployee()" id="del-emp-confirm-btn" disabled style="flex:1;background:var(--red);border:none;color:#fff;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:14px;cursor:pointer;opacity:0.5">Checking…</button>
     </div>
   </div>
 </div>
@@ -7312,6 +7334,26 @@ window.PentaGeocodeHistory = (function() {
     });
   }
 
+  // PR #155 — real hard delete (row actually removed), for test/junk
+  // employee records. Distinct from archive(): archive() keeps the row
+  // (audit trail, historical hours) and is what real past employees
+  // should use. This is irreversible and cascades real data (daily_
+  // assignments, time_entries, forms, reward history) per the FK
+  // constraints already on those tables -- the UI confirmation step
+  // (openDeleteEmployeeModal) is responsible for showing those counts
+  // BEFORE calling this, not this function.
+  async function hardDelete(id) {
+    if (!_cacheReady) await _hydrate();
+    var sb = SB();
+    if (!sb) throw new Error('No Supabase client');
+    var res = await sb.from('employees').delete().eq('id', id);
+    if (res.error) throw res.error;
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].id === id) { _cache.splice(i, 1); break; }
+    }
+    _notify();
+  }
+
   async function uploadPhoto(id, file) {
     // Upload to employee-photos bucket. Path: <business_id>/<employee_id>/photo.<ext>
     // After upload, set photo_url on the employee row to the storage path.
@@ -7387,6 +7429,7 @@ window.PentaGeocodeHistory = (function() {
     setField: setField,
     insert: insert,
     archive: archive,
+    hardDelete: hardDelete,
     uploadPhoto: uploadPhoto,
     getPhotoUrl: getPhotoUrl,
     getSignedPhotoUrl: getSignedPhotoUrl,
@@ -25999,6 +26042,7 @@ function openMainEmpModal() {
   document.getElementById('main-emp-phone').value = '';
   document.getElementById('main-emp-status').value = 'active';
   document.getElementById('main-emp-delete').style.display = 'none';
+  document.getElementById('main-emp-hard-delete').style.display = 'none';
   document.getElementById('main-emp-msg').textContent = '';
   document.getElementById('main-emp-term-reason').value = '';
   document.getElementById('main-emp-term-notes').value = '';
@@ -26024,6 +26068,7 @@ function openMainEmpEdit(idx) {
   document.getElementById('main-emp-term-notes').value = emp.termNotes || '';
   document.getElementById('main-emp-rehire').checked = emp.rehire || false;
   document.getElementById('main-emp-delete').style.display = 'block';
+  document.getElementById('main-emp-hard-delete').style.display = 'block';
   document.getElementById('main-emp-msg').textContent = '';
   toggleTermFields();
   document.getElementById('main-emp-modal').style.display = 'flex';
@@ -26914,6 +26959,7 @@ async function rehireEmployee(employeeId) {
 // main-emp and staff edit modals (source: 'main'|'staff'), which each
 // resolve an employee by index into their own list.
 var _terminateEmployeeCtx = null;
+var _deleteEmployeeCtx = null;
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function openTerminateEmployeeModal(idx, source) {
@@ -26971,6 +27017,109 @@ async function confirmTerminateEmployee() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Confirm Termination';
+  }
+}
+
+// PR #155 — real hard delete, for cleaning up test/junk employee records.
+// Distinct from Terminate: this actually removes the row. The cascading
+// FKs on daily_assignments/time_entries/reward_ledger/reward_submissions/
+// reward_redemptions/forms/employee_invites/employee_sessions/
+// lunch_breaks/chat_messages mean real history goes with it -- the counts
+// shown here before the confirm button unlocks are the safety check, not
+// a DB constraint. job_applications.hired_employee_id is NOT cascading
+// (NO ACTION) -- confirmDeleteEmployee nulls that reference first (same
+// pattern as PR #144's Melissa-cleanup: preserve the application record,
+// just drop the now-dangling link) rather than letting the delete fail
+// outright or silently deleting the application too.
+function openDeleteEmployeeModal(idx, source) {
+  var list = source === 'staff' ? getStaffList() : getMainEmpList();
+  var target = list[parseInt(idx, 10)];
+  if (!target || !target.id || !UUID_RE.test(String(target.id))) {
+    alert('This employee record has no linked account yet and cannot be deleted through this flow.');
+    return;
+  }
+  _deleteEmployeeCtx = { uuid: target.id, name: target.name, source: source };
+  document.getElementById('del-emp-title').textContent = 'Delete ' + (target.name || 'this employee') + '?';
+  document.getElementById('del-emp-error').style.display = 'none';
+  document.getElementById('del-emp-counts').textContent = 'Checking associated data…';
+  var btn = document.getElementById('del-emp-confirm-btn');
+  btn.disabled = true; btn.textContent = 'Checking…'; btn.style.opacity = '0.5';
+  document.getElementById('delete-employee-modal').style.display = 'flex';
+  _renderDeleteEmployeeCounts(target.id);
+}
+
+function closeDeleteEmployeeModal() {
+  var m = document.getElementById('delete-employee-modal');
+  if (m) m.style.display = 'none';
+  _deleteEmployeeCtx = null;
+}
+
+async function _renderDeleteEmployeeCounts(uuid) {
+  var countsEl = document.getElementById('del-emp-counts');
+  var btn = document.getElementById('del-emp-confirm-btn');
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { countsEl.textContent = 'Could not check associated data — Supabase not ready.'; return; }
+  var checks = [
+    ['Team assignments', 'daily_assignments'],
+    ['Hours entries', 'time_entries'],
+    ['Reward points records', 'reward_ledger'],
+    ['Submitted forms', 'forms'],
+  ];
+  try {
+    var results = await Promise.all(checks.map(function (c) {
+      return sb.from(c[1]).select('id', { count: 'exact', head: true }).eq('employee_id', uuid)
+        .then(function (r) { return { label: c[0], count: (r && r.count) || 0 }; })
+        .catch(function () { return { label: c[0], count: null }; });
+    }));
+    var hiredRes = await sb.from('job_applications').select('id', { count: 'exact', head: true }).eq('hired_employee_id', uuid);
+    var hiredCount = (hiredRes && hiredRes.count) || 0;
+
+    var totalReal = results.reduce(function (s, r) { return s + (r.count || 0); }, 0);
+    var rowsHtml = results.map(function (r) {
+      return '<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:var(--muted)">' + r.label + '</span><span style="font-weight:600;color:' + (r.count ? 'var(--red)' : 'var(--muted)') + '">' + (r.count == null ? '?' : r.count) + '</span></div>';
+    }).join('');
+    var hiredNote = hiredCount > 0
+      ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--amber)">Linked to ' + hiredCount + ' job application' + (hiredCount === 1 ? '' : 's') + ' — the link will be cleared, the application itself is kept.</div>'
+      : '';
+    countsEl.innerHTML = rowsHtml + hiredNote
+      + (totalReal === 0 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--green)">No associated activity found — looks safe to delete.</div>'
+        : '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-weight:600">This employee has real associated data. Consider Terminate Employee instead unless you\'re sure this is a test record.</div>');
+    btn.disabled = false; btn.textContent = 'Delete Permanently'; btn.style.opacity = '1';
+  } catch (e) {
+    countsEl.textContent = 'Could not check associated data: ' + ((e && e.message) || 'unknown error');
+  }
+}
+
+async function confirmDeleteEmployee() {
+  if (!_deleteEmployeeCtx) return;
+  var errEl = document.getElementById('del-emp-error');
+  errEl.style.display = 'none';
+  var btn = document.getElementById('del-emp-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      await sb.from('job_applications').update({ hired_employee_id: null }).eq('hired_employee_id', _deleteEmployeeCtx.uuid);
+    }
+    if (!window.PentaEmployees || !window.PentaEmployees.hardDelete) throw new Error('Delete is unavailable right now — refresh and try again.');
+    await window.PentaEmployees.hardDelete(_deleteEmployeeCtx.uuid);
+    var source = _deleteEmployeeCtx.source;
+    closeDeleteEmployeeModal();
+    if (source === 'staff') {
+      var sm = document.getElementById('staff-modal'); if (sm) sm.style.display = 'none';
+      if (typeof renderStaffList === 'function') renderStaffList();
+      if (typeof renderStaffSubview === 'function') renderStaffSubview();
+    } else {
+      var mm = document.getElementById('main-emp-modal'); if (mm) mm.style.display = 'none';
+      if (typeof renderMainEmployees === 'function') renderMainEmployees();
+    }
+    if (typeof showToast === 'function') showToast('Employee deleted.', 'success');
+  } catch (e) {
+    errEl.textContent = (e && e.message) || 'Delete failed — try again.';
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Delete Permanently';
   }
 }
 
@@ -39920,6 +40069,7 @@ function openAddStaff() {
     set('staff-shirt-size', ''); set('staff-pants-size', '');
     setD('staff-term-fields', 'none');
     setD('staff-delete-btn', 'none');
+    setD('staff-hard-delete-btn', 'none');
     setD('staff-signature-section', 'none');
     setC('staff-rehire', false);
     setT('staff-rehire-lbl', 'No');
@@ -40577,6 +40727,7 @@ function openEditStaff(idx) {
     if (inp) inp.value = '';
   });
   document.getElementById('staff-delete-btn').style.display = 'block';
+  document.getElementById('staff-hard-delete-btn').style.display = 'block';
   document.getElementById('staff-save-msg').textContent = '';
   document.getElementById('staff-modal').style.display = 'block';
   showStaffTab('view');
@@ -51374,6 +51525,9 @@ function _p3dPage(dir) {
       <div style="display:flex;gap:10px;margin-top:4px">
         <button onclick="saveStaffEmployee()" style="flex:1;background:var(--accent);border:none;border-radius:9px;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;cursor:pointer">Save</button>
         <button onclick="openTerminateEmployeeModal(document.getElementById('staff-edit-idx').value, 'staff')" id="staff-delete-btn" style="display:none;flex:0.6;background:rgba(248,113,113,0.15);border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;cursor:pointer">Terminate Employee</button>
+      </div>
+      <div style="text-align:center;margin-top:8px">
+        <button onclick="openDeleteEmployeeModal(document.getElementById('staff-edit-idx').value, 'staff')" id="staff-hard-delete-btn" style="display:none;background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;font-size:12px;cursor:pointer;text-decoration:underline">🗑 Delete Employee (permanent)</button>
       </div>
       <div id="staff-save-msg" style="margin-top:10px;text-align:center;font-size:13px;color:var(--green);min-height:20px"></div>
     </div>
