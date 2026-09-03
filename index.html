@@ -12097,7 +12097,7 @@ async function refreshManagerChatBadge() {
         }
         // If the EMPLOYEE has the chat tab open, repaint their view too.
         if (typeof currentEmployee !== 'undefined' && currentEmployee &&
-            newMsg.thread_employee_id === currentEmployee.id) {
+            newMsg.thread_employee_id === (currentEmployee.uuid || currentEmployee.id)) {
           try { renderEmpChat(); } catch (e) {}
         }
       }
@@ -15697,6 +15697,7 @@ window.addEventListener('DOMContentLoaded', function() {
         var langMap = { mx: 'es', br: 'pt', kr: 'ko', us: 'en', generic: 'en' };
         return {
           id: m.legacy_roster_id || m.id,
+          uuid: m.id,
           name: ((m.first_name || '') + ' ' + (m.last_name || '')).trim(),
           first_name: m.first_name || '',
           last_name: m.last_name || '',
@@ -19856,7 +19857,7 @@ async function renderEmpChat() {
   var c = document.getElementById('emp-chat-messages');
   if (!c) return;
   // Fetch DB-backed messages for this thread; AI messages from local thread.
-  try { _empChatDbRows = await window.PentaChatMessages.listThread(currentEmployee.id); }
+  try { _empChatDbRows = await window.PentaChatMessages.listThread(currentEmployee.uuid || currentEmployee.id); }
   catch (e) { console.warn('[renderEmpChat] listThread failed', e); _empChatDbRows = []; }
   var aiMsgs = (thread && Array.isArray(thread.msgs))
     ? thread.msgs.filter(function(m){ return m.from === 'ai' || m.askedAi; })
@@ -19908,7 +19909,7 @@ async function renderEmpChat() {
   }).join('');
   requestAnimationFrame(function(){ c.scrollTop = c.scrollHeight; });
   // Mark manager → employee messages as read.
-  try { await window.PentaChatMessages.markThreadRead(currentEmployee.id, 'employee'); } catch (e) {}
+  try { await window.PentaChatMessages.markThreadRead(currentEmployee.uuid || currentEmployee.id, 'employee'); } catch (e) {}
   updateEmpChatBadge();
 }
 
@@ -20313,7 +20314,7 @@ async function updateEmpChatBadge() {
   var badge = document.getElementById('ptab-chat-badge');
   if (!badge) return;
   try {
-    var unread = await window.PentaChatMessages.countUnreadForEmployee(currentEmployee.id);
+    var unread = await window.PentaChatMessages.countUnreadForEmployee(currentEmployee.uuid || currentEmployee.id);
     if (unread > 0) { badge.textContent = unread; badge.style.display = ''; }
     else { badge.style.display = 'none'; }
   } catch (e) { badge.style.display = 'none'; }
@@ -20332,7 +20333,7 @@ async function sendStaffReplyEmp() {
   // match what was actually typed.
   try {
     await window.PentaChatMessages.send({
-      threadEmployeeId: currentEmployee.id,
+      threadEmployeeId: currentEmployee.uuid || currentEmployee.id,
       text: text,
       lang: empLang,
       urgent: false,
