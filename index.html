@@ -42624,7 +42624,18 @@ function renderSchedule() {
   const todayStr = viewDate.getFullYear() + '-' +
     String(viewDate.getMonth()+1).padStart(2,'0') + '-' +
     String(viewDate.getDate()).padStart(2,'0');
-  const team = currentEmployee ? currentEmployee.team : '';
+  // Resolve the VIEWED day's team, not just the employee's static default —
+  // a day-specific override (dailyAssignments, via getEmployeeTeam) must
+  // win, same as the manager Live tab / Hours views already do. Without
+  // this, an employee moved to a different team for one day (or one with
+  // no default team_text/team_id at all — e.g. hired via the application
+  // flow and placed day-by-day) sees "No jobs scheduled" even though real
+  // jobs exist for the team they were actually assigned that day.
+  const team = currentEmployee
+    ? (typeof getEmployeeTeam === 'function'
+        ? (getEmployeeTeam(currentEmployee.id, todayStr) || '')
+        : (currentEmployee.team || ''))
+    : '';
   // Sprint 6.10: precompute employee's team color from PentaTeams cache,
   // fall back to legacy TEAM_COLORS for legacy team strings, then gray.
   const _empTeamColor = (function() {
