@@ -47,14 +47,15 @@ check("editing an existing main employee (openMainEmpEdit) reveals the Delete bu
 const openFnSource = extract('function openDeleteEmployeeModal(idx, source) {', '\n\nfunction closeDeleteEmployeeModal', 'openDeleteEmployeeModal');
 {
   const alerts = [];
+  const countsCalls = [];
   const sandbox = {
     console,
     UUID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     getStaffList: () => [{ id: 'not-a-uuid', name: 'Legacy Row' }],
-    getMainEmpList: () => [{ id: '11111111-1111-1111-1111-111111111111', name: 'Real Employee' }],
+    getMainEmpList: () => [{ id: '11111111-1111-1111-1111-111111111111', name: 'Real Employee', auth_user_id: 'auth-uuid-1' }],
     alert: (m) => alerts.push(m),
     document: { getElementById: () => ({ style: {}, textContent: '' }) },
-    _renderDeleteEmployeeCounts: () => {},
+    _renderDeleteEmployeeCounts: (uuid, hasAuthAccount) => countsCalls.push([uuid, hasAuthAccount]),
   };
   vm.createContext(sandbox);
   vm.runInContext('var _deleteEmployeeCtx = null;\n' + openFnSource, sandbox);
@@ -65,6 +66,7 @@ const openFnSource = extract('function openDeleteEmployeeModal(idx, source) {', 
   sandbox.openDeleteEmployeeModal('0', 'main');
   check('a real UUID employee is accepted (no rejection alert)', alerts.length, 1);
   check('_deleteEmployeeCtx is set with the right uuid/name/source', sandbox._deleteEmployeeCtx, { uuid: '11111111-1111-1111-1111-111111111111', name: 'Real Employee', source: 'main' });
+  check('_renderDeleteEmployeeCounts is told whether the employee has a login account, so the modal can disclose it will also be deleted', countsCalls[countsCalls.length - 1], ['11111111-1111-1111-1111-111111111111', true]);
 }
 
 // --- Behavioral: PentaEmployees.hardDelete ---
@@ -73,10 +75,32 @@ const hardDeleteFn = extract('async function hardDelete(id) {', '\n  }\n', 'hard
 // --- Behavioral: confirmDeleteEmployee ---
 const confirmFnSource = extract('async function confirmDeleteEmployee() {', '\n\n// PR #149 — Rehire', 'confirmDeleteEmployee');
 
+// --- Behavioral: _renderDeleteEmployeeCounts discloses the linked login account ---
+const countsFnSource = extract('async function _renderDeleteEmployeeCounts(uuid, hasAuthAccount) {', '\n\nasync function confirmDeleteEmployee', '_renderDeleteEmployeeCounts');
+
+function buildCountsSandbox() {
+  const els = { 'del-emp-counts': { innerHTML: '', textContent: '' }, 'del-emp-confirm-btn': { disabled: true, textContent: '', style: {} } };
+  const sandbox = {
+    console,
+    document: { getElementById: (id) => els[id] || null },
+    window: {
+      supabaseClient: {
+        from: () => ({ select: () => ({ eq: () => Promise.resolve({ count: 0, error: null }) }) }),
+      },
+    },
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(countsFnSource, sandbox);
+  return { sandbox, els };
+}
+
 (async () => {
-  // hardDelete: deletes the right row, updates the local cache, notifies.
+  // hardDelete: routes through the delete_employee_with_auth RPC (PR #157
+  // -- a plain `DELETE FROM employees` left orphaned auth.users rows,
+  // confirmed live to block re-inviting the same email later), updates
+  // the local cache, notifies.
   {
-    let deletedEq = null, notified = false;
+    let rpcCall = null, notified = false;
     const cache = [{ id: 'emp-1', name: 'Test Emp' }, { id: 'emp-2', name: 'Keep Me' }];
     const sandbox = {
       console,
@@ -85,25 +109,24 @@ const confirmFnSource = extract('async function confirmDeleteEmployee() {', '\n\
       _hydrate: () => Promise.resolve(),
       _notify: () => { notified = true; },
       SB: () => ({
-        from: (table) => ({
-          delete: () => ({ eq: (col, val) => { deletedEq = [table, col, val]; return Promise.resolve({ error: null }); } }),
-        }),
+        rpc: (fn, args) => { rpcCall = [fn, args]; return Promise.resolve({ error: null }); },
       }),
     };
     vm.createContext(sandbox);
     vm.runInContext(hardDeleteFn, sandbox);
     await sandbox.hardDelete('emp-1');
-    check('hardDelete issues DELETE FROM employees WHERE id = <target>', deletedEq, ['employees', 'id', 'emp-1']);
+    check('hardDelete calls the delete_employee_with_auth RPC with the target id (not a plain employees delete)', rpcCall, ['delete_employee_with_auth', { p_employee_id: 'emp-1' }]);
     check('hardDelete removes the row from the local cache', cache.map(e => e.id), ['emp-2']);
     check('hardDelete notifies listeners so the UI re-renders', notified, true);
   }
 
-  // hardDelete: DB error (e.g. the job_applications NO ACTION block) throws, not swallowed.
+  // hardDelete: DB/RPC error (e.g. the job_applications NO ACTION block, or
+  // the RPC's own authorization check) throws, not swallowed.
   {
     const sandbox = {
       console, _cacheReady: true, _cache: [],
       _hydrate: () => Promise.resolve(), _notify: () => {},
-      SB: () => ({ from: () => ({ delete: () => ({ eq: () => Promise.resolve({ error: new Error('foreign key violation') }) }) }) }),
+      SB: () => ({ rpc: () => Promise.resolve({ error: new Error('foreign key violation') }) }),
     };
     vm.createContext(sandbox);
     vm.runInContext(hardDeleteFn, sandbox);
@@ -174,6 +197,18 @@ const confirmFnSource = extract('async function confirmDeleteEmployee() {', '\n\
     await sandbox.confirmDeleteEmployee();
     check('a hardDelete failure surfaces its real error message', elements['del-emp-error'].textContent, 'permission denied');
     check('the confirm button is re-enabled after a failure (not stuck disabled)', elements['del-emp-confirm-btn'].disabled, false);
+  }
+
+  // _renderDeleteEmployeeCounts: discloses the linked login account will also be deleted.
+  {
+    const { sandbox, els } = buildCountsSandbox();
+    await sandbox._renderDeleteEmployeeCounts('emp-1', true);
+    check('an employee WITH a login account gets an explicit note that it will be deleted too', els['del-emp-counts'].innerHTML.indexOf('Has a login account') !== -1, true);
+  }
+  {
+    const { sandbox, els } = buildCountsSandbox();
+    await sandbox._renderDeleteEmployeeCounts('emp-1', false);
+    check('an employee with NO login account gets no auth-account note (nothing to disclose)', els['del-emp-counts'].innerHTML.indexOf('Has a login account') !== -1, false);
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
