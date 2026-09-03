@@ -13770,6 +13770,22 @@ function _mirrorPentaAssignmentsToInMemory() {
       } catch (e) { console.warn('[hours] realtime-triggered hours refresh failed', e); }
       // PR #144: cross-device/cross-tab team changes change job durations too.
       _refreshCalIfActive();
+      // PR #160 follow-up: the employee portal's own schedule tab reads
+      // this same dailyAssignments mirror (via getEmployeeTeam) to resolve
+      // which team's jobs to show for the viewed day. Same gap the PentaJobs
+      // mirror already covers (v10.5.5, see pentaPhase4MirrorHydrate above)
+      // was open here too -- an employee landing on the schedule tab BEFORE
+      // this mirror pass completes (e.g. right after being placed on a team
+      // for the first time, with no default team to fall back to) saw the
+      // empty state and never re-rendered once the override actually
+      // arrived, since nothing told renderSchedule() to run again.
+      try {
+        if (typeof renderSchedule === 'function'
+            && document.body.classList.contains('in-portal')) {
+          var _schedTabAssignMirror = document.getElementById('tab-schedule');
+          if (_schedTabAssignMirror && _schedTabAssignMirror.offsetParent !== null) renderSchedule();
+        }
+      } catch (e) {}
     }, 200);
   }
 }
