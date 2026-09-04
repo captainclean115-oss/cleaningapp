@@ -9061,9 +9061,28 @@ window.PentaLunchFlags = (function() {
 
   async function _hydrate() {
     if (_hydrating) return _hydrating;
-    _hydrating = (async function() {
+    // v11.0.29 -- this module's own IIFE fires _hydrate() synchronously at
+    // script-parse time, which races the auth session restoring
+    // (_businessId() depends on PentaTenant.current(), populated
+    // asynchronously) -- on a fresh page load this branch can genuinely
+    // hit before business_id is available yet. Every sibling facade
+    // (PentaEmployees, PentaAssignments) resets `_hydrating = null` on
+    // this exact bail so a later ready() call retries once tenant/auth
+    // catches up -- but doing that reset FROM INSIDE the async closure,
+    // on a path with no `await` before it, doesn't work: an async
+    // function body runs synchronously up to its first await, so
+    // `_hydrating = null` there executes and is immediately overwritten
+    // the moment the closure call finishes and the outer `_hydrating =
+    // (async function(){...})()` assignment completes right after.
+    // Resetting in a `.then()` instead guarantees it runs as a
+    // genuinely-later microtask, after the outer assignment has landed.
+    // Confirmed live: a manager's "Not lunch" override wrote and
+    // optimistically updated correctly in the same session, but was
+    // invisible again after every fresh reload -- not a save failure, a
+    // permanently-cached empty read from this exact race.
+    var attempt = (async function() {
       var sb = _client(), bid = _businessId();
-      if (!sb || !bid) { _ready = true; return false; }
+      if (!sb || !bid) { return false; }
       try {
         var res = await sb.from('lunch_flag_overrides')
           .select('id, team, date, stop_key, override_type, stop_address, stop_duration_min, created_at')
@@ -9075,6 +9094,10 @@ window.PentaLunchFlags = (function() {
       _notify();
       return true;
     })();
+    _hydrating = attempt.then(function(ok) {
+      if (!ok) _hydrating = null;
+      return ok;
+    });
     return _hydrating;
   }
 
