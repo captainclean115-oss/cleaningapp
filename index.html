@@ -33480,7 +33480,26 @@ async function loadGPSData() {
     // and previously a known gap (a team with no matching device just
     // disappeared with no indication anything was wrong).
     const teamOrder = _pentaTeamNames();
-    const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, selectedDate);
+    // v11.0.29 -- in rolling-window mode (3d/7d/30d), the date picker used
+    // for `selectedDate` is HIDDEN (_syncGPSDatePickerVisibility) because
+    // it's meaningless for a multi-day span -- but its underlying value
+    // can still be whatever calendar day it was last left on from single-
+    // day use (today, by default, but stays wherever the user picked it
+    // until the tab reopens). If a team has a date-scoped vehicle
+    // override for THAT ONE leftover day (e.g. a one-day swap), the whole
+    // rolling window's card locks onto the swap vehicle instead of the
+    // team's normal one -- confirmed live: B1's card in "Last 30 Days"
+    // silently showed S3's van (the one B1 borrowed for a single day)
+    // for the ENTIRE window because the picker was left on that swap
+    // date, so B1's OWN real activity on every other day in the window
+    // (confirmed via a MyGeotab screenshot) was invisible, while S3's
+    // van's gaps (a day it had no trips at all) looked like B1's gaps.
+    // Rolling mode should resolve each team's device off "now", not
+    // whatever single day the (hidden, irrelevant here) picker is
+    // holding -- a stable, predictable choice matching what the mode
+    // actually represents (the team's current vehicle's recent history),
+    // not the single-day picker's leftover state.
+    const teamDeviceMap = await _resolveTeamDeviceMap(devices, teamOrder, isRollingWindow ? now : selectedDate);
     const usedDeviceIds = {};
 
     // PR #123 -- surface (don't silently auto-correct) any team whose
