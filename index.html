@@ -30511,14 +30511,51 @@ async function showEmpStops(team, dateMs) {
 
     var stops = [];
     if (trips.length > 0) {
-      stops.push({ addr: trips[0].startAddress || 'Unknown', inTime: null, outTime: new Date(trips[0].start), isDepot: isDepotAddress(trips[0].startAddress||'',team) });
+      stops.push({ addr: trips[0].startAddress || 'Unknown', inTime: null, outTime: new Date(trips[0].start), isDepot: isDepotAddress(trips[0].startAddress||'',team), lat: trips[0].startPoint ? trips[0].startPoint.y : null, lng: trips[0].startPoint ? trips[0].startPoint.x : null });
     }
     trips.forEach(function(t,ti) {
       var arr = t.stop ? new Date(t.stop) : null;
       var nextDep = trips[ti+1] ? new Date(trips[ti+1].start) : null;
       var dist = t.distance ? Math.round(t.distance * 0.000621371) : null;
       var dm = arr ? Math.round((arr - new Date(t.start)) / 60000) : null;
-      stops.push({ addr: t.stopAddress || 'Unknown', inTime: arr, outTime: nextDep, isDepot: isDepotAddress(t.stopAddress||'',team), distMi: dist, driveMins: dm });
+      stops.push({ addr: t.stopAddress || 'Unknown', inTime: arr, outTime: nextDep, isDepot: isDepotAddress(t.stopAddress||'',team) || isDepotPoint(t.stopPoint,team), lat: t.stopPoint ? t.stopPoint.y : null, lng: t.stopPoint ? t.stopPoint.x : null, distMi: dist, driveMins: dm });
+    });
+
+    // v11.0.29 -- this view (the employee day-detail's inline Stops list)
+    // was a stale, independently-diverged copy of the trip-to-stop-list
+    // construction _renderGPSStopRow (Live tab) already does correctly:
+    // it never called matchStopToClientGeo at all (raw address only, no
+    // client name -- confirmed live: Tom sees client names on the Live
+    // tab's stops but not here for the exact same trips), and it can only
+    // ever highlight ONE stop as "lunch" (lunchStopIdx, matched against
+    // _detectDayLunch's FIRST candidate time only) even though a day can
+    // have several independently-qualifying short stops -- the Live tab
+    // evaluates every stop's own naturallyLunch status independently, so
+    // multiple stops can each show "🍔❓ Possible lunch" there. Bringing
+    // this view to parity by reusing the exact same two building blocks
+    // (matchStopToClientGeo, PentaLunchFlags) rather than re-diverging
+    // with a third copy of the same logic. Deliberately NOT touching the
+    // existing lunchStopIdx/_empLunchStop/setLunchStop mechanism below --
+    // that's a separate, still-useful "tap a stop to quick-fill the
+    // manual Lunch(min) override field" helper, not the auto-detection
+    // system, and Tom didn't report anything wrong with it.
+    var todayKeyForStops = dateKey(date);
+    var todayTeamJobsForStops = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+      ? jobs.filter(function(jj){ return jj.date === todayKeyForStops && jj.team === team && !jj.cancelled; })
+      : [];
+    stops.forEach(function(s) {
+      if (s.isDepot) { s.clientMatch = null; s.clientName = 'Office'; s.naturallyLunch = false; s.maybeLunch = false; return; }
+      var _match = matchStopToClientGeo(s.lat, s.lng, s.addr, todayTeamJobsForStops, team);
+      s.clientMatch = _match;
+      s.clientName = _match ? _match.name : '';
+      var _dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
+      s.naturallyLunch = !_match && _dur !== null && _dur > 0 && _dur < 60;
+      s.stopKeyIso = s.inTime ? s.inTime.toISOString() : null;
+      s.stopDateStr = s.inTime ? dateKey(s.inTime) : null;
+      var _ov = (s.naturallyLunch && s.stopKeyIso && s.stopDateStr && window.PentaLunchFlags)
+        ? window.PentaLunchFlags.getOverride(team, s.stopDateStr, s.stopKeyIso) : null;
+      s.lunchExcluded = !!(_ov && _ov.override_type === 'exclude');
+      s.maybeLunch = s.naturallyLunch && !s.lunchExcluded;
     });
 
     // Find current lunch stop index
@@ -30553,9 +30590,25 @@ async function showEmpStops(team, dateMs) {
       var dot = s.isDepot ? 'var(--green)' : 'var(--accent)';
       var isLunch = si === lunchStopIdx;
       var driveInfo = s.distMi && si>0 ? '<div style="font-size:10px;color:var(--muted);padding:2px 0 2px 18px">▲ '+s.distMi+'mi · '+(s.driveMins||'?')+'m drive</div>' : '';
-      html += driveInfo + '<div onclick="setLunchStop('+si+')" style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;background:'+(isLunch?'rgba(251,191,36,0.08)':'transparent')+';border-radius:6px;'+(isLunch?'margin:0 -6px;padding-left:6px;padding-right:6px;border:1px solid rgba(251,191,36,0.2)':'')+'">'
+      // v11.0.29 -- same client-name + multi-stop lunch detection the
+      // Live tab already shows for these same trips (see the comment
+      // where s.clientName/s.maybeLunch get computed, above).
+      var _escStopAddr = (s.addr || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      var lunchAutoTag = s.maybeLunch
+        ? '<div style="display:flex;align-items:center;font-size:11px;font-weight:700;color:var(--amber);margin-bottom:1px">🍔❓ Possible lunch / break'
+          + '<button onclick="event.stopPropagation();_toggleLunchOverride(\''+team+'\',\''+s.stopDateStr+'\',\''+s.stopKeyIso+'\',\'exclude\',\''+_escStopAddr+'\','+(dur||0)+');showEmpStops(\''+team+'\','+dateMs+')" title="Mark this stop as not lunch" style="background:none;border:1px solid rgba(217,119,6,0.4);color:var(--amber);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">✕ Not lunch</button></div>'
+        : (s.naturallyLunch && s.lunchExcluded
+          ? '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">✕ Marked not-lunch'
+            + '<button onclick="event.stopPropagation();_toggleLunchOverride(\''+team+'\',\''+s.stopDateStr+'\',\''+s.stopKeyIso+'\',\'reverse\',\''+_escStopAddr+'\','+(dur||0)+');showEmpStops(\''+team+'\','+dateMs+')" title="Mark this stop as lunch again" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">🍔 Mark as lunch</button></div>'
+          : '');
+      var primaryLabel = s.clientName ? s.clientName : s.addr;
+      var secondaryAddrLine = s.clientName ? '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">'+s.addr+'</div>' : '';
+      html += driveInfo + '<div onclick="setLunchStop('+si+')" style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;background:'+(isLunch?'rgba(251,191,36,0.08)':(s.maybeLunch?'rgba(251,191,36,0.06)':'transparent'))+';border-radius:6px;'+(isLunch?'margin:0 -6px;padding-left:6px;padding-right:6px;border:1px solid rgba(251,191,36,0.2)':'')+'">'
         +'<div style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;margin-top:4px"></div>'
-        +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;margin-bottom:2px">'+(isLunch?'🍔 ':'')+s.addr+'</div>'
+        +'<div style="flex:1;min-width:0">'
+        +lunchAutoTag
+        +'<div style="font-size:13px;font-weight:500;margin-bottom:2px">'+(isLunch?'🍔 ':'')+primaryLabel+'</div>'
+        +secondaryAddrLine
         +'<div style="display:flex;gap:12px;flex-wrap:wrap">'
         +(s.inTime?'<span style="font-size:11px;color:var(--green)">In: '+inStr+'</span>':'<span style="font-size:11px;color:var(--green)">Out: '+outStr+'</span>')
         +(s.inTime&&s.outTime?'<span style="font-size:11px;color:var(--red)">Out: '+outStr+'</span>':'')
