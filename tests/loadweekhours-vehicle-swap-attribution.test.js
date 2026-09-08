@@ -23,7 +23,11 @@ const path = require('path');
 const INDEX_HTML = path.join(__dirname, '..', 'index.html');
 const src = fs.readFileSync(INDEX_HTML, 'utf8');
 
-const fnStartMarker = 'async function loadWeekHours() {';
+// v11.0.30 -- loadWeekHours() was split into a thin in-flight-guard
+// wrapper + this renamed inner implementation (see
+// gps-hours-autopoll-inflight-guard.test.js for the wrapper's own
+// coverage); the real logic under test here is unchanged, just moved.
+const fnStartMarker = 'async function _loadWeekHoursInner() {';
 const fnStartIdx = src.indexOf(fnStartMarker);
 const fnEndMarker = '\nasync function debugTrips()';
 const fnEndIdx = src.indexOf(fnEndMarker, fnStartIdx);
@@ -122,7 +126,7 @@ function buildSandbox() {
 (async () => {
   const sandbox = buildSandbox();
   vm.runInContext(fnSource, sandbox);
-  await sandbox.loadWeekHours();
+  await sandbox._loadWeekHoursInner();
 
   const b1 = sandbox.weekHours['B1'];
   if (!b1) { console.error('FAIL: weekHours.B1 was never populated'); process.exit(1); }

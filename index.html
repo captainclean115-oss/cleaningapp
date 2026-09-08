@@ -29765,7 +29765,23 @@ function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr, trueStart, true
   return { time: firstLunchTime, duration: totalLunchMin, lat: firstLunchLat, lng: firstLunchLng };
 }
 
+// v11.0.30 -- same fix as loadGPSData() above: window._hoursLiveInterval
+// (every 60s, while an open shift is active) calls loadWeekHours()
+// directly, bypassing refreshLiveTab()'s own guard the same way
+// window._autoRefreshInterval bypassed it for loadGPSData(). Guarding
+// here protects every caller (the button, the 60s timer, gpsInit()'s own
+// initial call) uniformly.
+var _weekHoursLoadInFlight = false;
 async function loadWeekHours() {
+  if (_weekHoursLoadInFlight) return;
+  _weekHoursLoadInFlight = true;
+  try {
+    await _loadWeekHoursInner();
+  } finally {
+    _weekHoursLoadInFlight = false;
+  }
+}
+async function _loadWeekHoursInner() {
   var _myWeekHoursToken = ++_weekHoursLoadToken;
 
   // PR #115 — ensure manager lunch overrides are hydrated before
@@ -33377,7 +33393,32 @@ async function refreshLiveTab() {
   }
 }
 
+// v11.0.30 -- PR #164 guarded the "↻ Refresh" button's own entry point
+// (refreshLiveTab) against overlapping calls, but window._autoRefreshInterval
+// (every 2 minutes, while the GPS tab is open) calls loadGPSData() directly,
+// completely bypassing that guard -- confirmed live via the geotab-call
+// edge function's own logs, which showed a steady burst of calls every
+// ~2 minutes all day, exactly matching this timer. When that timer's own
+// in-flight call overlapped with a manual "Refresh" click, both competed
+// for the browser's same small per-host connection pool -- the exact
+// pileup PR #164 fixed for the button, recurring through this other,
+// unguarded entry point. Moving the guard down into loadGPSData() itself
+// (and loadWeekHours(), which window._hoursLiveInterval's 60s timer also
+// calls directly) protects every caller uniformly instead of only the
+// button -- confirmed live this session was the actual gap: "lags a lot"
+// + "hit refresh and nothing happens" is what a real click looks like
+// when it's queued behind an already-running auto-refresh cycle.
+var _gpsDataLoadInFlight = false;
 async function loadGPSData() {
+  if (_gpsDataLoadInFlight) return;
+  _gpsDataLoadInFlight = true;
+  try {
+    await _loadGPSDataInner();
+  } finally {
+    _gpsDataLoadInFlight = false;
+  }
+}
+async function _loadGPSDataInner() {
   // PR #115 — ensure manager lunch overrides are hydrated before
   // Today's Activity renders its lunch flags off them.
   if (window.PentaLunchFlags && typeof window.PentaLunchFlags.ready === 'function') {
