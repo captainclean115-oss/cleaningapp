@@ -39,7 +39,7 @@ function check(label, actual, expected) {
 const startMarker = 'var _refreshLiveTabInFlight = false;';
 const startIdx = src.indexOf(startMarker);
 if (startIdx === -1) { console.error('FAIL: could not find _refreshLiveTabInFlight declaration'); process.exit(1); }
-const endMarker = '\n\nasync function loadGPSData() {';
+const endMarker = '\nvar _gpsDataLoadInFlight = false;';
 const endIdx = src.indexOf(endMarker, startIdx);
 if (endIdx === -1) { console.error('FAIL: could not find refreshLiveTab end boundary'); process.exit(1); }
 const fnSource = src.slice(startIdx, endIdx);
