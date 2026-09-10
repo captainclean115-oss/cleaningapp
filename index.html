@@ -32155,21 +32155,6 @@ function renderHoursTable(days, dayNames) {
 // empHours_cache for that weekend date. We never fabricate weekend data.
 // ─────────────────────────────────────────
 
-function _hrReportWeekDates(offset) {
-  var off = offset || 0;
-  var today = new Date(); today.setHours(0,0,0,0);
-  var dow = today.getDay(); // 0=Sun
-  var monday = new Date(today);
-  monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) + (off * 7));
-  var days = [];
-  for (var i = 0; i < 7; i++) {
-    var d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    days.push(d);
-  }
-  return days;
-}
-
 function _hrTo24hr(d) {
   if (!d) return '';
   if (typeof d === 'string') {
@@ -32212,118 +32197,391 @@ function _hrCsvField(s) {
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
-// Build the week's report. Returns { text, csv, filename, weekLabel, grandHours }.
-function _buildHoursReport(offset) {
-  var days = _hrReportWeekDates(offset || 0);
-  var dayShort = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  var monday = days[0], sunday = days[6];
-  var weekLabel = monday.toLocaleDateString('en-US',{month:'short',day:'numeric'})
-                + '–' + sunday.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-  var fnameWeek = monday.toISOString().slice(0,10);
+// Tom: Export Hours Report always used the Hours tab's current week
+// (or whatever offset was passed), completely ignoring whatever range
+// he was actually viewing on the Live tab's GPS filter (last week, a
+// custom range, etc) -- and fired immediately with no way to pick a
+// different range at all. _hoursReportDefaultRange() reads the Live
+// tab's own GPS filter state first (the same globals the GPS filter
+// itself uses -- window._gpsActivityWindowMode/_gpsLastWeekRange/
+// _gpsCustomRange, set in _loadGPSDataInner), falling back to the
+// Hours tab's own currently-loaded week only when the Live tab has no
+// state yet (e.g. it was never opened this session).
+function _hoursReportDefaultRange() {
+  var mode = window._gpsActivityWindowMode;
+  var tz = _pentaBusinessTimezone();
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  if (mode === 'lastweek' && window._gpsLastWeekRange) {
+    return { from: window._gpsLastWeekRange.startYmd, to: window._gpsLastWeekRange.endYmd };
+  }
+  if (mode === 'custom' && window._gpsCustomRange && window._gpsCustomRange.from && window._gpsCustomRange.to) {
+    return { from: window._gpsCustomRange.from, to: window._gpsCustomRange.to };
+  }
+  if (mode === '3d' || mode === '7d' || mode === '30d') {
+    var spanDays = { '3d': 3, '7d': 7, '30d': 30 }[mode];
+    var today = _bizTodayParts(tz);
+    var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
+    var fromD = new Date(todayUtcMidnight - (spanDays - 1) * 86400000);
+    return {
+      from: fromD.getUTCFullYear() + '-' + pad2(fromD.getUTCMonth() + 1) + '-' + pad2(fromD.getUTCDate()),
+      to: today.y + '-' + pad2(today.m) + '-' + pad2(today.d)
+    };
+  }
+  if (mode === '24h') {
+    var gd = (typeof getGPSDate === 'function') ? getGPSDate() : new Date();
+    var dk = dateKey(gd);
+    return { from: dk, to: dk };
+  }
+  // No Live-tab GPS state this session (tab never opened) -- fall back
+  // to the Hours tab's own currently-loaded week.
+  var wd = getWeekDates(hoursWeekOffset);
+  return { from: dateKey(wd[0]), to: dateKey(wd[wd.length - 1]) };
+}
 
-  // Polished text layout: box-drawing headers, inline weekly total next to
-  // each employee name, column-aligned day rows inside the <pre> monospace.
-  // Column budgets: 2 indent · 14 day · 16 time · 10 duration · lunch tail.
+function openHoursReportPicker() {
+  var old = document.getElementById('hours-report-picker-overlay');
+  if (old) old.remove();
+  var range = _hoursReportDefaultRange();
+  var overlay = document.createElement('div');
+  overlay.id = 'hours-report-picker-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:410;background:rgba(0,0,0,0.8);display:flex;align-items:flex-end;font-family:\'DM Sans\',sans-serif';
+  overlay.innerHTML = '<div style="background:var(--surface);width:100%;border-radius:16px 16px 0 0;border-top:1px solid var(--border2);color:var(--text)">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
+    +   '<div style="font-size:17px;font-weight:600">Export Hours Report</div>'
+    +   '<button onclick="document.getElementById(\'hours-report-picker-overlay\').remove()" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;font-family:inherit;padding:0">&times;</button>'
+    + '</div>'
+    + '<div style="padding:16px 20px">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Pre-filled with the range currently shown on the Live tab. Change it if needed.</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:12px">'
+    +     '<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">From</div><input type="date" id="hours-report-from" value="' + range.from + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +     '<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">To</div><input type="date" id="hours-report-to" value="' + range.to + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:16px">'
+    +     '<button onclick="_hoursReportQuickSelect(\'thisweek\')" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">This week</button>'
+    +     '<button onclick="_hoursReportQuickSelect(\'lastweek\')" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">Last week</button>'
+    +   '</div>'
+    +   '<div id="hours-report-picker-status" style="font-size:12px;color:var(--muted);margin-bottom:10px;min-height:16px"></div>'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button onclick="document.getElementById(\'hours-report-picker-overlay\').remove()" style="flex:1;background:none;border:1px solid var(--border);color:var(--muted);font-family:inherit;font-size:14px;font-weight:600;padding:12px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +     '<button id="hours-report-picker-export" onclick="confirmHoursReportExport()" style="flex:2;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Export</button>'
+    +   '</div>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+}
+
+// "This week"/"Last week" quick-selects respect the per-business pay
+// week setting (businesses.pay_week_start_day, migration 111) -- same
+// helper the GPS filter uses, never a hardcoded Mon-Sun/Sun-Sat.
+function _hoursReportQuickSelect(which) {
+  var fromEl = document.getElementById('hours-report-from');
+  var toEl = document.getElementById('hours-report-to');
+  if (!fromEl || !toEl) return;
+  var tz = _pentaBusinessTimezone();
+  var startDay = _pentaPayWeekStartDay();
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  if (which === 'lastweek') {
+    var r = _computeLastPayWeekRange(tz, startDay);
+    fromEl.value = r.startYmd;
+    toEl.value = r.endYmd;
+    return;
+  }
+  // 'thisweek' -- the week containing today, same start-day convention.
+  var startDayNum = startDay === 'sunday' ? 0 : 1;
+  var today = _bizTodayParts(tz);
+  var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
+  var weekday = new Date(todayUtcMidnight).getUTCDay();
+  var daysSinceStart = (weekday - startDayNum + 7) % 7;
+  var weekStart = new Date(todayUtcMidnight - daysSinceStart * 86400000);
+  var weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+  fromEl.value = weekStart.getUTCFullYear() + '-' + pad2(weekStart.getUTCMonth() + 1) + '-' + pad2(weekStart.getUTCDate());
+  toEl.value = weekEnd.getUTCFullYear() + '-' + pad2(weekEnd.getUTCMonth() + 1) + '-' + pad2(weekEnd.getUTCDate());
+}
+
+async function confirmHoursReportExport() {
+  var fromEl = document.getElementById('hours-report-from');
+  var toEl = document.getElementById('hours-report-to');
+  var statusEl = document.getElementById('hours-report-picker-status');
+  var btn = document.getElementById('hours-report-picker-export');
+  var fromStr = fromEl && fromEl.value;
+  var toStr = toEl && toEl.value;
+  if (!fromStr || !toStr) { if (statusEl) statusEl.textContent = 'Pick both a start and end date.'; return; }
+  if (toStr < fromStr) { var _t = fromStr; fromStr = toStr; toStr = _t; } // forgiving of reversed inputs
+  var dates = [];
+  var cur = new Date(fromStr + 'T00:00:00');
+  var end = new Date(toStr + 'T00:00:00');
+  var guard = 0;
+  while (cur <= end && guard < 62) { dates.push(dateKey(cur)); cur = new Date(cur.getTime() + 86400000); guard++; }
+  if (!dates.length) { if (statusEl) statusEl.textContent = 'Invalid range.'; return; }
+  if (guard >= 62) { if (statusEl) statusEl.textContent = 'Range too large -- pick 60 days or fewer.'; return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+  if (statusEl) statusEl.textContent = '';
+  var rep;
+  try {
+    rep = await _buildHoursReportForDates(dates);
+  } catch (e) {
+    console.error('[HoursReport] build failed for range', fromStr, toStr, e);
+    if (statusEl) statusEl.textContent = 'Could not build the report -- see console.';
+    if (btn) { btn.disabled = false; btn.textContent = 'Export'; }
+    return;
+  }
+  var pickerOverlay = document.getElementById('hours-report-picker-overlay');
+  if (pickerOverlay) pickerOverlay.remove();
+  _renderHoursReportResults(rep);
+}
+
+// Generalizes _buildHoursReport (which only ever worked for the
+// current Hours-tab week) to an ARBITRARY date range. Fast path: if
+// `dates` is exactly the currently-loaded Hours-tab week, reuse the
+// global weekHours as-is -- no extra Geotab calls, identical output to
+// the pre-existing export for that common case. Slow path: any other
+// range (last week, a custom range, a rolling window) computes fresh
+// via _computeHoursForDateRange.
+async function _buildHoursReportForDates(dates) {
+  var teams = _pentaTeamNames();
+  var currentWeekDates = getWeekDates(hoursWeekOffset).map(dateKey);
+  var isCurrentWeek = dates.length === currentWeekDates.length && dates.every(function (d, i) { return d === currentWeekDates[i]; });
+
+  var weekHoursData = {};
+  teams.forEach(function (team) {
+    weekHoursData[team] = {
+      days: dates.map(function () { return 0; }),
+      starts: dates.map(function () { return null; }),
+      ends: dates.map(function () { return null; }),
+      lunch: dates.map(function () { return null; }),
+      total: 0
+    };
+  });
+
+  if (isCurrentWeek && typeof weekHours !== 'undefined' && Object.keys(weekHours).length > 0) {
+    teams.forEach(function (team) {
+      var src = weekHours[team];
+      if (!src) return;
+      dates.forEach(function (dStr, i) {
+        weekHoursData[team].days[i] = (src.days && src.days[i]) || 0;
+        weekHoursData[team].starts[i] = (src.starts && src.starts[i]) || null;
+        weekHoursData[team].ends[i] = (src.ends && src.ends[i]) || null;
+        weekHoursData[team].lunch[i] = (src.lunch && src.lunch[i]) || null;
+      });
+      weekHoursData[team].total = src.total || 0;
+    });
+  } else {
+    var computed = await _computeHoursForDateRange(dates);
+    teams.forEach(function (team) { if (computed[team]) weekHoursData[team] = computed[team]; });
+  }
+
+  return _buildHoursReportFromData(dates, weekHoursData, teams);
+}
+
+// Generalizes _loadWeekHoursInner's Geotab-supplementary computation
+// (per-day device resolution + one bulk trip fetch covering the whole
+// range across every device + the depot/job-crossref/lunch algorithm)
+// to an arbitrary list of dates -- a separate, read-only computation,
+// deliberately NOT touching weekHours/the DOM/_loadWeekHoursInner
+// itself, so it can't regress the Hours tab. Mirrors the exact
+// per-day algorithm _computeGpsHoursForDay already uses (see that
+// function's own comment) but batches ONE trip fetch for the whole
+// range instead of one fetch per day -- necessary since the Live tab's
+// GPS filter supports ranges up to 30 days, and a per-day fetch would
+// mean hundreds of sequential Geotab round-trips for a full export.
+// Known gap (same as _computeGpsHoursForDay/Claire's get_employee_hours):
+// does not consult time_entries -- acceptable today since that table
+// has near-zero real usage in this business (confirmed: 4 rows total).
+async function _computeHoursForDateRange(dates) {
+  var teamOrder = _pentaTeamNames();
+  var result = {};
+  teamOrder.forEach(function (team) {
+    result[team] = {
+      days: dates.map(function () { return 0; }),
+      starts: dates.map(function () { return null; }),
+      ends: dates.map(function () { return null; }),
+      lunch: dates.map(function () { return null; }),
+      total: 0
+    };
+  });
+
+  var devices;
+  try { devices = await _geotabCall('Get', { typeName: 'Device', resultsLimit: 50 }); }
+  catch (e) { console.warn('[hours export] device fetch failed', e); return result; }
+
+  var teamDeviceMapByDay;
+  try {
+    teamDeviceMapByDay = await Promise.all(dates.map(function (dStr) {
+      return _resolveTeamDeviceMap(devices, teamOrder, new Date(dStr + 'T00:00:00'));
+    }));
+  } catch (e) { console.warn('[hours export] device resolution failed', e); return result; }
+
+  var tz = _pentaBusinessTimezone();
+  var _fp = dates[0].split('-').map(Number);
+  var _lp = dates[dates.length - 1].split('-').map(Number);
+  var fromD = _bizWallClockToUtc(_fp[0], _fp[1], _fp[2], 0, 0, 0, tz);
+  var toD = _bizWallClockToUtc(_lp[0], _lp[1], _lp[2], 23, 59, 59, tz);
+  // Scaled with the range -- generous enough for a full fleet's worth
+  // of trips across up to 30 days without silently truncating.
+  var tripLimit = Math.min(15000, Math.max(500, dates.length * teamOrder.length * 60));
+  var trips;
+  try {
+    trips = await _geotabCall('Get', {
+      typeName: 'Trip',
+      search: { fromDate: fromD.toISOString(), toDate: toD.toISOString(), includeOverlappedTrips: true },
+      resultsLimit: tripLimit
+    });
+    await reverseGeocodeTrips(trips);
+  } catch (e) { console.warn('[hours export] trip fetch failed', e); return result; }
+
+  var tripsByDevice = {};
+  (trips || []).forEach(function (t) {
+    var did = t.device.id;
+    if (!tripsByDevice[did]) tripsByDevice[did] = [];
+    tripsByDevice[did].push(t);
+  });
+
+  teamOrder.forEach(function (team) {
+    dates.forEach(function (dStr, dayIdx) {
+      var resolved = teamDeviceMapByDay[dayIdx][team];
+      var deviceId = resolved && resolved.device && resolved.device.id;
+      if (!deviceId) return;
+      var _dp = dStr.split('-').map(Number);
+      var dayStart = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 0, 0, 0, tz);
+      var dayEnd = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 23, 59, 59, tz);
+      var dayTrips = (tripsByDevice[deviceId] || [])
+        .filter(function (t) { var ts = new Date(t.start); return ts >= dayStart && ts <= dayEnd; })
+        .sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+      if (!dayTrips.length) return;
+
+      var todayTeamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+        ? jobs.filter(function (jj) { return jj.date === dStr && jj.team === team && !jj.cancelled; })
+        : [];
+      var _isDepotStop = function (t) {
+        var sa = t.stopAddress || t.stopLocation || '';
+        return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+      };
+      var _crossref = _findJobCrossrefStartEnd(dayTrips, _isDepotStop, todayTeamJobs, team);
+      var _depotResult = _findTrueDepotDepartureTrip(dayTrips, _isDepotStop, 90);
+      var depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
+      var trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+      var trueStart = null, trueEnd = null;
+      if (trueStartTrip) { trueStart = new Date(trueStartTrip.start); }
+      else { var firstTrip = dayTrips[0]; if (firstTrip) trueStart = new Date(firstTrip.start); }
+      if (!trueStart) return;
+
+      if (_crossref.matched && _crossref.trueEndTrip) {
+        trueEnd = new Date(_crossref.trueEndTrip.stop);
+      } else {
+        var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
+        if (lateDepotArrivals.length) trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+      }
+      if (!trueEnd) {
+        var allStops = dayTrips.filter(function (t) { return t.stop; }).sort(function (a, b) { return new Date(b.stop) - new Date(a.stop); });
+        if (allStops.length) trueEnd = new Date(allStops[0].stop);
+      }
+      if (!trueEnd) return;
+
+      var totalHrs = (trueEnd - trueStart) / 3600000;
+      if (!(totalHrs >= 0.25 && totalHrs <= 15)) return;
+
+      var dayLunch = _detectDayLunch(dayTrips, team, todayTeamJobs, dStr, trueStart, trueEnd);
+      var lunchMin = (dayLunch && dayLunch.duration != null) ? dayLunch.duration : 0;
+      var finalHrs = Math.max(0, totalHrs - lunchMin / 60);
+
+      result[team].days[dayIdx] = finalHrs;
+      result[team].starts[dayIdx] = trueStart;
+      result[team].ends[dayIdx] = trueEnd;
+      result[team].lunch[dayIdx] = dayLunch;
+      result[team].total += finalHrs;
+    });
+  });
+
+  return result;
+}
+
+// Actual text/CSV builder -- shared by both the fast path (current
+// week, reused weekHours) and slow path (freshly computed range) in
+// _buildHoursReportForDates, since both normalize to the exact same
+// { days, starts, ends, lunch, total } shape sized to dates.length.
+function _buildHoursReportFromData(dates, weekHoursData, teams) {
+  var firstDate = new Date(dates[0] + 'T00:00:00');
+  var lastDate = new Date(dates[dates.length - 1] + 'T00:00:00');
+  var weekLabel = firstDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    + '–' + lastDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  var fnameWeek = dates[0] + '_to_' + dates[dates.length - 1];
+
   var SEP_HEAVY = '═'.repeat(43);
-  var SEP_THIN  = '─'.repeat(43);
+  var SEP_THIN = '─'.repeat(43);
 
   var textLines = [];
   textLines.push(SEP_HEAVY);
   textLines.push('  HOURS REPORT');
-  // v11.0.1 (Item A): tenant name resolved dynamically.
   var _wBiz = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
-  textLines.push('  Week of ' + weekLabel + (_wBiz ? ' · ' + _wBiz : ''));
+  textLines.push('  ' + weekLabel + (_wBiz ? ' · ' + _wBiz : ''));
   textLines.push(SEP_HEAVY);
   textLines.push('');
 
   var csvRows = [];
   csvRows.push('Employee,Team,Date,ClockIn,ClockOut,Lunch,HoursWorked');
 
-  var teams = _pentaTeamNames();
   var grandHours = 0;
   var empsSeen = 0;
 
-  // v11.0.21: STRICT per-day team membership — mirrors renderHoursTable.
-  // No defaultTeam fallback in the filter; per-cell rendering gates on
-  // getEmployeeTeam(emp.id, dk) === team so an employee moved off this
-  // team for the day records zero hours under it.
-  teams.forEach(function(team) {
-    var data = (typeof weekHours !== 'undefined' && weekHours[team]) ? weekHours[team] : null;
-    var teamEmployees = getUnifiedRoster().filter(function(e) {
-      return days.some(function(d){ return getEmployeeTeam(e.id, dateKey(d)) === team; });
+  teams.forEach(function (team) {
+    var data = weekHoursData[team];
+    var teamEmployees = getUnifiedRoster().filter(function (e) {
+      return dates.some(function (dk) { return getEmployeeTeam(e.id, dk) === team; });
     });
-    if (!data && teamEmployees.length === 0) return;
+    if (teamEmployees.length === 0) return;
 
-    teamEmployees.forEach(function(emp) {
+    teamEmployees.forEach(function (emp) {
       empsSeen++;
       var empWeekHours = 0;
       var dayRows = [];
 
-      days.forEach(function(d, i) {
-        var dk = dateKey(d);
-        var dayIdx = i; // 0=Mon..6=Sun
+      dates.forEach(function (dk, dayIdx) {
+        var d = new Date(dk + 'T00:00:00');
         var override = getEmpHours(emp.id, dk);
         var onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
 
-        // Only Mon-Fri (0..4) have team GPS baseline data.
-        var inMonFri = dayIdx <= 4;
-        var teamH = (data && inMonFri) ? (data.days[dayIdx] || 0) : 0;
-        var teamStart = (data && inMonFri) ? data.starts[dayIdx] : null;
-        var teamEnd = (data && inMonFri) ? data.ends[dayIdx] : null;
-        var teamLunchMin = (data && inMonFri && data.lunch && data.lunch[dayIdx]) ? (data.lunch[dayIdx].duration || 0) : 0;
+        var teamH = data ? (data.days[dayIdx] || 0) : 0;
+        var teamStart = data ? data.starts[dayIdx] : null;
+        var teamEnd = data ? data.ends[dayIdx] : null;
+        var teamLunchMin = (data && data.lunch && data.lunch[dayIdx]) ? (data.lunch[dayIdx].duration || 0) : 0;
 
         var empH = !onThisTeamToday ? 0 : (override ? (override.hours || 0) : teamH);
         var startStr = !onThisTeamToday ? '' : (override ? (override.start || '') : _hrTo24hr(teamStart));
         var endStr = !onThisTeamToday ? '' : (override ? (override.end || '') : _hrTo24hr(teamEnd));
         var lunchMin = !onThisTeamToday ? 0 : (override ? (override.lunch || 0) : teamLunchMin);
 
-        // Day quality: negative/zero duration but with both timestamps → log a warning
         if ((startStr && endStr) && empH <= 0) {
           console.warn('[HoursReport] non-positive duration for', emp.name, dk, { startStr: startStr, endStr: endStr, empH: empH });
           empH = 0;
         }
 
-        var dateISO = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
-        var dayLabel = dayShort[dayIdx] + ' ' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+        var dateISO = dk;
+        var dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
         if (empH > 0 && startStr && endStr) {
           empWeekHours += empH;
           var timeRange = startStr + ' – ' + endStr;
           var durTxt = _hrDecimalHoursText(empH);
-          var lunchTail = lunchMin ? ('lunch ' + Math.floor(lunchMin/60) + ':' + String(lunchMin%60).padStart(2,'0')) : '';
+          var lunchTail = lunchMin ? ('lunch ' + Math.floor(lunchMin / 60) + ':' + String(lunchMin % 60).padStart(2, '0')) : '';
           dayRows.push('  ' + dayLabel.padEnd(14) + timeRange.padEnd(16) + durTxt.padEnd(10) + lunchTail);
           csvRows.push([
-            _hrCsvField(emp.name || emp.id),
-            _hrCsvField(team),
-            dateISO,
-            _hrTo24hr(startStr),
-            _hrTo24hr(endStr),
-            _hrMinsToHHMM(lunchMin),
-            _hrDecimalHoursToHHMM(empH)
+            _hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO,
+            _hrTo24hr(startStr), _hrTo24hr(endStr), _hrMinsToHHMM(lunchMin), _hrDecimalHoursToHHMM(empH)
           ].join(','));
         } else if ((startStr && !endStr) || (!startStr && endStr)) {
-          // Partial/malformed — show ? in text, empty in CSV
           dayRows.push('  ' + dayLabel.padEnd(14) + '? (incomplete clock data)');
-          csvRows.push([
-            _hrCsvField(emp.name || emp.id),
-            _hrCsvField(team),
-            dateISO, '', '', '',
-            '0:00'
-          ].join(','));
+          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO, '', '', '', '0:00'].join(','));
         } else {
           dayRows.push('  ' + dayLabel.padEnd(14) + 'OFF');
-          csvRows.push([
-            _hrCsvField(emp.name || emp.id),
-            _hrCsvField(team),
-            dateISO, '', '', '', '0:00'
-          ].join(','));
+          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO, '', '', '', '0:00'].join(','));
         }
       });
 
-      // Thin separator between employees (not before the first one)
       if (empsSeen > 1) textLines.push(SEP_THIN);
       textLines.push((emp.name || emp.id).toUpperCase() + ' (' + team + ') — ' + _hrDecimalHoursText(empWeekHours));
-      dayRows.forEach(function(row){ textLines.push(row); });
+      dayRows.forEach(function (row) { textLines.push(row); });
       grandHours += empWeekHours;
     });
   });
@@ -32418,15 +32676,15 @@ function showToast(msg, kind) {
   }
 }
 
+// Was: build the current week's report and show it immediately, no way
+// to pick a different range. Now opens the range picker first (see its
+// own comment) -- confirmHoursReportExport() is what actually builds
+// and shows the report once a range is confirmed.
 function showHoursReport() {
-  var rep;
-  try { rep = _buildHoursReport(0); }
-  catch (e) {
-    console.error('[HoursReport] build failed', e);
-    alert('Hours Report build failed — see console.');
-    return;
-  }
+  openHoursReportPicker();
+}
 
+function _renderHoursReportResults(rep) {
   // Clean up any previous instance
   var old = document.getElementById('hours-report-overlay');
   if (old) old.remove();
@@ -32441,7 +32699,7 @@ function showHoursReport() {
     + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
     +   '<div>'
     +     '<div style="font-size:17px;font-weight:600">Hours Report</div>'
-    +     '<div style="font-size:13px;color:var(--muted)">Week of ' + rep.weekLabel + ' · ' + rep.empsSeen + ' employees · ' + _hrDecimalHoursText(rep.grandHours) + ' total</div>'
+    +     '<div style="font-size:13px;color:var(--muted)">' + rep.weekLabel + ' · ' + rep.empsSeen + ' employees · ' + _hrDecimalHoursText(rep.grandHours) + ' total</div>'
     +   '</div>'
     +   '<button id="hours-report-close" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;line-height:1;cursor:pointer;font-family:inherit;padding:0">×</button>'
     + '</div>'
