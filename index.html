@@ -5380,12 +5380,20 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none;cursor:pointer">
           <option value="24h">Last 24 hours</option>
           <option value="3d">Last 3 days</option>
-          <option value="lastweek">Last week (Mon–Sun)</option>
+          <option value="lastweek">Last week</option>
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
+          <option value="custom">Custom range…</option>
         </select>
         <input type="date" id="gps-date-picker"
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none"
+          onchange="loadGPSData()">
+        <input type="date" id="gps-custom-from"
+          style="display:none;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none"
+          onchange="loadGPSData()">
+        <span id="gps-custom-range-sep" style="display:none;color:var(--muted);font-size:13px">–</span>
+        <input type="date" id="gps-custom-to"
+          style="display:none;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none"
           onchange="loadGPSData()">
         <span class="gps-last-update" id="gps-last-update">Loading...</span>
         <span id="gps-partial-indicator" style="display:none;font-size:11px;color:var(--muted)">Some data loading…</span>
@@ -5528,6 +5536,7 @@ window.PentaTenant = (function() {
   function operatorFirst()  { return window.__pentaOperatorFirstName || ''; }
   function operatorPhone()  { return window.__pentaOperatorPhone || ''; }
   function timezone()       { return window.__pentaBusinessTimezone || ''; }
+  function payWeekStartDay(){ return window.__pentaPayWeekStartDay || ''; }
   // v11.0.1 (Item A): callers need a slug-safe form of the business name
   // for hashtag generation (#TestBusinessTwo). Strip non-alphanumeric.
   function nameSlugCompact() {
@@ -5545,6 +5554,7 @@ window.PentaTenant = (function() {
   function _setOperatorFirst(n){ if (n) window.__pentaOperatorFirstName = String(n); }
   function _setOperatorPhone(p){ if (p) window.__pentaOperatorPhone = String(p); }
   function _setTimezone(t)     { if (t) window.__pentaBusinessTimezone = String(t); }
+  function _setPayWeekStartDay(d) { if (d === 'sunday' || d === 'monday') window.__pentaPayWeekStartDay = d; }
   function ready() {
     return new Promise(function(resolve){
       if (window.__pentaBusinessId) { resolve(window.__pentaBusinessId); return; }
@@ -5558,6 +5568,7 @@ window.PentaTenant = (function() {
     operatorFirst: operatorFirst,
     operatorPhone: operatorPhone,
     timezone: timezone,
+    payWeekStartDay: payWeekStartDay,
     nameSlugCompact: nameSlugCompact,
     ready: ready,
     _set: _set,
@@ -5565,7 +5576,8 @@ window.PentaTenant = (function() {
     _setLegalName: _setLegalName,
     _setOperatorFirst: _setOperatorFirst,
     _setOperatorPhone: _setOperatorPhone,
-    _setTimezone: _setTimezone
+    _setTimezone: _setTimezone,
+    _setPayWeekStartDay: _setPayWeekStartDay
   };
 })();
 
@@ -16119,11 +16131,12 @@ window.addEventListener('DOMContentLoaded', function() {
         // v11.0.5 (Issue B-6): also pull legal_name for handbook /
         // applicant-consent surfaces that need to identify the actual
         // legal entity, not just the display name.
-        sbBoot.from('businesses').select('name, legal_name, timezone').eq('id', dbBusinessId).maybeSingle()
+        sbBoot.from('businesses').select('name, legal_name, timezone, pay_week_start_day').eq('id', dbBusinessId).maybeSingle()
           .then(function(bres){
             var nm = bres && bres.data && bres.data.name;
             var ln = bres && bres.data && bres.data.legal_name;
             var tz = bres && bres.data && bres.data.timezone;
+            var pwsd = bres && bres.data && bres.data.pay_week_start_day;
             if (nm && window.PentaTenant && window.PentaTenant._setName) {
               window.PentaTenant._setName(nm);
             }
@@ -16140,6 +16153,13 @@ window.addEventListener('DOMContentLoaded', function() {
             // PentaTenant.current() is.
             if (tz && window.PentaTenant && window.PentaTenant._setTimezone) {
               window.PentaTenant._setTimezone(tz);
+            }
+            // Pay-week boundary setting (migration 111) -- same
+            // boot-piggyback reasoning as timezone above: available the
+            // moment PentaTenant.current() is, not after a separate
+            // async round-trip.
+            if (pwsd && window.PentaTenant && window.PentaTenant._setPayWeekStartDay) {
+              window.PentaTenant._setPayWeekStartDay(pwsd);
             }
           }).catch(function(){});
       }
@@ -24290,7 +24310,8 @@ var CLAIRE_TOOLS = [
   { name: 'change_price', description: 'Change a client cleaning price for all their future scheduled jobs', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, price:{type:'string',description:'New price amount (just the number)'} }, required:['client','price'] } },
   { name: 'record_payment', description: 'Record a payment received from a client. Reduces their balance.', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'}, amount:{type:'string',description:'Payment amount'}, method:{type:'string',description:'Payment method: cash, check, credit card, venmo, zelle'} }, required:['client','amount'] } },
   { name: 'compute_quote', description: 'Compute a cleaning quote backend-only. Geocodes the address, looks up sq ft + baths from MassGIS, applies pricing settings, returns structured JSON with formattedPrice, hours, cleaners, breakdown, and a ready-to-send sms_text. NEVER renders UI. ALWAYS call this BEFORE quoting a price to the user. Present the result inline in chat and WAIT for explicit user confirmation before calling send_text.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'weekly | biweekly | triweekly | monthly | once'}, square_feet:{type:'number',description:'Optional override if MassGIS lookup fails or user supplies it'}, baths:{type:'number',description:'Optional override (defaults to MassGIS or 2)'}, team_size:{type:'number',description:'Default 3'} }, required:['address','frequency'] } },
-  { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee first name'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
+  { name: 'get_employee_hours', description: 'Read an employee\'s worked hours for a single date or a date range. Returns, per day: day_of_week, start_time, end_time, lunch_minutes, total_hours, source (gps | manual_override), team_that_day, and a status (off/no_data/unassigned) when there are no hours to report. Always call this BEFORE edit_employee_hours when the user wants to copy one employee\'s hours to another, or otherwise needs to see current values first.', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name (first name, full name, or however the user referred to them)'}, date:{type:'string',description:'Single date YYYY-MM-DD. Omit if using from/to instead.'}, from:{type:'string',description:'Range start date YYYY-MM-DD (use with "to" for a range)'}, to:{type:'string',description:'Range end date YYYY-MM-DD (use with "from" for a range)'} }, required:['employee'] } },
+  { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day. Writes a manual override to the database (visible everywhere, on every device, immediately). ALWAYS confirm the new values with the user before calling this, unless they already gave you exact times to set.', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name (first name, full name, or however the user referred to them)'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
   { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
   { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } },
   // Coach-Claire Phase 2 — aggregate tools. Each returns a rolled-up summary
@@ -24328,9 +24349,15 @@ async function processVoiceCommand(text) {
   // gracefully rather than rendering this stale "I need an API key"
   // canned reply.
 
-  var today = new Date();
-  var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-  var todayKey = dateKey(today);
+  // Business-timezone-aware "today" -- Claire's own date reasoning
+  // ("last week", "last Tuesday") depends on getting this right, and a
+  // bare `new Date()` here would resolve calendar day in the VIEWER's
+  // browser timezone, not the business's (this codebase has a
+  // documented history of exactly this class of bug for GPS times).
+  var _bizToday = _bizTodayParts(_pentaBusinessTimezone());
+  var todayKey = _bizToday.y + '-' + String(_bizToday.m).padStart(2, '0') + '-' + String(_bizToday.d).padStart(2, '0');
+  var today = new Date(Date.UTC(_bizToday.y, _bizToday.m - 1, _bizToday.d)); // pure calendar date (midnight UTC) -- only used for weekday/display formatting below, always with timeZone:'UTC' to match
+  var todayStr = today.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric',timeZone:'UTC'});
   var todayJobs = jobs.filter(function(j){ return j.date === todayKey && !j.cancelled; });
   // Phase 6.5a: prefer live facade roster; fall back to EMPLOYEE_ROSTER hardcoded const if facade is empty.
   var empNames = (function(){
@@ -24361,9 +24388,18 @@ async function processVoiceCommand(text) {
   if (_scale.teamCount != null && _scale.clientCount != null) {
     _scaleClause = ' (' + _scale.teamCount + ' teams, ~' + _scale.clientCount + ' clients)';
   }
+  // Pay week boundary is a per-business setting (businesses.
+  // pay_week_start_day, migration 111) -- never hardcode Mon-Sun/Sun-Sat
+  // here. Compute the ACTUAL current "last week" boundary and state it
+  // concretely so the model pattern-matches from a real example instead
+  // of doing its own date arithmetic (which it can get wrong).
+  var _payWeekStartDay = _pentaPayWeekStartDay();
+  var _payWeekLabel = _payWeekStartDay === 'sunday' ? 'Sunday–Saturday' : 'Monday–Sunday';
+  var _lastPayWeek = _computeLastPayWeekRange(_pentaBusinessTimezone(), _payWeekStartDay);
 
   var systemPrompt = 'You are Claire, ' + _opName + '\'s strategic business advisor for Penta — the field-service SaaS being built, currently running their cleaning business ' + _bizName + _geoClause + _scaleClause + '.\n'
-    +'Today is '+todayStr+' ('+todayKey+').\n\n'
+    +'Today is '+todayStr+' ('+todayKey+').\n'
+    +'The pay week runs '+_payWeekLabel+'. "Last week" means the most recently completed pay week: '+_lastPayWeek.startYmd+' through '+_lastPayWeek.endYmd+'. "Last Tuesday" (or any other "last <weekday>") means the most recent occurrence of that weekday BEFORE today, never today itself even if today happens to be that weekday. Always convert a relative date phrase to a concrete YYYY-MM-DD date (or a from/to range) yourself before calling any tool — every date-taking tool expects real dates, never phrases like "last week".\n\n'
     +'YOUR ROLE\n'
     +'Think with ' + _opName + ' about their business. Answer any question grounded in their actual data. Be direct, practical, and honest. Default to plain prose, not bullet lists. Keep responses short unless depth is genuinely useful. Tone: a sharp business partner who knows the numbers — not a friendly cleaning assistant, not a customer-service bot. Strategic, blunt when warranted, helpful.\n'
     +'If ' + _opName + ' asks an advisory question (strategy, opinion, plan, recommendation, "what do you think", "help me figure out") — just answer with reasoning. Don\'t try to fit it into the operational tools or the multi-action protocol. Strategic questions get strategic answers, not recap lines. Use a lookup_* tool ONLY when a specific number or record is genuinely required; otherwise reason directly.\n\n'
@@ -24376,10 +24412,10 @@ async function processVoiceCommand(text) {
     +'- team_performance — team metrics\n'
     +'- at_risk_clients — composite churn risk signals\n'
     +'\nClients have a status: active (default — on the schedule and in operations), paused (snowbird, vacation, renovation, medical — temporary hold, often with a return date), inactive (gone but kept in the database for marketing and history). Operational tools (query_clients, at_risk_clients, accounts_receivable_summary, lookup_balance) DEFAULT to active. Pull paused or inactive deliberately when ' + _opName + ' asks about win-back, churn, specific snowbirds, or the full picture — pass client_status="paused", "inactive", or "all" to override.\n'
-    +'\nYou also have single-record lookups (lookup_client, lookup_employee, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data ' + _opName + ' doesn\'t have in the app.\n'
+    +'\nYou also have single-record lookups (lookup_client, lookup_employee, get_employee_hours, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data ' + _opName + ' doesn\'t have in the app.\n'
     +'\nCite specific numbers from data. Never guess. If ' + _opName + ' asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
-    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients or employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
+    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients, read or edit employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
     +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
     +'QUOTE FLOW (follow this exactly when the user asks for a quote):\n'
     +'1. ALWAYS call compute_quote first. Pass the address and the frequency the user asked for (weekly | biweekly | triweekly | monthly | once). compute_quote does the math backend-only — it does NOT render anything.\n'
@@ -24388,6 +24424,12 @@ async function processVoiceCommand(text) {
     +'4. After the user confirms, call send_text with phone=<their phone> and message=<the sms_text from compute_quote>. Then report what came back.\n'
     +'If compute_quote returns non_ma_address (geocoded outside the service area), tell the user: "That address looks like it\'s outside the service area — auto-lookup is restricted. What\'s the square footage?" Then call compute_quote again with square_feet provided.\n'
     +'If compute_quote returns address_not_found, ask the user to confirm the full address with city and state, then retry.\n\n'
+    +'HOURS FLOW (follow this exactly for reading or changing an employee\'s hours):\n'
+    +'1. To answer "what were X\'s hours" questions, call get_employee_hours with the resolved employee name and a concrete date or from/to range. Present the returned values in plain language, e.g. "Nadia\'s Tuesday: 9:15 AM – 5:20 PM, 30m lunch, 7.9h (from GPS)." A day with status "off" means an approved day off (state the reason/category). A day with status "no_data" or "unassigned" means there\'s nothing to report — say so plainly, never guess a number.\n'
+    +'2. For a "copy X\'s hours to Y" (or "match X\'s hours") request: FIRST call get_employee_hours for X on the requested date/range. Present the EXACT values to ' + _opName + ' — e.g. "Nadia\'s Tue Sept 1: 9:15 AM – 5:20 PM, 30m lunch. Copy to Natalia?" — and WAIT for explicit confirmation. Do NOT call edit_employee_hours in the same turn as get_employee_hours for a copy request.\n'
+    +'3. After ' + _opName + ' confirms, call edit_employee_hours for Y with the exact start/end/lunch X had. edit_employee_hours verifies its own write by reading it back before replying, so a success message means the value is confirmed in the database, not just attempted.\n'
+    +'4. If get_employee_hours or edit_employee_hours returns error: "ambiguous_employee", list the candidate names from the result and ask ' + _opName + ' which one they meant — never just guess the first match. If it returns error: "employee_not_found", say so and mention the suggestions if any were returned.\n'
+    +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '.\n\n'
     +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
@@ -24633,6 +24675,59 @@ function findClientWithSuggestions(query) {
   });
   all.sort(function(a, b) { return a.dist - b.dist; });
   return { matches: [], suggestions: all.slice(0, 3).map(function(x) { return x.client; }) };
+}
+
+// Ranked employee matcher, mirrors findClients() above -- same score
+// tiers, adapted for employees' single .name field (no fn/ln split).
+// Every other employee-taking Claire tool (edit_employee_hours,
+// lookup_employee, move_employee, employee_day_off) currently does
+// first-match-wins exact-name lookup with no ambiguity check -- this
+// codebase has 7+ duplicate-name employee groups (documented project
+// memory: feedback_name_based_identity_resolution_risk), including two
+// "Maria Vieira" records, so first-match-wins is a live risk, not a
+// hypothetical one. getUnifiedRoster() called with no asOfDate already
+// excludes every terminated employee (PR #148 -- see its own comment),
+// so a terminated duplicate can't silently win or force a
+// disambiguation prompt for a name only one ACTIVE employee actually has.
+function findEmployees(query) {
+  if (!query) return [];
+  var q = _cleanName(query);
+  if (!q) return [];
+  var tokens = q.split(/\s+/).filter(Boolean);
+  var scored = [];
+  getUnifiedRoster().forEach(function(e) {
+    var full = _cleanName(e.name);
+    if (!full) return;
+    var nameTokens = full.split(/\s+/).filter(Boolean);
+    var score = 0;
+    if (q === full) score = 1000;
+    else if (nameTokens.indexOf(q) !== -1) score = 900;
+    else if (nameTokens.some(function(t) { return t.indexOf(q) === 0; })) score = 800;
+    else if (full.indexOf(q) >= 0) score = 700;
+    else if (tokens.length > 1 && tokens.every(function(t) { return full.indexOf(t) >= 0; })) score = 500;
+    if (score > 0) scored.push({ emp: e, score: score });
+  });
+  scored.sort(function(a, b) { return b.score - a.score; });
+  return scored.map(function(x) { return x.emp; });
+}
+
+// Returns { matches: [...], suggestions: [closest 3] } -- same shape as
+// findClientWithSuggestions, for the ambiguity-prone employee tool
+// handlers (get_employee_hours, edit_employee_hours) to surface a
+// disambiguation prompt via the LLM round instead of guessing.
+function findEmployeeWithSuggestions(query) {
+  var matches = findEmployees(query);
+  if (matches.length) return { matches: matches, suggestions: [] };
+  var q = _cleanName(query);
+  if (!q) return { matches: [], suggestions: [] };
+  var all = [];
+  getUnifiedRoster().forEach(function(e) {
+    var full = _cleanName(e.name);
+    if (!full) return;
+    all.push({ emp: e, dist: _lev(q, full) });
+  });
+  all.sort(function(a, b) { return a.dist - b.dist; });
+  return { matches: [], suggestions: all.slice(0, 3).map(function(x) { return x.emp; }) };
 }
 
 // Tools that return information to Claire rather than perform an action.
@@ -25321,22 +25416,95 @@ async function _executeClaireToolCallInner(toolCall, message) {
     return;
 
   // ── EDIT EMPLOYEE HOURS ──
+  } else if (name === 'get_employee_hours') {
+    var ghLookup = findEmployeeWithSuggestions(input.employee || '');
+    if (ghLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_employee', query: input.employee,
+        candidates: ghLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; })
+      });
+      return;
+    }
+    if (ghLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'employee_not_found', query: input.employee,
+        suggestions: ghLookup.suggestions.map(function(e){ return e.name; })
+      });
+      return;
+    }
+    var ghEmp = ghLookup.matches[0];
+    var ghKeyId = ghEmp.legacy_roster_id || ghEmp.id;
+    var ghDates = [];
+    if (input.from && input.to) {
+      var _ghCur = new Date(input.from + 'T00:00:00');
+      var _ghEnd = new Date(input.to + 'T00:00:00');
+      if (_ghEnd < _ghCur) { var _ghTmp = _ghCur; _ghCur = _ghEnd; _ghEnd = _ghTmp; } // forgiving of reversed inputs
+      var _ghGuard = 0;
+      while (_ghCur <= _ghEnd && _ghGuard < 366) {
+        ghDates.push(dateKey(_ghCur));
+        _ghCur = new Date(_ghCur.getTime() + 86400000);
+        _ghGuard++;
+      }
+    } else {
+      ghDates = [input.date || dateKey(new Date())];
+    }
+    var ghResults = [];
+    for (var ghi = 0; ghi < ghDates.length; ghi++) {
+      var ghDate = ghDates[ghi];
+      var ghDayLabel = new Date(ghDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+      var ghTeam = getEmployeeTeam(ghKeyId, ghDate);
+      if (!ghTeam) {
+        var ghOff = getEmployeeDayOffInfo(ghKeyId, ghDate);
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'off',
+          reason: (ghOff && ghOff.status_type && DAY_OFF_CATEGORY_LABELS[ghOff.status_type]) || 'Off' });
+        continue;
+      }
+      var ghOverride = getEmpHours(ghKeyId, ghDate);
+      if (ghOverride) {
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel,
+          start_time: _hrsFmt12(ghOverride.start), end_time: _hrsFmt12(ghOverride.end),
+          lunch_minutes: ghOverride.lunch || 0,
+          total_hours: ghOverride.hours != null ? Number(ghOverride.hours) : null,
+          source: 'manual_override', team_that_day: ghTeam });
+        continue;
+      }
+      var ghGps = null;
+      try { ghGps = await _computeGpsHoursForDay(ghTeam, ghDate); } catch (ghErr) { ghGps = { available: false, reason: 'Error: ' + (ghErr && ghErr.message || ghErr) }; }
+      if (ghGps.available) {
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel,
+          start_time: _hrsFmt12(ghGps.start), end_time: _hrsFmt12(ghGps.end),
+          lunch_minutes: ghGps.lunchMin || 0, total_hours: Math.round(ghGps.hours * 100) / 100,
+          source: 'gps', team_that_day: ghTeam });
+      } else {
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'no_data', reason: ghGps.reason, team_that_day: ghTeam });
+      }
+    }
+    _claireLastToolResult = JSON.stringify({ employee: ghEmp.name, days: ghResults });
+
   } else if (name === 'edit_employee_hours') {
-    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
-    var ehEmp = null;
-    if (window.PentaEmployees && window.PentaEmployees.getByName) ehEmp = window.PentaEmployees.getByName(input.employee || '');
-    if (!ehEmp) ehEmp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
-    if (!ehEmp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'Couldn\'t find that employee.'); return; }
-    // PR #134 -- window.PentaEmployees.getByName returns the raw facade
-    // object, whose .id is the Supabase uuid (this bypasses
-    // getUnifiedRoster(), which is what wraps .id to legacy_roster_id).
-    // Every other empHrs_* reader/writer (renderHoursTable,
+    var ehLookup = findEmployeeWithSuggestions(input.employee || '');
+    if (ehLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_employee', query: input.employee,
+        candidates: ehLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; })
+      });
+      return;
+    }
+    if (ehLookup.matches.length === 0) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'employee_not_found', query: input.employee,
+        suggestions: ehLookup.suggestions.map(function(e){ return e.name; })
+      });
+      return;
+    }
+    var ehEmp = ehLookup.matches[0];
+    // PR #134 -- every empHrs_* reader/writer (renderHoursTable,
     // showEmpDayDetail, the employee portal) keys off getUnifiedRoster()
     // -style ids -- legacy_roster_id when the employee has one, which
     // matches production data 1:1 (documented in project memory as a
     // repeat trap: feedback_legacy_roster_id_vs_uuid_keyspace). Writing
-    // under ehEmp.id (uuid) silently wrote to a key nothing else ever
-    // read -- a live, confirmed bug, not a hypothetical one.
+    // under the Supabase uuid instead silently wrote to a key nothing
+    // else ever read -- a live, confirmed bug, not a hypothetical one.
     var ehKeyId = ehEmp.legacy_roster_id || ehEmp.id;
     var ehDate = input.date || dateKey(new Date());
     var existing = getEmpHours(ehKeyId, ehDate) || {};
@@ -25356,6 +25524,45 @@ async function _executeClaireToolCallInner(toolCall, message) {
       claireReply(message || ('Could not save the hours change for ' + ehEmp.name + '.'));
       return;
     }
+    // Read-back verification -- an independent fetch straight from
+    // Supabase (not the client-side cache setOverride already updated),
+    // so "the write succeeded" is confirmed by what the server actually
+    // has, not just trusted from the write call's own return value.
+    var ehVerified = false;
+    try {
+      var ehSb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      var ehBid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+      var ehUuid = ehEmp.uuid || (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId && (function(){ var r = window.PentaEmployees.getByLegacyRosterId(ehKeyId); return r && r.id; })()) || null;
+      if (ehSb && ehBid && ehUuid) {
+        var ehCheck = await ehSb.from('manual_hour_overrides').select('start_time, end_time, lunch_minutes, hours')
+          .eq('business_id', ehBid).eq('employee_id', ehUuid).eq('date', ehDate).maybeSingle();
+        // Row must exist AND every field actually part of this edit must
+        // match what was just requested (a lunch-only edit still gets
+        // its own value checked, not just "a row exists") -- confirms
+        // the server has the edit itself, not just some row.
+        var ehRow = ehCheck && ehCheck.data;
+        ehVerified = !!ehRow
+          && (!input.start || ehRow.start_time === existing.start)
+          && (!input.end || ehRow.end_time === existing.end)
+          && (!input.lunch || ehRow.lunch_minutes === existing.lunch);
+      }
+    } catch (ehVerifyErr) { console.warn('[Claire] edit_employee_hours: read-back verification failed', ehVerifyErr); }
+    if (!ehVerified) {
+      _claireLastToolResult = 'Saved the hours for ' + ehEmp.name + ', but could not verify the write by reading it back. Please double-check ' + ehEmp.name + '\'s hours for this day.';
+      claireReply(message || ('Saved, but I could not verify it -- please double-check ' + ehEmp.name + '\'s hours.'));
+      return;
+    }
+    // Audit trail with an explicit source='claire' marker (distinct
+    // from the manager's own logPendingUpdate/logActivity actor tag,
+    // which already stamps 'Claire' there automatically via
+    // _claireActing -- this is the separate, permanent Postgres
+    // audit_log row Tom asked for specifically).
+    try {
+      await _auditSupplement('manual_override', 'employee', ehUuid, {
+        source: 'claire', date: ehDate, start: existing.start || null, end: existing.end || null,
+        lunch: existing.lunch != null ? existing.lunch : null, hours: existing.hours != null ? existing.hours : null
+      });
+    } catch (ehAuditErr) { console.warn('[Claire] edit_employee_hours: audit supplement failed (non-fatal)', ehAuditErr); }
     // PR #134 -- same reasoning as saveEmpDayHours: a Claire-written
     // override wasn't visible in the manager's Hours tab OR the
     // employee portal until an unrelated later loadWeekHours() refresh.
@@ -25379,7 +25586,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (input.end) changes.push('end: '+input.end);
     if (input.lunch) changes.push('lunch: '+input.lunch+'min');
     logPendingUpdate('Hours edited: '+ehEmp.name, dayL3+' — '+changes.join(', '));
-    _claireLastToolResult = 'Updated '+ehEmp.name+'\'s hours for '+dayL3+': '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : '')+' Done.';
+    _claireLastToolResult = 'Updated '+ehEmp.name+'\'s hours for '+dayL3+': '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : '')+' Verified by reading it back. Done.';
     claireReply(message || 'Updated '+ehEmp.name+'\'s hours for '+dayL3+'. '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : ''));
 
   // ── LOCATE TEAM ──  (query tool — no claireReply)
@@ -30716,12 +30923,28 @@ async function _computeGpsHoursForDay(team, dateStr) {
       return { available: false, reason: resolved.source === 'assignment-none' ? ('No GPS device assigned to ' + team + ' on ' + dateStr) : ('No vehicle found for ' + team) };
     }
 
-    var startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
-    var endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+    // Business-timezone day boundary (not browser-local .setHours) --
+    // matches _loadWeekHoursInner's own dayStart/dayEnd computation.
+    var _dp = dateStr.split('-').map(Number);
+    var _tz = _pentaBusinessTimezone();
+    var startOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 0, 0, 0, _tz);
+    var endOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 23, 59, 59, _tz);
     var trips = await _geotabCallRetryOn429('Get', {
       typeName: 'Trip',
       search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
       resultsLimit: 200
+    });
+    // Geotab's own API can return a trip outside the requested range
+    // (confirmed live: a zero-duration, garbage-coordinate trip from the
+    // PRIOR calendar day came back for a fromDate/toDate that excluded
+    // it) -- re-filter defensively by t.start, same as
+    // _loadWeekHoursInner's dayTrips filter already does. Without this,
+    // a stray boundary trip can become "trueStart" and produce a
+    // wildly wrong multi-day span that then fails the sanity check
+    // below, reporting a real day as having no data at all.
+    trips = (trips || []).filter(function (t) {
+      var ts = new Date(t.start);
+      return ts >= startOfDay && ts <= endOfDay;
     });
     await reverseGeocodeTrips(trips);
     if (!trips || !trips.length) return { available: false, reason: 'No GPS trips recorded for ' + team + ' on ' + dateStr };
@@ -33761,22 +33984,28 @@ function setGPSDateToday() {
   picker.value = y + '-' + m + '-' + d;
 }
 
-// "Last week" GPS filter (Tom, for payroll review): the most recently
-// COMPLETED Monday–Sunday pay week, not a rolling 7-day window (which
-// spans across pay-period boundaries and isn't useful for weekly
-// payroll). "Today" for determining which week just ended must be
-// evaluated in the BUSINESS's timezone, not the viewer's browser
+// "Last week" (GPS filter and Claire's date resolution both use this):
+// the most recently COMPLETED pay week, not a rolling 7-day window
+// (which spans across pay-period boundaries and isn't useful for
+// weekly payroll). "Today" for determining which week just ended must
+// be evaluated in the BUSINESS's timezone, not the viewer's browser
 // timezone -- this codebase has been bitten by exactly this class of
 // bug before (GPS start/end times drifting hours off when viewer and
-// business timezones differ). Confirmed no existing pay_period_start_day
-// setting anywhere in the schema; Manna's pay week is Monday–Sunday,
-// confirmed directly with Tom.
+// business timezones differ).
+//
+// The week-start day itself (Sunday vs Monday) is a per-business
+// setting (businesses.pay_week_start_day, migration 111) -- Manna's is
+// Monday, confirmed directly with Tom, but this must NOT be hardcoded:
+// a future tenant may run a Sunday-Saturday pay week. Read via
+// _pentaPayWeekStartDay() (falls back to 'monday' if unset).
 //
 // Returns { y, m, d } (m is 1-indexed) for "today" as observed in tz,
 // via Intl rather than any Date-object timezone conversion (which
 // JS has no native support for) -- this only extracts calendar
-// components, so no offset math is needed here.
-function _gpsBizTodayParts(tz) {
+// components, so no offset math is needed here. Generic (not GPS-
+// specific) -- also used to compute Claire's own "today" for date
+// reasoning ("last week", "last Tuesday").
+function _bizTodayParts(tz) {
   var s = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   var p = s.split('-');
   return { y: parseInt(p[0], 10), m: parseInt(p[1], 10), d: parseInt(p[2], 10) };
@@ -33803,25 +34032,32 @@ function _bizWallClockToUtc(y, m, d, hh, mm, ss, tz) {
   return new Date(guess.getTime() - driftMs);
 }
 
-// Returns { fromDate, toDate, mondayYmd, sundayYmd } for the most
-// recently COMPLETED Monday–Sunday week, evaluated in tz. If today
-// itself is a Monday, "last week" is the 7 days immediately prior (this
-// week hasn't produced any payroll data yet) -- same as any other day.
-function _computeLastPayWeekRange(tz) {
-  var today = _gpsBizTodayParts(tz);
+// Returns { fromDate, toDate, startYmd, endYmd } for the most recently
+// COMPLETED pay week, evaluated in tz. `startDay` is 'sunday' or
+// 'monday' (from businesses.pay_week_start_day -- pass
+// _pentaPayWeekStartDay()'s result, don't hardcode). If today itself IS
+// the week's start day, "last week" is the 7 days immediately prior
+// (this week hasn't produced any payroll data yet) -- same as any
+// other day.
+function _computeLastPayWeekRange(tz, startDay) {
+  var startDayNum = (startDay === 'sunday') ? 0 : 1; // default/fallback: monday
+  var today = _bizTodayParts(tz);
   var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
   var weekday = new Date(todayUtcMidnight).getUTCDay(); // 0=Sun..6=Sat
-  var daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
-  var thisWeekMonday = todayUtcMidnight - daysSinceMonday * 86400000;
-  var lastWeekMonday = thisWeekMonday - 7 * 86400000;
-  var lastWeekSunday = lastWeekMonday + 6 * 86400000;
-  var mon = new Date(lastWeekMonday), sun = new Date(lastWeekSunday);
-  var fromDate = _bizWallClockToUtc(mon.getUTCFullYear(), mon.getUTCMonth() + 1, mon.getUTCDate(), 0, 0, 0, tz);
-  var toDate = _bizWallClockToUtc(sun.getUTCFullYear(), sun.getUTCMonth() + 1, sun.getUTCDate(), 23, 59, 59, tz);
+  var daysSinceWeekStart = (weekday - startDayNum + 7) % 7;
+  var thisWeekStart = todayUtcMidnight - daysSinceWeekStart * 86400000;
+  var lastWeekStart = thisWeekStart - 7 * 86400000;
+  var lastWeekEnd = lastWeekStart + 6 * 86400000;
+  var start = new Date(lastWeekStart), end = new Date(lastWeekEnd);
+  var fromDate = _bizWallClockToUtc(start.getUTCFullYear(), start.getUTCMonth() + 1, start.getUTCDate(), 0, 0, 0, tz);
+  var toDate = _bizWallClockToUtc(end.getUTCFullYear(), end.getUTCMonth() + 1, end.getUTCDate(), 23, 59, 59, tz);
   var pad2 = function (n) { return String(n).padStart(2, '0'); };
-  var mondayYmd = mon.getUTCFullYear() + '-' + pad2(mon.getUTCMonth() + 1) + '-' + pad2(mon.getUTCDate());
-  var sundayYmd = sun.getUTCFullYear() + '-' + pad2(sun.getUTCMonth() + 1) + '-' + pad2(sun.getUTCDate());
-  return { fromDate: fromDate, toDate: toDate, mondayYmd: mondayYmd, sundayYmd: sundayYmd };
+  var startYmd = start.getUTCFullYear() + '-' + pad2(start.getUTCMonth() + 1) + '-' + pad2(start.getUTCDate());
+  var endYmd = end.getUTCFullYear() + '-' + pad2(end.getUTCMonth() + 1) + '-' + pad2(end.getUTCDate());
+  return { fromDate: fromDate, toDate: toDate, startYmd: startYmd, endYmd: endYmd,
+    // Back-compat aliases for existing callers (GPS label) written
+    // when this was hardcoded Monday-Sunday.
+    mondayYmd: startYmd, sundayYmd: endYmd };
 }
 
 
@@ -33906,8 +34142,25 @@ function toggleGPSShowHidden() {
 function _syncGPSDatePickerVisibility() {
   var actWindowEl = document.getElementById('gps-activity-window');
   var picker = document.getElementById('gps-date-picker');
+  var fromEl = document.getElementById('gps-custom-from');
+  var toEl = document.getElementById('gps-custom-to');
+  var sepEl = document.getElementById('gps-custom-range-sep');
   if (!actWindowEl || !picker) return;
-  picker.style.display = actWindowEl.value === '24h' ? '' : 'none';
+  var mode = actWindowEl.value;
+  picker.style.display = mode === '24h' ? '' : 'none';
+  var showCustom = mode === 'custom' ? '' : 'none';
+  if (fromEl) fromEl.style.display = showCustom;
+  if (toEl) toEl.style.display = showCustom;
+  if (sepEl) sepEl.style.display = showCustom;
+  // Pre-fill with last week's range the first time custom mode is
+  // entered with nothing picked yet -- same convenience setGPSDateToday()
+  // gives the single-day picker, so the control isn't blank/useless on
+  // first switch.
+  if (mode === 'custom' && fromEl && toEl && !fromEl.value && !toEl.value) {
+    var _r = _computeLastPayWeekRange(_pentaBusinessTimezone(), _pentaPayWeekStartDay());
+    fromEl.value = _r.startYmd;
+    toEl.value = _r.endYmd;
+  }
 }
 
 function onGPSActivityWindowChange() {
@@ -34051,14 +34304,41 @@ async function _loadGPSDataInner() {
     var fromDate, toDate, tripLimit;
     if (actWindow === 'lastweek') {
       // "Last week" is a FIXED calendar week (the most recently completed
-      // Monday–Sunday pay week), not a rolling window ending now -- see
-      // _computeLastPayWeekRange's own comment for why "today" has to be
-      // evaluated in the business's timezone, not the viewer's.
-      var _lastWeekRange = _computeLastPayWeekRange(_pentaBusinessTimezone());
+      // pay week, Sunday- or Monday-start per businesses.pay_week_start_day),
+      // not a rolling window ending now -- see _computeLastPayWeekRange's
+      // own comment for why "today" has to be evaluated in the business's
+      // timezone, not the viewer's.
+      var _lastWeekRange = _computeLastPayWeekRange(_pentaBusinessTimezone(), _pentaPayWeekStartDay());
       fromDate = _lastWeekRange.fromDate;
       toDate = _lastWeekRange.toDate;
       window._gpsLastWeekRange = _lastWeekRange;
       tripLimit = 3000; // same span/device-count assumption as the 7d rolling tier
+    } else if (actWindow === 'custom') {
+      // Explicit "from"/"to" date range (Tom: needs an arbitrary window,
+      // not just the presets). Both boundaries are business-timezone wall
+      // clock, same as every other date-range computation in this file --
+      // NOT the viewer's browser-local midnight.
+      var _custFromEl = document.getElementById('gps-custom-from');
+      var _custToEl = document.getElementById('gps-custom-to');
+      var _custFromStr = _custFromEl && _custFromEl.value;
+      var _custToStr = _custToEl && _custToEl.value;
+      if (_custFromStr && _custToStr) {
+        var _cf = _custFromStr.split('-').map(Number);
+        var _ct = _custToStr.split('-').map(Number);
+        var _tz = _pentaBusinessTimezone();
+        fromDate = _bizWallClockToUtc(_cf[0], _cf[1], _cf[2], 0, 0, 0, _tz);
+        toDate = _bizWallClockToUtc(_ct[0], _ct[1], _ct[2], 23, 59, 59, _tz);
+        if (toDate < fromDate) { var _swapTmp = fromDate; fromDate = toDate; toDate = _swapTmp; } // forgiving of reversed inputs
+      } else {
+        // Nothing picked yet (e.g. mode just switched to custom) --
+        // fall back to the same window as the 7d rolling tier rather
+        // than firing a request with missing dates.
+        fromDate = new Date(now.getTime() - 7 * 86400000);
+        toDate = now;
+      }
+      window._gpsCustomRange = { from: _custFromStr || null, to: _custToStr || null };
+      var _custDaySpan = Math.max(1, Math.round((toDate - fromDate) / 86400000) + 1);
+      tripLimit = Math.min(10000, Math.max(500, _custDaySpan * 500));
     } else if (isRollingWindow) {
       var ROLLING_MS = { '3d': 3*86400000, '7d': 7*86400000, '30d': 30*86400000 }[actWindow] || 86400000;
       fromDate = new Date(now.getTime() - ROLLING_MS);
@@ -34389,13 +34669,19 @@ async function reverseGeocodeTrips(trips) {
 function _gpsActivityWindowLabel() {
   var mode = window._gpsActivityWindowMode || '24h';
   if (mode === 'lastweek' && window._gpsLastWeekRange) {
-    // Show the actual Mon–Sun dates, not a generic "Last Week's" --
+    // Show the actual pay-week dates, not a generic "Last Week's" --
     // this filter exists specifically so payroll review shows exactly
-    // which pay week is on screen.
+    // which pay week is on screen (the week's start day itself is a
+    // per-business setting, see _computeLastPayWeekRange).
     var r = window._gpsLastWeekRange;
-    var mon = new Date(r.mondayYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    var sun = new Date(r.sundayYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return mon + '–' + sun + "'s";
+    var start = new Date(r.startYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    var end = new Date(r.endYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return start + '–' + end + "'s";
+  }
+  if (mode === 'custom' && window._gpsCustomRange && window._gpsCustomRange.from && window._gpsCustomRange.to) {
+    var cf = new Date(window._gpsCustomRange.from + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    var ct = new Date(window._gpsCustomRange.to + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return cf + '–' + ct + "'s";
   }
   return { '24h': "Today's", '3d': "Last 3 Days'", '7d': "Last 7 Days'", '30d': "Last 30 Days'" }[mode] || "Today's";
 }
@@ -39110,6 +39396,18 @@ function _pentaBusinessTimezone() {
   var fromTenant = (window.PentaTenant && window.PentaTenant.timezone)
                    ? window.PentaTenant.timezone() : '';
   return fromTenant || _pentaCachedBusinessTimezone || 'America/New_York';
+}
+
+// Sync getter for the pay-week boundary setting (businesses.
+// pay_week_start_day, migration 111) -- 'sunday' or 'monday'. Same
+// resolution shape as _pentaBusinessTimezone() (PentaTenant, populated
+// at boot). Falls back to 'monday' -- matches the column's own DB
+// DEFAULT, so an unresolved fetch still produces Manna's real setting,
+// not an arbitrary guess. Never hardcode Mon-Sun/Sun-Sat directly in a
+// feature; always read this so a future tenant's own convention works.
+function _pentaPayWeekStartDay() {
+  var v = (window.PentaTenant && window.PentaTenant.payWeekStartDay) ? window.PentaTenant.payWeekStartDay() : '';
+  return (v === 'sunday' || v === 'monday') ? v : 'monday';
 }
 
 (function _pentaWireBusinessTimezone(){
@@ -50089,6 +50387,7 @@ function openAdminScreen() {
   try { renderOfficesStatus(); } catch(e){}
   try { _loadClientHealthConfig(); } catch(e){}
   try { _loadGpsVerificationStartDate(); } catch(e){}
+  try { _loadPayWeekStartDay(); } catch(e){}
 }
 
 // ─── Client Health config (businesses.business_settings->'client_health') ───
@@ -50190,6 +50489,47 @@ async function saveGpsVerificationStartDate() {
 }
 window._loadGpsVerificationStartDate = _loadGpsVerificationStartDate;
 window.saveGpsVerificationStartDate = saveGpsVerificationStartDate;
+
+// Pay Week Settings -- businesses.pay_week_start_day (migration 111).
+// Same read/write shape as GPS Verification start date just above.
+async function _loadPayWeekStartDay() {
+  var sel = document.getElementById('admin-pay-week-start');
+  var status = document.getElementById('admin-pay-week-status');
+  if (!sel) return;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) return;
+  try {
+    var res = await sb.from('businesses').select('pay_week_start_day').eq('id', bid).single();
+    if (res.error) throw res.error;
+    var val = (res.data && res.data.pay_week_start_day) || 'monday';
+    sel.value = val;
+    if (status) status.textContent = 'Currently ' + (val === 'sunday' ? 'Sunday–Saturday' : 'Monday–Sunday') + '.';
+  } catch (e) {
+    if (status) status.textContent = 'Could not load: ' + (e.message || e);
+  }
+}
+
+async function savePayWeekStartDay() {
+  var sel = document.getElementById('admin-pay-week-start');
+  var status = document.getElementById('admin-pay-week-status');
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid || !sel) return;
+  var val = sel.value === 'sunday' ? 'sunday' : 'monday';
+  try {
+    var res = await sb.from('businesses').update({ pay_week_start_day: val }).eq('id', bid);
+    if (res.error) throw res.error;
+    // Update the in-memory cache too so "last week" reflects the new
+    // setting immediately, without needing a full page reload.
+    if (window.PentaTenant && window.PentaTenant._setPayWeekStartDay) window.PentaTenant._setPayWeekStartDay(val);
+    if (status) status.textContent = 'Saved — ' + (val === 'sunday' ? 'Sunday–Saturday' : 'Monday–Sunday') + '. No data changes needed; future "last week" references use this immediately.';
+  } catch (e) {
+    if (status) status.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+window._loadPayWeekStartDay = _loadPayWeekStartDay;
+window.savePayWeekStartDay = savePayWeekStartDay;
 
 // v11.0.4 (Issue A): status line + list/edit modal for the tenant's
 // office locations. Backed by business_offices via PentaOffices.
@@ -53990,6 +54330,24 @@ function _p3dPage(dir) {
         <button onclick="saveGpsVerificationStartDate()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:9px 14px;border-radius:8px;cursor:pointer">Save</button>
       </div>
       <div id="admin-gps-verify-status" style="padding:8px 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- Pay Week Settings -- businesses.pay_week_start_day (migration 111).
+         Drives "last week" everywhere it's used: the GPS filter's Last
+         week option and Claire's own date resolution ("last week",
+         "last Tuesday"). Manna's is Monday-Sunday; kept editable per
+         business since a future tenant may run Sunday-Saturday. -->
+    <div class="admin-sec" id="admin-pay-week-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Pay Week Settings</div>
+      <div style="padding:0 14px 8px;font-size:12px;color:rgba(255,255,255,0.55)">Which day starts the pay week -- controls what "last week" means on the GPS Live tab filter and when Claire resolves dates like "last week" or "last Tuesday".</div>
+      <div class="admin-row" style="gap:8px;align-items:center">
+        <select id="admin-pay-week-start" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;padding:9px 10px;border-radius:8px">
+          <option value="monday">Monday – Sunday</option>
+          <option value="sunday">Sunday – Saturday</option>
+        </select>
+        <button onclick="savePayWeekStartDay()" style="background:rgba(108,143,255,0.18);border:1px solid rgba(108,143,255,0.45);color:#cbd6ff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:9px 14px;border-radius:8px;cursor:pointer">Save</button>
+      </div>
+      <div id="admin-pay-week-status" style="padding:8px 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- Phase 3C — Client Data Sync. Manager-gated; hidden when admin_phase3c=false.

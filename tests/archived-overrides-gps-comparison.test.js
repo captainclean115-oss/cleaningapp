@@ -43,6 +43,10 @@ function extract(startMarker, endMarker) {
 // start/end, lunch detection -- verbatim, same functions _loadWeekHoursInner
 // itself calls.
 const algoSrc = extract('function _findTrueDepotDepartureTrip(', '\nasync function loadWeekHours()');
+// Real business-timezone wall-clock helper -- _computeGpsHoursForDay's
+// own day-boundary computation depends on this now (pure logic, no
+// environment dependency beyond Intl, so extracted rather than mocked).
+const bizWallClockSrc = extract('function _bizWallClockToUtc(', '\n\n// Returns { fromDate, toDate,');
 // Real orchestration under test.
 const archiveSrc = extract('function _readArchivedEmpHrsEntries() {', '\nasync function showArchivedOverridesComparison()');
 
@@ -51,6 +55,7 @@ function buildSandbox(opts) {
   const calls = [];
   const sandbox = {
     console: console,
+    Intl: Intl,
     window: { PentaLunchFlags: null },
     jobs: opts.jobs || [],
     dateKey: function (d) {
@@ -62,6 +67,7 @@ function buildSandbox(opts) {
     isDepotAddress: function (addr) { return addr === 'DEPOT'; },
     isDepotPoint: function () { return false; },
     matchStopToClientGeo: function (lat, lng, addr) { return addr === 'CLIENT' ? { id: 'c1', scheduled: true } : null; },
+    _pentaBusinessTimezone: function () { return 'America/New_York'; },
     _geotabCallRetryOn429: function (method, params) {
       calls.push(['_geotabCallRetryOn429', method, params]);
       if (params.typeName === 'Device') return Promise.resolve(opts.devices || [{ id: 'dev-1', name: 'B1 van' }]);
@@ -78,6 +84,7 @@ function buildSandbox(opts) {
   };
   vm.createContext(sandbox);
   vm.runInContext(algoSrc, sandbox);
+  vm.runInContext(bizWallClockSrc, sandbox);
   vm.runInContext(archiveSrc, sandbox);
   return { sandbox, calls };
 }
@@ -163,6 +170,28 @@ async function main() {
     check('a genuine unmatched short stop is detected as lunch', r.lunchMin, 30);
     // raw span 13:15Z-21:22Z = 8h07m, minus 30min lunch = 7.617h
     check('lunch minutes are deducted from the final hours', Math.round(r.hours * 100) / 100, 7.62);
+  }
+
+  // ---- Regression: a stray trip from the PRIOR calendar day, which
+  // Geotab's own API can return despite it falling outside the
+  // requested fromDate/toDate (confirmed live during the Maria Vieira
+  // Sept 1 diagnosis -- a zero-duration, garbage-coordinate trip from
+  // Aug 31 came back for a Sept 1-only query), must be filtered out by
+  // t.start rather than becoming trueStart and producing a nonsensical
+  // multi-day span. ----
+  {
+    const trips = [
+      // Stray trip from the day BEFORE 2026-08-03 -- must be excluded.
+      { start: '2026-08-02T14:43:40.165Z', stop: '2026-08-02T14:43:40.165Z', stopAddress: 'DEPOT', stopPoint: { x: 1, y: 1 } },
+      { start: '2026-08-03T13:15:00.000Z', stop: '2026-08-03T13:15:00.000Z', stopAddress: 'DEPOT', startAddress: 'DEPOT' },
+      { start: '2026-08-03T13:15:00.000Z', stop: '2026-08-03T17:00:00.000Z', stopAddress: 'CLIENT' },
+      { start: '2026-08-03T17:30:00.000Z', stop: '2026-08-03T21:22:00.000Z', stopAddress: 'DEPOT' },
+    ];
+    const { sandbox } = buildSandbox({ trips: trips });
+    const r = await sandbox._computeGpsHoursForDay('B1', '2026-08-03');
+    check('a stray prior-day trip does not corrupt the computed span', r.available, true);
+    check('trueStart is NOT the stray Aug 2 trip', r.start.toISOString(), '2026-08-03T13:15:00.000Z');
+    check('hours reflect only the real Aug 3 trips (~8h07m, no lunch)', Math.round(r.hours * 100) / 100, 8.12);
   }
 
   // ---- a span that fails the sanity check (>15h) is reported, not
