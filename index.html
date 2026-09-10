@@ -8988,6 +8988,11 @@ window.PentaAssignments = (function() {
     forDate: forDate, forEmployee: forEmployee, getEmployeeTeam: getEmployeeTeam,
     assign: assign, unassign: unassign, unassignFutureForEmployee: unassignFutureForEmployee,
     onChange: onChange, _hydrate: _hydrate, _setupRealtime: _setupRealtime,
+    // Exposed so other modules needing the same legacy_roster_id/uuid
+    // resolution (e.g. PentaHourOverrides) reuse this one retry-aware
+    // implementation instead of a second copy that can silently drift
+    // from it (see feedback_mirrored_algorithm_copies_diverge).
+    resolveEmployeeId: _resolveEmployeeId,
   };
 })();
 
@@ -9151,6 +9156,181 @@ window.PentaLunchFlags = (function() {
     isReady: isReady, ready: ready, onChange: onChange,
     getOverride: getOverride, listForTeamDate: listForTeamDate,
     setOverride: setOverride, clearOverride: clearOverride
+  };
+})();
+
+// =====================================================================
+// PentaHourOverrides — manual hour-correction overrides (migration 110).
+//
+// getEmpHours/saveEmpHours (below, in the hours-report section) used to
+// write straight to localStorage (empHrs_{empId}_{date}) with no server
+// side at all -- confirmed via a full-file grep, there was never a
+// Supabase write anywhere in that path. These are supposed to be
+// authoritative payroll corrections, not a device cache: being
+// localStorage-only meant a correction made on one browser/device was
+// invisible everywhere else (a manager's own phone vs. desktop, the
+// employee's own portal login on their own device), permanently lost if
+// localStorage was ever cleared, and the "hitting quota limits" report
+// was a direct symptom of piling authoritative business data into a
+// per-origin storage quota never meant to hold it.
+//
+// Modeled directly on PentaLunchFlags just above (same hydrate/cache/
+// notify shape, same reset-in-.then() fix for the async-bail race
+// documented on that module's own _hydrate()), since this is the same
+// class of small manager-correction table.
+window.PentaHourOverrides = (function() {
+  var _cache = [];
+  var _byKey = {};
+  var _ready = false;
+  var _hydrating = null;
+  var _listeners = [];
+
+  function _key(empUuid, dateStr) { return empUuid + '|' + dateStr; }
+
+  function _rebuildIndex() {
+    _byKey = {};
+    _cache.forEach(function(r) { _byKey[_key(r.employee_id, r.date)] = r; });
+  }
+
+  function _notify() { _listeners.forEach(function(fn) { try { fn(); } catch (e) { console.warn('[PentaHourOverrides] listener threw', e); } }); }
+
+  function _businessId() {
+    return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  }
+  function _client() {
+    return window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  }
+  function _isUuid(s) { return typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s); }
+
+  // Sync best-effort resolve for read paths (render loops can't await).
+  // PentaEmployees is expected to already be hydrated by the time any of
+  // these render functions run -- the same assumption getEmployeeTeam/
+  // getUnifiedRoster() already make throughout this file.
+  function _resolveEmpUuidSync(empId) {
+    if (!empId) return null;
+    if (_isUuid(empId)) return empId;
+    if (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId) {
+      var row = window.PentaEmployees.getByLegacyRosterId(empId);
+      if (row && row.id) return row.id;
+    }
+    return null;
+  }
+  // Full async resolve (with hydrate-wait retry) for write paths -- reuses
+  // PentaAssignments' own resolver instead of a second copy of its retry
+  // logic (see feedback_mirrored_algorithm_copies_diverge).
+  async function _resolveEmpUuidAsync(empId) {
+    if (!empId) return null;
+    if (_isUuid(empId)) return empId;
+    if (window.PentaAssignments && window.PentaAssignments.resolveEmployeeId) {
+      return await window.PentaAssignments.resolveEmployeeId(empId);
+    }
+    return _resolveEmpUuidSync(empId);
+  }
+  async function _currentUserId() {
+    try {
+      var ses = window.PentaAuth && window.PentaAuth.session;
+      if (ses && ses.user && ses.user.id) return ses.user.id;
+      var sb = _client();
+      if (!sb) return null;
+      var u = await sb.auth.getUser();
+      return (u && u.data && u.data.user && u.data.user.id) || null;
+    } catch (e) { return null; }
+  }
+
+  async function _hydrate() {
+    if (_hydrating) return _hydrating;
+    // Same async-bail race PentaLunchFlags' own comment documents: an
+    // async function body runs synchronously up to its first await, so
+    // resetting `_hydrating = null` on a no-await bail path gets
+    // overwritten the instant the outer assignment below completes.
+    // Reset in `.then()` instead, guaranteed to run as a later microtask.
+    var attempt = (async function() {
+      var sb = _client(), bid = _businessId();
+      if (!sb || !bid) { return false; }
+      try {
+        var res = await sb.from('manual_hour_overrides')
+          .select('id, employee_id, date, start_time, end_time, lunch_minutes, hours, team, created_by, created_at, updated_by, updated_at')
+          .eq('business_id', bid);
+        if (res.error) { console.warn('[PentaHourOverrides] hydrate query error', res.error); }
+        else if (Array.isArray(res.data)) { _cache = res.data; _rebuildIndex(); }
+      } catch (e) { console.warn('[PentaHourOverrides] hydrate threw', e); }
+      _ready = true;
+      _notify();
+      return true;
+    })();
+    _hydrating = attempt.then(function(ok) {
+      if (!ok) _hydrating = null;
+      return ok;
+    });
+    return _hydrating;
+  }
+
+  function isReady() { return _ready; }
+  function ready() { return _hydrate(); }
+  function onChange(fn) { _listeners.push(fn); }
+  // Raw rows (employee_id is the uuid, not the mixed legacy shape) --
+  // used by the "Audit Hour Overrides" tool to list every override for
+  // the business, not just look one up by a known employee+date.
+  function listAll() { return _cache.slice(); }
+
+  // Sync getter -- empId may be a legacy_roster_id or uuid (mixed shape,
+  // matching every other empHrs_* reader/writer's convention). Returns
+  // the same { start, end, lunch, hours, team } shape the old
+  // localStorage-backed getEmpHours() returned, so every render call
+  // site (renderHoursTable, showEmpDayDetail, the portal) keeps working
+  // unchanged.
+  function getOverride(empId, dateStr) {
+    var uuid = _resolveEmpUuidSync(empId);
+    if (!uuid) return null;
+    var row = _byKey[_key(uuid, dateStr)];
+    if (!row) return null;
+    return { start: row.start_time, end: row.end_time, lunch: row.lunch_minutes, hours: row.hours, team: row.team };
+  }
+
+  async function setOverride(empId, dateStr, data) {
+    var sb = _client(), bid = _businessId();
+    if (!sb || !bid) throw new Error('PentaHourOverrides.setOverride: not connected');
+    var uuid = await _resolveEmpUuidAsync(empId);
+    if (!uuid) throw new Error('PentaHourOverrides.setOverride: could not resolve employee id ' + JSON.stringify(empId));
+    var actorId = await _currentUserId();
+    var row = {
+      business_id: bid, employee_id: uuid, date: dateStr,
+      start_time: (data && data.start) || null,
+      end_time: (data && data.end) || null,
+      lunch_minutes: (data && data.lunch != null) ? data.lunch : null,
+      hours: (data && data.hours != null) ? data.hours : null,
+      team: (data && data.team) || null,
+      created_by: actorId, updated_by: actorId, updated_at: new Date().toISOString()
+    };
+    var res = await sb.from('manual_hour_overrides')
+      .upsert(row, { onConflict: 'business_id,employee_id,date' })
+      .select().single();
+    if (res.error) throw res.error;
+    _cache = _cache.filter(function(r) { return !(r.employee_id === uuid && r.date === dateStr); });
+    _cache.push(res.data);
+    _rebuildIndex();
+    _notify();
+    return res.data;
+  }
+
+  async function clearOverride(empId, dateStr) {
+    var sb = _client(), bid = _businessId();
+    if (!sb || !bid) throw new Error('PentaHourOverrides.clearOverride: not connected');
+    var uuid = await _resolveEmpUuidAsync(empId);
+    if (!uuid) return; // nothing resolvable -- nothing to clear
+    var res = await sb.from('manual_hour_overrides').delete()
+      .eq('business_id', bid).eq('employee_id', uuid).eq('date', dateStr);
+    if (res.error) throw res.error;
+    _cache = _cache.filter(function(r) { return !(r.employee_id === uuid && r.date === dateStr); });
+    _rebuildIndex();
+    _notify();
+  }
+
+  _hydrate();
+
+  return {
+    isReady: isReady, ready: ready, onChange: onChange, listAll: listAll,
+    getOverride: getOverride, setOverride: setOverride, clearOverride: clearOverride
   };
 })();
 
@@ -25165,7 +25345,16 @@ async function _executeClaireToolCallInner(toolCall, message) {
     if (existing.start && existing.end) {
       existing.hours = calcHoursFromTimes(existing.start, existing.end, existing.lunch || 0);
     }
-    saveEmpHours(ehKeyId, ehDate, existing);
+    // saveEmpHours is now a Supabase write (migration 110) -- must be
+    // awaited and its failure reported honestly, not claimed as success.
+    try {
+      await saveEmpHours(ehKeyId, ehDate, existing);
+    } catch (ehErr) {
+      console.error('[Claire] edit_employee_hours: save failed', ehErr);
+      _claireLastToolResult = 'Could not save hours for ' + ehEmp.name + ': ' + (ehErr && ehErr.message || 'unknown error') + '.';
+      claireReply(message || ('Could not save the hours change for ' + ehEmp.name + '.'));
+      return;
+    }
     // PR #134 -- same reasoning as saveEmpDayHours: a Claire-written
     // override wasn't visible in the manager's Hours tab OR the
     // employee portal until an unrelated later loadWeekHours() refresh.
@@ -29826,6 +30015,14 @@ async function _loadWeekHoursInner() {
     try { await window.PentaLunchFlags.ready(); } catch (e) { console.warn('[hours] PentaLunchFlags ready failed', e); }
   }
 
+  // Manual hour overrides (empHrs_* -- now Supabase-backed via
+  // PentaHourOverrides, see that module's own comment) must be hydrated
+  // before getEmpHours() is read below and inside renderHoursTable --
+  // same reasoning as the PentaLunchFlags.ready() call just above.
+  if (window.PentaHourOverrides && typeof window.PentaHourOverrides.ready === 'function') {
+    try { await window.PentaHourOverrides.ready(); } catch (e) { console.warn('[hours] PentaHourOverrides ready failed', e); }
+  }
+
   // PR #128 — same race renderTeamManager already fixed once (see that
   // function's comment): getEmployeeTeam reads the module-level
   // dailyAssignments object, which only picks up real Supabase
@@ -30255,17 +30452,26 @@ async function debugTrips() {
 }
 
 // ── PER-EMPLOYEE HOUR OVERRIDES ──
-// Key format: empHrs_{empId}_{YYYY-MM-DD}  Value: { start: "HH:MM", end: "HH:MM", lunch: minutes, hours: number }
-function getEmpHourKey(empId, date) {
-  var d = typeof date === 'string' ? date : dateKey(date);
-  return 'empHrs_' + empId + '_' + d;
-}
+// Migration 110 / PentaHourOverrides (above, near PentaLunchFlags) --
+// these used to read/write localStorage directly (empHrs_{empId}_{date}),
+// with no server-side persistence at all. Now thin wrappers so every
+// existing call site (renderHoursTable, showEmpDayDetail, Claire's
+// edit_employee_hours tool, the portal) keeps working unchanged: reads
+// stay synchronous (PentaHourOverrides.getOverride reads its own
+// already-hydrated in-memory cache), writes are now async and MUST be
+// awaited by callers -- an unhandled rejection here means the
+// correction was never actually persisted.
+function _dateKeyStr(date) { return typeof date === 'string' ? date : dateKey(date); }
 function getEmpHours(empId, date) {
-  var stored = localStorage.getItem(getEmpHourKey(empId, date));
-  return stored ? JSON.parse(stored) : null;
+  return window.PentaHourOverrides ? window.PentaHourOverrides.getOverride(empId, _dateKeyStr(date)) : null;
 }
-function saveEmpHours(empId, date, data) {
-  localStorage.setItem(getEmpHourKey(empId, date), JSON.stringify(data));
+async function saveEmpHours(empId, date, data) {
+  if (!window.PentaHourOverrides) throw new Error('PentaHourOverrides not loaded');
+  return window.PentaHourOverrides.setOverride(empId, _dateKeyStr(date), data);
+}
+async function clearEmpHours(empId, date) {
+  if (!window.PentaHourOverrides) throw new Error('PentaHourOverrides not loaded');
+  return window.PentaHourOverrides.clearOverride(empId, _dateKeyStr(date));
 }
 
 // PR #119's cleanup (below, now dead) used each employee's DB uuid as
@@ -30329,37 +30535,29 @@ function saveEmpHours(empId, date, data) {
 })();
 
 // PR #119 -- diagnostic sweep, callable from the browser console
-// (`_hrsAuditOverrides()`), since empHrs_* overrides live in localStorage
-// only and can't be enumerated from outside a real browser session.
-// Lists every currently-stored override with the employee's name
-// resolved, so a human can eyeball which ones look wrong without
-// guessing at raw employee ids and dates.
+// (`_hrsAuditOverrides()`). Migration 110 / PentaHourOverrides moved
+// these off localStorage onto Supabase, so this now lists whatever
+// PentaHourOverrides has hydrated (the whole business's overrides, not
+// just whatever happened to accumulate on this one device) -- resolves
+// each row's uuid employee_id back to a display name via
+// PentaEmployees.getById (PR #162).
 function _hrsAuditOverrides() {
   var rows = [];
   try {
-    var roster = getUnifiedRoster();
-    for (var i = 0; i < localStorage.length; i++) {
-      var key = localStorage.key(i);
-      if (!key || key.indexOf('empHrs_') !== 0) continue;
-      var rest = key.slice('empHrs_'.length);
-      var lastUnderscore = rest.lastIndexOf('_');
-      if (lastUnderscore < 0) continue;
-      var empId = rest.slice(0, lastUnderscore);
-      var date = rest.slice(lastUnderscore + 1);
-      var emp = roster.find(function (e) { return e.id === empId; });
-      var data = null;
-      try { data = JSON.parse(localStorage.getItem(key)); } catch (e2) {}
+    var all = (window.PentaHourOverrides && window.PentaHourOverrides.listAll) ? window.PentaHourOverrides.listAll() : [];
+    all.forEach(function (r) {
+      var emp = (window.PentaEmployees && window.PentaEmployees.getById) ? window.PentaEmployees.getById(r.employee_id) : null;
       rows.push({
-        employee: emp ? emp.name : '(unknown emp id ' + empId + ')',
-        empId: empId,
-        date: date,
-        start: data && data.start,
-        end: data && data.end,
-        lunch: data && data.lunch,
-        hours: data && data.hours,
-        team: data && data.team
+        employee: emp ? emp.name : '(unknown employee ' + r.employee_id + ')',
+        empId: r.employee_id,
+        date: r.date,
+        start: r.start_time,
+        end: r.end_time,
+        lunch: r.lunch_minutes,
+        hours: r.hours,
+        team: r.team
       });
-    }
+    });
   } catch (e) { console.warn('[hours] audit sweep failed', e); }
   rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
   if (console.table) console.table(rows); else console.log(rows);
@@ -30396,11 +30594,11 @@ function _renderHoursOverrideAuditBody() {
   if (!body) return;
   var rows = _hrsAuditOverrides();
   if (rows.length === 0) {
-    body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No manual hour overrides currently stored on this device.</div>';
+    body.innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No manual hour overrides currently active.</div>';
     return;
   }
   body.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">'
-    + rows.length + ' override' + (rows.length === 1 ? '' : 's') + ' stored on this device. Compare each against the day cell before clearing -- "Clear" deletes it and re-pulls live GPS immediately, same as tapping "Reset to GPS data" in that employee\'s day view.</div>'
+    + rows.length + ' active override' + (rows.length === 1 ? '' : 's') + '. Compare each against the day cell before clearing -- "Clear" deletes it and re-pulls live GPS immediately, same as tapping "Reset to GPS data" in that employee\'s day view.</div>'
     + rows.map(function (r) {
       var timeStr = (r.start || r.end) ? _audEsc((r.start || '—') + ' – ' + (r.end || '—')) : '<span style="color:var(--muted)">no start/end</span>';
       var hoursStr = (r.hours != null) ? Number(r.hours).toFixed(1) + 'h' : '';
@@ -31091,7 +31289,11 @@ async function saveEmpDayHours(empId, empName, dk) {
     var hrs = calcHoursFromTimes(s, e, l);
     var tasks = getEmpTasks(empId, dk);
     var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
-    saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
+    // saveEmpHours is now a Supabase write (migration 110) -- MUST be
+    // awaited so a failure (network, RLS) lands in this catch instead of
+    // becoming an unhandled rejection while the rest of this function
+    // (and the caller) proceeds as if it had succeeded.
+    await saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
   } catch (err) {
     console.error('[hours] saveEmpDayHours: save step failed', err);
     alert('Could not save the hours: ' + (err && err.message || 'unknown error') + '. Nothing was changed.');
@@ -31123,7 +31325,18 @@ async function saveEmpDayHours(empId, empName, dk) {
 }
 
 async function clearEmpDayHours(empId, empName, dk) {
-  localStorage.removeItem(getEmpHourKey(empId, dk));
+  // clearEmpHours is now a Supabase delete (migration 110) -- unlike the
+  // old plain localStorage.removeItem() (which could never fail), this
+  // can throw (network, RLS), so it needs the same isolated try/catch
+  // saveEmpDayHours above uses: an accurate "could not clear" message
+  // when nothing changed, distinct from a failure in the refresh step.
+  try {
+    await clearEmpHours(empId, dk);
+  } catch (err) {
+    console.error('[hours] clearEmpDayHours: clear step failed', err);
+    alert('Could not reset the hours: ' + (err && err.message || 'unknown error') + '. Nothing was changed.');
+    return;
+  }
   var overlayEl = document.getElementById('emp-hours-overlay');
   if (overlayEl) overlayEl.remove();
   // PR #119 -- audit parity with the manual-save path above, plus a
@@ -31134,8 +31347,7 @@ async function clearEmpDayHours(empId, empName, dk) {
   // innerHTML assignment at the very end, so a throw ANYWHERE in that
   // pass (not necessarily on this employee's own row) silently aborted
   // the whole re-render and left the stale pre-reset numbers on screen
-  // even though the localStorage override really was gone underneath
-  // (confirmed via isolated test: the removeItem itself always works).
+  // even though the override really was gone underneath.
   // Re-running the full loadWeekHours() pass instead of a bare re-render
   // (a) recomputes weekHours from live GPS and calls
   // _writeWeekHoursCache() again, so a reset can no longer leave the
