@@ -26787,6 +26787,22 @@ async function setTeamDeviceAssignment(team, dateStr) {
 // could silently diverge from it again (same remediation already
 // applied to promptDefaultTeam -> _setEmployeeDefaultTeam, PR #74).
 function quickAssign(empId, team, dateStr) {
+  // Anyone with an active Day-Off status shows up in this same
+  // "Unassigned" row (getEmployeeTeam returns null for OFF) right next
+  // to these one-tap team pills. assignEmployee/assign() unconditionally
+  // soft-deletes any existing row once the team differs, so a single
+  // stray tap here silently erases e.g. a just-set Vacation status with
+  // no trace other than the audit log. Confirm first. (Root cause of
+  // "vacation for Aug 31 doesn't render" -- it rendered fine, it was
+  // overwritten by a later quick-assign tap on the same row.)
+  var _existingOff = getEmployeeDayOffInfo(empId, dateStr);
+  if (_existingOff) {
+    var _offLbl = (_existingOff.status_type && DAY_OFF_CATEGORY_LABELS[_existingOff.status_type]) || 'Day Off';
+    var _emp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+    if (!confirm((_emp ? _emp.name : 'This employee') + ' is marked "' + _offLbl + '" for this day. Assigning ' + team + ' will remove that status. Continue?')) {
+      return;
+    }
+  }
   var oldTeam = getEmployeeTeam(empId, dateStr);
   var writePromise = assignEmployee(empId, team, dateStr);
 
@@ -27603,6 +27619,24 @@ function confirmTeamAssign(employeeId, dateStr, team, overlay, extra) {
     console.warn('[confirmTeamAssign] employee not found for id', employeeId, '-- closing modal without saving');
     try { overlay.remove(); } catch (e) {}
     return;
+  }
+
+  // Picking a plain team over an active Day-Off status silently
+  // discards it -- assignEmployee/assign() soft-deletes any existing
+  // row once the team differs, with no distinction for "the existing
+  // row was OFF." Confirm first so a tap on a team button (the header
+  // above already shows "Currently: Day Off -- Vacation", but it's easy
+  // to miss) can't erase it unnoticed. Only applies when picking an
+  // actual team here -- picking a Day Off category itself is the
+  // intentional override case and needs no extra confirmation.
+  if (team !== 'OFF') {
+    var _existingOff = getEmployeeDayOffInfo(employeeId, dateStr);
+    if (_existingOff) {
+      var _offLbl = (_existingOff.status_type && DAY_OFF_CATEGORY_LABELS[_existingOff.status_type]) || 'Day Off';
+      if (!confirm(emp.name + ' is marked "' + _offLbl + '" for this day. Assigning ' + team + ' will remove that status. Continue?')) {
+        return;
+      }
+    }
   }
 
   // Track old team so we can recalc its schedule

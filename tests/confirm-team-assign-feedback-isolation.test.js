@@ -84,6 +84,7 @@ function buildConfirmTeamAssignSandbox(opts) {
     DAY_OFF_CATEGORY_LABELS: { vacation: 'Vacation' },
     getUnifiedRoster: function () { return [{ id: 'emp1', name: 'Keyshla' }]; },
     getEmployeeTeam: function () { return 'B1'; },
+    getEmployeeDayOffInfo: function () { return null; },
     assignEmployee: function () { return Promise.resolve({}); },
     logPendingUpdate: function () {
       calls.logPendingUpdateCalled = true;
