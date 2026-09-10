@@ -5380,6 +5380,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:13px;padding:5px 8px;border-radius:8px;outline:none;cursor:pointer">
           <option value="24h">Last 24 hours</option>
           <option value="3d">Last 3 days</option>
+          <option value="lastweek">Last week (Mon–Sun)</option>
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
         </select>
@@ -33760,6 +33761,69 @@ function setGPSDateToday() {
   picker.value = y + '-' + m + '-' + d;
 }
 
+// "Last week" GPS filter (Tom, for payroll review): the most recently
+// COMPLETED Monday–Sunday pay week, not a rolling 7-day window (which
+// spans across pay-period boundaries and isn't useful for weekly
+// payroll). "Today" for determining which week just ended must be
+// evaluated in the BUSINESS's timezone, not the viewer's browser
+// timezone -- this codebase has been bitten by exactly this class of
+// bug before (GPS start/end times drifting hours off when viewer and
+// business timezones differ). Confirmed no existing pay_period_start_day
+// setting anywhere in the schema; Manna's pay week is Monday–Sunday,
+// confirmed directly with Tom.
+//
+// Returns { y, m, d } (m is 1-indexed) for "today" as observed in tz,
+// via Intl rather than any Date-object timezone conversion (which
+// JS has no native support for) -- this only extracts calendar
+// components, so no offset math is needed here.
+function _gpsBizTodayParts(tz) {
+  var s = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  var p = s.split('-');
+  return { y: parseInt(p[0], 10), m: parseInt(p[1], 10), d: parseInt(p[2], 10) };
+}
+
+// Constructs the actual UTC instant for HH:MM:SS on a given calendar
+// date AS OBSERVED in tz (e.g. "2026-08-24 00:00:00 America/New_York"),
+// since JS's Date has no native "construct in this timezone" -- the
+// standard guess-and-correct technique: build a Date assuming the
+// components were UTC, format that guess back through tz, and shift by
+// however far off the guess turned out to be.
+function _bizWallClockToUtc(y, m, d, hh, mm, ss, tz) {
+  var guess = new Date(Date.UTC(y, m - 1, d, hh, mm, ss));
+  var fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  var parts = fmt.formatToParts(guess).reduce(function (acc, part) { acc[part.type] = part.value; return acc; }, {});
+  var guessedHour = parseInt(parts.hour, 10);
+  if (guessedHour === 24) guessedHour = 0; // some locales render midnight as "24"
+  var asIfUtc = Date.UTC(parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10), guessedHour, parseInt(parts.minute, 10), parseInt(parts.second, 10));
+  var driftMs = asIfUtc - guess.getTime();
+  return new Date(guess.getTime() - driftMs);
+}
+
+// Returns { fromDate, toDate, mondayYmd, sundayYmd } for the most
+// recently COMPLETED Monday–Sunday week, evaluated in tz. If today
+// itself is a Monday, "last week" is the 7 days immediately prior (this
+// week hasn't produced any payroll data yet) -- same as any other day.
+function _computeLastPayWeekRange(tz) {
+  var today = _gpsBizTodayParts(tz);
+  var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
+  var weekday = new Date(todayUtcMidnight).getUTCDay(); // 0=Sun..6=Sat
+  var daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  var thisWeekMonday = todayUtcMidnight - daysSinceMonday * 86400000;
+  var lastWeekMonday = thisWeekMonday - 7 * 86400000;
+  var lastWeekSunday = lastWeekMonday + 6 * 86400000;
+  var mon = new Date(lastWeekMonday), sun = new Date(lastWeekSunday);
+  var fromDate = _bizWallClockToUtc(mon.getUTCFullYear(), mon.getUTCMonth() + 1, mon.getUTCDate(), 0, 0, 0, tz);
+  var toDate = _bizWallClockToUtc(sun.getUTCFullYear(), sun.getUTCMonth() + 1, sun.getUTCDate(), 23, 59, 59, tz);
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  var mondayYmd = mon.getUTCFullYear() + '-' + pad2(mon.getUTCMonth() + 1) + '-' + pad2(mon.getUTCDate());
+  var sundayYmd = sun.getUTCFullYear() + '-' + pad2(sun.getUTCMonth() + 1) + '-' + pad2(sun.getUTCDate());
+  return { fromDate: fromDate, toDate: toDate, mondayYmd: mondayYmd, sundayYmd: sundayYmd };
+}
+
 
 // ─────────────────────────────────────────
 // MYGEOTAB GPS INTEGRATION
@@ -33985,7 +34049,17 @@ async function _loadGPSDataInner() {
     var actWindow = (actWindowEl && actWindowEl.value) || '24h';
     var isRollingWindow = actWindow !== '24h';
     var fromDate, toDate, tripLimit;
-    if (isRollingWindow) {
+    if (actWindow === 'lastweek') {
+      // "Last week" is a FIXED calendar week (the most recently completed
+      // Monday–Sunday pay week), not a rolling window ending now -- see
+      // _computeLastPayWeekRange's own comment for why "today" has to be
+      // evaluated in the business's timezone, not the viewer's.
+      var _lastWeekRange = _computeLastPayWeekRange(_pentaBusinessTimezone());
+      fromDate = _lastWeekRange.fromDate;
+      toDate = _lastWeekRange.toDate;
+      window._gpsLastWeekRange = _lastWeekRange;
+      tripLimit = 3000; // same span/device-count assumption as the 7d rolling tier
+    } else if (isRollingWindow) {
       var ROLLING_MS = { '3d': 3*86400000, '7d': 7*86400000, '30d': 30*86400000 }[actWindow] || 86400000;
       fromDate = new Date(now.getTime() - ROLLING_MS);
       toDate = now;
@@ -34314,6 +34388,15 @@ async function reverseGeocodeTrips(trips) {
 // stops can now span multiple calendar days.
 function _gpsActivityWindowLabel() {
   var mode = window._gpsActivityWindowMode || '24h';
+  if (mode === 'lastweek' && window._gpsLastWeekRange) {
+    // Show the actual Mon–Sun dates, not a generic "Last Week's" --
+    // this filter exists specifically so payroll review shows exactly
+    // which pay week is on screen.
+    var r = window._gpsLastWeekRange;
+    var mon = new Date(r.mondayYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    var sun = new Date(r.sundayYmd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return mon + '–' + sun + "'s";
+  }
   return { '24h': "Today's", '3d': "Last 3 Days'", '7d': "Last 7 Days'", '30d': "Last 30 Days'" }[mode] || "Today's";
 }
 
