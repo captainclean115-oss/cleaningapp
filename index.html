@@ -30474,6 +30474,29 @@ async function clearEmpHours(empId, date) {
   return window.PentaHourOverrides.clearOverride(empId, _dateKeyStr(date));
 }
 
+// PR #172 -- one-time cleanup. Migration 110 / PentaHourOverrides (above)
+// moved manual hour overrides to Supabase; every empHrs_* key already
+// sitting in a browser's localStorage from before that migration is now
+// dead weight -- getEmpHours/saveEmpHours/clearEmpHours never read or
+// write that key shape any more. On a browser that had accumulated many
+// of them over time, they were the direct, confirmed cause of the
+// "hitting quota limits" report (Tom's own desktop). Same one-time
+// guarded-flag pattern as PR #119/#120's cleanups just below -- safe to
+// run on every load, real work happens exactly once per browser.
+(function () {
+  try {
+    if (localStorage.getItem('_pr172_emphrs_localstorage_cleanup_done')) return;
+    var toRemove = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (key && key.indexOf('empHrs_') === 0) toRemove.push(key);
+    }
+    toRemove.forEach(function (k) { localStorage.removeItem(k); });
+    if (toRemove.length) console.log('[PR172 cleanup] removed ' + toRemove.length + ' stale empHrs_* localStorage key(s), now migrated to Supabase (PR #171)');
+    localStorage.setItem('_pr172_emphrs_localstorage_cleanup_done', '1');
+  } catch (e) {}
+})();
+
 // PR #119's cleanup (below, now dead) used each employee's DB uuid as
 // the override key. It silently deleted nothing: getUnifiedRoster()
 // (the ONLY thing every override read/write in this feature is keyed
