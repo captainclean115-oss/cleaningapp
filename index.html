@@ -30617,7 +30617,10 @@ function showHoursOverrideAudit() {
   overlay.innerHTML = '<div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
     + '<div style="font-size:17px;font-weight:600">Hour Overrides</div>'
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<button onclick="showArchivedOverridesComparison()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:DM Sans,sans-serif;font-size:12px;font-weight:600;padding:8px 12px;border-radius:8px;cursor:pointer;white-space:nowrap">🗄 Archived (pre-migration)</button>'
     + '<button onclick="document.getElementById(\'hrs-override-audit-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">&times;</button>'
+    + '</div>'
     + '</div>'
     + '<div id="hrs-override-audit-body" style="padding:16px 20px"></div>'
     + '</div>';
@@ -30652,6 +30655,196 @@ function _renderHoursOverrideAuditBody() {
 async function _hrsAuditClearOne(empId, empName, date) {
   await clearEmpDayHours(empId, empName, date);
   _renderHoursOverrideAuditBody();
+}
+
+// PR #174 -- Tom: "show me the 11 stale [pre-migration] overrides in a
+// table with... what the GPS-calculated hours would be without the
+// override... Do NOT clear any yet - just show me the comparison."
+// These entries were archived (not deleted) by PR #173 under an
+// _empHrs_archived_ prefix specifically so they'd survive long enough
+// for exactly this kind of review. Read-only: no button here writes or
+// deletes anything.
+function _readArchivedEmpHrsEntries() {
+  var rows = [];
+  try {
+    var roster = getUnifiedRoster();
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (!key || key.indexOf('_empHrs_archived_') !== 0) continue;
+      var rest = key.slice('_empHrs_archived_'.length);
+      var lastUnderscore = rest.lastIndexOf('_');
+      if (lastUnderscore < 0) continue;
+      var empId = rest.slice(0, lastUnderscore);
+      var date = rest.slice(lastUnderscore + 1);
+      var data = null;
+      try { data = JSON.parse(localStorage.getItem(key)); } catch (e2) {}
+      var emp = roster.find(function (e) { return e.id === empId; });
+      // The team the override was saved under is stored directly on the
+      // record itself (saveEmpDayHours always wrote it) -- prefer that
+      // over getEmployeeTeam(), which reflects TODAY's assignment cache
+      // and may not reflect who was on which team on this past date.
+      var team = (data && data.team) || null;
+      rows.push({
+        key: key, empId: empId,
+        employee: emp ? emp.name : ('(unknown employee id ' + empId + ')'),
+        date: date, team: team,
+        override: { start: data && data.start, end: data && data.end, lunch: data && data.lunch, hours: data && data.hours }
+      });
+    }
+  } catch (e) { console.warn('[hours] archived-entries read failed', e); }
+  rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return rows;
+}
+
+// Faithful replication of the per-day GPS computation _loadWeekHoursInner
+// runs inline for the currently-loaded week (see that function's
+// v11.0.23 TRUE START/END comments) -- same real functions
+// (_findJobCrossrefStartEnd, _findTrueDepotDepartureTrip, _detectDayLunch),
+// same fallback order, same SUSTAINED_AWAY_MIN_MIN/sanity-check
+// constants -- but fetched independently for one arbitrary past
+// team+date instead of requiring that week to already be loaded/cached.
+// Does not read or write weekHours / any cache; pure read of live Geotab
+// data for comparison purposes.
+async function _computeGpsHoursForDay(team, dateStr) {
+  try {
+    var date = new Date(dateStr + 'T00:00:00');
+    var devices = await _geotabCallRetryOn429('Get', { typeName: 'Device', resultsLimit: 500 });
+    var resolved = await _resolveTeamDevice(devices, team, date);
+    var device = resolved.device;
+    if (!device) {
+      return { available: false, reason: resolved.source === 'assignment-none' ? ('No GPS device assigned to ' + team + ' on ' + dateStr) : ('No vehicle found for ' + team) };
+    }
+
+    var startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
+    var endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+    var trips = await _geotabCallRetryOn429('Get', {
+      typeName: 'Trip',
+      search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
+      resultsLimit: 200
+    });
+    await reverseGeocodeTrips(trips);
+    if (!trips || !trips.length) return { available: false, reason: 'No GPS trips recorded for ' + team + ' on ' + dateStr };
+    trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+
+    var todayTeamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+      ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
+      : [];
+    var _isDepotStop = function (t) {
+      var sa = t.stopAddress || t.stopLocation || '';
+      return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+    };
+
+    var validTrips = trips;
+    var _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
+    var _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, 90);
+    var depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
+    var trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+    var trueStart = null, trueEnd = null;
+    if (trueStartTrip) {
+      trueStart = new Date(trueStartTrip.start);
+    } else {
+      var firstTrip = validTrips[0];
+      if (firstTrip) trueStart = new Date(firstTrip.start);
+    }
+    if (!trueStart) return { available: false, reason: 'Could not determine a start time from GPS trips' };
+
+    if (_crossref.matched && _crossref.trueEndTrip) {
+      trueEnd = new Date(_crossref.trueEndTrip.stop);
+    } else {
+      var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
+      if (lateDepotArrivals.length > 0) trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+    }
+    if (!trueEnd) {
+      var allStops = validTrips.filter(function (t) { return t.stop; }).sort(function (a, b) { return new Date(b.stop) - new Date(a.stop); });
+      if (allStops.length > 0) trueEnd = new Date(allStops[0].stop);
+    }
+    if (!trueEnd) return { available: false, reason: 'Could not determine an end time from GPS trips' };
+
+    var totalHrs = (trueEnd - trueStart) / 3600000;
+    if (!(totalHrs >= 0.25 && totalHrs <= 15)) return { available: false, reason: 'Computed span (' + totalHrs.toFixed(1) + 'h) failed the sanity check' };
+
+    var dayLunch = _detectDayLunch(trips, team, todayTeamJobs, dateStr, trueStart, trueEnd);
+    var lunchMin = (dayLunch && dayLunch.duration != null) ? dayLunch.duration : 0;
+    var finalHrs = Math.max(0, totalHrs - lunchMin / 60);
+
+    return { available: true, start: trueStart, end: trueEnd, lunchMin: lunchMin, hours: finalHrs };
+  } catch (e) {
+    return { available: false, reason: 'Error: ' + (e && e.message || e) };
+  }
+}
+
+async function showArchivedOverridesComparison() {
+  var old = document.getElementById('archived-overrides-compare-overlay');
+  if (old) old.remove();
+
+  var entries = _readArchivedEmpHrsEntries();
+  var overlay = document.createElement('div');
+  overlay.id = 'archived-overrides-compare-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:450;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  overlay.innerHTML = '<div style="background:var(--surface);width:100%;max-height:88vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
+    + '<div style="font-size:16px;font-weight:700">Archived Overrides vs GPS (' + entries.length + ')</div>'
+    + '<button onclick="document.getElementById(\'archived-overrides-compare-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">&times;</button>'
+    + '</div>'
+    + '<div style="padding:8px 20px 0;font-size:11px;color:var(--muted)">Read-only -- nothing here clears or changes any data. GPS figures are computed live from Geotab for each row.</div>'
+    + '<div id="archived-compare-body" style="padding:16px 20px;font-size:13px;color:var(--muted)">Computing GPS hours for each entry (calls Geotab live, one row at a time) — this may take a moment...</div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+
+  if (entries.length === 0) {
+    _renderArchivedCompareBody([], 0);
+    return;
+  }
+
+  var results = [];
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var gps = e.team ? await _computeGpsHoursForDay(e.team, e.date) : { available: false, reason: 'No team on record for this override' };
+    results.push({ entry: e, gps: gps });
+    // Progressive render -- rows fill in one at a time rather than a
+    // single long blank wait while every Geotab call completes.
+    if (!document.getElementById('archived-overrides-compare-overlay')) return; // closed mid-load
+    _renderArchivedCompareBody(results, entries.length);
+  }
+}
+
+function _renderArchivedCompareBody(results, total) {
+  var body = document.getElementById('archived-compare-body');
+  if (!body) return;
+  if (total === 0) {
+    body.innerHTML = '<div style="text-align:center;padding:20px 0">No archived pre-migration overrides found on this device.</div>';
+    return;
+  }
+  body.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);color:var(--muted)">'
+    + '<th style="padding:6px 8px">Employee</th><th style="padding:6px 8px">Date</th>'
+    + '<th style="padding:6px 8px">Override start–end</th><th style="padding:6px 8px">Override lunch</th><th style="padding:6px 8px">Override hrs</th>'
+    + '<th style="padding:6px 8px">GPS start–end</th><th style="padding:6px 8px">GPS lunch</th><th style="padding:6px 8px">GPS hrs</th>'
+    + '<th style="padding:6px 8px">Diff (override − GPS)</th></tr></thead><tbody>'
+    + results.map(function (r) {
+      var o = r.entry.override;
+      var g = r.gps;
+      var gpsRange = g.available ? (_hrsFmt12(g.start) + ' – ' + _hrsFmt12(g.end)) : ('<span style="color:var(--red)">' + _audEsc(g.reason || 'unavailable') + '</span>');
+      var gpsLunch = g.available ? (g.lunchMin || 0) + 'm' : '—';
+      var gpsHrs = g.available ? g.hours.toFixed(2) : '—';
+      var diffVal = (g.available && o.hours != null) ? (o.hours - g.hours) : null;
+      var diff = diffVal != null ? diffVal.toFixed(2) : '—';
+      var diffColor = (diffVal != null && Math.abs(diffVal) >= 0.25) ? 'var(--red)' : 'var(--text)';
+      return '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:6px 8px">' + _audEsc(r.entry.employee) + '</td>'
+        + '<td style="padding:6px 8px">' + _audEsc(r.entry.date) + '</td>'
+        + '<td style="padding:6px 8px">' + _audEsc((o.start || '—') + ' – ' + (o.end || '—')) + '</td>'
+        + '<td style="padding:6px 8px">' + (o.lunch != null ? o.lunch + 'm' : '—') + '</td>'
+        + '<td style="padding:6px 8px">' + (o.hours != null ? Number(o.hours).toFixed(2) : '—') + '</td>'
+        + '<td style="padding:6px 8px">' + gpsRange + '</td>'
+        + '<td style="padding:6px 8px">' + gpsLunch + '</td>'
+        + '<td style="padding:6px 8px">' + gpsHrs + '</td>'
+        + '<td style="padding:6px 8px;font-weight:700;color:' + diffColor + '">' + diff + '</td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table></div>'
+    + (results.length < total ? '<div style="text-align:center;padding:10px 0;color:var(--muted)">Computing ' + (results.length + 1) + ' of ' + total + '...</div>' : '');
 }
 
 function calcHoursFromTimes(startStr, endStr, lunchMins) {
