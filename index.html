@@ -31020,31 +31020,72 @@ function onEmpTeamChange(empId, dk, newTeam, dateMs) {
   }
 }
 
-function saveEmpDayHours(empId, empName, dk) {
-  var s = document.getElementById('emp-hr-start').value;
-  var e = document.getElementById('emp-hr-end').value;
-  var l = parseInt(document.getElementById('emp-hr-lunch').value) || 0;
-  var t = document.getElementById('emp-hr-team') ? document.getElementById('emp-hr-team').value : '';
-  var hrs = calcHoursFromTimes(s, e, l);
-  var tasks = getEmpTasks(empId, dk);
-  var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
-  saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
-  // PR #119 -- this manual-edit path previously had NO audit trail at
-  // all (unlike Claire's edit_employee_hours tool, which already logs),
-  // so a manually-entered override could never be traced to who set it
-  // or when. logPendingUpdate matches the wording/shape Claire's tool
-  // already writes, so both paths are attributable the same way.
-  var dayLbl = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-  logPendingUpdate('Hours edited: '+empName, dayLbl+' — start: '+(s||'—')+', end: '+(e||'—')+', lunch: '+l+'min');
-  document.getElementById('emp-hours-overlay').remove();
-  renderHoursTable(getWeekDates(hoursWeekOffset), ['Mon','Tue','Wed','Thu','Fri']);
-  // PR #134 -- was missing (clearEmpDayHours already had this, PR #119).
-  // Without it, a saved edit showed correctly in this manager's own
-  // Hours tab immediately but stayed stale in weekHours_cache /
-  // empHours_cache -- the blobs the employee portal and PentaAssignments-
-  // aware readers on OTHER manager sessions read -- until an unrelated
-  // later loadWeekHours() happened to run.
-  _writeWeekHoursCache(getWeekDates(hoursWeekOffset));
+async function saveEmpDayHours(empId, empName, dk) {
+  // v11.0.30 -- this had NO error handling at all, and re-rendered via a
+  // bare renderHoursTable() call instead of the safer loadWeekHours()
+  // pattern clearEmpDayHours (right below) was already fixed to use for
+  // exactly this reason (PR #119/#134's own comment there): a throw
+  // ANYWHERE in renderHoursTable's pass -- not necessarily on THIS
+  // employee's own row, any OTHER employee's malformed data can trigger
+  // it too -- silently aborts the whole re-render. Whether that leaves
+  // the save looking like "nothing happens" (if the throw or a missing
+  // DOM element hits before the overlay closes) or "responded but didn't
+  // stick" (if it hits after) depends on exactly where the failure
+  // lands, matching the intermittent, hard-to-reproduce reports of both
+  // symptoms -- it depends on which OTHER employee's data is in the
+  // table at the time, not on anything about this specific save.
+  // Save step isolated in its own try/catch so a failure HERE (nothing
+  // persisted yet) gets an accurate "could not save" message, distinct
+  // from a failure in the refresh step below (already saved -- only the
+  // redraw failed). Conflating the two previously meant any throw
+  // anywhere in this function -- even one that happened before anything
+  // was written -- would have claimed "saved" regardless.
+  var s, e, l, t;
+  try {
+    var startEl = document.getElementById('emp-hr-start');
+    var endEl = document.getElementById('emp-hr-end');
+    var lunchEl = document.getElementById('emp-hr-lunch');
+    var teamEl = document.getElementById('emp-hr-team');
+    if (!startEl || !endEl || !lunchEl) {
+      alert('Could not save -- the edit form is no longer open. Please try again.');
+      return;
+    }
+    s = startEl.value;
+    e = endEl.value;
+    l = parseInt(lunchEl.value) || 0;
+    t = teamEl ? teamEl.value : '';
+    var hrs = calcHoursFromTimes(s, e, l);
+    var tasks = getEmpTasks(empId, dk);
+    var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
+    saveEmpHours(empId, dk, { start: s, end: e, lunch: l, hours: hrs + taskHrs, team: t });
+  } catch (err) {
+    console.error('[hours] saveEmpDayHours: save step failed', err);
+    alert('Could not save the hours: ' + (err && err.message || 'unknown error') + '. Nothing was changed.');
+    return;
+  }
+
+  try {
+    // PR #119 -- this manual-edit path previously had NO audit trail at
+    // all (unlike Claire's edit_employee_hours tool, which already logs),
+    // so a manually-entered override could never be traced to who set it
+    // or when. logPendingUpdate matches the wording/shape Claire's tool
+    // already writes, so both paths are attributable the same way.
+    var dayLbl = new Date(dk+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    logPendingUpdate('Hours edited: '+empName, dayLbl+' — start: '+(s||'—')+', end: '+(e||'—')+', lunch: '+l+'min');
+    var overlayEl = document.getElementById('emp-hours-overlay');
+    if (overlayEl) overlayEl.remove();
+    // PR #134 -- loadWeekHours() (not a bare renderHoursTable() call)
+    // recomputes weekHours fresh AND calls _writeWeekHoursCache() itself
+    // at the end of a successful run -- so the employee portal's own
+    // "My Hours" cache and other manager sessions' reads can no longer
+    // go stale the way a bare render (or a separately-called cache
+    // write that never ran because the render above it threw first)
+    // could.
+    await loadWeekHours();
+  } catch (err) {
+    console.error('[hours] saveEmpDayHours: post-save refresh failed', err);
+    alert('The hours were saved, but refreshing the table failed. Please reload the page to see the corrected value.');
+  }
 }
 
 async function clearEmpDayHours(empId, empName, dk) {
