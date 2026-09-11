@@ -7174,11 +7174,23 @@ window.PentaGeocodeHistory = (function() {
 
   function _hydrate() {
     if (_hydrating) return _hydrating;
-    _hydrating = (async function() {
+    // Resetting `_hydrating = null` on a bail path with no `await` before it
+    // doesn't work: the async closure below runs synchronously up to its
+    // first await, so an inline reset there executes and is immediately
+    // overwritten the moment `_hydrating = (async function(){...})()`
+    // finishes assigning right after. That stranded a resolved-false
+    // promise in `_hydrating` forever if SB() was momentarily unavailable
+    // on the very first call (a real boot-time race) — every later
+    // ready()/ open-Teams-modal call then short-circuited on the cached
+    // `_hydrating` without ever retrying, so employees never loaded until
+    // a hard refresh gave the boot sequence a new chance to not hit it.
+    // Same fix as PentaLunchFlags/PentaHourOverrides: reset via `.then()`
+    // instead, so it lands as a genuinely later microtask.
+    var attempt = (async function() {
       var sb = SB();
-      if (!sb) { _hydrating = null; return false; }
+      if (!sb) { return false; }
       var bid = await _businessId();
-      if (!bid) { _hydrating = null; return false; }
+      if (!bid) { return false; }
       // Sprint 6.9: load teams BEFORE employees so _fromRow's team_id lookup
       // resolves to a team name. Failure here is non-fatal — _fromRow falls
       // back to the legacy team_text path.
@@ -7194,15 +7206,17 @@ window.PentaGeocodeHistory = (function() {
         .order('first_name');
       if (res.error) {
         console.error('PentaEmployees hydrate error', res.error);
-        _hydrating = null;
         return false;
       }
       _cache = (res.data || []).map(_fromRow).filter(function(x){ return x !== null; });
       _cacheReady = true;
       _notify();
-      _hydrating = null;
       return true;
     })();
+    _hydrating = attempt.then(function(ok) {
+      if (!ok) _hydrating = null;
+      return ok;
+    });
     return _hydrating;
   }
 
@@ -27204,17 +27218,28 @@ function quickAssign(empId, team, dateStr) {
   var writePromise = assignEmployee(empId, team, dateStr);
 
   renderTeamManager({ skipMirror: true }); // paint straight from the just-applied optimistic write -- see renderTeamManager's opts.skipMirror comment
-  recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
-  if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
-  _hrsMaybeRefreshForDate(dateStr); // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
+  // PR #185 -- unlike confirmTeamAssign, these calls used to be unwrapped:
+  // a throw from recalcTeamTimes/hrsMaybeRefreshForDate propagated straight
+  // out of quickAssign uncaught, and since that throw happens BEFORE the
+  // writePromise.catch() line below, the rollback handler never even got
+  // attached -- the tap silently did nothing and the button looked dead
+  // ("stops responding" after a few taps). Match confirmTeamAssign's
+  // already-hardened per-call try/catch.
+  try {
+    recalcTeamTimes(oldTeam, dateStr); // recalcTeamTimes no-ops on falsy team internally
+    if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+  } catch (e) { console.warn('[quickAssign] recalcTeamTimes failed (non-fatal)', e); }
+  try { _hrsMaybeRefreshForDate(dateStr); } catch (e) { console.warn('[quickAssign] hours refresh failed (non-fatal)', e); } // PR #109 Item 3 -- keep the Live tab's hours in sync with a retroactive team change
 
   writePromise.catch(function() {
     // assignEmployee already rolled back the optimistic write and
     // toasted the failure -- reflect that revert visually.
     renderTeamManager();
-    recalcTeamTimes(oldTeam, dateStr);
-    if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
-    _hrsMaybeRefreshForDate(dateStr);
+    try {
+      recalcTeamTimes(oldTeam, dateStr);
+      if (team !== 'OFF' && team !== oldTeam) recalcTeamTimes(team, dateStr);
+    } catch (e) { console.warn('[quickAssign] rollback recalcTeamTimes failed (non-fatal)', e); }
+    try { _hrsMaybeRefreshForDate(dateStr); } catch (e) { console.warn('[quickAssign] rollback hours refresh failed (non-fatal)', e); }
   });
 }
 
