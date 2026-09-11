@@ -29868,12 +29868,39 @@ function _findTrueDepotDepartureTrip(validTrips, _isDepotStop, sustainedAwayMinM
 // "trip 0 always wins" naively could, because an unrelated errand
 // won't geomatch a scheduled client address.
 //
-// Returns { matched: false } whenever NO stop anywhere in the day's
-// trips geomatches a scheduled client (Geotab data too sparse /
-// detection failed / genuinely no scheduled jobs that day) OR the
-// scan still can't cleanly resolve both ends -- caller falls back to
-// the sustained-away rule entirely in either case, same as before
-// this PR.
+// Returns { matched: false, startMatched: false, endMatched: false }
+// whenever NO stop anywhere in the day's trips is confirmed as real work
+// (see stopConfirmsWork below) -- caller falls back to the sustained-away
+// rule entirely in that case. Otherwise startMatched/endMatched are
+// INDEPENDENT: confirming one side doesn't require also confirming the
+// other. `matched` (both true) is kept for callers/tests that only care
+// about the fully-confirmed case; new code should check the two flags
+// separately.
+//
+// PR #185 (Emilia, M2, Sept 2) -- `matched` used to be a single flag
+// gating BOTH sides: if the day's end couldn't be confirmed, a perfectly
+// good, confirmed START got thrown out too, and the caller fell all the
+// way back to _findTrueDepotDepartureTrip's pure depot heuristic for
+// BOTH ends. Concrete case: a real 8:32am-2:17pm workday (job-confirmed
+// start) had its END go unconfirmed only because the trip immediately
+// before the 2:17pm depot arrival (a real ~90-minute client stop) wasn't
+// one of that day's sparse job records (2 jobs against 6 real trips) --
+// so the whole result was discarded and the fallback picked 2:25pm as
+// "the start" (the depot heuristic's own blind spot: it treats the last
+// un-returned depot departure as day-start, which breaks the moment
+// there's a real but incidental mid-day depot touch). Decoupling means
+// the confirmed 8:32am start now survives even when end-confirmation
+// fails, and vice versa.
+//
+// Also loosened per the same fix: a stop no longer has to match one of
+// TODAY'S scheduled jobs specifically to count as real work. Job records
+// can be sparse or stale relative to what actually happened on the
+// ground -- stopConfirmsWork additionally accepts any stop that's
+// client-adjacent (matches ANY active, geocoded client -- same
+// matchStopToClientGeo(...,[],...) idiom _detectDayLunch's own "ANY
+// client match... disqualifies" check already uses), not the depot, and
+// with a real dwell time before the next trip (not a passing GPS blip).
+var MIN_WORK_STOP_DWELL_MIN = 5;
 function _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team) {
   var stopIsScheduledClient = validTrips.map(function(t) {
     if (!t.stop) return false;
@@ -29886,7 +29913,28 @@ function _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team)
     return !!(m && m.scheduled);
   });
 
-  if (!stopIsScheduledClient.some(Boolean)) return { matched: false };
+  var stopLooksLikeWork = validTrips.map(function(t, idx) {
+    if (!t.stop) return false;
+    if (_isDepotStop(t)) return false;
+    var nextTrip = validTrips[idx + 1];
+    if (nextTrip) {
+      var dwellMin = (new Date(nextTrip.start) - new Date(t.stop)) / 60000;
+      if (dwellMin < MIN_WORK_STOP_DWELL_MIN) return false;
+    }
+    var stopAddr = t.stopAddress || t.stopLocation || '';
+    var m = matchStopToClientGeo(
+      t.stopPoint ? t.stopPoint.y : null,
+      t.stopPoint ? t.stopPoint.x : null,
+      stopAddr, [], team
+    );
+    return !!m;
+  });
+
+  var stopConfirmsWork = validTrips.map(function(t, idx) {
+    return stopIsScheduledClient[idx] || stopLooksLikeWork[idx];
+  });
+
+  if (!stopConfirmsWork.some(Boolean)) return { matched: false, startMatched: false, endMatched: false };
 
   var depotArrivals = validTrips
     .map(function(t, idx) { return { t: t, idx: idx }; })
@@ -29895,7 +29943,7 @@ function _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team)
 
   // START: first office departure (trip 0, or any trip whose
   // immediately preceding trip ended at the depot) that reaches a
-  // scheduled client stop before the next depot arrival.
+  // confirmed-work stop before the next depot arrival.
   var trueStartTrip = null;
   for (var i = 0; i < validTrips.length; i++) {
     var prev = i > 0 ? validTrips[i - 1] : null;
@@ -29905,22 +29953,24 @@ function _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team)
     var untilIdx = nextArrival ? nextArrival.idx : validTrips.length - 1;
     var sawSchedule = false;
     for (var j = i; j <= untilIdx; j++) {
-      if (stopIsScheduledClient[j]) { sawSchedule = true; break; }
+      if (stopConfirmsWork[j]) { sawSchedule = true; break; }
     }
     if (sawSchedule) { trueStartTrip = validTrips[i]; break; }
   }
 
-  // END: last depot arrival whose immediately-preceding trip's stop
-  // was a scheduled client -- excludes an arrival that's just another
-  // office idle (bounced depot-to-depot with no real work between).
+  // END: last depot arrival whose immediately-preceding trip's stop was
+  // confirmed work -- excludes an arrival that's just another office
+  // idle (bounced depot-to-depot with no real work between).
   var trueEndTrip = null;
   depotArrivals.forEach(function(a) {
     var precedingIdx = a.idx - 1;
-    if (precedingIdx >= 0 && stopIsScheduledClient[precedingIdx]) trueEndTrip = a.t;
+    if (precedingIdx >= 0 && stopConfirmsWork[precedingIdx]) trueEndTrip = a.t;
   });
 
   return {
     matched: !!(trueStartTrip && trueEndTrip),
+    startMatched: !!trueStartTrip,
+    endMatched: !!trueEndTrip,
     trueStartTrip: trueStartTrip,
     trueEndTrip: trueEndTrip,
     depotArrivalsAsc: depotArrivals.map(function(x) { return x.t; })
@@ -30539,8 +30589,12 @@ async function _loadWeekHoursInner() {
 
         const _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
         const _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, SUSTAINED_AWAY_MIN_MIN);
-        const depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
-        const trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+        const depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+        // PR #185 -- startMatched/endMatched are independent now: a
+        // confirmed start survives even when the SAME day's end can't
+        // also be confirmed (and vice versa). See _findJobCrossrefStartEnd's
+        // own comment for the concrete case this fixes.
+        const trueStartTrip = _crossref.startMatched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
         if (trueStartTrip) {
           trueStart = new Date(trueStartTrip.start);
         } else {
@@ -30560,7 +30614,7 @@ async function _loadWeekHoursInner() {
         // PR #117: when the job-crossref algorithm matched, prefer its
         // own trueEndTrip (last arrival preceded by a real scheduled
         // client stop, not just "last depot arrival at all").
-        if (_crossref.matched && _crossref.trueEndTrip) {
+        if (_crossref.endMatched && _crossref.trueEndTrip) {
           trueEnd = new Date(_crossref.trueEndTrip.stop);
         } else {
           const lateDepotArrivals = depotArrivalsAsc.filter(a => new Date(a.stop) > trueStart);
@@ -30986,8 +31040,10 @@ async function _computeGpsHoursForDay(team, dateStr) {
     var validTrips = trips;
     var _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
     var _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, 90);
-    var depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
-    var trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+    var depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+    // PR #185 -- startMatched/endMatched are independent; see
+    // _findJobCrossrefStartEnd's own comment.
+    var trueStartTrip = _crossref.startMatched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
     var trueStart = null, trueEnd = null;
     if (trueStartTrip) {
       trueStart = new Date(trueStartTrip.start);
@@ -30997,7 +31053,7 @@ async function _computeGpsHoursForDay(team, dateStr) {
     }
     if (!trueStart) return { available: false, reason: 'Could not determine a start time from GPS trips' };
 
-    if (_crossref.matched && _crossref.trueEndTrip) {
+    if (_crossref.endMatched && _crossref.trueEndTrip) {
       trueEnd = new Date(_crossref.trueEndTrip.stop);
     } else {
       var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
@@ -32485,14 +32541,16 @@ async function _computeHoursForDateRange(dates) {
       };
       var _crossref = _findJobCrossrefStartEnd(dayTrips, _isDepotStop, todayTeamJobs, team);
       var _depotResult = _findTrueDepotDepartureTrip(dayTrips, _isDepotStop, 90);
-      var depotArrivalsAsc = _crossref.matched ? _crossref.depotArrivalsAsc : _depotResult.depotArrivalsAsc;
-      var trueStartTrip = _crossref.matched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+      var depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+      // PR #185 -- startMatched/endMatched are independent; see
+      // _findJobCrossrefStartEnd's own comment.
+      var trueStartTrip = _crossref.startMatched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
       var trueStart = null, trueEnd = null;
       if (trueStartTrip) { trueStart = new Date(trueStartTrip.start); }
       else { var firstTrip = dayTrips[0]; if (firstTrip) trueStart = new Date(firstTrip.start); }
       if (!trueStart) return;
 
-      if (_crossref.matched && _crossref.trueEndTrip) {
+      if (_crossref.endMatched && _crossref.trueEndTrip) {
         trueEnd = new Date(_crossref.trueEndTrip.stop);
       } else {
         var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
