@@ -32608,10 +32608,27 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
   var grandHours = 0;
   var empsSeen = 0;
 
+  // PR #186 -- each employee must appear ONCE, under their DEFAULT team,
+  // with one combined weekly total -- exactly like the Live tab's Hours
+  // Worked widget (renderHoursTable, PR #109 Item 1). This used to group
+  // by `dates.some(dk => getEmployeeTeam(e.id, dk) === team)`, which
+  // shows an employee under EVERY team they touched that week, each
+  // section only populating ITS OWN days and blanking the rest as "OFF"
+  // -- the per-DAY math was always correct (verified against real Katia
+  // Mejia / Analia DeSouza data, every single day matched the Live tab
+  // exactly), but a cross-team week got silently split into multiple
+  // disconnected sections with separate subtotals. Confirmed live: Tom
+  // saw "KATIA MEJIA (B1) — 22h 47m" and read that as her week total,
+  // never noticing the separate "KATIA MEJIA (S3) — 6h 3m" section
+  // later in the same report holding her other day -- the two together
+  // (28h 50m) match the Live tab's 28.8h exactly. Fixed the same way
+  // renderHoursTable does: resolve the REAL team worked EACH DAY
+  // (dayTeam) independently of which team's card/section this employee
+  // is grouped under, and label each day/CSV row with that real
+  // dayTeam so a cross-team day still shows correctly, just once.
   teams.forEach(function (team) {
-    var data = weekHoursData[team];
     var teamEmployees = getUnifiedRoster().filter(function (e) {
-      return dates.some(function (dk) { return getEmployeeTeam(e.id, dk) === team; });
+      return e.defaultTeam === team && dates.some(function (dk) { return !!getEmployeeTeam(e.id, dk); });
     });
     if (teamEmployees.length === 0) return;
 
@@ -32622,18 +32639,19 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
 
       dates.forEach(function (dk, dayIdx) {
         var d = new Date(dk + 'T00:00:00');
+        var dayTeam = getEmployeeTeam(emp.id, dk); // the team ACTUALLY worked this date -- may differ from `team` (this card's default) on days worked elsewhere
+        var data = dayTeam ? weekHoursData[dayTeam] : null;
         var override = getEmpHours(emp.id, dk);
-        var onThisTeamToday = getEmployeeTeam(emp.id, dk) === team;
 
         var teamH = data ? (data.days[dayIdx] || 0) : 0;
         var teamStart = data ? data.starts[dayIdx] : null;
         var teamEnd = data ? data.ends[dayIdx] : null;
         var teamLunchMin = (data && data.lunch && data.lunch[dayIdx]) ? (data.lunch[dayIdx].duration || 0) : 0;
 
-        var empH = !onThisTeamToday ? 0 : (override ? (override.hours || 0) : teamH);
-        var startStr = !onThisTeamToday ? '' : (override ? (override.start || '') : _hrTo24hr(teamStart));
-        var endStr = !onThisTeamToday ? '' : (override ? (override.end || '') : _hrTo24hr(teamEnd));
-        var lunchMin = !onThisTeamToday ? 0 : (override ? (override.lunch || 0) : teamLunchMin);
+        var empH = !dayTeam ? 0 : (override ? (override.hours || 0) : teamH);
+        var startStr = !dayTeam ? '' : (override ? (override.start || '') : _hrTo24hr(teamStart));
+        var endStr = !dayTeam ? '' : (override ? (override.end || '') : _hrTo24hr(teamEnd));
+        var lunchMin = !dayTeam ? 0 : (override ? (override.lunch || 0) : teamLunchMin);
 
         if ((startStr && endStr) && empH <= 0) {
           console.warn('[HoursReport] non-positive duration for', emp.name, dk, { startStr: startStr, endStr: endStr, empH: empH });
@@ -32642,23 +32660,25 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
 
         var dateISO = dk;
         var dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        var rowTeam = dayTeam || team;
 
         if (empH > 0 && startStr && endStr) {
           empWeekHours += empH;
           var timeRange = startStr + ' – ' + endStr;
           var durTxt = _hrDecimalHoursText(empH);
           var lunchTail = lunchMin ? ('lunch ' + Math.floor(lunchMin / 60) + ':' + String(lunchMin % 60).padStart(2, '0')) : '';
-          dayRows.push('  ' + dayLabel.padEnd(14) + timeRange.padEnd(16) + durTxt.padEnd(10) + lunchTail);
+          var crossTeamTag = dayTeam && dayTeam !== team ? (' [' + dayTeam + ']') : '';
+          dayRows.push('  ' + dayLabel.padEnd(14) + timeRange.padEnd(16) + durTxt.padEnd(10) + lunchTail + crossTeamTag);
           csvRows.push([
-            _hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO,
+            _hrCsvField(emp.name || emp.id), _hrCsvField(rowTeam), dateISO,
             _hrTo24hr(startStr), _hrTo24hr(endStr), _hrMinsToHHMM(lunchMin), _hrDecimalHoursToHHMM(empH)
           ].join(','));
         } else if ((startStr && !endStr) || (!startStr && endStr)) {
           dayRows.push('  ' + dayLabel.padEnd(14) + '? (incomplete clock data)');
-          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO, '', '', '', '0:00'].join(','));
+          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(rowTeam), dateISO, '', '', '', '0:00'].join(','));
         } else {
           dayRows.push('  ' + dayLabel.padEnd(14) + 'OFF');
-          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(team), dateISO, '', '', '', '0:00'].join(','));
+          csvRows.push([_hrCsvField(emp.name || emp.id), _hrCsvField(rowTeam), dateISO, '', '', '', '0:00'].join(','));
         }
       });
 
