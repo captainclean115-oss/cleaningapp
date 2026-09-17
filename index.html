@@ -24326,6 +24326,16 @@ var CLAIRE_TOOLS = [
   { name: 'compute_quote', description: 'Compute a cleaning quote backend-only. Geocodes the address, looks up sq ft + baths from MassGIS, applies pricing settings, returns structured JSON with formattedPrice, hours, cleaners, breakdown, and a ready-to-send sms_text. NEVER renders UI. ALWAYS call this BEFORE quoting a price to the user. Present the result inline in chat and WAIT for explicit user confirmation before calling send_text.', input_schema: { type:'object', properties: { address:{type:'string',description:'Full street address with city and state'}, frequency:{type:'string',description:'weekly | biweekly | triweekly | monthly | once'}, square_feet:{type:'number',description:'Optional override if MassGIS lookup fails or user supplies it'}, baths:{type:'number',description:'Optional override (defaults to MassGIS or 2)'}, team_size:{type:'number',description:'Default 3'} }, required:['address','frequency'] } },
   { name: 'get_employee_hours', description: 'Read an employee\'s worked hours for a single date or a date range. Returns, per day: day_of_week, start_time, end_time, lunch_minutes, total_hours, source (gps | manual_override), team_that_day, and a status (off/no_data/unassigned) when there are no hours to report. Always call this BEFORE edit_employee_hours when the user wants to copy one employee\'s hours to another, or otherwise needs to see current values first.', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name (first name, full name, or however the user referred to them)'}, date:{type:'string',description:'Single date YYYY-MM-DD. Omit if using from/to instead.'}, from:{type:'string',description:'Range start date YYYY-MM-DD (use with "to" for a range)'}, to:{type:'string',description:'Range end date YYYY-MM-DD (use with "from" for a range)'} }, required:['employee'] } },
   { name: 'edit_employee_hours', description: 'Edit an employee start time, end time, or lunch for a specific day. Writes a manual override to the database (visible everywhere, on every device, immediately). ALWAYS confirm the new values with the user before calling this, unless they already gave you exact times to set.', input_schema: { type:'object', properties: { employee:{type:'string',description:'Employee name (first name, full name, or however the user referred to them)'}, date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'}, start:{type:'string',description:'Start time HH:MM (optional)'}, end:{type:'string',description:'End time HH:MM (optional)'}, lunch:{type:'string',description:'Lunch minutes (optional)'} }, required:['employee'] } },
+  { name: 'batch_edit_employee_hours', description: 'Set start/end/lunch times for MULTIPLE employee+date combinations in one call -- several employees on the same date, one employee across several dates, or any mix (e.g. "set B1\'s Sept 2 to 9-5", "set Elvia\'s whole last week to 8-5", "match everyone\'s Sept 3 to their Sept 2"). ALWAYS call this FIRST with confirmed omitted (or false) to get a preview -- this performs NO writes, it only resolves every entry and returns each one\'s CURRENT value alongside the proposed one. Present the FULL list to the user (current -> proposed for every entry) and WAIT for explicit confirmation of the whole list -- batches ALWAYS require this confirmation, even if the user already gave exact times (unlike the single-entry edit_employee_hours tool). If the user asks to drop someone ("skip X"), remove that entry and call again with confirmed omitted to preview the updated list -- do not write yet. Only call again with confirmed=true after the user has explicitly confirmed the exact final list in this conversation. If ANY entry fails to resolve (ambiguous or not found), the whole call returns errors and performs no writes or preview at all -- fix the entries and retry. If a write fails partway through, every entry already written in that call is rolled back to its exact prior value and the failure is reported plainly -- never implies partial success.', input_schema: { type:'object', properties: {
+    entries: { type:'array', description:'One entry per employee+date combination to change.', items: { type:'object', properties: {
+      employee:{type:'string',description:'Employee name (first name, full name, or however the user referred to them)'},
+      date:{type:'string',description:'Date YYYY-MM-DD, defaults to today'},
+      start:{type:'string',description:'Start time HH:MM (optional)'},
+      end:{type:'string',description:'End time HH:MM (optional)'},
+      lunch:{type:'string',description:'Lunch minutes (optional)'}
+    }, required:['employee'] } },
+    confirmed: { type:'boolean', description:'Set true ONLY after the user has explicitly confirmed the exact final list shown in a preview call. Omit or false for a preview-only dry run that writes nothing.' }
+  }, required:['entries'] } },
   { name: 'locate_team', description: 'Find where a team currently is — their current address, which client they are at, what time they arrived, and when they are expected to finish', input_schema: { type:'object', properties: { team:{type:'string',description:'Team code: B1,B3,B5,S1,S3,M1,M2,M3'} }, required:['team'] } },
   { name: 'send_invoice', description: 'Send a balance/invoice reminder to a client via SMS', input_schema: { type:'object', properties: { client:{type:'string',description:'Client full name'} }, required:['client'] } },
   // Coach-Claire Phase 2 — aggregate tools. Each returns a rolled-up summary
@@ -24443,7 +24453,14 @@ async function processVoiceCommand(text) {
     +'2. For a "copy X\'s hours to Y" (or "match X\'s hours") request: FIRST call get_employee_hours for X on the requested date/range. Present the EXACT values to ' + _opName + ' — e.g. "Nadia\'s Tue Sept 1: 9:15 AM – 5:20 PM, 30m lunch. Copy to Natalia?" — and WAIT for explicit confirmation. Do NOT call edit_employee_hours in the same turn as get_employee_hours for a copy request.\n'
     +'3. After ' + _opName + ' confirms, call edit_employee_hours for Y with the exact start/end/lunch X had. edit_employee_hours verifies its own write by reading it back before replying, so a success message means the value is confirmed in the database, not just attempted.\n'
     +'4. If get_employee_hours or edit_employee_hours returns error: "ambiguous_employee", list the candidate names from the result and ask ' + _opName + ' which one they meant — never just guess the first match. If it returns error: "employee_not_found", say so and mention the suggestions if any were returned.\n'
-    +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '.\n\n'
+    +'5. For BATCH changes — multiple employees on the same date, one employee across multiple dates, or any combination (e.g. "set B1\'s Sept 2 to 9-5", "set Elvia\'s whole last week to 8-5", "match everyone\'s Sept 3 to their Sept 2") — use batch_edit_employee_hours instead of calling edit_employee_hours repeatedly. ALWAYS call it first with confirmed omitted to get a preview (no writes happen). Show ' + _opName + ' the COMPLETE list, one line per person/day, current value -> proposed value, e.g.:\n'
+    +'   "About to set these 5 employees to 9:00 AM - 5:00 PM on Sept 2:\n'
+    +'    - Katia Mejia (currently OFF)\n'
+    +'    - Elvia Tonato (currently 8:32 AM - 4:15 PM)\n'
+    +'    - ...\n'
+    +'    Confirm all? (yes / no / skip [name])"\n'
+    +'   This confirmation is REQUIRED for every batch, even when ' + _opName + ' already gave exact times — unlike a single edit_employee_hours call, a batch never skips this step. If ' + _opName + ' asks to skip someone, drop that entry and call batch_edit_employee_hours again with confirmed omitted to show the updated list — do not write until the (possibly shorter) final list is explicitly confirmed. Only after an explicit yes on the exact final list, call batch_edit_employee_hours again with the SAME entries and confirmed=true. If it returns error: "entry_resolution_failed", resolve each listed employee (same ambiguous/not-found handling as step 4) before retrying — nothing is written or previewed until every entry resolves. If it returns error: "batch_write_failed", tell ' + _opName + ' exactly what was rolled back and what (if anything) still needs manual review — never imply the whole batch succeeded.\n'
+    +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '. This exception does NOT apply to batch_edit_employee_hours, which always previews and confirms first regardless.\n\n'
     +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
@@ -25616,6 +25633,155 @@ async function _executeClaireToolCallInner(toolCall, message) {
     logPendingUpdate('Hours edited: '+ehEmp.name, dayL3+' — '+changes.join(', '));
     _claireLastToolResult = 'Updated '+ehEmp.name+'\'s hours for '+dayL3+': '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : '')+' Verified by reading it back. Done.';
     claireReply(message || 'Updated '+ehEmp.name+'\'s hours for '+dayL3+'. '+changes.join(', ')+'.'+(existing.hours ? ' Total: '+existing.hours.toFixed(1)+'h.' : ''));
+
+  // ── BATCH EDIT EMPLOYEE HOURS ──
+  // Tom (via the "Claire seems stuck/limited" report): edit_employee_hours
+  // already handled one employee/one date correctly, but every multi-
+  // person or multi-day request had to be broken into N separate calls
+  // with no combined confirmation -- this is the explicit batch tool he
+  // asked for. Two-phase protocol enforced by the `confirmed` flag: a
+  // preview call (confirmed omitted/false) resolves every entry and
+  // returns current-vs-proposed for ALL of them WITHOUT writing anything,
+  // so Claire can show Tom the complete list and get one explicit
+  // confirmation before a second, confirmed=true call actually writes.
+  // Same per-entry ambiguity/not-found handling as edit_employee_hours
+  // (ambiguous_employee/employee_not_found), but ANY unresolved entry
+  // bails the WHOLE call -- never silently preview or write a partial
+  // list Tom didn't ask to see. On a write failure partway through,
+  // every entry this call already wrote gets rolled back to its exact
+  // prior value (a real prior override, or no override at all if none
+  // existed) rather than leaving a half-applied batch.
+  } else if (name === 'batch_edit_employee_hours') {
+    var beEntries = Array.isArray(input.entries) ? input.entries : [];
+    if (!beEntries.length) {
+      _claireLastToolResult = JSON.stringify({ error: 'no_entries' });
+      return;
+    }
+    var beResolved = [];
+    var beErrors = [];
+    for (var bi = 0; bi < beEntries.length; bi++) {
+      var beEnt = beEntries[bi] || {};
+      var beLookup = findEmployeeWithSuggestions(beEnt.employee || '');
+      if (beLookup.matches.length > 1) {
+        beErrors.push({ index: bi, employee: beEnt.employee, error: 'ambiguous_employee',
+          candidates: beLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; }) });
+        continue;
+      }
+      if (beLookup.matches.length === 0) {
+        beErrors.push({ index: bi, employee: beEnt.employee, error: 'employee_not_found',
+          suggestions: beLookup.suggestions.map(function(e){ return e.name; }) });
+        continue;
+      }
+      var beEmp = beLookup.matches[0];
+      var beKeyId = beEmp.legacy_roster_id || beEmp.id;
+      var beDate = beEnt.date || dateKey(new Date());
+      var beTeam = getEmployeeTeam(beKeyId, beDate);
+      var beCurrentOverride = getEmpHours(beKeyId, beDate); // null if none on file
+      var beCurrentLabel;
+      if (!beTeam) {
+        var beOff = getEmployeeDayOffInfo(beKeyId, beDate);
+        beCurrentLabel = 'OFF' + ((beOff && beOff.status_type && DAY_OFF_CATEGORY_LABELS[beOff.status_type]) ? ' (' + DAY_OFF_CATEGORY_LABELS[beOff.status_type] + ')' : '');
+      } else if (beCurrentOverride) {
+        beCurrentLabel = _hrsFmt12(beCurrentOverride.start) + ' - ' + _hrsFmt12(beCurrentOverride.end);
+      } else {
+        beCurrentLabel = 'no manual override on file (GPS-derived if any)';
+      }
+      var beUuid = beEmp.uuid || (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId && (function(){ var r = window.PentaEmployees.getByLegacyRosterId(beKeyId); return r && r.id; })()) || null;
+      beResolved.push({
+        index: bi, employee: beEmp, keyId: beKeyId, uuid: beUuid, date: beDate,
+        currentOverride: beCurrentOverride, currentLabel: beCurrentLabel,
+        proposed: { start: beEnt.start, end: beEnt.end, lunch: beEnt.lunch }
+      });
+    }
+
+    if (beErrors.length) {
+      _claireLastToolResult = JSON.stringify({ error: 'entry_resolution_failed', errors: beErrors, resolved_count: beResolved.length, total: beEntries.length });
+      return;
+    }
+
+    if (!input.confirmed) {
+      // Preview only -- writes NOTHING. Claire must show this full list
+      // to Tom and get one explicit confirmation before calling again
+      // with confirmed=true.
+      _claireLastToolResult = JSON.stringify({
+        preview: true,
+        changes: beResolved.map(function(r) {
+          var pStart = r.proposed.start || (r.currentOverride && r.currentOverride.start);
+          var pEnd = r.proposed.end || (r.currentOverride && r.currentOverride.end);
+          var proposedLabel = (r.proposed.start || r.proposed.end) ? (_hrsFmt12(pStart) + ' - ' + _hrsFmt12(pEnd))
+            : (r.proposed.lunch ? 'lunch: ' + r.proposed.lunch + 'min' : '(no change specified)');
+          return { employee: r.employee.name, date: r.date, current: r.currentLabel, proposed: proposedLabel };
+        })
+      });
+      return;
+    }
+
+    // confirmed=true -- Tom has explicitly confirmed the exact list in
+    // conversation. Write sequentially so a failure partway through
+    // leaves a well-defined, rollback-able set of "already applied"
+    // entries instead of firing every write in parallel.
+    var beApplied = [];
+    var beWriteError = null;
+    for (var wi = 0; wi < beResolved.length; wi++) {
+      var r2 = beResolved[wi];
+      try {
+        var existing2 = Object.assign({}, r2.currentOverride || {});
+        if (r2.proposed.start) existing2.start = r2.proposed.start;
+        if (r2.proposed.end) existing2.end = r2.proposed.end;
+        if (r2.proposed.lunch) existing2.lunch = parseInt(r2.proposed.lunch) || 0;
+        if (existing2.start && existing2.end) {
+          existing2.hours = calcHoursFromTimes(existing2.start, existing2.end, existing2.lunch || 0);
+        }
+        await saveEmpHours(r2.keyId, r2.date, existing2);
+        // Per-edit audit_log row -- granular provenance, matching
+        // edit_employee_hours's single-entry pattern exactly (one row
+        // per employee+date, not one rolled-up entry for the batch).
+        try {
+          await _auditSupplement('manual_override', 'employee', r2.uuid, {
+            source: 'claire', date: r2.date, start: existing2.start || null, end: existing2.end || null,
+            lunch: existing2.lunch != null ? existing2.lunch : null, hours: existing2.hours != null ? existing2.hours : null,
+            batch: true
+          });
+        } catch (beAuditErr) { console.warn('[Claire] batch_edit_employee_hours: audit supplement failed (non-fatal)', beAuditErr); }
+        var beDayLabel = new Date(r2.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+        logPendingUpdate('Hours edited: '+r2.employee.name, beDayLabel+' — batch edit', 'Claire');
+        beApplied.push(Object.assign({ written: existing2 }, r2));
+      } catch (beErr) {
+        beWriteError = { index: wi, employee: r2.employee.name, message: (beErr && beErr.message) || String(beErr) };
+        break;
+      }
+    }
+
+    if (beWriteError) {
+      // Roll back every entry THIS call actually wrote, in reverse
+      // order, restoring each to its exact pre-batch state -- a real
+      // prior override, or no override at all if none existed.
+      var beRolledBack = [];
+      var beRollbackFailed = [];
+      for (var ri = beApplied.length - 1; ri >= 0; ri--) {
+        var a = beApplied[ri];
+        try {
+          if (a.currentOverride) { await saveEmpHours(a.keyId, a.date, a.currentOverride); }
+          else { await clearEmpHours(a.keyId, a.date); }
+          beRolledBack.push(a.employee.name);
+        } catch (beRbErr) {
+          beRollbackFailed.push({ employee: a.employee.name, message: (beRbErr && beRbErr.message) || String(beRbErr) });
+        }
+      }
+      _claireLastToolResult = JSON.stringify({
+        error: 'batch_write_failed', failed_at: beWriteError,
+        attempted: beResolved.length, written_before_failure: beApplied.length,
+        rolled_back: beRolledBack, rollback_failed: beRollbackFailed
+      });
+      claireReply(message || ('The batch hit an error partway through (' + beWriteError.employee + ': ' + beWriteError.message + '). ' +
+        (beRollbackFailed.length ? 'Some rollbacks failed too -- please double-check hours for: ' + beRollbackFailed.map(function(x){return x.employee;}).join(', ') + '.'
+          : 'Everything already written was rolled back, so nothing was left half-applied.')));
+      return;
+    }
+
+    var beDayList = beApplied.map(function(r) { return r.employee.name + ' (' + r.date + ')'; }).join(', ');
+    _claireLastToolResult = JSON.stringify({ success: true, count: beApplied.length, updated: beApplied.map(function(r){ return { employee: r.employee.name, date: r.date }; }) });
+    claireReply(message || ('Updated hours for ' + beApplied.length + ': ' + beDayList + '. Done.'));
 
   // ── LOCATE TEAM ──  (query tool — no claireReply)
   } else if (name === 'locate_team') {
