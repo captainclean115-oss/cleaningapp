@@ -24532,7 +24532,18 @@ async function processVoiceCommand(text) {
           claireReply('Hit rate limit, slow down — try again in a few minutes.');
           return;
         }
-        if (!didAnyToolCall) { processVoiceCommandLocal(text); return; }
+        // Bug fix: this used to drop claireErr entirely, so ANY round-0
+        // API failure (bad tool schema, auth, upstream 5xx, whatever)
+        // surfaced as the same content-free "having trouble connecting"
+        // canned reply local parsing falls through to for an unrecognized
+        // message -- indistinguishable from "Claire just didn't
+        // understand you," and made a real regression unreportable (Tom
+        // had nothing concrete to say beyond "she seems stuck"). Passing
+        // the real reason through means the ONE case that actually
+        // matters -- local parsing ALSO finds nothing to do -- shows it,
+        // instead of every genuinely-unrecognized message growing a
+        // scary error suffix.
+        if (!didAnyToolCall) { processVoiceCommandLocal(text, claireErr && claireErr.message); return; }
         claireReply('I had trouble finishing that — want me to try again?');
         return;
       }
@@ -24624,9 +24635,17 @@ async function processVoiceCommand(text) {
       _claireLastToolSmsLink = null;
     }
   } catch(e) {
+    // Bug fix: this used to swallow `e` completely -- no console trace at
+    // all, unlike the inner round-0 catch a few lines up which at least
+    // console.warns. Anything that throws in the tool-loop body outside
+    // that inner try (response parsing, history bookkeeping, a future
+    // change) vanished without a trace and fell back to the same
+    // content-free generic reply. Log it and pass the reason through the
+    // same way the inner catch now does.
+    console.error('[claire] processVoiceCommand failed:', e && e.message, e);
     _claireSilent = false;
     claireHideTyping();
-    processVoiceCommandLocal(text);
+    processVoiceCommandLocal(text, e && e.message);
   }
 }
 
@@ -26380,8 +26399,12 @@ function claireSendSms(clientId, msgText) {
   });
 }
 
-// Fallback local parsing when API is unavailable
-function processVoiceCommandLocal(text) {
+// Fallback local parsing when API is unavailable. apiErrorReason (optional)
+// is the real error from the failed _claireApi call that triggered this
+// fallback -- surfaced only in the final generic catch-all below, so a
+// genuine API/schema/auth failure is reportable instead of looking
+// identical to "Claire didn't understand a normal message."
+function processVoiceCommandLocal(text, apiErrorReason) {
   var lower = text.toLowerCase();
 
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
@@ -26437,7 +26460,9 @@ function processVoiceCommandLocal(text) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
     if (noteText) { var now=new Date(); var ts=now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); manualTasks.unshift({id:Date.now().toString(),text:noteText,time:ts,done:false}); saveManualTasks(); renderTasks(); claireReply('Noted! Added "'+noteText+'" to your reminders.'); return; }
   }
-  claireReply('Sorry, I\'m having trouble connecting right now. Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
+  claireReply('Sorry, I\'m having trouble connecting right now.'
+    + (apiErrorReason ? ' (' + apiErrorReason + ')' : '')
+    + ' Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
 }
 
 function cancelVoiceCmd() {
