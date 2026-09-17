@@ -24722,7 +24722,19 @@ function findEmployees(query) {
     if (score > 0) scored.push({ emp: e, score: score });
   });
   scored.sort(function(a, b) { return b.score - a.score; });
-  return scored.map(function(x) { return x.emp; });
+  // Bug fix: this used to return EVERY scored match regardless of tier, so
+  // an exact/token match (1000/900) still got diluted by an unrelated
+  // employee whose full name merely CONTAINS the query as a substring
+  // (700) -- e.g. querying "Maria Vieira" (an exact match) also matched
+  // "Ana Maria Vieira Santos" purely because the substring appears inside
+  // it, forcing edit_employee_hours/get_employee_hours's `matches.length >
+  // 1` check to report ambiguous_employee and stall Claire on an obvious
+  // name. Filtering to only the top score tier preserves genuine
+  // ambiguity (multiple employees tied at the same best tier, e.g. two
+  // real "Maria Vieira" records) while letting a clearly-better match win
+  // outright over a merely-contains match.
+  var topScore = scored.length ? scored[0].score : 0;
+  return scored.filter(function(x) { return x.score === topScore; }).map(function(x) { return x.emp; });
 }
 
 // Returns { matches: [...], suggestions: [closest 3] } -- same shape as
