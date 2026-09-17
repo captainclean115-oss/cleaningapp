@@ -26930,6 +26930,16 @@ async function renderTeamManager(opts) {
   const isActiveEmp = (emp) => (termData[emp.id]?.status || 'active') !== 'terminated';
 
   teams.forEach(team => {
+   // Bug fix: this whole callback used to run unguarded. renderTeamManager
+   // only assigns its accumulated `html` to #team-mgr-content on its very
+   // last line, so an uncaught throw for ANY single team (most likely from
+   // _teamDayStats's mostly-unguarded job/client lookups below) aborted
+   // the entire forEach and the whole modal -- which openTeamManager had
+   // already shown as an open overlay -- stayed permanently blank, no
+   // banner, no toast, just a console error. Isolating per-team means one
+   // team's bad data degrades to an error card instead of blanking every
+   // other team (and Unassigned) too.
+   try {
     const color = _pentaTeamColor(team, '#6b7280');
     const employees = getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team && isActiveEmp(e));
     const stats = _teamDayStats(team, dateStr);
@@ -27028,8 +27038,20 @@ async function renderTeamManager(opts) {
         ${employees.length === 0 ? '<div style="color:var(--muted);font-size:13px;padding:4px 0">No employees assigned</div>' : ''}
       </div>
     </div>`;
+   } catch (e) {
+    console.error('[TeamMgr] rendering team "' + team + '" failed -- showing an error card instead of blanking the whole modal', e);
+    html += '<div style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:14px 16px;color:var(--text);font-size:13px">'
+      + '<div style="font-weight:700;margin-bottom:4px;color:var(--red)">Team ' + _adminEsc(team) + ' failed to load</div>'
+      + '<div style="color:var(--muted)">' + _adminEsc((e && e.message) || String(e)) + '</div></div>';
+   }
   });
 
+  // Floaters / unassigned / archived -- wrapped the same way as the
+  // per-team loop above: an uncaught throw anywhere in here used to abort
+  // the rest of renderTeamManager before the final innerHTML assignment,
+  // silently blanking the already-open modal (team cards included, even
+  // though those render fine on their own now).
+  try {
   // Floaters / unassigned
   const unassigned = getUnifiedRoster().filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e));
   if (unassigned.length > 0) {
@@ -27127,6 +27149,12 @@ async function renderTeamManager(opts) {
         </div>`;
       }).join('')}
     </div>`;
+  }
+  } catch (e) {
+    console.error('[TeamMgr] rendering unassigned/archived sections failed -- team cards above still show', e);
+    html += '<div style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:14px 16px;color:var(--text);font-size:13px">'
+      + '<div style="font-weight:700;margin-bottom:4px;color:var(--red)">Unassigned/archived employees failed to load</div>'
+      + '<div style="color:var(--muted)">' + _adminEsc((e && e.message) || String(e)) + '</div></div>';
   }
 
   document.getElementById('team-mgr-content').innerHTML = html;
@@ -27896,7 +27924,21 @@ function openDayOffPicker(employeeId, dateStr) {
 }
 
 function getRosterTermData() {
-  return JSON.parse(localStorage.getItem('roster_term_data') || '{}');
+  // Read at the very top of renderTeamManager's team-building loop, before
+  // any team card is built -- an unguarded throw here (e.g. a corrupted
+  // roster_term_data value) aborted the whole render, and since
+  // renderTeamManager only assigns its built `html` string to
+  // #team-mgr-content on its very last line, that meant the Teams modal
+  // opened (openTeamManager shows the overlay first, unconditionally) and
+  // stayed permanently blank -- no banner, no toast, just a console error.
+  // Non-fatal now, matching the read-side equivalent of the write-side
+  // localStorage hardening already applied elsewhere (PR #181).
+  try {
+    return JSON.parse(localStorage.getItem('roster_term_data') || '{}');
+  } catch (e) {
+    console.warn('[getRosterTermData] failed to parse roster_term_data (non-fatal)', e);
+    return {};
+  }
 }
 function saveRosterTermData(data) {
   localStorage.setItem('roster_term_data', JSON.stringify(data));
