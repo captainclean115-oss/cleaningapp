@@ -25248,9 +25248,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var method = input.method || 'unknown';
     var now2 = new Date();
     var ts2 = now2.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now2.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-    var pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-    pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method, clientId: rpClient.id });
-    localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+    try {
+      var pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
+      pending.unshift({ id:Date.now().toString(), action:'💵 Payment: '+rpClient.fn+' '+rpClient.ln, details:'$'+payAmt+' by '+method+'. Balance: $'+oldBal+' → $'+Math.round(rpClient.bal), time:ts2, done:false, type:'payment_received', amount:payAmt, method:method, clientId: rpClient.id });
+      localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+    } catch (e) { console.warn('[claire record_payment] pending log failed (non-fatal)', e); }
     logActivity('Payment: '+rpClient.fn+' '+rpClient.ln, '$'+payAmt+' by '+method, null, rpClient.id);
     _claireLastToolResult = 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance: $'+Math.round(oldBal)+' -> $'+Math.round(rpClient.bal)+'. Done.';
     claireReply(message || 'Recorded $'+payAmt+' payment from '+rpClient.fn+' '+rpClient.ln+' by '+method+'. Balance went from $'+Math.round(oldBal)+' to $'+Math.round(rpClient.bal)+'.');
@@ -28202,8 +28204,24 @@ function getUnifiedRoster(asOfDate) {
 // key: 'YYYY-MM-DD_employeeId' -> teamName
 let dailyAssignments = JSON.parse(localStorage.getItem('daily_assignments') || '{}');
 
+// Was completely unguarded, and every caller (assignEmployee's optimistic
+// write chief among them) invokes it OUTSIDE any try/catch of its own --
+// a QuotaExceededError here threw straight out of assignEmployee BEFORE
+// it ever reached the `await window.PentaAssignments.assign(...)` line,
+// skipping the real Supabase write entirely with no rollback and no
+// toast (confirmTeamAssign/quickAssign's writePromise.catch() only
+// re-renders, it doesn't toast -- that's assignEmployee's own catch,
+// which this bypassed). Same PR #140 hazard class, just on a call site
+// that fix never touched. Non-fatal now, matching savePending/
+// saveManualTasks/logActivity's already-established pattern: the
+// in-memory optimistic state (and the actual network write right after)
+// proceed regardless of whether the local cache persisted.
 function saveDailyAssignments() {
-  localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+  try {
+    localStorage.setItem('daily_assignments', JSON.stringify(dailyAssignments));
+  } catch (e) {
+    console.warn('[saveDailyAssignments] failed (non-fatal) -- override may not persist across reload', e);
+  }
 }
 
 // Structured "Day off" categories (migration 086). Same key shape as
@@ -41904,7 +41922,7 @@ async function saveFormDecision(formId, status, fid) {
   if (status !== null) allForms[idx].managerStatus = status;
   allForms[idx].managerNote = note;
   allForms[idx].reviewedAt = reviewedDisplay;
-  localStorage.setItem('emp_forms', JSON.stringify(allForms));
+  try { localStorage.setItem('emp_forms', JSON.stringify(allForms)); } catch (e) { console.warn('[forms] legacy review save failed (non-fatal)', e); }
   if (typeof submittedForms !== 'undefined') {
     const pi = submittedForms.findIndex(f => String(f.timestamp||'') === ts);
     if (pi >= 0) submittedForms[pi] = allForms[idx];
@@ -45958,21 +45976,25 @@ function submitCustomForm(formId) {
     data, custom: true
   };
 
-  const allForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
-  allForms.push(entry);
-  localStorage.setItem('emp_forms', JSON.stringify(allForms));
+  try {
+    const allForms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
+    allForms.push(entry);
+    localStorage.setItem('emp_forms', JSON.stringify(allForms));
+  } catch (e) { console.warn('[submitCustomForm] emp_forms save failed (non-fatal)', e); }
   if (typeof submittedForms !== 'undefined') submittedForms.push(entry);
 
   // Log to pending
-  const pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
-  pending.unshift({
-    id: Date.now().toString(),
-    action: form.icon + ' ' + form.name + ' — ' + empName + (empTeam?' ('+empTeam+')':''),
-    details: Object.entries(data).filter(([k,v])=>v).map(([k,v])=>k+': '+v).slice(0,3).join(' · '),
-    time: now.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),
-    done: false, type: formId
-  });
-  localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+  try {
+    const pending = JSON.parse(localStorage.getItem('cleanco_pending') || '[]');
+    pending.unshift({
+      id: Date.now().toString(),
+      action: form.icon + ' ' + form.name + ' — ' + empName + (empTeam?' ('+empTeam+')':''),
+      details: Object.entries(data).filter(([k,v])=>v).map(([k,v])=>k+': '+v).slice(0,3).join(' · '),
+      time: now.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}),
+      done: false, type: formId
+    });
+    localStorage.setItem('cleanco_pending', JSON.stringify(pending));
+  } catch (e) { console.warn('[submitCustomForm] pending log failed (non-fatal)', e); }
 
   const success = document.getElementById('form-success');
   if (success) success.innerHTML = '<div class="success-msg">✓ Submitted!</div>';
@@ -46400,12 +46422,14 @@ function signHandbook() {
   const dateStr = now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
   const key = currentEmployee.name + '_sig';
   signatures[key] = { name, date: dateStr, timestamp: now.toISOString(), employee: currentEmployee.name, team: currentEmployee.team };
-  localStorage.setItem('emp_signatures', JSON.stringify(signatures));
+  try { localStorage.setItem('emp_signatures', JSON.stringify(signatures)); } catch (e) { console.warn('[signHandbook] signature save failed (non-fatal)', e); }
 
   // Log to main app
-  const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
-  updates.unshift({ id: Date.now().toString(), text: `Handbook signed — ${currentEmployee.name} (${currentEmployee.team})`, done: false, date: now.toISOString() });
-  localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+  try {
+    const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
+    updates.unshift({ id: Date.now().toString(), text: `Handbook signed — ${currentEmployee.name} (${currentEmployee.team})`, done: false, date: now.toISOString() });
+    localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+  } catch (e) { console.warn('[signHandbook] task log failed (non-fatal)', e); }
 
   document.getElementById('esign-form').style.display = 'none';
   document.getElementById('esign-signed-display').style.display = 'block';
@@ -47267,14 +47291,16 @@ async function submitApplication() {
   //   For now the thank-you screen is the only confirmation surface.
 
   // Log to main app updates tab
-  const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
-  updates.unshift({
-    id: Date.now().toString(),
-    text: '📋 New job application — ' + app.firstName + ' ' + app.lastName + ' · ' + app.phone,
-    done: false,
-    date: now.toISOString()
-  });
-  localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+  try {
+    const updates = JSON.parse(localStorage.getItem('cleanco_tasks') || '[]');
+    updates.unshift({
+      id: Date.now().toString(),
+      text: '📋 New job application — ' + app.firstName + ' ' + app.lastName + ' · ' + app.phone,
+      done: false,
+      date: now.toISOString()
+    });
+    localStorage.setItem('cleanco_tasks', JSON.stringify(updates));
+  } catch (e) { console.warn('[apply] task log failed (non-fatal)', e); }
 
   // Show success
   document.getElementById('app-form').style.display = 'none';
