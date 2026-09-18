@@ -5334,6 +5334,19 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div class="claire-name" style="font-size:20px;font-weight:700">Claire</div>
       <div class="claire-status" style="justify-content:center;margin-top:2px"><span class="claire-online-dot"></span><span id="claire-status-text">Online · Your AI assistant</span></div>
     </div>
+    <!-- Feature: voice on/off toggle. Always visible (unlike #claire-stop-btn,
+         which only shows mid-speech) so it can be flipped mid-conversation
+         without hunting through a settings screen -- there isn't one for
+         Claire today; this is deliberately a direct control in her own view. -->
+    <button id="claire-voice-toggle-btn" onclick="toggleClaireVoice()" type="button"
+            aria-pressed="true" title="Turn Claire's spoken replies on or off"
+            style="display:flex; align-items:center; gap:6px; margin:10px auto 0; padding:6px 16px;
+                   background:rgba(255,255,255,0.08); color:#fff;
+                   border:1px solid rgba(255,255,255,0.22); border-radius:20px;
+                   font-size:13px; font-weight:600; cursor:pointer;
+                   -webkit-tap-highlight-color: transparent;">
+      <span id="claire-voice-toggle-icon">🔊</span><span id="claire-voice-toggle-label">Voice on</span>
+    </button>
     <div id="claire-waveform" class="claire-waveform">
       <span></span><span></span><span></span><span></span><span></span>
     </div>
@@ -7754,6 +7767,7 @@ window.PentaSettings = (function() {
     // gps_session + gps_server retired in feat/geotab-per-tenant-pr2 —
     // Geotab credentials live on business_geotab_integrations (mig 067)
     // and the geotab-call EF holds the session server-side.
+    'claire_voice_enabled', // Claire voice on/off toggle -- see toggleClaireVoice()
   ];
 
   var _cache = {};        // last-known DB settings
@@ -7827,10 +7841,42 @@ window.PentaSettings = (function() {
 
       _ready = true;
       _loading = null;
+      _setupRealtime(sb, uid);
       _notify();
       return true;
     })();
     return _loading;
+  }
+
+  // Feature (Claire voice toggle): cross-device sync needs more than the
+  // load()-on-boot merge above -- without this, flipping the toggle on the
+  // phone wouldn't reach an already-open desktop tab until it reloaded.
+  // Same postgres_changes pattern used throughout this file (e.g.
+  // PentaForms/PentaAssignments _setupRealtime), filtered to this user's
+  // OWN row only (id=eq.<uid>) -- each browser subscribes only to its own
+  // signed-in user's settings, never anyone else's, regardless of what the
+  // table-level publication or RLS SELECT policy would otherwise allow a
+  // teammate to read on request.
+  var _realtimeChannel = null;
+  function _setupRealtime(sb, uid) {
+    if (_realtimeChannel || !sb || !uid) return;
+    try {
+      _realtimeChannel = sb.channel('penta-user-settings-' + uid)
+        .on('postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'users', filter: 'id=eq.' + uid },
+          function (payload) {
+            if (!payload.new || !payload.new.settings) return;
+            _cache = Object.assign({}, payload.new.settings);
+            SYNC_KEYS.forEach(function (k) {
+              var v = _cache[k];
+              if (v != null && v !== '') {
+                try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch (e) {}
+              }
+            });
+            _notify();
+          })
+        .subscribe(function (status) { console.log('[PentaSettings._setupRealtime] status=' + status); });
+    } catch (e) { console.warn('[PentaSettings] realtime subscribe failed (non-fatal)', e); }
   }
 
   function get(key) {
@@ -21454,8 +21500,54 @@ function _claireStripForSpeech(text) {
 // her ring while she's speaking. Stop button appears during speech so the
 // user can interrupt her mid-sentence.
 // ═══════════════════════════════════════════════════════════════════════
+// Feature: Claire voice on/off toggle. Tom: "doesn't want to hear her speak
+// most of the time -- reading her responses is faster." Text replies always
+// still render (claireReply always calls _claireRenderBubble); this only
+// gates the speechSynthesis call, so turning voice off never hides content.
+// Persisted via PentaSettings under 'claire_voice_enabled' (added to
+// SYNC_KEYS below) -- per-user, synced to public.users.settings jsonb, and
+// mirrored to localStorage so a same-tab read before PentaSettings.load()
+// resolves still gets the right answer instantly. Always stored/read as the
+// STRING 'true'/'false' (every other PentaSettings-backed flag in this file
+// follows that convention -- see rc_token_expiry, claire_photo, etc. --
+// avoids any boolean/string ambiguity across the jsonb round-trip). Absence
+// of the key (brand new user, never toggled) means "not yet decided," which
+// this treats as ON to match the required default.
+function _claireVoiceEnabled() {
+  var v = (window.PentaSettings && window.PentaSettings.get) ? window.PentaSettings.get('claire_voice_enabled') : null;
+  return v !== 'false';
+}
+
+// Wired to the toggle button in #claire-view (next to the avatar). Flips
+// the setting, updates the button immediately (don't wait on the DB round-
+// trip), and if voice was just turned off mid-speech, cuts her off instead
+// of letting the in-flight utterance finish.
+function toggleClaireVoice() {
+  var next = !_claireVoiceEnabled();
+  if (!next) {
+    try { window.speechSynthesis.cancel(); } catch(e){}
+    _claireSetSpeakingUI(false);
+  }
+  _claireUpdateVoiceToggleUI(next);
+  try { if (window.PentaSettings && window.PentaSettings.set) window.PentaSettings.set('claire_voice_enabled', next ? 'true' : 'false'); } catch (e) {}
+}
+
+// Reflects the current on/off state in the button. Called on toggle, on
+// initial boot once PentaSettings has loaded, and on a realtime update from
+// another device (see PentaSettings._setupRealtime) so the button stays in
+// sync across devices without a page reload.
+function _claireUpdateVoiceToggleUI(enabled) {
+  var icon = document.getElementById('claire-voice-toggle-icon');
+  var label = document.getElementById('claire-voice-toggle-label');
+  var btn = document.getElementById('claire-voice-toggle-btn');
+  if (icon) icon.textContent = enabled ? '🔊' : '🔇';
+  if (label) label.textContent = enabled ? 'Voice on' : 'Voice off';
+  if (btn) btn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+}
+
 function claireSpeak(text) {
   if (!text) return;
+  if (!_claireVoiceEnabled()) return;
   var plain = _claireStripForSpeech(text);
   if (!plain) return;
   if (!('speechSynthesis' in window)) return;
@@ -21491,6 +21583,13 @@ function claireStopSpeaking() {
 // the preferred voice so the first call to claireSpeak doesn't race. Also
 // refresh the voice-name display + hint-visibility when voices load in.
 function initClaireVoices() {
+  // Reflect the voice toggle immediately from localStorage (instant, no
+  // network wait) -- PentaSettings.load() + onChange (wired below) refresh
+  // it again once the DB/cross-device state is known.
+  _claireUpdateVoiceToggleUI(_claireVoiceEnabled());
+  if (window.PentaSettings && window.PentaSettings.onChange) {
+    window.PentaSettings.onChange(function () { _claireUpdateVoiceToggleUI(_claireVoiceEnabled()); });
+  }
   if (!('speechSynthesis' in window)) return;
   var v = window.speechSynthesis.getVoices();
   if (v && v.length) {
