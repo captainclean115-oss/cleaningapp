@@ -20906,6 +20906,75 @@ let currentConv = null;
 // user-facing notice.
 var _claireApiKey = '';
 var _claireHistory = []; // conversation history for context
+
+// Bug fix (Sept 2026 payroll session crash): processVoiceCommand used to
+// cap history with a flat `_claireHistory.slice(-24)`, which counts raw
+// messages, not conversational turns. A single multi-round tool-calling
+// exchange (e.g. a batch hours edit: preview call -> tool_result -> confirm
+// call -> tool_result -> wrap-up) pushes TWO messages per round: an
+// assistant message (which may carry unanswered tool_use blocks) and a
+// user message (which may be nothing but tool_result blocks answering
+// them). Anthropic requires every tool_result to be preceded immediately
+// by the assistant message that issued the matching tool_use. Slicing at a
+// flat count has no idea where those pair boundaries are -- whenever the
+// number of messages trimmed off the front happened to be even, the cut
+// landed between a tool_use assistant message and its tool_result user
+// message, leaving the tool_result as the new first message with no
+// matching tool_use anywhere in the array. That's exactly what produced
+// "messages.0.content.0: unexpected tool_use_id found in tool_result
+// blocks" -- a real, reproducible 400 from the API, not a fluke -- and,
+// on rounds where the cut just barely missed a pair boundary, it silently
+// dropped the user's own message (the one with the actual times/names)
+// while leaving the rest of the array well-formed, which is why Claire
+// could deny ever having received values she'd just previewed two turns
+// earlier: they'd already been trimmed out, cleanly, with no error at all.
+//
+// Fix: only ever cut at a genuine turn boundary -- a 'user' message whose
+// content is a plain string (a real thing the operator typed), never an
+// array of tool_result blocks. Scan forward from the target cut point to
+// the next such boundary. If none exists in the trimmable range (an
+// unusually long single tool-calling exchange), skip trimming this round
+// rather than gut the array to something malformed or empty -- it'll
+// trim cleanly on a later round once a real turn boundary exists.
+function _claireTrimHistory(maxMessages) {
+  if (_claireHistory.length <= maxMessages) return;
+  var cut = _claireHistory.length - maxMessages;
+  while (cut < _claireHistory.length) {
+    var m = _claireHistory[cut];
+    if (m && m.role === 'user' && typeof m.content === 'string') break;
+    cut++;
+  }
+  if (cut >= _claireHistory.length) return; // no safe boundary yet -- leave it, trim later
+  _claireHistory = _claireHistory.slice(cut);
+}
+
+// Bug fix (same payroll-session report): the MAX_TOOL_ROUNDS fallback and
+// the "Claude returned neither text nor tool_use" defensive fallback both
+// used to reply with a vague, unverified line ("That was a lot -- anything
+// still left to handle?" / "Done.") with no idea whether any write in this
+// turn actually succeeded. Tom asking "is it done?" right after one of
+// these, and Claire not being able to answer from her own prior turn, was
+// the direct cause of the "I never received the times" contradiction.
+// Every write-shaped tool result IS available right here as it comes back
+// -- this pulls a concrete, factual summary out of it so the wrap-up (or
+// round-cap) reply can state plainly what was actually saved, instead of
+// asking the operator to trust an unconfirmed status.
+function _claireWriteSummary(toolName, resStr) {
+  if (toolName === 'batch_edit_employee_hours') {
+    try {
+      var parsed = JSON.parse(resStr);
+      if (parsed && parsed.success === true && Array.isArray(parsed.updated) && parsed.updated.length) {
+        return 'Saved hours for ' + parsed.updated.map(function(u){ return u.employee + ' (' + u.date + ')'; }).join(', ') + '.';
+      }
+    } catch(e) {}
+    return null;
+  }
+  if (toolName === 'edit_employee_hours' && typeof resStr === 'string' && resStr.indexOf('Updated ') === 0) {
+    return resStr.split(' Verified by reading it back.')[0] + '.';
+  }
+  return null;
+}
+
 function setClaireApiKey() {
   alert('API keys are server-side now — no per-browser setup needed. Claire just works once you sign in.');
 }
@@ -24453,14 +24522,17 @@ async function processVoiceCommand(text) {
     +'2. For a "copy X\'s hours to Y" (or "match X\'s hours") request: FIRST call get_employee_hours for X on the requested date/range. Present the EXACT values to ' + _opName + ' — e.g. "Nadia\'s Tue Sept 1: 9:15 AM – 5:20 PM, 30m lunch. Copy to Natalia?" — and WAIT for explicit confirmation. Do NOT call edit_employee_hours in the same turn as get_employee_hours for a copy request.\n'
     +'3. After ' + _opName + ' confirms, call edit_employee_hours for Y with the exact start/end/lunch X had. edit_employee_hours verifies its own write by reading it back before replying, so a success message means the value is confirmed in the database, not just attempted.\n'
     +'4. If get_employee_hours or edit_employee_hours returns error: "ambiguous_employee", list the candidate names from the result and ask ' + _opName + ' which one they meant — never just guess the first match. If it returns error: "employee_not_found", say so and mention the suggestions if any were returned.\n'
-    +'5. For BATCH changes — multiple employees on the same date, one employee across multiple dates, or any combination (e.g. "set B1\'s Sept 2 to 9-5", "set Elvia\'s whole last week to 8-5", "match everyone\'s Sept 3 to their Sept 2") — use batch_edit_employee_hours instead of calling edit_employee_hours repeatedly. ALWAYS call it first with confirmed omitted to get a preview (no writes happen). Show ' + _opName + ' the COMPLETE list, one line per person/day, current value -> proposed value, e.g.:\n'
+    +'5. For BATCH changes — multiple employees on the same date, one employee across multiple dates, or any combination (e.g. "set B1\'s Sept 2 to 9-5", "set Elvia\'s whole last week to 8-5", "match everyone\'s Sept 3 to their Sept 2") — use batch_edit_employee_hours instead of calling edit_employee_hours repeatedly. If ' + _opName + ' gives you several dates in the same message (a Sunday payroll batch is the normal case — different times per day, same group of people, sometimes overriding a vacation/OFF day), put EVERY entry across ALL those dates into ONE batch_edit_employee_hours call\'s entries array — do not split it into one call per date. ALWAYS call it first with confirmed omitted to get a preview (no writes happen). Show ' + _opName + ' the COMPLETE list, one line per person/day, current value -> proposed value, e.g.:\n'
     +'   "About to set these 5 employees to 9:00 AM - 5:00 PM on Sept 2:\n'
     +'    - Katia Mejia (currently OFF)\n'
     +'    - Elvia Tonato (currently 8:32 AM - 4:15 PM)\n'
     +'    - ...\n'
     +'    Confirm all? (yes / no / skip [name])"\n'
-    +'   This confirmation is REQUIRED for every batch, even when ' + _opName + ' already gave exact times — unlike a single edit_employee_hours call, a batch never skips this step. If ' + _opName + ' asks to skip someone, drop that entry and call batch_edit_employee_hours again with confirmed omitted to show the updated list — do not write until the (possibly shorter) final list is explicitly confirmed. Only after an explicit yes on the exact final list, call batch_edit_employee_hours again with the SAME entries and confirmed=true. If it returns error: "entry_resolution_failed", resolve each listed employee (same ambiguous/not-found handling as step 4) before retrying — nothing is written or previewed until every entry resolves. If it returns error: "batch_write_failed", tell ' + _opName + ' exactly what was rolled back and what (if anything) still needs manual review — never imply the whole batch succeeded.\n'
-    +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '. This exception does NOT apply to batch_edit_employee_hours, which always previews and confirms first regardless.\n\n'
+    +'   This confirmation is REQUIRED for every batch, even when ' + _opName + ' already gave exact times — unlike a single edit_employee_hours call, a batch never skips this step. If ' + _opName + ' asks to skip someone, drop that entry and call batch_edit_employee_hours again with confirmed omitted to show the updated list — do not write until the (possibly shorter) final list is explicitly confirmed.\n'
+    +'   A short reply from ' + _opName + ' after you show the preview — "yes", "confirmed", "override", "do it", "go ahead", or similar — confirms the ENTIRE list exactly as shown, including any entries whose current value was an approved day off/vacation. It is NOT a request for more detail and does NOT need a follow-up question. In that same turn, immediately call batch_edit_employee_hours again with the SAME entries and confirmed=true — never just acknowledge ("got it") or re-preview the same list back without calling the tool; a confirmation word with no confirmed=true call behind it means nothing was saved, no matter what you say.\n'
+    +'   If it returns error: "entry_resolution_failed", resolve each listed employee (same ambiguous/not-found handling as step 4) before retrying — nothing is written or previewed until every entry resolves. If it returns error: "batch_write_failed", tell ' + _opName + ' exactly what was rolled back and what (if anything) still needs manual review — never imply the whole batch succeeded. On success, your final reply for this message MUST state plainly what was saved — name every employee/date pair or say the count and range (e.g. "Saved Fatima, Franchesca, Nadia and Natalia for 8/9, 8/10 and 8/11. Done.") — never end a completed write with an open-ended line like "anything else?" that doesn\'t confirm the save happened.\n'
+    +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '. This exception does NOT apply to batch_edit_employee_hours, which always previews and confirms first regardless.\n'
+    +'6. If ' + _opName + ' asks "is it done?" / "did that save?" after any hours edit, do not answer from memory of what you intended to do — call get_employee_hours for the employee(s)/date(s) in question and report the actual current value read back from the database. If your own last message already stated a save succeeded, you may state that directly, but never claim or deny a save you cannot see in this conversation\'s tool results — if you genuinely don\'t know, say that and re-check rather than guessing either way.\n\n'
     +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
@@ -24504,6 +24576,7 @@ async function processVoiceCommand(text) {
   var MAX_TOOL_ROUNDS = 10;
   var didAnyToolCall = false;
   var toolsCalledCount = 0;
+  var writeSummaries = []; // concrete "what actually saved" lines, gathered as tool_results come back
   // Run the entire tool loop in silent mode so individual tool handlers
   // don't render intermediate bubbles or trigger intermediate D-ID videos.
   // Only the final wrap-up reply gets rendered + spoken — ONE bubble, ONE
@@ -24586,6 +24659,8 @@ async function processVoiceCommand(text) {
           } catch (te) {
             resStr = 'Tool ' + tu.name + ' threw: ' + (te && te.message ? te.message : String(te));
           }
+          var _ws = _claireWriteSummary(tu.name, resStr);
+          if (_ws) writeSummaries.push(_ws);
           toolResults.push({
             type: 'tool_result',
             tool_use_id: tu.id,
@@ -24593,21 +24668,29 @@ async function processVoiceCommand(text) {
           });
         }
         _claireHistory.push({ role: 'user', content: toolResults });
-        if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
+        _claireTrimHistory(40);
         continue;
       }
 
       // No tool call this round — Claude is wrapping up. Exit silent mode
       // so this ONE reply renders + speaks normally.
       _claireSilent = false;
-      if (_claireHistory.length > 24) _claireHistory = _claireHistory.slice(-24);
+      _claireTrimHistory(40);
       if (textReply) {
         claireReply(textReply, _claireMode);
       } else if (!didAnyToolCall) {
         claireReply('I\'m not sure what you need — can you say that differently?');
+      } else if (writeSummaries.length) {
+        // Defensive: Claude returned neither text nor tool_use after tool
+        // calls. Used to be a bare "Done." -- worthless to an operator
+        // trying to confirm a write actually happened. We know exactly
+        // what was written this turn, so say it instead of asking Tom to
+        // trust an unconfirmed status.
+        claireReply(writeSummaries.join(' ') + ' Done.');
       } else {
         // Defensive: Claude returned neither text nor tool_use after tool
-        // calls. Shouldn't happen with Sonnet, but fall back gracefully.
+        // calls, and nothing this turn was a write. Shouldn't happen with
+        // Sonnet, but fall back gracefully.
         claireReply('Done.');
       }
       // Coach-Claire Phase 2: render the SMS "Send to <X>" button bubble
@@ -24618,15 +24701,25 @@ async function processVoiceCommand(text) {
       }
       return;
     }
-    // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging. Recap line is
-    // for genuine multi-action batches that exceeded the cap; if Claude
-    // burned the budget speculatively (one or zero real tools, e.g. an
-    // advisory question that got mis-routed), don't insult Tom with the
-    // "that was a lot" line — give a non-recap fallback instead.
+    // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
+    //
+    // Bug fix: this used to reply "That was a lot -- anything still left
+    // to handle?" whenever 2+ tools ran, regardless of whether any of them
+    // actually wrote anything. That phrasing reads as "I finished, ask me
+    // if there's more" -- but hitting the round cap means Claude did NOT
+    // get to produce its own wrap-up, so whether the last write (e.g. a
+    // batch confirm) even landed is genuinely unknown at this point. Tom
+    // asking "is it done?" right after this exact line, and getting "I
+    // never received the times" back, is what happens when this vague
+    // status is trusted. Report only what we can actually verify: real
+    // write summaries gathered from tool_results this turn, if any, plus
+    // an explicit "still confirming" note rather than an implied all-clear.
     _claireSilent = false;
     claireHideTyping();
-    if (toolsCalledCount >= 2) {
-      claireReply('That was a lot — anything still left to handle?');
+    if (writeSummaries.length) {
+      claireReply(writeSummaries.join(' ') + ' Still finishing the rest — say "is it done?" and I\'ll check.');
+    } else if (toolsCalledCount >= 2) {
+      claireReply('Still working through that — nothing\'s confirmed saved yet. Ask me to check, or try again.');
     } else {
       claireReply('Hmm, I got tangled up looking that up — can you ask again, or rephrase?');
     }
