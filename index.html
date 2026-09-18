@@ -21604,6 +21604,62 @@ function initClaireVoices() {
 }
 document.addEventListener('DOMContentLoaded', initClaireVoices);
 
+// ═══════════════════════════════════════════════════════════════════════
+// Stale-tab detection ("update available" banner)
+//
+// Bug report (Sept 2026): a fix that raised Claire's voice-mode max_tokens
+// 400 -> 3000 was confirmed correct in the deployed source AND confirmed
+// live server-side (GitHub Pages build for the commit finished, verified
+// via the Pages API) roughly 9-10 minutes before Tom's next test -- yet
+// the claire-chat Edge Function's own request logs showed max_tokens=400
+// on every request during that test, proving the browser was still
+// running the OLD JavaScript. Root cause: this app has no service worker
+// and no build-time cache-busting, so (a) GitHub Pages' CDN caches
+// index.html for up to 10 minutes (cache-control: max-age=600, confirmed
+// via curl) and (b) even after that window, an already-open tab NEVER
+// refetches index.html at all until manually reloaded -- a page loaded
+// before a deploy keeps running that exact old code indefinitely, with
+// zero indication anything shipped. That combination is exactly what
+// made a real, correctly-deployed fix look like it "didn't take effect."
+//
+// Fix: periodically HEAD this same page (cache: 'no-store' to bypass any
+// browser-level cache on the check itself) and compare the ETag/
+// Last-Modified this tab loaded with against the CDN's current value. A
+// mismatch means a newer deploy exists -- show a small, dismissible-by-
+// refreshing banner instead of leaving the operator (or a future
+// diagnosis session) to wonder whether a shipped fix actually landed.
+var _pentaLoadedVersionTag = null;
+async function _pentaCheckForUpdate() {
+  try {
+    var resp = await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
+    var tag = resp.headers.get('etag') || resp.headers.get('last-modified');
+    if (!tag) return;
+    if (_pentaLoadedVersionTag === null) { _pentaLoadedVersionTag = tag; return; }
+    if (tag !== _pentaLoadedVersionTag) _pentaShowUpdateBanner();
+  } catch (e) { /* offline / network hiccup -- just skip this check, try again next interval */ }
+}
+function _pentaShowUpdateBanner() {
+  if (document.getElementById('penta-update-banner')) return;
+  var b = document.createElement('div');
+  b.id = 'penta-update-banner';
+  b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;'
+    + 'background:#111;color:#fff;padding:12px 16px;display:flex;align-items:center;'
+    + 'justify-content:space-between;gap:12px;font-family:"DM Sans",sans-serif;font-size:14px;'
+    + 'box-shadow:0 -2px 12px rgba(0,0,0,0.3);'
+    + 'padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))';
+  b.innerHTML = '<span>A new version of this app is available.</span>'
+    + '<button onclick="location.reload()" style="background:#fff;color:#111;border:none;'
+    + 'border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;flex-shrink:0">Refresh</button>';
+  document.body.appendChild(b);
+}
+// Check on load (records this tab's baseline tag -- never shows the
+// banner on the very first check), on return-to-foreground (the moment a
+// stale background tab is most likely to be acted on), and every 5
+// minutes while open, comfortably past the CDN's 10-minute cache window.
+document.addEventListener('DOMContentLoaded', _pentaCheckForUpdate);
+document.addEventListener('visibilitychange', function () { if (!document.hidden) _pentaCheckForUpdate(); });
+setInterval(_pentaCheckForUpdate, 5 * 60 * 1000);
+
 // Renders the "download a premium voice" help text when no enhanced voice is
 // installed, plus the small debug line showing which voice is selected.
 function updateClaireVoiceHint() {
