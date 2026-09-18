@@ -20975,6 +20975,107 @@ function _claireWriteSummary(toolName, resStr) {
   return null;
 }
 
+// Bug fix (recurrence report, Sept 2026): the same "unexpected tool_use_id
+// found in tool_result blocks" 400 came back after _claireTrimHistory
+// shipped, in a conversation short enough that trimming (cap 40) never
+// even engaged -- so whatever produced this particular corruption predates
+// the exchange that crashed, sitting dormant in _claireHistory (a single
+// global array that persists for the whole session, across many unrelated
+// messages) until the next API call happened to send it. Rather than keep
+// hunting for every individual mutation site that could ever introduce a
+// bad pairing, this is a last line of defense: run immediately before
+// every request that sends _claireHistory to the API, and GUARANTEE the
+// array actually sent is valid, independent of how it got into whatever
+// state it's in.
+//
+// Two passes:
+//   1. Advance past any leading messages until a genuine turn boundary
+//      (same rule as _claireTrimHistory) -- never start the array on a
+//      dangling tool_result or an assistant message whose tool_use has no
+//      surviving answer.
+//   2. Walk forward pairing every assistant tool_use message with the
+//      user tool_result message immediately after it. A pair only
+//      survives if the ids match exactly (same set, order-independent --
+//      Anthropic matches by id). A broken pair -- either side missing,
+//      mismatched ids, or a tool_result with nothing valid before it --
+//      is dropped ENTIRELY (both sides), never left half-corrected, since
+//      a half-fix just trades one 400 for the other ("tool_use ids
+//      without tool_result").
+// Plain text turns (both roles) pass through untouched.
+function _claireSanitizeHistoryForApi() {
+  var start = 0;
+  while (start < _claireHistory.length) {
+    var m0 = _claireHistory[start];
+    if (m0 && m0.role === 'user' && typeof m0.content === 'string') break;
+    start++;
+  }
+  var src = start < _claireHistory.length ? _claireHistory.slice(start) : _claireHistory.slice();
+
+  var out = [];
+  for (var i = 0; i < src.length; i++) {
+    var msg = src[i];
+    var toolUseIds = (msg && msg.role === 'assistant' && Array.isArray(msg.content))
+      ? msg.content.filter(function(b){ return b && b.type === 'tool_use'; }).map(function(b){ return b.id; })
+      : [];
+    if (toolUseIds.length) {
+      var next = src[i + 1];
+      var nextIds = (next && next.role === 'user' && Array.isArray(next.content))
+        ? next.content.filter(function(b){ return b && b.type === 'tool_result'; }).map(function(b){ return b.tool_use_id; })
+        : [];
+      var pairsUp = toolUseIds.length === nextIds.length && toolUseIds.every(function(id){ return nextIds.indexOf(id) !== -1; });
+      if (pairsUp) { out.push(msg); out.push(next); i++; continue; }
+      // Broken pair. Drop this assistant tool_use message; if the very
+      // next message is itself a tool_result block (just not one that
+      // matches), drop it too -- it can't stand alone.
+      if (next && next.role === 'user' && Array.isArray(next.content) && next.content.length && next.content[0] && next.content[0].type === 'tool_result') { i++; }
+      continue;
+    }
+    if (msg && msg.role === 'user' && Array.isArray(msg.content) && msg.content.length && msg.content[0] && msg.content[0].type === 'tool_result') {
+      continue; // orphaned tool_result with nothing valid before it
+    }
+    out.push(msg);
+  }
+  _claireHistory = out;
+}
+
+// Bug fix (same report): Claire's error paths used to show Tom the raw
+// technical detail verbatim -- "Sorry, I'm having trouble connecting right
+// now. (Anthropic error — {"type":"error","error":{...}} (Anthropic
+// status: 400))" -- useless to a non-technical operator, long, and scary-
+// looking. PR #185 (surfacing SOME reason instead of a content-free
+// fallback) was right that swallowing the error entirely made regressions
+// unreportable, but the fix for that shouldn't have been "dump raw JSON
+// into chat" -- it should have been "log the real detail somewhere a
+// developer can find it, show the operator a short plain-English line."
+// This maps a technical error to a short, calm, actionable sentence for
+// display; the full original detail is still console.error'd at every
+// throw site (unchanged) and, here, also persisted to audit_log so it
+// survives a page reload / isn't only in devtools.
+function _claireUserFacingError(err) {
+  if (err && err.isRateLimit) return 'Hit rate limit, slow down — try again in a few minutes.';
+  var msg = String((err && err.message) || '');
+  if (/no active session|sign in again/i.test(msg)) return 'You got signed out — sign back in and try again.';
+  if (/network/i.test(msg)) return 'Connection dropped. Try again?';
+  if (/unexpected tool_use_id|tool_use ids without tool_result|invalid_request_error/i.test(msg)) return 'I lost track — can you resend your last request?';
+  if (/time(d)?[ -]?out/i.test(msg)) return 'That took too long. Try again?';
+  return 'Something went wrong. Try again?';
+}
+
+// Best-effort durable log of a Claire-side technical failure -- action_type
+// must be one of audit_log's fixed CHECK-constraint values, so this reuses
+// 'manual_note'/'system' (the same convention logActivity already uses for
+// system-provenance notes) rather than a Claire-specific value the
+// constraint would reject.
+function _claireLogTechnicalError(context, err) {
+  try {
+    _auditSupplement('manual_note', 'system', null, {
+      source: 'claire', event: 'api_error', context: context,
+      message: (err && err.message) || String(err),
+      status: (err && err.status) || null
+    });
+  } catch (e) {}
+}
+
 function setClaireApiKey() {
   alert('API keys are server-side now — no per-browser setup needed. Claire just works once you sign in.');
 }
@@ -21095,6 +21196,18 @@ function _detectClaireMode(text) {
   if (/\b(compare|competitors?|competition|market|strategy|strategic|should i|how do i|what'?s the best|how does .{0,20}(stack|compare)|research|analyze|analysis|deep ?dive|explain|walk me through|thoughts on|pricing strategy|industry|trend|benchmark|recommend|recommendation|swot|opportun(ity|ities)|risks?|growth|expand|state of the business|state of my business)\b/.test(t)) {
     return 'research';
   }
+  // Bug fix: a dictated payroll batch ("9/8-934-637 10lunch 9/9-906-610.
+  // 10 lunch 9/10 910-722 10lunch ...") doesn't start with an action verb
+  // (no "set"/"change" -- Tom just lists dates) and easily blows past 120
+  // chars from date/time volume alone once it covers a week or more, not
+  // because it reads like a research question. The old length-only
+  // fallback below routed that straight into research mode (wrong tone --
+  // "Research mode -- pulling data and market context..." on a payroll
+  // edit -- and wrong max_tokens/system prompt for an operational batch).
+  // 2+ M/D date tokens is a strong, specific signal on its own: a real
+  // research question never reads like a date list, so this check runs
+  // BEFORE the length fallback and wins regardless of length.
+  if ((t.match(/\b\d{1,2}\/\d{1,2}\b/g) || []).length >= 2) return 'voice';
   // Long messages without action flavor → research.
   if (t.length > 120) return 'research';
   return 'voice';
@@ -24522,6 +24635,7 @@ async function processVoiceCommand(text) {
     +'2. For a "copy X\'s hours to Y" (or "match X\'s hours") request: FIRST call get_employee_hours for X on the requested date/range. Present the EXACT values to ' + _opName + ' — e.g. "Nadia\'s Tue Sept 1: 9:15 AM – 5:20 PM, 30m lunch. Copy to Natalia?" — and WAIT for explicit confirmation. Do NOT call edit_employee_hours in the same turn as get_employee_hours for a copy request.\n'
     +'3. After ' + _opName + ' confirms, call edit_employee_hours for Y with the exact start/end/lunch X had. edit_employee_hours verifies its own write by reading it back before replying, so a success message means the value is confirmed in the database, not just attempted.\n'
     +'4. If get_employee_hours or edit_employee_hours returns error: "ambiguous_employee", list the candidate names from the result and ask ' + _opName + ' which one they meant — never just guess the first match. If it returns error: "employee_not_found", say so and mention the suggestions if any were returned.\n'
+    +'4a. If ' + _opName + ' gives you dates/times for a TEAM (e.g. "S1 9/8 934-637...") without naming which employee(s), that is genuinely ambiguous whenever the team has more than one member — ask which specific person(s), OR whether it means the whole team, e.g. "S1 has 4 employees — all 4, or just one? If all, say \'all\'; if one, name them." A bare "yes"/"yeah"/"sure"/"correct" reply to THIS KIND of multiple-choice question does not select anything and must NOT be treated as an answer — this applies generally: whenever your last message offered a set of named options (which employee, which entry to skip, which of two matching clients), a one-word confirmation that doesn\'t repeat one of those names is not a valid answer. Ask again, framed so a one-word reply becomes unambiguous ("say \'all\' or name the person") rather than guessing which option "yes" was meant to confirm.\n'
     +'5. For BATCH changes — multiple employees on the same date, one employee across multiple dates, or any combination (e.g. "set B1\'s Sept 2 to 9-5", "set Elvia\'s whole last week to 8-5", "match everyone\'s Sept 3 to their Sept 2") — use batch_edit_employee_hours instead of calling edit_employee_hours repeatedly. If ' + _opName + ' gives you several dates in the same message (a Sunday payroll batch is the normal case — different times per day, same group of people, sometimes overriding a vacation/OFF day), put EVERY entry across ALL those dates into ONE batch_edit_employee_hours call\'s entries array — do not split it into one call per date. ALWAYS call it first with confirmed omitted to get a preview (no writes happen). Show ' + _opName + ' the COMPLETE list, one line per person/day, current value -> proposed value, e.g.:\n'
     +'   "About to set these 5 employees to 9:00 AM - 5:00 PM on Sept 2:\n'
     +'    - Katia Mejia (currently OFF)\n'
@@ -24567,6 +24681,11 @@ async function processVoiceCommand(text) {
     +'Today\'s jobs: '+todayJobs.length;
 
   _claireHistory.push({ role: 'user', content: text });
+  // Last line of defense against a corrupted tool_use/tool_result pairing
+  // anywhere earlier in this (session-long, persistent) history array --
+  // see _claireSanitizeHistoryForApi's own comment for why this exists
+  // even after _claireTrimHistory.
+  _claireSanitizeHistoryForApi();
 
   // Tool-use loop. Claude may need several rounds to handle a message
   // that asks for multiple actions (e.g. "cancel A, move B, change C").
@@ -24596,7 +24715,11 @@ async function processVoiceCommand(text) {
           messages: _claireHistory
         });
       } catch (claireErr) {
-        console.warn('[claire] tool-loop round', round, 'failed:', claireErr.message);
+        // Full technical detail: console (unchanged from PR #185) PLUS
+        // audit_log now, so a real regression is diagnosable after the
+        // fact without needing devtools open at the moment it happened.
+        console.error('[claire] tool-loop round', round, 'failed:', claireErr.message, claireErr);
+        _claireLogTechnicalError('processVoiceCommand round ' + round, claireErr);
         _claireSilent = false;
         claireHideTyping();
         // Rate-limit gets its own visible message so the user knows
@@ -24605,18 +24728,16 @@ async function processVoiceCommand(text) {
           claireReply('Hit rate limit, slow down — try again in a few minutes.');
           return;
         }
-        // Bug fix: this used to drop claireErr entirely, so ANY round-0
-        // API failure (bad tool schema, auth, upstream 5xx, whatever)
-        // surfaced as the same content-free "having trouble connecting"
-        // canned reply local parsing falls through to for an unrecognized
-        // message -- indistinguishable from "Claire just didn't
-        // understand you," and made a real regression unreportable (Tom
-        // had nothing concrete to say beyond "she seems stuck"). Passing
-        // the real reason through means the ONE case that actually
-        // matters -- local parsing ALSO finds nothing to do -- shows it,
-        // instead of every genuinely-unrecognized message growing a
-        // scary error suffix.
-        if (!didAnyToolCall) { processVoiceCommandLocal(text, claireErr && claireErr.message); return; }
+        // Bug fix (PR #185): this used to drop claireErr entirely, so ANY
+        // round-0 API failure surfaced as the same content-free "having
+        // trouble connecting" canned reply local parsing falls through to
+        // for an unrecognized message -- made a real regression
+        // unreportable. Bug fix (this pass): #185's fix over-corrected by
+        // showing the RAW technical detail verbatim in chat (a JSON blob
+        // with "Anthropic status: 400" etc) -- useless and scary to a
+        // non-technical operator. _claireUserFacingError translates it to
+        // a short plain sentence; the real detail is still logged above.
+        if (!didAnyToolCall) { processVoiceCommandLocal(text, _claireUserFacingError(claireErr)); return; }
         claireReply('I had trouble finishing that — want me to try again?');
         return;
       }
@@ -24728,17 +24849,18 @@ async function processVoiceCommand(text) {
       _claireLastToolSmsLink = null;
     }
   } catch(e) {
-    // Bug fix: this used to swallow `e` completely -- no console trace at
-    // all, unlike the inner round-0 catch a few lines up which at least
-    // console.warns. Anything that throws in the tool-loop body outside
-    // that inner try (response parsing, history bookkeeping, a future
+    // Bug fix (PR #185): this used to swallow `e` completely -- no console
+    // trace at all. Anything that throws in the tool-loop body outside
+    // the inner try (response parsing, history bookkeeping, a future
     // change) vanished without a trace and fell back to the same
-    // content-free generic reply. Log it and pass the reason through the
-    // same way the inner catch now does.
+    // content-free generic reply. Now logged both to console and
+    // audit_log, and translated to a short plain sentence for display
+    // (same reasoning as the inner catch above -- see _claireUserFacingError).
     console.error('[claire] processVoiceCommand failed:', e && e.message, e);
+    _claireLogTechnicalError('processVoiceCommand outer catch', e);
     _claireSilent = false;
     claireHideTyping();
-    processVoiceCommandLocal(text, e && e.message);
+    processVoiceCommandLocal(text, _claireUserFacingError(e));
   }
 }
 
@@ -26493,10 +26615,13 @@ function claireSendSms(clientId, msgText) {
 }
 
 // Fallback local parsing when API is unavailable. apiErrorReason (optional)
-// is the real error from the failed _claireApi call that triggered this
-// fallback -- surfaced only in the final generic catch-all below, so a
-// genuine API/schema/auth failure is reportable instead of looking
-// identical to "Claire didn't understand a normal message."
+// is a SHORT, PLAIN-ENGLISH reason from _claireUserFacingError -- never the
+// raw technical error -- surfaced only in the final generic catch-all
+// below, so a genuine API/schema/auth failure reads as "something broke,
+// try again" instead of looking identical to "Claire didn't understand a
+// normal message," and without dumping JSON/status codes into the chat.
+// The full technical detail is logged separately (console + audit_log) by
+// every caller before this fires.
 function processVoiceCommandLocal(text, apiErrorReason) {
   var lower = text.toLowerCase();
 
@@ -26553,8 +26678,7 @@ function processVoiceCommandLocal(text, apiErrorReason) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
     if (noteText) { var now=new Date(); var ts=now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); manualTasks.unshift({id:Date.now().toString(),text:noteText,time:ts,done:false}); saveManualTasks(); renderTasks(); claireReply('Noted! Added "'+noteText+'" to your reminders.'); return; }
   }
-  claireReply('Sorry, I\'m having trouble connecting right now.'
-    + (apiErrorReason ? ' (' + apiErrorReason + ')' : '')
+  claireReply((apiErrorReason || 'Sorry, I\'m having trouble connecting right now.')
     + ' Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
 }
 

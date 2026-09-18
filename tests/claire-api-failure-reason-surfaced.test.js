@@ -31,6 +31,17 @@
 // those represent local parsing actually working, not an error state. Also
 // added console.error logging to the previously-silent outer catch.
 //
+// Follow-up (Sept 2026, separate bug report): threading the RAW error
+// through turned out to be an over-correction -- Tom started seeing raw
+// JSON/"Anthropic status: 400" dumped straight into chat, which is just as
+// unreportable to a non-technical operator as the original silent
+// fallback, just uglier. Both call sites now pass the error through
+// _claireUserFacingError() (a short plain-English translation) instead of
+// the raw .message; the full technical detail is still logged, now to both
+// console AND audit_log via _claireLogTechnicalError so it survives a page
+// reload. See tests/claire-history-trim-tool-pairing.test.js for coverage
+// of _claireUserFacingError itself.
+//
 // This test extracts processVoiceCommandLocal verbatim from index.html and
 // exercises both the error-surfacing path and every existing keyword path,
 // to prove the fix is additive only. It does NOT (and cannot, in this
@@ -131,15 +142,22 @@ function buildSandbox() {
   check('the reminder was actually added', sandbox.manualTasks.length, 1);
 }
 
-// ---- Verify the call site actually threads claireErr.message through
-// (not just that processVoiceCommandLocal accepts the param). ----
+// ---- Verify the call sites thread the error through _claireUserFacingError
+// (a short plain-English translation), not the raw .message -- and that the
+// full technical detail is still logged (console + audit_log) before that
+// translation happens, so a real regression stays diagnosable even though
+// the operator no longer sees the raw text. ----
 {
-  const callSiteIdx = src.indexOf('if (!didAnyToolCall) { processVoiceCommandLocal(text, claireErr && claireErr.message); return; }');
-  check('the round-0 API failure call site passes the real error through', callSiteIdx !== -1, true);
+  const callSiteIdx = src.indexOf('if (!didAnyToolCall) { processVoiceCommandLocal(text, _claireUserFacingError(claireErr)); return; }');
+  check('the round-0 API failure call site passes a translated (not raw) error through', callSiteIdx !== -1, true);
+  const roundLogIdx = src.indexOf("_claireLogTechnicalError('processVoiceCommand round ' + round, claireErr);");
+  check('the round-0 failure logs the full technical error before translating it', roundLogIdx !== -1, true);
   const outerCatchIdx = src.indexOf("console.error('[claire] processVoiceCommand failed:', e && e.message, e);");
   check('the previously-silent outer catch now logs the real error', outerCatchIdx !== -1, true);
-  const outerCallIdx = src.indexOf('processVoiceCommandLocal(text, e && e.message);');
-  check('the outer catch also threads its error through to the fallback message', outerCallIdx !== -1, true);
+  const outerLogIdx = src.indexOf("_claireLogTechnicalError('processVoiceCommand outer catch', e);");
+  check('the outer catch also logs the full technical error to audit_log', outerLogIdx !== -1, true);
+  const outerCallIdx = src.indexOf('processVoiceCommandLocal(text, _claireUserFacingError(e));');
+  check('the outer catch threads a translated (not raw) error through to the fallback message', outerCallIdx !== -1, true);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
