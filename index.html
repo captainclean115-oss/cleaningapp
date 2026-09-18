@@ -20975,6 +20975,51 @@ function _claireWriteSummary(toolName, resStr) {
   return null;
 }
 
+// Bug fix (Sept 2026, third report on this same flow): a large batch (Tom's
+// 8-date x 4-employee = 32-entry request) hit MAX_TOOL_ROUNDS without ever
+// reaching a text-only wrap-up turn, and the round-cap fallback ("Still
+// working through that...") gave Tom no idea whether Claire had even
+// gotten as far as building a preview -- turned out she almost certainly
+// had (see _claireApi's max_tokens fix, same commit): a 32-entry preview
+// or its human-readable summary both individually exceed the OLD 400-token
+// voice-mode ceiling, so the round that would have shown it never got to
+// finish. Rather than only fix the ceiling and hope it's always enough,
+// this pulls the actual preview/error straight out of tool_results as they
+// come back -- mirroring _claireWriteSummary -- so if a future edge case
+// still exhausts the round cap, Claire can show what she actually has
+// (a real preview, a real error) instead of a vague, uninformative status.
+function _clairePreviewSummary(toolName, resStr) {
+  if (toolName !== 'batch_edit_employee_hours') return null;
+  try {
+    var parsed = JSON.parse(resStr);
+    if (parsed && parsed.preview === true && Array.isArray(parsed.changes) && parsed.changes.length) {
+      return 'About to set ' + parsed.changes.length + ':\n'
+        + parsed.changes.map(function(c){ return '- ' + c.employee + ' ' + c.date + ': ' + c.current + ' -> ' + c.proposed; }).join('\n')
+        + '\nConfirm all?';
+    }
+  } catch(e) {}
+  return null;
+}
+
+function _claireErrorSummary(toolName, resStr) {
+  if (typeof resStr !== 'string') return null;
+  if (resStr.indexOf('Tool ' + toolName + ' threw:') === 0) return toolName + ' failed: ' + resStr.slice(('Tool ' + toolName + ' threw: ').length) + '.';
+  try {
+    var parsed = JSON.parse(resStr);
+    if (parsed && parsed.error) {
+      if (parsed.error === 'entry_resolution_failed' && Array.isArray(parsed.errors) && parsed.errors.length) {
+        var first = parsed.errors[0];
+        return 'Couldn\'t resolve ' + (first.employee || 'an entry') + ' (' + first.error + ').';
+      }
+      if (parsed.error === 'batch_write_failed' && parsed.failed_at) {
+        return 'Save failed partway through at ' + parsed.failed_at.employee + ': ' + parsed.failed_at.message + '.';
+      }
+      return toolName + ' error: ' + parsed.error + '.';
+    }
+  } catch(e) {}
+  return null;
+}
+
 // Bug fix (recurrence report, Sept 2026): the same "unexpected tool_use_id
 // found in tool_result blocks" 400 came back after _claireTrimHistory
 // shipped, in a conversation short enough that trimming (cap 40) never
@@ -24696,6 +24741,8 @@ async function processVoiceCommand(text) {
   var didAnyToolCall = false;
   var toolsCalledCount = 0;
   var writeSummaries = []; // concrete "what actually saved" lines, gathered as tool_results come back
+  var lastPreview = null;  // most recent unconfirmed batch preview, in case the round cap is hit before Claude relays it
+  var lastError = null;    // most recent concrete tool error, same reason
   // Run the entire tool loop in silent mode so individual tool handlers
   // don't render intermediate bubbles or trigger intermediate D-ID videos.
   // Only the final wrap-up reply gets rendered + spoken — ONE bubble, ONE
@@ -24707,9 +24754,24 @@ async function processVoiceCommand(text) {
       try {
         data = await _claireApi({
           model: 'claude-sonnet-4-6',
-          // Voice mode keeps replies short; research mode needs room for
-          // 4-8 paragraphs of structured analysis with citations.
-          max_tokens: (_claireMode === 'research') ? 2000 : 400,
+          // Voice mode keeps REPLIES short (the system prompt enforces that
+          // independently); this ceiling just has to be big enough that a
+          // legitimate operational payload never gets cut off mid-generation.
+          // Bug fix: 400 was sized for a short spoken sentence, not for a
+          // large batch_edit_employee_hours call. Measured against Tom's
+          // real reproduction (S1, 8 dates x 4 employees = 32 entries): the
+          // tool_use JSON alone runs ~750-950 tokens, and the human-readable
+          // preview text the model has to write afterward (one line per
+          // entry, per the HOURS FLOW example format) runs ~600 tokens on
+          // its own -- BOTH already exceed 400 individually. That's why the
+          // preview never rendered: the round generating it couldn't finish
+          // within budget, Claude retried, and the loop burned through
+          // MAX_TOOL_ROUNDS without ever completing a turn. 3000 gives
+          // headroom well past this business's realistic batch sizes
+          // (roughly 2-3x Tom's 32-entry case) while research mode (long
+          // structured prose, a different shape of output) keeps its own
+          // separate 2000 ceiling.
+          max_tokens: (_claireMode === 'research') ? 2000 : 3000,
           system: systemPrompt,
           tools: CLAIRE_TOOLS.concat([{ type: 'web_search_20250305', name: 'web_search' }]),
           messages: _claireHistory
@@ -24782,6 +24844,10 @@ async function processVoiceCommand(text) {
           }
           var _ws = _claireWriteSummary(tu.name, resStr);
           if (_ws) writeSummaries.push(_ws);
+          var _ps = _clairePreviewSummary(tu.name, resStr);
+          if (_ps) lastPreview = _ps;
+          var _es = _claireErrorSummary(tu.name, resStr);
+          if (_es) lastError = _es;
           toolResults.push({
             type: 'tool_result',
             tool_use_id: tu.id,
@@ -24808,10 +24874,17 @@ async function processVoiceCommand(text) {
         // what was written this turn, so say it instead of asking Tom to
         // trust an unconfirmed status.
         claireReply(writeSummaries.join(' ') + ' Done.');
+      } else if (lastPreview) {
+        // Same defensive case, but the last thing that happened was an
+        // unconfirmed preview, not a write -- show it instead of a bare
+        // "Done." (which would be actively wrong: nothing is done yet).
+        claireReply(lastPreview);
+      } else if (lastError) {
+        claireReply(lastError + ' Want me to try again?');
       } else {
         // Defensive: Claude returned neither text nor tool_use after tool
-        // calls, and nothing this turn was a write. Shouldn't happen with
-        // Sonnet, but fall back gracefully.
+        // calls, and nothing this turn was a write, preview, or error.
+        // Shouldn't happen with Sonnet, but fall back gracefully.
         claireReply('Done.');
       }
       // Coach-Claire Phase 2: render the SMS "Send to <X>" button bubble
@@ -24824,23 +24897,33 @@ async function processVoiceCommand(text) {
     }
     // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
     //
-    // Bug fix: this used to reply "That was a lot -- anything still left
-    // to handle?" whenever 2+ tools ran, regardless of whether any of them
-    // actually wrote anything. That phrasing reads as "I finished, ask me
-    // if there's more" -- but hitting the round cap means Claude did NOT
-    // get to produce its own wrap-up, so whether the last write (e.g. a
-    // batch confirm) even landed is genuinely unknown at this point. Tom
-    // asking "is it done?" right after this exact line, and getting "I
-    // never received the times" back, is what happens when this vague
-    // status is trusted. Report only what we can actually verify: real
-    // write summaries gathered from tool_results this turn, if any, plus
-    // an explicit "still confirming" note rather than an implied all-clear.
+    // Bug fix (round 1): this used to reply "That was a lot -- anything
+    // still left to handle?" whenever 2+ tools ran, regardless of whether
+    // any of them actually wrote anything -- read as an implied all-clear
+    // when the round cap specifically means Claude never got to state its
+    // own status.
+    //
+    // Bug fix (round 2, this pass): the round-1 fix's OWN fallback --
+    // "Still working through that -- nothing's confirmed saved yet" -- was
+    // itself just as uninformative in practice: Tom's real reproduction (a
+    // 32-entry batch) hit this exact line with a preview already built and
+    // sitting in a tool_result, never shown. Claire must commit to ONE of
+    // four concrete states here, never a vague "still working": a
+    // confirmed SAVE (writeSummaries), an unconfirmed PREVIEW ready to
+    // show (lastPreview -- this is the fix for "never showed a preview"),
+    // a concrete ERROR (lastError), or, only if none of those exist, an
+    // honest "got stuck, try again" that still doesn't pretend to know
+    // more than it does.
     _claireSilent = false;
     claireHideTyping();
     if (writeSummaries.length) {
       claireReply(writeSummaries.join(' ') + ' Still finishing the rest — say "is it done?" and I\'ll check.');
+    } else if (lastPreview) {
+      claireReply(lastPreview);
+    } else if (lastError) {
+      claireReply(lastError + ' Want me to try again?');
     } else if (toolsCalledCount >= 2) {
-      claireReply('Still working through that — nothing\'s confirmed saved yet. Ask me to check, or try again.');
+      claireReply('I got stuck partway through and didn\'t finish — can you try that again?');
     } else {
       claireReply('Hmm, I got tangled up looking that up — can you ask again, or rephrase?');
     }
