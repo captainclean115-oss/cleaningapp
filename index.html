@@ -27661,6 +27661,10 @@ async function renderTeamManager(opts) {
         <span style="font-size:12px;color:var(--muted)">🏠 ${stats.houses}</span>
         <span style="font-size:12px;color:var(--muted)">⏱️ ${hLabel}</span>
         ${_carChipHtml}
+        <button onclick="openTeamHoursModal('${team}','${dateStr}')" title="Edit ${_adminEsc(team)}'s hours for ${dateStr}"
+          style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer;min-height:28px">
+          🕐 Hours
+        </button>
         <button onclick="openTeamColorEditor()" style="display:none" title="Sprint 7: hidden — use Manage Teams instead">🎨</button>
       </div>
       <div style="padding:8px 14px">
@@ -27866,6 +27870,378 @@ async function setTeamDeviceAssignment(team, dateStr) {
   }
   _invalidateTmgrGpsCache(); // the whole point of this write -- force a fresh device-map fetch
   try { renderTeamManager(); } catch (e) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TEAM HOURS MODAL — "🕐 Hours" button in a team's header (Team Manager
+// modal, Live + Schedule tabs, same renderTeamManager). Lets Tom correct
+// a whole team's hours for the viewed day in one action instead of
+// opening each employee's own hours edit one at a time.
+//
+// Writes go through PentaHourOverrides.setOverride (migration 110,
+// manual_hour_overrides) -- the SAME Supabase-backed table every other
+// manual hours correction in this app uses (saveEmpDayHours, Claire's
+// edit_employee_hours/batch_edit_employee_hours). One row per employee
+// per date; this just fans the same write out across a team instead of
+// introducing a second, team-level table or any localStorage state.
+// ═══════════════════════════════════════════════════════════════════
+
+// Who gets changed vs. who gets skipped, for a team+date. "included"
+// mirrors renderTeamManager's own `employees` filter exactly (same team
+// membership rule, same isActiveEmp terminated-exclusion) so this modal
+// always agrees with what the team card itself is showing. "skipped" is
+// everyone whose DEFAULT team is this team but isn't in `included`
+// because they're terminated or marked off/vacation for this specific
+// date -- NOT people who were day-specifically moved to a different
+// team today (those are correctly just absent from both lists; they're
+// not this team's problem today).
+function _teamHoursEligibility(team, dateStr) {
+  var termData = getRosterTermData();
+  var isActive = function(e) { return (termData[e.id]?.status || 'active') !== 'terminated'; };
+  var roster = getUnifiedRoster();
+  var included = roster.filter(function(e) { return getEmployeeTeam(e.id, dateStr) === team && isActive(e); });
+  var includedIds = {};
+  included.forEach(function(e) { includedIds[e.id] = true; });
+  var skipped = [];
+  roster.filter(function(e) { return e.defaultTeam === team; }).forEach(function(e) {
+    if (includedIds[e.id]) return;
+    if (!isActive(e)) { skipped.push({ emp: e, reason: 'Terminated' }); return; }
+    var off = getEmployeeDayOffInfo(e.id, dateStr);
+    if (off) {
+      skipped.push({ emp: e, reason: (off.status_type && DAY_OFF_CATEGORY_LABELS[off.status_type]) || 'Day Off' });
+    }
+  });
+  return { included: included, skipped: skipped };
+}
+
+// Resolves an employee's manual_hour_overrides/audit_log uuid the same
+// way every other call site in this file does (beUuid/ehUuid pattern) --
+// emp.uuid if the roster row already carries it, else a legacy_roster_id
+// lookup through PentaEmployees.
+function _teamHoursEmpUuid(emp) {
+  if (emp.uuid) return emp.uuid;
+  if (window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId) {
+    var r = window.PentaEmployees.getByLegacyRosterId(emp.id);
+    if (r && r.id) return r.id;
+  }
+  return null;
+}
+
+// GPS-computed start/end/lunch prefill for the modal, business-timezone-
+// correct (never browser-local -- see _pentaBusinessTimezone's own
+// comment for why that distinction matters to Tom specifically).
+//
+// Prefers the already-loaded Hours-tab week's data (weekHours[team]),
+// the same richer, Geotab-cross-checked numbers the EDITED-tag table
+// itself shows, when the viewed date happens to fall in that week --
+// avoids a redundant fetch for data already in memory. Falls back to a
+// direct, single-day time_entries query (this team's employees only)
+// when it doesn't. That fallback deliberately skips the Geotab trip
+// layer loadWeekHours also consults -- that layer is "supplementary"
+// there too (see its own comment) -- so lunch always prefills to 0 in
+// the fallback path, matching PR #116's rule: time_entries alone has no
+// lunch-detection capability, so "no GPS lunch detected = 0 lunch
+// deducted".
+async function _computeTeamDayGpsHours(team, dateStr, employees) {
+  var tz = _pentaBusinessTimezone();
+  try {
+    if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined' && weekHours[team]) {
+      var days = getWeekDates(hoursWeekOffset);
+      var dayIdx = days.findIndex(function(d) { return dateKey(d) === dateStr; });
+      if (dayIdx !== -1) {
+        var td = weekHours[team];
+        var s = td.starts && td.starts[dayIdx] ? _bizHM(td.starts[dayIdx], tz) : '';
+        var e = td.ends && td.ends[dayIdx] ? _bizHM(td.ends[dayIdx], tz) : '';
+        var l = (td.lunch && td.lunch[dayIdx] && td.lunch[dayIdx].duration) || 0;
+        if (s || e) return { start: s, end: e, lunch: l };
+      }
+    }
+  } catch (e) { console.warn('[TeamHours] reusing weekHours prefill failed (falling back to a direct query)', e); }
+
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  var uuids = (employees || []).map(_teamHoursEmpUuid).filter(Boolean);
+  if (!sb || !bid || !uuids.length) return { start: '', end: '', lunch: 0 };
+  try {
+    var dp = dateStr.split('-').map(Number);
+    var dayStart = _bizWallClockToUtc(dp[0], dp[1], dp[2], 0, 0, 0, tz);
+    var dayEnd = _bizWallClockToUtc(dp[0], dp[1], dp[2], 23, 59, 59, tz);
+    var res = await sb.from('time_entries')
+      .select('employee_id, clock_in_at, clock_out_at')
+      .eq('business_id', bid)
+      .in('employee_id', uuids)
+      .gte('clock_in_at', dayStart.toISOString())
+      .lte('clock_in_at', dayEnd.toISOString())
+      .is('deleted_at', null);
+    if (res.error || !Array.isArray(res.data)) return { start: '', end: '', lunch: 0 };
+    var earliest = null, latest = null;
+    res.data.forEach(function(row) {
+      var inAt = new Date(row.clock_in_at);
+      if (!earliest || inAt < earliest) earliest = inAt;
+      if (row.clock_out_at) {
+        var outAt = new Date(row.clock_out_at);
+        if (!latest || outAt > latest) latest = outAt;
+      }
+    });
+    return { start: earliest ? _bizHM(earliest, tz) : '', end: latest ? _bizHM(latest, tz) : '', lunch: 0 };
+  } catch (e) {
+    console.warn('[TeamHours] fallback single-day GPS prefill query failed', e);
+    return { start: '', end: '', lunch: 0 };
+  }
+}
+
+async function openTeamHoursModal(team, dateStr) {
+  var overlay = document.getElementById('team-hours-overlay');
+  if (!overlay) { console.warn('[TeamHours] #team-hours-overlay missing from the page -- cannot open'); return; }
+  if (!window.PentaHourOverrides) { console.warn('[TeamHours] PentaHourOverrides not loaded -- cannot open'); alert('Hours can\'t be edited right now (not connected). Refresh and try again.'); return; }
+
+  var elig = _teamHoursEligibility(team, dateStr);
+  overlay.dataset.team = team;
+  overlay.dataset.date = dateStr;
+
+  var dayLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  document.getElementById('team-hours-title').textContent = team + ' hours — ' + dayLabel;
+  document.getElementById('team-hours-subtitle').textContent = elig.included.length
+    ? 'Applies to ' + elig.included.length + ' employee' + (elig.included.length === 1 ? '' : 's') + ' on this team for this day.'
+    : 'No employees are on this team for this day.';
+
+  var errEl = document.getElementById('team-hours-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+
+  document.getElementById('team-hours-included').innerHTML = elig.included.length
+    ? elig.included.map(function(e) { return _adminEsc(e.name); }).join(', ')
+    : '<span style="color:var(--muted)">— none —</span>';
+
+  var skippedWrap = document.getElementById('team-hours-skipped-wrap');
+  if (elig.skipped.length) {
+    skippedWrap.style.display = '';
+    document.getElementById('team-hours-skipped').innerHTML = elig.skipped.map(function(s) {
+      return _adminEsc(s.emp.name) + ' (' + _adminEsc(s.reason) + ')';
+    }).join(', ');
+  } else {
+    skippedWrap.style.display = 'none';
+  }
+
+  var applyBtn = document.getElementById('team-hours-apply-btn');
+  var resetBtn = document.getElementById('team-hours-reset-btn');
+  if (applyBtn) applyBtn.disabled = elig.included.length === 0;
+  if (resetBtn) resetBtn.disabled = elig.included.length === 0;
+
+  // Prefill with GPS-computed values -- show the modal first (with
+  // today's hours in loading state is still a functional modal; a slow
+  // prefill fetch shouldn't delay Tom seeing the team/employee list).
+  document.getElementById('team-hours-start').value = '';
+  document.getElementById('team-hours-end').value = '';
+  document.getElementById('team-hours-lunch').value = '0';
+  overlay.style.display = 'flex';
+
+  try {
+    var gps = await _computeTeamDayGpsHours(team, dateStr, elig.included);
+    // Bail if the modal was closed or re-opened for a different team/date
+    // while this prefill fetch was in flight.
+    if (overlay.dataset.team !== team || overlay.dataset.date !== dateStr || overlay.style.display === 'none') return;
+    document.getElementById('team-hours-start').value = gps.start || '';
+    document.getElementById('team-hours-end').value = gps.end || '';
+    document.getElementById('team-hours-lunch').value = String(gps.lunch || 0);
+  } catch (e) {
+    console.warn('[TeamHours] GPS prefill failed (non-fatal -- fields left blank)', e);
+  }
+}
+
+function closeTeamHoursModal() {
+  var overlay = document.getElementById('team-hours-overlay');
+  if (!overlay) { console.warn('[TeamHours] #team-hours-overlay missing -- nothing to close'); return; }
+  overlay.style.display = 'none';
+}
+
+function _teamHoursShowError(msg) {
+  var errEl = document.getElementById('team-hours-error');
+  if (!errEl) { console.warn('[TeamHours] #team-hours-error missing -- showing alert instead:', msg); alert(msg); return; }
+  errEl.textContent = msg;
+  errEl.style.display = '';
+}
+
+// Apply to team — validates, then writes one manual_hour_overrides row
+// per included employee (PentaHourOverrides.setOverride), sequentially
+// so a failure partway through leaves a well-defined, rollback-able set
+// of "already applied" entries. All-or-nothing: any write failure rolls
+// back every entry THIS call already wrote, restoring each to its exact
+// prior value (a real prior override, or no override at all), matching
+// Claire's batch_edit_employee_hours's own rollback contract exactly.
+async function teamHoursApply() {
+  var overlay = document.getElementById('team-hours-overlay');
+  if (!overlay) { console.warn('[TeamHours] apply: #team-hours-overlay missing'); return; }
+  var team = overlay.dataset.team, dateStr = overlay.dataset.date;
+  if (!team || !dateStr) { console.warn('[TeamHours] apply: no team/date on the overlay -- modal opened incorrectly?'); _teamHoursShowError('Something went wrong opening this modal. Close it and try again.'); return; }
+  if (!window.PentaHourOverrides) { console.warn('[TeamHours] apply: PentaHourOverrides not loaded'); _teamHoursShowError('Not connected -- refresh and try again.'); return; }
+
+  var startEl = document.getElementById('team-hours-start');
+  var endEl = document.getElementById('team-hours-end');
+  var lunchEl = document.getElementById('team-hours-lunch');
+  if (!startEl || !endEl || !lunchEl) { console.warn('[TeamHours] apply: form fields missing'); _teamHoursShowError('The edit form is no longer open. Please try again.'); return; }
+
+  var start = startEl.value, end = endEl.value;
+  var lunch = parseInt(lunchEl.value) || 0;
+
+  if (!start || !end) { _teamHoursShowError('Enter both a start time and an end time.'); return; }
+  // The Maria Vieira case: 21:00 → 16:27 must be impossible, not silently
+  // clamped to 0 hours the way calcHoursFromTimes's own Math.max(0, …)
+  // would otherwise let through unnoticed.
+  var sp = start.split(':'), ep = end.split(':');
+  var startMins = parseInt(sp[0]) * 60 + parseInt(sp[1]);
+  var endMins = parseInt(ep[0]) * 60 + parseInt(ep[1]);
+  if (endMins <= startMins) { _teamHoursShowError('End time must be after start time (' + end + ' is not after ' + start + ').'); return; }
+
+  var elig = _teamHoursEligibility(team, dateStr);
+  if (!elig.included.length) { _teamHoursShowError('No employees to apply this to.'); return; }
+
+  var hours = calcHoursFromTimes(start, end, lunch);
+  var data = { start: start, end: end, lunch: lunch, hours: hours, team: team };
+
+  var applyBtn = document.getElementById('team-hours-apply-btn');
+  if (applyBtn) applyBtn.disabled = true;
+  document.getElementById('team-hours-error').style.display = 'none';
+
+  var applied = []; // { emp, uuid, prior } for everything actually written, for rollback
+  var writeError = null;
+  for (var i = 0; i < elig.included.length; i++) {
+    var emp = elig.included[i];
+    try {
+      var prior = getEmpHours(emp.id, dateStr); // null if no override existed
+      await saveEmpHours(emp.id, dateStr, data);
+      var uuid = _teamHoursEmpUuid(emp);
+      try {
+        await _auditSupplement('manual_override', 'employee', uuid, {
+          source: 'team_hours_button', date: dateStr, team: team,
+          start: start, end: end, lunch: lunch, hours: hours
+        });
+      } catch (auditErr) { console.warn('[TeamHours] audit supplement failed (non-fatal)', auditErr); }
+      applied.push({ emp: emp, uuid: uuid, prior: prior });
+    } catch (err) {
+      writeError = { emp: emp, message: (err && err.message) || String(err) };
+      break;
+    }
+  }
+
+  if (writeError) {
+    var rollbackFailed = [];
+    for (var r = applied.length - 1; r >= 0; r--) {
+      var a = applied[r];
+      try {
+        if (a.prior) { await saveEmpHours(a.emp.id, dateStr, a.prior); }
+        else { await clearEmpHours(a.emp.id, dateStr); }
+      } catch (rbErr) {
+        console.error('[TeamHours] rollback failed for', a.emp.name, rbErr);
+        rollbackFailed.push(a.emp.name);
+      }
+    }
+    if (applyBtn) applyBtn.disabled = false;
+    _teamHoursShowError('Could not save hours for ' + writeError.emp.name + ' (' + writeError.message + '). ' +
+      (rollbackFailed.length
+        ? 'Some rollbacks failed too -- please double-check hours for: ' + rollbackFailed.join(', ') + '.'
+        : 'Nothing was left half-applied -- everything already written was rolled back.'));
+    return;
+  }
+
+  logPendingUpdate('Team hours edited: ' + team, new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) +
+    ' — ' + start + '-' + end + ', lunch ' + lunch + 'min (' + applied.length + ' employee' + (applied.length === 1 ? '' : 's') + ')');
+
+  closeTeamHoursModal();
+  if (applyBtn) applyBtn.disabled = false;
+  await _teamHoursRefreshAfterWrite(dateStr);
+}
+
+// Reset team to GPS — clears the manual override for each included
+// employee on this date (back to whatever GPS/time_entries derives).
+// Same capture-then-rollback shape as Apply: if a clear fails partway
+// through, everything already cleared gets restored to its captured
+// prior value rather than leaving a half-reset team.
+async function teamHoursResetToGps() {
+  var overlay = document.getElementById('team-hours-overlay');
+  if (!overlay) { console.warn('[TeamHours] reset: #team-hours-overlay missing'); return; }
+  var team = overlay.dataset.team, dateStr = overlay.dataset.date;
+  if (!team || !dateStr) { console.warn('[TeamHours] reset: no team/date on the overlay'); _teamHoursShowError('Something went wrong opening this modal. Close it and try again.'); return; }
+  if (!window.PentaHourOverrides) { console.warn('[TeamHours] reset: PentaHourOverrides not loaded'); _teamHoursShowError('Not connected -- refresh and try again.'); return; }
+
+  var elig = _teamHoursEligibility(team, dateStr);
+  if (!elig.included.length) { _teamHoursShowError('No employees to reset.'); return; }
+
+  var resetBtn = document.getElementById('team-hours-reset-btn');
+  if (resetBtn) resetBtn.disabled = true;
+  document.getElementById('team-hours-error').style.display = 'none';
+
+  var cleared = []; // { emp, uuid, prior }
+  var clearError = null;
+  for (var i = 0; i < elig.included.length; i++) {
+    var emp = elig.included[i];
+    var uuid = _teamHoursEmpUuid(emp);
+    try {
+      var prior = getEmpHours(emp.id, dateStr);
+      if (prior) {
+        await clearEmpHours(emp.id, dateStr);
+        try {
+          await _auditSupplement('manual_override', 'employee', uuid, {
+            source: 'team_hours_button', date: dateStr, team: team, action: 'reset_to_gps'
+          });
+        } catch (auditErr) { console.warn('[TeamHours] audit supplement failed (non-fatal)', auditErr); }
+      }
+      cleared.push({ emp: emp, uuid: uuid, prior: prior });
+    } catch (err) {
+      clearError = { emp: emp, message: (err && err.message) || String(err) };
+      break;
+    }
+  }
+
+  if (clearError) {
+    var rollbackFailed = [];
+    for (var r = cleared.length - 1; r >= 0; r--) {
+      var a = cleared[r];
+      if (!a.prior) continue; // nothing was cleared for this one, nothing to restore
+      try { await saveEmpHours(a.emp.id, dateStr, a.prior); }
+      catch (rbErr) { console.error('[TeamHours] reset rollback failed for', a.emp.name, rbErr); rollbackFailed.push(a.emp.name); }
+    }
+    if (resetBtn) resetBtn.disabled = false;
+    _teamHoursShowError('Could not reset hours for ' + clearError.emp.name + ' (' + clearError.message + '). ' +
+      (rollbackFailed.length
+        ? 'Some rollbacks failed too -- please double-check hours for: ' + rollbackFailed.join(', ') + '.'
+        : 'Nothing was left half-reset.'));
+    return;
+  }
+
+  var actuallyCleared = cleared.filter(function(c) { return c.prior; }).length;
+  logPendingUpdate('Team hours reset to GPS: ' + team, new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) +
+    ' — ' + actuallyCleared + ' override' + (actuallyCleared === 1 ? '' : 's') + ' cleared');
+
+  closeTeamHoursModal();
+  if (resetBtn) resetBtn.disabled = false;
+  await _teamHoursRefreshAfterWrite(dateStr);
+}
+
+// Shared post-write refresh for both Apply and Reset — PR #169's exact
+// pattern (saveEmpDayHours): the write already succeeded by the time
+// this runs, so a failure HERE must never read back as "the save
+// failed." Each refresh step gets its own try/catch; a failure in one
+// doesn't block or get blamed on the other.
+async function _teamHoursRefreshAfterWrite(dateStr) {
+  try {
+    if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined') {
+      var gv = document.getElementById('gps-view');
+      var days = getWeekDates(hoursWeekOffset);
+      var d = new Date(dateStr + 'T00:00:00');
+      var inView = days.length && d >= days[0] && d <= days[4];
+      if (gv && gv.classList.contains('active') && inView && typeof loadWeekHours === 'function') {
+        await loadWeekHours();
+      }
+    }
+  } catch (e) {
+    console.error('[TeamHours] post-write Live hours refresh failed (the save itself already succeeded)', e);
+  }
+  try {
+    await renderTeamManager();
+  } catch (e) {
+    console.error('[TeamHours] post-write Team Manager re-render failed (the save itself already succeeded)', e);
+  }
 }
 
 // PR #118 — was a hand-rolled duplicate of assignEmployee's write logic:
@@ -35107,6 +35483,20 @@ function _bizWallClockToUtc(y, m, d, hh, mm, ss, tz) {
   var asIfUtc = Date.UTC(parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10), guessedHour, parseInt(parts.minute, 10), parseInt(parts.second, 10));
   var driftMs = asIfUtc - guess.getTime();
   return new Date(guess.getTime() - driftMs);
+}
+
+// The reverse of _bizWallClockToUtc, for the Team Hours modal's prefill
+// (openTeamHoursModal) -- an already-correct UTC instant (a clock-in/
+// clock-out timestamp from time_entries), formatted as the "HH:MM" wall
+// clock an <input type="time"> expects, AS OBSERVED in tz. Plain
+// toLocaleTimeString is locale-format-dependent (12h vs 24h, leading
+// zeros); formatToParts with hour12:false sidesteps that the same way
+// _bizWallClockToUtc already does above.
+function _bizHM(date, tz) {
+  var fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit' });
+  var parts = fmt.formatToParts(date).reduce(function (acc, part) { acc[part.type] = part.value; return acc; }, {});
+  var hh = parts.hour === '24' ? '00' : parts.hour;
+  return hh + ':' + parts.minute;
 }
 
 // Returns { fromDate, toDate, startYmd, endYmd } for the most recently
@@ -53487,6 +53877,52 @@ function _p3dPage(dir) {
   </div>
 </div>
 
+
+<!-- TEAM HOURS MODAL -- opened from the "🕐 Hours" button in a team's
+     header inside the Team Manager modal above (z-index:500). Must sit
+     above it, and above staff-modal (9000) and its 9500-tier nested
+     modals (see terminate-modal-zindex-stacking.test.js for why 9500 is
+     the established floor for "nested inside staff-modal" -- this one
+     isn't nested inside staff-modal, but Live/Schedule → Teams can be
+     opened from either tab, so matching the same floor is the safe
+     choice rather than assuming a lower stacking context is safe here
+     too). -->
+<div id="team-hours-overlay" style="display:none;position:fixed;inset:0;z-index:9600;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeTeamHoursModal()">
+  <div style="background:var(--surface);width:100%;max-width:420px;max-height:90vh;overflow-y:auto;border-radius:16px;border:1px solid var(--border2);padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div id="team-hours-title" style="font-size:17px;font-weight:700">Team hours</div>
+      <button onclick="closeTeamHoursModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;min-width:32px;min-height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div id="team-hours-subtitle" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
+
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <label style="flex:1;font-size:12px;color:var(--muted)">Start time
+        <input type="time" id="team-hours-start" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+      </label>
+      <label style="flex:1;font-size:12px;color:var(--muted)">End time
+        <input type="time" id="team-hours-end" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+      </label>
+    </div>
+    <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:14px">Lunch minutes
+      <input type="number" id="team-hours-lunch" min="0" step="5" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+    </label>
+
+    <div id="team-hours-error" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-size:13px;padding:10px 12px;border-radius:10px;margin-bottom:12px"></div>
+
+    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Will be changed</div>
+    <div id="team-hours-included" style="font-size:13px;margin-bottom:10px"></div>
+    <div id="team-hours-skipped-wrap" style="margin-bottom:14px">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Skipped</div>
+      <div id="team-hours-skipped" style="font-size:13px;color:var(--muted)"></div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button id="team-hours-apply-btn" onclick="teamHoursApply()" style="flex:2;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Apply to team</button>
+      <button onclick="closeTeamHoursModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Cancel</button>
+    </div>
+    <button id="team-hours-reset-btn" onclick="teamHoursResetToGps()" style="width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer;min-height:44px">Reset team to GPS</button>
+  </div>
+</div>
 
 
 <!-- ═══ STAFF EDITOR MODAL ═══ -->
