@@ -27927,67 +27927,85 @@ function _teamHoursEmpUuid(emp) {
   return null;
 }
 
-// GPS-computed start/end/lunch prefill for the modal, business-timezone-
-// correct (never browser-local -- see _pentaBusinessTimezone's own
-// comment for why that distinction matters to Tom specifically).
-//
-// Prefers the already-loaded Hours-tab week's data (weekHours[team]),
-// the same richer, Geotab-cross-checked numbers the EDITED-tag table
-// itself shows, when the viewed date happens to fall in that week --
-// avoids a redundant fetch for data already in memory. Falls back to a
-// direct, single-day time_entries query (this team's employees only)
-// when it doesn't. That fallback deliberately skips the Geotab trip
-// layer loadWeekHours also consults -- that layer is "supplementary"
-// there too (see its own comment) -- so lunch always prefills to 0 in
-// the fallback path, matching PR #116's rule: time_entries alone has no
-// lunch-detection capability, so "no GPS lunch detected = 0 lunch
-// deducted".
-async function _computeTeamDayGpsHours(team, dateStr, employees) {
-  var tz = _pentaBusinessTimezone();
-  try {
-    if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined' && weekHours[team]) {
-      var days = getWeekDates(hoursWeekOffset);
-      var dayIdx = days.findIndex(function(d) { return dateKey(d) === dateStr; });
-      if (dayIdx !== -1) {
-        var td = weekHours[team];
-        var s = td.starts && td.starts[dayIdx] ? _bizHM(td.starts[dayIdx], tz) : '';
-        var e = td.ends && td.ends[dayIdx] ? _bizHM(td.ends[dayIdx], tz) : '';
-        var l = (td.lunch && td.lunch[dayIdx] && td.lunch[dayIdx].duration) || 0;
-        if (s || e) return { start: s, end: e, lunch: l };
-      }
-    }
-  } catch (e) { console.warn('[TeamHours] reusing weekHours prefill failed (falling back to a direct query)', e); }
+// Renders the modal's "GPS Activity" section (summary line + stop-list
+// timeline) from an already-fetched _fetchTeamDayGpsDetail result --
+// never fetches anything itself, so this can be called as many times as
+// needed (initial open, after a "Not lunch" toggle) without a second
+// Geotab call. Uses the exact same _renderGPSStopRow the Live tab uses
+// (see that function's own comment) so a stop reads identically in both
+// places; afterToggleFn wires each row's "Not lunch"/"Mark as lunch"
+// button back to _teamHoursAfterLunchToggle (below) instead of Live's
+// bare renderGPS()-only default.
+function _teamHoursRenderGpsTimeline(detail, team, dateStr) {
+  var summaryEl = document.getElementById('team-hours-gps-summary');
+  var timelineEl = document.getElementById('team-hours-gps-timeline');
+  if (!summaryEl || !timelineEl) { console.warn('[TeamHours] GPS timeline elements missing from the page'); return; }
 
-  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
-  var uuids = (employees || []).map(_teamHoursEmpUuid).filter(Boolean);
-  if (!sb || !bid || !uuids.length) return { start: '', end: '', lunch: 0 };
-  try {
-    var dp = dateStr.split('-').map(Number);
-    var dayStart = _bizWallClockToUtc(dp[0], dp[1], dp[2], 0, 0, 0, tz);
-    var dayEnd = _bizWallClockToUtc(dp[0], dp[1], dp[2], 23, 59, 59, tz);
-    var res = await sb.from('time_entries')
-      .select('employee_id, clock_in_at, clock_out_at')
-      .eq('business_id', bid)
-      .in('employee_id', uuids)
-      .gte('clock_in_at', dayStart.toISOString())
-      .lte('clock_in_at', dayEnd.toISOString())
-      .is('deleted_at', null);
-    if (res.error || !Array.isArray(res.data)) return { start: '', end: '', lunch: 0 };
-    var earliest = null, latest = null;
-    res.data.forEach(function(row) {
-      var inAt = new Date(row.clock_in_at);
-      if (!earliest || inAt < earliest) earliest = inAt;
-      if (row.clock_out_at) {
-        var outAt = new Date(row.clock_out_at);
-        if (!latest || outAt > latest) latest = outAt;
-      }
-    });
-    return { start: earliest ? _bizHM(earliest, tz) : '', end: latest ? _bizHM(latest, tz) : '', lunch: 0 };
-  } catch (e) {
-    console.warn('[TeamHours] fallback single-day GPS prefill query failed', e);
-    return { start: '', end: '', lunch: 0 };
+  if (!detail.device) {
+    summaryEl.innerHTML = '';
+    timelineEl.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">' + _adminEsc(detail.gps.reason || ('No GPS device for ' + team + ' on ' + dateStr)) + '</div>';
+    return;
   }
+  if (!detail.trips.length) {
+    summaryEl.innerHTML = '';
+    timelineEl.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">No GPS trips recorded for ' + _adminEsc(team) + ' on ' + _adminEsc(dateStr) + '.</div>';
+    return;
+  }
+
+  var tz = _pentaBusinessTimezone();
+  var gps = detail.gps;
+  summaryEl.innerHTML = gps.available
+    ? 'GPS says: <b>' + _bizHM(gps.start, tz) + '</b>–<b>' + _bizHM(gps.end, tz) + '</b> &middot; Lunch ' + (gps.lunchMin || 0) + 'm &middot; ' + gps.hours.toFixed(1) + 'h total'
+    : '<span style="color:var(--amber)">' + _adminEsc(gps.reason || 'GPS hours unavailable for this day') + '</span>';
+
+  var todayTeamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+    ? jobs.filter(function(jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
+    : [];
+  var stopList = detail.stopList;
+  timelineEl.innerHTML = stopList.length
+    ? stopList.map(function(s, si) {
+        return _renderGPSStopRow(s, si > 0, {
+          tz: tz, team: team, teamJobs: todayTeamJobs,
+          isLastOverall: s === stopList[stopList.length - 1],
+          afterToggleFn: '_teamHoursAfterLunchToggle'
+        });
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">No stops in range for this day.</div>';
+}
+
+// "Not lunch"/"Mark as lunch" buttons inside the modal's timeline call
+// _toggleLunchOverride directly (same team-scoped, that-date write Live
+// uses -- see that function's comment), which then calls this by name
+// afterward. No second Geotab fetch here: PentaLunchFlags' own cache is
+// already updated synchronously by the time _toggleLunchOverride
+// resolves (same pattern as every other PentaX facade in this file), so
+// recomputing from the ALREADY-cached trips on overlay._gpsDetail is
+// enough to reflect the change -- re-render the timeline, and only
+// overwrite the Start/End/Lunch fields if Tom hasn't typed into them
+// himself (userEdited dataset flag, set by each field's oninput).
+async function _teamHoursAfterLunchToggle(team, dateStr) {
+  var overlay = document.getElementById('team-hours-overlay');
+  if (!overlay || overlay.style.display === 'none') return; // modal isn't open -- nothing to refresh
+  if (overlay.dataset.team !== team || overlay.dataset.date !== dateStr) return; // a toggle for a different team/date than what's currently open
+  var detail = overlay._gpsDetail;
+  if (!detail) { console.warn('[TeamHours] after-lunch-toggle: no cached GPS detail to refresh from'); return; }
+
+  try {
+    detail.gps = _computeGpsHoursFromTrips(detail.trips, team, dateStr);
+    _teamHoursRenderGpsTimeline(detail, team, dateStr);
+    if (overlay.dataset.userEdited !== 'true' && detail.gps.available) {
+      var tz = _pentaBusinessTimezone();
+      var startEl = document.getElementById('team-hours-start');
+      var endEl = document.getElementById('team-hours-end');
+      var lunchEl = document.getElementById('team-hours-lunch');
+      if (startEl) startEl.value = _bizHM(detail.gps.start, tz);
+      if (endEl) endEl.value = _bizHM(detail.gps.end, tz);
+      if (lunchEl) lunchEl.value = String(detail.gps.lunchMin || 0);
+    }
+  } catch (e) {
+    console.error('[TeamHours] timeline/prefill refresh after lunch toggle failed', e);
+  }
+  try { await _teamHoursRefreshAfterWrite(dateStr); } catch (e) { console.error('[TeamHours] Live hours refresh after lunch toggle failed', e); }
 }
 
 async function openTeamHoursModal(team, dateStr) {
@@ -27998,6 +28016,8 @@ async function openTeamHoursModal(team, dateStr) {
   var elig = _teamHoursEligibility(team, dateStr);
   overlay.dataset.team = team;
   overlay.dataset.date = dateStr;
+  overlay.dataset.userEdited = 'false'; // reset for this team/date -- new context, nothing typed yet
+  overlay._gpsDetail = null;
 
   var dayLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
   document.getElementById('team-hours-title').textContent = team + ' hours — ' + dayLabel;
@@ -28031,21 +28051,38 @@ async function openTeamHoursModal(team, dateStr) {
   // Prefill with GPS-computed values -- show the modal first (with
   // today's hours in loading state is still a functional modal; a slow
   // prefill fetch shouldn't delay Tom seeing the team/employee list).
+  // Rule #5: Apply must never be blocked by this -- Apply reads whatever
+  // is in the fields at click time regardless of whether this fetch
+  // ever succeeds, so a GPS failure here can only ever leave the fields
+  // blank/stale, never disable the button.
   document.getElementById('team-hours-start').value = '';
   document.getElementById('team-hours-end').value = '';
   document.getElementById('team-hours-lunch').value = '0';
+  var summaryEl = document.getElementById('team-hours-gps-summary');
+  var timelineEl = document.getElementById('team-hours-gps-timeline');
+  if (summaryEl) summaryEl.innerHTML = '';
+  if (timelineEl) timelineEl.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">Loading GPS...</div>';
   overlay.style.display = 'flex';
 
   try {
-    var gps = await _computeTeamDayGpsHours(team, dateStr, elig.included);
+    var detail = await _fetchTeamDayGpsDetail(team, dateStr);
     // Bail if the modal was closed or re-opened for a different team/date
-    // while this prefill fetch was in flight.
+    // while this fetch was in flight.
     if (overlay.dataset.team !== team || overlay.dataset.date !== dateStr || overlay.style.display === 'none') return;
-    document.getElementById('team-hours-start').value = gps.start || '';
-    document.getElementById('team-hours-end').value = gps.end || '';
-    document.getElementById('team-hours-lunch').value = String(gps.lunch || 0);
+    overlay._gpsDetail = detail;
+    _teamHoursRenderGpsTimeline(detail, team, dateStr);
+    // Same userEdited guard _teamHoursAfterLunchToggle uses -- this
+    // fetch can take a moment, and Tom may already have started typing
+    // his own values into the fields while it was in flight.
+    if (overlay.dataset.userEdited !== 'true' && detail.gps.available) {
+      var tz = _pentaBusinessTimezone();
+      document.getElementById('team-hours-start').value = _bizHM(detail.gps.start, tz);
+      document.getElementById('team-hours-end').value = _bizHM(detail.gps.end, tz);
+      document.getElementById('team-hours-lunch').value = String(detail.gps.lunchMin || 0);
+    }
   } catch (e) {
-    console.warn('[TeamHours] GPS prefill failed (non-fatal -- fields left blank)', e);
+    console.warn('[TeamHours] GPS fetch failed (fields left blank, timeline shows a short error -- Apply is unaffected)', e);
+    if (timelineEl) timelineEl.innerHTML = '<div style="color:var(--red);font-size:12px;text-align:center;padding:10px 0">Could not load GPS activity: ' + _adminEsc((e && e.message) || String(e)) + '</div>';
   }
 }
 
@@ -31238,7 +31275,17 @@ function _adjustWeekHoursLunch(team, dateStr, deltaMinutes) {
 // previous exclude -- just deletes the override, reverting to whatever
 // natural detection already said, which is "lunch" or it wouldn't have
 // had an exclude override to reverse in the first place).
-async function _toggleLunchOverride(team, dateStr, stopKey, action, addr, durationMin) {
+// afterRefreshFn (optional, 7th param): the Team Hours modal's GPS
+// activity timeline (openTeamHoursModal) reuses this exact function for
+// its own "Not lunch" buttons -- same write, same team-scoped date, same
+// audit trail Live already has -- but ALSO needs its own timeline/prefill
+// re-render afterward, which Live has no notion of. Passed as a global
+// function NAME (a plain string), not a closure, because this only ever
+// arrives through an onclick="" attribute, which can't serialize a
+// function reference. Every existing Live call site (renderGPS,
+// showEmpStops) omits this 7th arg entirely, so they're unaffected --
+// renderGPS() still always runs for them exactly as before.
+async function _toggleLunchOverride(team, dateStr, stopKey, action, addr, durationMin, afterRefreshFn) {
   try {
     if (action === 'exclude') {
       await PentaLunchFlags.setOverride(team, dateStr, stopKey, 'exclude', {
@@ -31258,6 +31305,9 @@ async function _toggleLunchOverride(team, dateStr, stopKey, action, addr, durati
       });
     }
     if (typeof renderGPS === 'function') renderGPS();
+    if (afterRefreshFn && typeof window[afterRefreshFn] === 'function') {
+      try { window[afterRefreshFn](team, dateStr); } catch (e) { console.warn('[_toggleLunchOverride] afterRefreshFn (' + afterRefreshFn + ') threw', e); }
+    }
   } catch (e) {
     alert('Could not update lunch flag: ' + (e.message || e));
   }
@@ -32084,90 +32134,128 @@ function _readArchivedEmpHrsEntries() {
 // team+date instead of requiring that week to already be loaded/cached.
 // Does not read or write weekHours / any cache; pure read of live Geotab
 // data for comparison purposes.
+//
+// Thin wrapper now -- _fetchTeamDayGpsDetail (below) does the actual
+// fetch+compute, shared with the Team Hours modal's GPS activity
+// timeline (openTeamHoursModal) so the two surfaces can't fetch trips
+// twice or disagree on the numbers. Behavior/return shape here is
+// unchanged for this function's own existing callers (Claire's
+// get_employee_hours-style tools, showArchivedOverridesComparison).
 async function _computeGpsHoursForDay(team, dateStr) {
   try {
-    var date = new Date(dateStr + 'T00:00:00');
-    var devices = await _geotabCallRetryOn429('Get', { typeName: 'Device', resultsLimit: 500 });
-    var resolved = await _resolveTeamDevice(devices, team, date);
-    var device = resolved.device;
-    if (!device) {
-      return { available: false, reason: resolved.source === 'assignment-none' ? ('No GPS device assigned to ' + team + ' on ' + dateStr) : ('No vehicle found for ' + team) };
-    }
-
-    // Business-timezone day boundary (not browser-local .setHours) --
-    // matches _loadWeekHoursInner's own dayStart/dayEnd computation.
-    var _dp = dateStr.split('-').map(Number);
-    var _tz = _pentaBusinessTimezone();
-    var startOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 0, 0, 0, _tz);
-    var endOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 23, 59, 59, _tz);
-    var trips = await _geotabCallRetryOn429('Get', {
-      typeName: 'Trip',
-      search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
-      resultsLimit: 200
-    });
-    // Geotab's own API can return a trip outside the requested range
-    // (confirmed live: a zero-duration, garbage-coordinate trip from the
-    // PRIOR calendar day came back for a fromDate/toDate that excluded
-    // it) -- re-filter defensively by t.start, same as
-    // _loadWeekHoursInner's dayTrips filter already does. Without this,
-    // a stray boundary trip can become "trueStart" and produce a
-    // wildly wrong multi-day span that then fails the sanity check
-    // below, reporting a real day as having no data at all.
-    trips = (trips || []).filter(function (t) {
-      var ts = new Date(t.start);
-      return ts >= startOfDay && ts <= endOfDay;
-    });
-    await reverseGeocodeTrips(trips);
-    if (!trips || !trips.length) return { available: false, reason: 'No GPS trips recorded for ' + team + ' on ' + dateStr };
-    trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
-
-    var todayTeamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
-      ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
-      : [];
-    var _isDepotStop = function (t) {
-      var sa = t.stopAddress || t.stopLocation || '';
-      return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
-    };
-
-    var validTrips = trips;
-    var _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
-    var _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, 90);
-    var depotArrivalsAsc = _depotResult.depotArrivalsAsc;
-    // PR #185 -- startMatched/endMatched are independent; see
-    // _findJobCrossrefStartEnd's own comment.
-    var trueStartTrip = _crossref.startMatched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
-    var trueStart = null, trueEnd = null;
-    if (trueStartTrip) {
-      trueStart = new Date(trueStartTrip.start);
-    } else {
-      var firstTrip = validTrips[0];
-      if (firstTrip) trueStart = new Date(firstTrip.start);
-    }
-    if (!trueStart) return { available: false, reason: 'Could not determine a start time from GPS trips' };
-
-    if (_crossref.endMatched && _crossref.trueEndTrip) {
-      trueEnd = new Date(_crossref.trueEndTrip.stop);
-    } else {
-      var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
-      if (lateDepotArrivals.length > 0) trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
-    }
-    if (!trueEnd) {
-      var allStops = validTrips.filter(function (t) { return t.stop; }).sort(function (a, b) { return new Date(b.stop) - new Date(a.stop); });
-      if (allStops.length > 0) trueEnd = new Date(allStops[0].stop);
-    }
-    if (!trueEnd) return { available: false, reason: 'Could not determine an end time from GPS trips' };
-
-    var totalHrs = (trueEnd - trueStart) / 3600000;
-    if (!(totalHrs >= 0.25 && totalHrs <= 15)) return { available: false, reason: 'Computed span (' + totalHrs.toFixed(1) + 'h) failed the sanity check' };
-
-    var dayLunch = _detectDayLunch(trips, team, todayTeamJobs, dateStr, trueStart, trueEnd);
-    var lunchMin = (dayLunch && dayLunch.duration != null) ? dayLunch.duration : 0;
-    var finalHrs = Math.max(0, totalHrs - lunchMin / 60);
-
-    return { available: true, start: trueStart, end: trueEnd, lunchMin: lunchMin, hours: finalHrs };
+    var detail = await _fetchTeamDayGpsDetail(team, dateStr);
+    return detail.gps;
   } catch (e) {
     return { available: false, reason: 'Error: ' + (e && e.message || e) };
   }
+}
+
+// Pure (no I/O): given trips already fetched, day-filtered, reverse-
+// geocoded and sorted ascending by start time for one team+date, derives
+// { available, start, end, lunchMin, hours } (or { available:false,
+// reason }). Extracted verbatim from _computeGpsHoursForDay's own body
+// so _fetchTeamDayGpsDetail can compute this from a SINGLE trip fetch
+// shared with the stop-list timeline, instead of each caller fetching
+// its own copy of the same trips.
+function _computeGpsHoursFromTrips(trips, team, dateStr) {
+  if (!trips || !trips.length) return { available: false, reason: 'No GPS trips recorded for ' + team + ' on ' + dateStr };
+
+  var todayTeamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+    ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
+    : [];
+  var _isDepotStop = function (t) {
+    var sa = t.stopAddress || t.stopLocation || '';
+    return isDepotAddress(sa, team) || isDepotPoint(t.stopPoint, team);
+  };
+
+  var validTrips = trips;
+  var _crossref = _findJobCrossrefStartEnd(validTrips, _isDepotStop, todayTeamJobs, team);
+  var _depotResult = _findTrueDepotDepartureTrip(validTrips, _isDepotStop, 90);
+  var depotArrivalsAsc = _depotResult.depotArrivalsAsc;
+  // PR #185 -- startMatched/endMatched are independent; see
+  // _findJobCrossrefStartEnd's own comment.
+  var trueStartTrip = _crossref.startMatched ? _crossref.trueStartTrip : _depotResult.trueStartTrip;
+  var trueStart = null, trueEnd = null;
+  if (trueStartTrip) {
+    trueStart = new Date(trueStartTrip.start);
+  } else {
+    var firstTrip = validTrips[0];
+    if (firstTrip) trueStart = new Date(firstTrip.start);
+  }
+  if (!trueStart) return { available: false, reason: 'Could not determine a start time from GPS trips' };
+
+  if (_crossref.endMatched && _crossref.trueEndTrip) {
+    trueEnd = new Date(_crossref.trueEndTrip.stop);
+  } else {
+    var lateDepotArrivals = depotArrivalsAsc.filter(function (a) { return new Date(a.stop) > trueStart; });
+    if (lateDepotArrivals.length > 0) trueEnd = new Date(lateDepotArrivals[lateDepotArrivals.length - 1].stop);
+  }
+  if (!trueEnd) {
+    var allStops = validTrips.filter(function (t) { return t.stop; }).sort(function (a, b) { return new Date(b.stop) - new Date(a.stop); });
+    if (allStops.length > 0) trueEnd = new Date(allStops[0].stop);
+  }
+  if (!trueEnd) return { available: false, reason: 'Could not determine an end time from GPS trips' };
+
+  var totalHrs = (trueEnd - trueStart) / 3600000;
+  if (!(totalHrs >= 0.25 && totalHrs <= 15)) return { available: false, reason: 'Computed span (' + totalHrs.toFixed(1) + 'h) failed the sanity check' };
+
+  var dayLunch = _detectDayLunch(trips, team, todayTeamJobs, dateStr, trueStart, trueEnd);
+  var lunchMin = (dayLunch && dayLunch.duration != null) ? dayLunch.duration : 0;
+  var finalHrs = Math.max(0, totalHrs - lunchMin / 60);
+
+  return { available: true, start: trueStart, end: trueEnd, lunchMin: lunchMin, hours: finalHrs };
+}
+
+// Fetches Geotab trips for one team+date EXACTLY ONCE and derives
+// everything both _computeGpsHoursForDay's GPS-hours numbers and the
+// Team Hours modal's stop-list timeline (_buildGpsStopList) need from
+// that single fetch -- the modal's prefill and its activity timeline can
+// then never show numbers derived from two different trip fetches.
+// Device resolution (_resolveTeamDevice) is the PR #150-aware per-day
+// resolver -- a date-scoped override on this date wins over the team's
+// default vehicle, same as every other GPS surface in this file.
+async function _fetchTeamDayGpsDetail(team, dateStr) {
+  var date = new Date(dateStr + 'T00:00:00');
+  var devices = await _geotabCallRetryOn429('Get', { typeName: 'Device', resultsLimit: 500 });
+  var resolved = await _resolveTeamDevice(devices, team, date);
+  var device = resolved.device;
+  if (!device) {
+    return {
+      device: null, resolved: resolved, trips: [], stopList: [],
+      gps: { available: false, reason: resolved.source === 'assignment-none' ? ('No GPS device assigned to ' + team + ' on ' + dateStr) : ('No vehicle found for ' + team) }
+    };
+  }
+
+  // Business-timezone day boundary (not browser-local .setHours) --
+  // matches _loadWeekHoursInner's own dayStart/dayEnd computation.
+  var _dp = dateStr.split('-').map(Number);
+  var _tz = _pentaBusinessTimezone();
+  var startOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 0, 0, 0, _tz);
+  var endOfDay = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 23, 59, 59, _tz);
+  var trips = await _geotabCallRetryOn429('Get', {
+    typeName: 'Trip',
+    search: { deviceSearch: { id: device.id }, fromDate: startOfDay.toISOString(), toDate: endOfDay.toISOString(), includeOverlappedTrips: true },
+    resultsLimit: 200
+  });
+  // Geotab's own API can return a trip outside the requested range
+  // (confirmed live: a zero-duration, garbage-coordinate trip from the
+  // PRIOR calendar day came back for a fromDate/toDate that excluded
+  // it) -- re-filter defensively by t.start, same as
+  // _loadWeekHoursInner's dayTrips filter already does. Without this,
+  // a stray boundary trip can become "trueStart" and produce a
+  // wildly wrong multi-day span that then fails the sanity check
+  // below, reporting a real day as having no data at all.
+  trips = (trips || []).filter(function (t) {
+    var ts = new Date(t.start);
+    return ts >= startOfDay && ts <= endOfDay;
+  });
+  await reverseGeocodeTrips(trips);
+  trips.sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+
+  var gps = _computeGpsHoursFromTrips(trips, team, dateStr);
+  var stopList = _buildGpsStopList(trips, team, date, true);
+
+  return { device: device, resolved: resolved, trips: trips, stopList: stopList, gps: gps };
 }
 
 async function showArchivedOverridesComparison() {
@@ -36153,6 +36241,174 @@ function _gpsActivityWindowLabel() {
   return { '24h': "Today's", '3d': "Last 3 Days'", '7d': "Last 7 Days'", '30d': "Last 30 Days'" }[mode] || "Today's";
 }
 
+// Shared stop-list builder: raw Trip records (already sorted ascending
+// by start time) -> an array of { addr, inTime, outTime, isDepot, lat,
+// lng, distMi, driveMins } stop rows. Extracted from renderGPS's old
+// inline construction (Live tab's per-vehicle "Today's Activity" card)
+// so the Team Hours modal's GPS activity timeline (openTeamHoursModal)
+// can show the exact same stops for an arbitrary team+date without a
+// second, divergence-prone copy of this logic. `trimToDay` applies the
+// PR #112 same-day trim (true for a single calendar day -- Live's 24h
+// mode and every Team Hours modal call; false for Live's rolling
+// 3d/7d/30d window, which groups multiple real days deliberately and
+// must NOT have any of them trimmed away).
+function _buildGpsStopList(sortedTrips, team, dateObj, trimToDay) {
+  let stopList = [];
+  const _depot = getDepotForTeam(team);
+
+  // First location = start of first trip
+  if (sortedTrips.length > 0) {
+    // v11.0.28: depot detection now combines address AND point checks.
+    // Geotab's Trip records often return startPoint=null for the first
+    // trip of the day (vehicle was parked, no GPS fix at engine-on),
+    // which left the row labeled "Unknown" + isDepot=false. When the
+    // vehicle has no signal at all (no startAddr, no startPoint), fall
+    // back to the team's depot — cleaning vans almost always park
+    // there overnight, so "first stop = depot" is the right default.
+    const r0Addr = sortedTrips[0].startAddress || sortedTrips[0].startLocation || '';
+    const r0Pt = sortedTrips[0].startPoint;
+    const r0Detected = isDepotAddress(r0Addr, team) || isDepotPoint(r0Pt, team);
+    const r0Inferred = !r0Addr && !r0Pt && !!_depot;
+    stopList.push({
+      addr: r0Addr || (r0Inferred ? _depot.addr : 'Unknown'),
+      inTime: null,
+      outTime: new Date(sortedTrips[0].start),
+      isDepot: r0Detected || r0Inferred
+    });
+  }
+
+  sortedTrips.forEach((t, ti) => {
+    const arriveAddr = t.stopAddress || t.stopLocation ||
+      (t.stopPoint ? (t.stopPoint.y.toFixed(4) + ', ' + t.stopPoint.x.toFixed(4)) : 'Unknown');
+    const arriveTime = t.stop ? new Date(t.stop) : null;
+    const nextDepart = sortedTrips[ti+1] ? new Date(sortedTrips[ti+1].start) : null;
+    const distMi = t.distance ? Math.round(t.distance * 0.000621371) : null;
+    const driveMins = arriveTime ? Math.round((arriveTime - new Date(t.start)) / 60000) : null;
+
+    stopList.push({
+      addr: arriveAddr,
+      inTime: arriveTime,
+      outTime: nextDepart,
+      // v11.0.28: include point-based depot detection as a fallback.
+      // GetAddresses occasionally returns "Unknown" or an unrelated
+      // street label for coords that ARE inside the depot radius;
+      // the lat/lng check catches that and flags the row as Office.
+      isDepot: isDepotAddress(arriveAddr, team) || isDepotPoint(t.stopPoint, team),
+      lat: t.stopPoint ? t.stopPoint.y : null,
+      lng: t.stopPoint ? t.stopPoint.x : null,
+      distMi,
+      driveMins
+    });
+  });
+
+  // PR #112 — a single-day view should never show a stop that belongs
+  // wholly to a PREVIOUS day. PR #111 removed the old payroll-window
+  // trim here because it was dropping REAL same-day stops (team B3's
+  // 111 Star St) -- but with no trim at all, Geotab's
+  // includeOverlappedTrips:true now lets a stop that started the prior
+  // evening (and just happens to still be parked when the fetch window
+  // opens) leak in too, e.g. a multi-hour overnight depot stay showing
+  // as the first "activity" of the day. Fix is narrower than the old
+  // trim: exclude only a stop with NO evidence of touching the selected
+  // day at all -- the synthetic first row (arrival unknown) is judged
+  // by its departure instead, since that's the only timestamp it has.
+  if (trimToDay) {
+    const _selDate = dateObj;
+    stopList = stopList.filter(function(s, si) {
+      if (si === 0 && s.inTime == null) return s.outTime && s.outTime.toDateString() === _selDate.toDateString();
+      if (s.inTime == null) return true; // still-open/current stop -- no data to judge, keep it
+      return s.inTime.toDateString() === _selDate.toDateString();
+    });
+  }
+
+  return stopList;
+}
+
+// Shared per-stop row renderer -- Live tab's renderGPS (Today's
+// Activity / rolling-window card) and the Team Hours modal's GPS
+// activity timeline (openTeamHoursModal, via _teamHoursRenderGpsTimeline)
+// call this directly so a stop renders identically (client match, lunch
+// detection + the "Not lunch"/"Mark as lunch" toggle, business-timezone
+// times) in both places -- not a second copy that can silently diverge.
+// `ctx`: { tz, team, teamJobs, isLastOverall, afterToggleFn }.
+// isLastOverall is precomputed by the caller (each caller knows its own
+// notion of "last stop in this render" -- the chronologically last stop
+// overall for Live's flat list vs. simply the modal's own single-day
+// list) rather than this function reaching into a specific caller's
+// array. afterToggleFn (optional) is a global function NAME string
+// forwarded to _toggleLunchOverride's own optional 7th param -- see that
+// function's comment; Live's calls omit it and are unaffected.
+function _renderGPSStopRow(s, includeDriveInfo, ctx) {
+  // v11.0.27: render in the BUSINESS's timezone (where the work
+  // happens), not the viewer's. A CA-based owner viewing MA-based
+  // fleet wants times in Eastern to match MyGeotab + their mental
+  // model of "team starts at 9 AM" (9 AM EDT at the office, not
+  // 9 AM their local time).
+  const _timeOpts = {hour:'numeric', minute:'2-digit', timeZone: ctx.tz};
+  const inStr = s.inTime ? s.inTime.toLocaleString('en-US', _timeOpts) : '—';
+  const outStr = s.outTime ? s.outTime.toLocaleString('en-US', _timeOpts) : (ctx.isLastOverall ? 'Now' : '—');
+  const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
+  const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
+  const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
+  const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
+  // Geo-first client match (migration 084 tiering, mirrored in JS):
+  // matches a real client visit even when it wasn't on today's
+  // schedule -- an unscheduled stop at a real client's house used to
+  // render as an unrecognized "possible lunch" stop just because no job
+  // existed for that team+client+day.
+  const _match = s.isDepot ? null : matchStopToClientGeo(s.lat, s.lng, s.addr, ctx.teamJobs, ctx.team);
+  const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
+  const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
+  // PR #115 — "naturally" is what the heuristic alone would flag;
+  // "maybeLunch" (used for the actual render below) also respects a
+  // manager's per-stop override, same identity (team+date+the stop's
+  // own ISO arrival timestamp) that _detectDayLunch checks, so the
+  // Activity flag and the weekly-card total can't disagree about which
+  // stops are excluded.
+  const naturallyLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
+  const _stopKey = s.inTime ? s.inTime.toISOString() : null;
+  const _stopDateStr = s.inTime ? dateKey(s.inTime) : null;
+  const _lunchOv = (naturallyLunch && _stopKey && _stopDateStr && window.PentaLunchFlags)
+    ? window.PentaLunchFlags.getOverride(ctx.team, _stopDateStr, _stopKey) : null;
+  const _isExcluded = !!(_lunchOv && _lunchOv.override_type === 'exclude');
+  const maybeLunch = naturallyLunch && !_isExcluded;
+  // PR #111 — a stop with NO client match at all (not just "real
+  // client, no job today" -- genuinely no record at this address) used
+  // to render as a bare, unlabeled address row, indistinguishable from
+  // any other line. Give it the same visibility as UNSCHEDULED -- e.g.
+  // team B3's 111 Star St stop, a confirmed real Geotab stop with no
+  // client on file anywhere.
+  const isUnknownLocation = !s.isDepot && !_match && !naturallyLunch;
+  const _escAddr = (s.addr || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  const _afterToggleArg = ctx.afterToggleFn ? `,'${ctx.afterToggleFn}'` : '';
+  const _lunchToggleBtn = (maybeLunch && _stopKey && _stopDateStr)
+    ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${ctx.team}','${_stopDateStr}','${_stopKey}','exclude','${_escAddr}',${dur||0}${_afterToggleArg})" title="Mark this stop as not lunch" style="background:none;border:1px solid rgba(217,119,6,0.4);color:var(--amber);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">✕ Not lunch</button>`
+    : (naturallyLunch && _isExcluded && _stopKey && _stopDateStr)
+    ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${ctx.team}','${_stopDateStr}','${_stopKey}','reverse','${_escAddr}',${dur||0}${_afterToggleArg})" title="Mark this stop as lunch again" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">🍔 Mark as lunch</button>`
+    : '';
+
+  const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
+  return `${includeDriveInfo ? driveInfo : ''}
+  <div class="tvc-stop-row" style="align-items:flex-start${maybeLunch ? ';background:rgba(251,191,36,0.06);border-radius:6px;margin:0 -4px;padding:4px' : ''}">
+    <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
+    <div style="flex:1;min-width:0">
+      ${maybeLunch || (naturallyLunch && _isExcluded) ? `<div style="display:flex;align-items:center;font-size:11px;font-weight:700;color:${maybeLunch ? 'var(--amber)' : 'var(--muted)'};margin-bottom:1px">${maybeLunch ? '🍔❓ Possible lunch / break' : '✕ Marked not-lunch'}${_lunchToggleBtn}</div>` : ''}
+      ${isUnknownLocation ? `<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">📍 Unrecognized stop — no client on file here</div>` : ''}
+      ${clientName && !maybeLunch ? (_match && _match.id
+        ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
+        : `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
+      ) : ''}
+      <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
+      <div style="display:flex;gap:12px;font-size:11px;align-items:center">
+        ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
+        ${s.inTime && s.outTime ? `<span style="color:var(--red)">◀ Out: ${outStr}</span>` : ''}
+        ${durStr ? `<span style="color:var(--muted)">${durStr}</span>` : ''}
+        ${mapsLink ? `<a href="${mapsLink}" target="_blank" onclick="event.stopPropagation()" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderGPS() {
   const moving = gpsVehicles.filter(v => v.isMoving).length;
   const stopped = gpsVehicles.filter(v => !v.isMoving).length;
@@ -36214,180 +36470,26 @@ function renderGPS() {
     const completedJobs = teamJobs.filter(j => j.done).length;
     const isExp = gpsExpanded[v.id];
 
-    // Build stops detail — show like MyGeotab:
-    // departed address → arrived address with times and duration at each stop
+    // Build stops detail — show like MyGeotab. Stop-list construction
+    // (_buildGpsStopList) and per-row rendering (_renderGPSStopRow) are
+    // shared with the Team Hours modal's GPS activity timeline
+    // (openTeamHoursModal) -- see those functions' own comments, defined
+    // just above this one. Live's own behavior is unchanged; this just
+    // calls the now-shared functions instead of building/rendering the
+    // same thing inline a second time.
     let stopsHtml = '';
+    let stopList = [];
     if (v.trips.length > 0) {
       const sortedTrips = [...v.trips].sort((a,b) => new Date(a.start) - new Date(b.start));
       let rows = '';
-
-      // Build a list of unique STOPS (locations visited)
-      // Each stop = arrived at address + departed from same address
-      // Simpler view: address | in time | out time | duration
-      let stopList = [];
-      const _depot = getDepotForTeam(v.team);
-
-      // First location = start of first trip
-      if (sortedTrips.length > 0) {
-        // v11.0.28: depot detection now combines address AND point checks.
-        // Geotab's Trip records often return startPoint=null for the first
-        // trip of the day (vehicle was parked, no GPS fix at engine-on),
-        // which left the row labeled "Unknown" + isDepot=false. When the
-        // vehicle has no signal at all (no startAddr, no startPoint), fall
-        // back to the team's depot — cleaning vans almost always park
-        // there overnight, so "first stop = depot" is the right default.
-        const r0Addr = sortedTrips[0].startAddress || sortedTrips[0].startLocation || '';
-        const r0Pt = sortedTrips[0].startPoint;
-        const r0Detected = isDepotAddress(r0Addr, v.team) || isDepotPoint(r0Pt, v.team);
-        const r0Inferred = !r0Addr && !r0Pt && !!_depot;
-        stopList.push({
-          addr: r0Addr || (r0Inferred ? _depot.addr : 'Unknown'),
-          inTime: null,
-          outTime: new Date(sortedTrips[0].start),
-          isDepot: r0Detected || r0Inferred
-        });
-      }
-
-      sortedTrips.forEach((t, ti) => {
-        const arriveAddr = t.stopAddress || t.stopLocation ||
-          (t.stopPoint ? (t.stopPoint.y.toFixed(4) + ', ' + t.stopPoint.x.toFixed(4)) : 'Unknown');
-        const arriveTime = t.stop ? new Date(t.stop) : null;
-        const nextDepart = sortedTrips[ti+1] ? new Date(sortedTrips[ti+1].start) : null;
-        const distMi = t.distance ? Math.round(t.distance * 0.000621371) : null;
-        const driveMins = arriveTime ? Math.round((arriveTime - new Date(t.start)) / 60000) : null;
-
-        stopList.push({
-          addr: arriveAddr,
-          inTime: arriveTime,
-          outTime: nextDepart,
-          // v11.0.28: include point-based depot detection as a fallback.
-          // GetAddresses occasionally returns "Unknown" or an unrelated
-          // street label for coords that ARE inside the depot radius;
-          // the lat/lng check catches that and flags the row as Office.
-          isDepot: isDepotAddress(arriveAddr, v.team) || isDepotPoint(t.stopPoint, v.team),
-          lat: t.stopPoint ? t.stopPoint.y : null,
-          lng: t.stopPoint ? t.stopPoint.x : null,
-          distMi,
-          driveMins
-        });
-      });
-
-      // PR #112 — "Today's Activity" (single-day/24h mode only; the
-      // rolling 3d/7d/30d view intentionally groups multiple real
-      // calendar days under date headers, so it's excluded below) should
-      // never show a stop that belongs wholly to a PREVIOUS day. PR #111
-      // removed the old payroll-window trim here because it was dropping
-      // REAL same-day stops (team B3's 111 Star St) -- but with no
-      // trim at all, Geotab's includeOverlappedTrips:true now lets a
-      // stop that started the prior evening (and just happens to still
-      // be parked when the fetch window opens) leak in too, e.g. a
-      // multi-hour overnight depot stay showing as the first "activity"
-      // of the day. Fix is narrower than the old trim: exclude only a
-      // stop with NO evidence of touching the selected day at all --
-      // the synthetic first row (arrival unknown) is judged by its
-      // departure instead, since that's the only timestamp it has.
-      if (!_isRollingView) {
-        const _selDate = getGPSDate();
-        stopList = stopList.filter(function(s, si) {
-          if (si === 0 && s.inTime == null) return s.outTime && s.outTime.toDateString() === _selDate.toDateString();
-          if (s.inTime == null) return true; // still-open/current stop -- no data to judge, keep it
-          return s.inTime.toDateString() === _selDate.toDateString();
-        });
-      }
+      stopList = _buildGpsStopList(sortedTrips, v.team, getGPSDate(), !_isRollingView);
 
       // Use shared matchStopToClientGeo function
-
       const _tz = _pentaBusinessTimezone();
-
-      // v11.0.30: extracted from the old stopList.map() so both the
-      // flat 24h render and the grouped-by-day rolling-window render
-      // (below) share one row template. includeDriveInfo replaces the
-      // old `si > 0` check -- "was there a previous stop to show
-      // drive-time from" now means "previous stop IN THIS DAY'S GROUP",
-      // not "previous stop in the whole multi-day list" (a 3am arrival
-      // on a new day isn't a "drive" from yesterday's last stop).
-      function _renderGPSStopRow(s, includeDriveInfo) {
-        // v11.0.27: render in the BUSINESS's timezone (where the work
-        // happens), not the viewer's. A CA-based owner viewing MA-based
-        // fleet wants times in Eastern to match MyGeotab + their mental
-        // model of "team starts at 9 AM" (9 AM EDT at the office, not
-        // 9 AM their local time).
-        // Rolling multi-day windows (3d/7d/30d) group stops under a
-        // per-day date header (below), so bare "2:14 PM" is unambiguous
-        // again within each group -- no date stamp needed on the row
-        // itself in either mode.
-        const _timeOpts = {hour:'numeric', minute:'2-digit', timeZone:_tz};
-        const inStr = s.inTime ? s.inTime.toLocaleString('en-US', _timeOpts) : '—';
-        // "Now" only for the single chronologically-last stop overall
-        // (found by reference, not array position -- position no longer
-        // implies recency once rolling-view groups reorder the render).
-        const isLastOverall = s === stopList[stopList.length - 1];
-        const outStr = s.outTime ? s.outTime.toLocaleString('en-US', _timeOpts) : (isLastOverall ? 'Now' : '—');
-        const dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
-        const durStr = dur ? (dur >= 60 ? Math.floor(dur/60)+'h '+(dur%60)+'m' : dur+'m') : '';
-        const dotColor = s.isDepot ? 'var(--green)' : 'var(--accent)';
-        const driveInfo = s.distMi ? `<div style="font-size:10px;color:var(--border2);margin-bottom:4px;padding-left:18px">▲ ${s.distMi}mi · ${s.driveMins||'?'}m drive</div>` : '';
-        // Geo-first client match (migration 084 tiering, mirrored in
-        // JS): matches a real client visit even when it wasn't on
-        // today's schedule, which is the bug this fixes -- an
-        // unscheduled stop at a real client's house used to render as
-        // an unrecognized "possible lunch" stop just because no job
-        // existed for that team+client+day.
-        const _match = s.isDepot ? null : matchStopToClientGeo(s.lat, s.lng, s.addr, teamJobs, v.team);
-        const clientName = s.isDepot ? 'Office' : (_match ? _match.name : '');
-        const isUnscheduled = !s.isDepot && !!_match && !_match.scheduled;
-        // PR #115 — "naturally" is what the heuristic alone would flag;
-        // "maybeLunch" (used for the actual render below) also respects
-        // a manager's per-stop override, same identity (team+date+the
-        // stop's own ISO arrival timestamp) that _detectDayLunch checks,
-        // so the Activity flag and the weekly-card total can't disagree
-        // about which stops are excluded.
-        const naturallyLunch = !s.isDepot && !_match && dur !== null && dur > 0 && dur < 60;
-        const _stopKey = s.inTime ? s.inTime.toISOString() : null;
-        const _stopDateStr = s.inTime ? dateKey(s.inTime) : null;
-        const _lunchOv = (naturallyLunch && _stopKey && _stopDateStr && window.PentaLunchFlags)
-          ? window.PentaLunchFlags.getOverride(v.team, _stopDateStr, _stopKey) : null;
-        const _isExcluded = !!(_lunchOv && _lunchOv.override_type === 'exclude');
-        const maybeLunch = naturallyLunch && !_isExcluded;
-        // PR #111 — a stop with NO client match at all (not just "real
-        // client, no job today" -- genuinely no record at this address)
-        // used to render as a bare, unlabeled address row, indistinguishable
-        // from any other line. Give it the same visibility Tom expects
-        // parity with UNSCHEDULED for -- e.g. team B3's 111 Star St stop,
-        // a confirmed real Geotab stop with no client on file anywhere.
-        const isUnknownLocation = !s.isDepot && !_match && !naturallyLunch;
-        const _escAddr = (s.addr || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-        const _lunchToggleBtn = (maybeLunch && _stopKey && _stopDateStr)
-          ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${v.team}','${_stopDateStr}','${_stopKey}','exclude','${_escAddr}',${dur||0})" title="Mark this stop as not lunch" style="background:none;border:1px solid rgba(217,119,6,0.4);color:var(--amber);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">✕ Not lunch</button>`
-          : (naturallyLunch && _isExcluded && _stopKey && _stopDateStr)
-          ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${v.team}','${_stopDateStr}','${_stopKey}','reverse','${_escAddr}',${dur||0})" title="Mark this stop as lunch again" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">🍔 Mark as lunch</button>`
-          : '';
-
-        const mapsLink = s.addr ? 'https://maps.google.com/?q='+encodeURIComponent(s.addr) : '';
-        return `${includeDriveInfo ? driveInfo : ''}
-        <div class="tvc-stop-row" style="align-items:flex-start${maybeLunch ? ';background:rgba(251,191,36,0.06);border-radius:6px;margin:0 -4px;padding:4px' : ''}">
-          <span class="tvc-stop-dot" style="background:${maybeLunch ? 'var(--amber)' : dotColor};margin-top:4px"></span>
-          <div style="flex:1;min-width:0">
-            ${maybeLunch || (naturallyLunch && _isExcluded) ? `<div style="display:flex;align-items:center;font-size:11px;font-weight:700;color:${maybeLunch ? 'var(--amber)' : 'var(--muted)'};margin-bottom:1px">${maybeLunch ? '🍔❓ Possible lunch / break' : '✕ Marked not-lunch'}${_lunchToggleBtn}</div>` : ''}
-            ${isUnknownLocation ? `<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:1px">📍 Unrecognized stop — no client on file here</div>` : ''}
-            ${clientName && !maybeLunch ? (_match && _match.id
-              ? `<div style="font-size:12px;font-weight:600;margin-bottom:1px"><button onclick="event.stopPropagation();openGPSClientCard('${_match.id}')" style="background:none;border:none;padding:6px 0;margin:-6px 0;font:inherit;font-weight:600;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px">${clientName}</button>${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
-              : `<div style="font-size:12px;font-weight:600;color:${s.isDepot?'var(--green)':'var(--accent)'};margin-bottom:1px">${clientName}${isUnscheduled ? ' <span title="No job scheduled for this client today" style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle;letter-spacing:.02em">UNSCHEDULED</span>' : ''}</div>`
-            ) : ''}
-            <div style="font-size:13px;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.addr}</div>
-            <div style="display:flex;gap:12px;font-size:11px;align-items:center">
-              ${s.inTime ? `<span style="color:var(--green)">▶ In: ${inStr}</span>` : `<span style="color:var(--green)">▶ Out: ${outStr}</span>`}
-              ${s.inTime && s.outTime ? `<span style="color:var(--red)">◀ Out: ${outStr}</span>` : ''}
-              ${durStr ? `<span style="color:var(--muted)">${durStr}</span>` : ''}
-              ${mapsLink ? `<a href="${mapsLink}" target="_blank" onclick="event.stopPropagation()" style="background:#34a853;color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap">📍</a>` : ''}
-            </div>
-          </div>
-        </div>`;
-      }
 
       if (!_isRollingView) {
         // 24h view: unchanged flat list, no date headers.
-        rows = stopList.map((s, si) => _renderGPSStopRow(s, si > 0)).join('');
+        rows = stopList.map((s, si) => _renderGPSStopRow(s, si > 0, { tz: _tz, team: v.team, teamJobs: teamJobs, isLastOverall: s === stopList[stopList.length - 1] })).join('');
       } else {
         // 3d/7d/30d view: group by calendar date (business timezone),
         // most recent day first, with a "Monday, Aug 3" header before
@@ -36412,7 +36514,7 @@ function renderGPS() {
         rows = _dayOrder.map(function(dKey, gi) {
           const g = _dayGroups[dKey];
           const headerHtml = `<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;padding:${gi === 0 ? '2px' : '10px'} 0 4px${gi === 0 ? '' : ';border-top:1px solid var(--border);margin-top:6px'}">${g.label}</div>`;
-          const itemsHtml = g.items.map(function(s, si2) { return _renderGPSStopRow(s, si2 > 0); }).join('');
+          const itemsHtml = g.items.map(function(s, si2) { return _renderGPSStopRow(s, si2 > 0, { tz: _tz, team: v.team, teamJobs: teamJobs, isLastOverall: s === stopList[stopList.length - 1] }); }).join('');
           return headerHtml + itemsHtml;
         }).join('');
       }
@@ -53888,39 +53990,53 @@ function _p3dPage(dir) {
      choice rather than assuming a lower stacking context is safe here
      too). -->
 <div id="team-hours-overlay" style="display:none;position:fixed;inset:0;z-index:9600;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeTeamHoursModal()">
-  <div style="background:var(--surface);width:100%;max-width:420px;max-height:90vh;overflow-y:auto;border-radius:16px;border:1px solid var(--border2);padding:20px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <div id="team-hours-title" style="font-size:17px;font-weight:700">Team hours</div>
-      <button onclick="closeTeamHoursModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;min-width:32px;min-height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+  <div style="background:var(--surface);width:100%;max-width:420px;max-height:90vh;border-radius:16px;border:1px solid var(--border2);display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:20px 20px 0;flex-shrink:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div id="team-hours-title" style="font-size:17px;font-weight:700">Team hours</div>
+        <button onclick="closeTeamHoursModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;min-width:32px;min-height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
+      </div>
+      <div id="team-hours-subtitle" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
     </div>
-    <div id="team-hours-subtitle" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
 
-    <div style="display:flex;gap:10px;margin-bottom:12px">
-      <label style="flex:1;font-size:12px;color:var(--muted)">Start time
-        <input type="time" id="team-hours-start" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+    <!-- Scrollable middle -- fields, GPS timeline, Will-be-changed/Skipped.
+         Mobile: Apply/Cancel/Reset below stay visible regardless of how
+         long the timeline gets (a busy team's full day of stops). -->
+    <div style="flex:1;overflow-y:auto;padding:0 20px;min-height:0">
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        <label style="flex:1;font-size:12px;color:var(--muted)">Start time
+          <input type="time" id="team-hours-start" oninput="document.getElementById('team-hours-overlay').dataset.userEdited='true'" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+        </label>
+        <label style="flex:1;font-size:12px;color:var(--muted)">End time
+          <input type="time" id="team-hours-end" oninput="document.getElementById('team-hours-overlay').dataset.userEdited='true'" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
+        </label>
+      </div>
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:14px">Lunch minutes
+        <input type="number" id="team-hours-lunch" min="0" step="5" oninput="document.getElementById('team-hours-overlay').dataset.userEdited='true'" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
       </label>
-      <label style="flex:1;font-size:12px;color:var(--muted)">End time
-        <input type="time" id="team-hours-end" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
-      </label>
-    </div>
-    <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:14px">Lunch minutes
-      <input type="number" id="team-hours-lunch" min="0" step="5" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
-    </label>
 
-    <div id="team-hours-error" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-size:13px;padding:10px 12px;border-radius:10px;margin-bottom:12px"></div>
+      <div id="team-hours-error" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-size:13px;padding:10px 12px;border-radius:10px;margin-bottom:12px"></div>
 
-    <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Will be changed</div>
-    <div id="team-hours-included" style="font-size:13px;margin-bottom:10px"></div>
-    <div id="team-hours-skipped-wrap" style="margin-bottom:14px">
-      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Skipped</div>
-      <div id="team-hours-skipped" style="font-size:13px;color:var(--muted)"></div>
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">GPS Activity</div>
+      <div id="team-hours-gps-summary" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div id="team-hours-gps-timeline" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface2);margin-bottom:14px"></div>
+
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Will be changed</div>
+      <div id="team-hours-included" style="font-size:13px;margin-bottom:10px"></div>
+      <div id="team-hours-skipped-wrap" style="margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Skipped</div>
+        <div id="team-hours-skipped" style="font-size:13px;color:var(--muted)"></div>
+      </div>
     </div>
 
-    <div style="display:flex;gap:8px;margin-bottom:8px">
-      <button id="team-hours-apply-btn" onclick="teamHoursApply()" style="flex:2;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Apply to team</button>
-      <button onclick="closeTeamHoursModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Cancel</button>
+    <!-- Fixed footer -- always visible, never scrolls away. -->
+    <div style="padding:14px 20px 20px;flex-shrink:0;border-top:1px solid var(--border)">
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="team-hours-apply-btn" onclick="teamHoursApply()" style="flex:2;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Apply to team</button>
+        <button onclick="closeTeamHoursModal()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:13px;border-radius:12px;cursor:pointer;min-height:48px">Cancel</button>
+      </div>
+      <button id="team-hours-reset-btn" onclick="teamHoursResetToGps()" style="width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer;min-height:44px">Reset team to GPS</button>
     </div>
-    <button id="team-hours-reset-btn" onclick="teamHoursResetToGps()" style="width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer;min-height:44px">Reset team to GPS</button>
   </div>
 </div>
 

@@ -211,6 +211,9 @@ function main() {
     sandbox._pentaBusinessTimezone = function () { return 'America/New_York'; };
     sandbox._bizWallClockToUtc = function (y, m, d, hh, mm, ss) { return new Date(Date.UTC(y, m - 1, d, hh + 4, mm, ss)); }; // EDT = UTC-4
     sandbox._detectDayLunch = function () { return null; }; // isolate the start/end fix; lunch detection has its own tests
+    // _fetchTeamDayGpsDetail (inside _computeGpsHoursForDay now) also
+    // builds a stop-list timeline -- not what this test is isolating.
+    sandbox._buildGpsStopList = function () { return []; };
     sandbox.getDepotForTeam = function () { return { lat: depotLat, lng: depotLng }; };
     sandbox.isDepotAddress = function (addr) { return /Boston Post Rd/i.test(addr || ''); };
     sandbox.isDepotPoint = function (pt) { return pt ? sandbox.distFeet(pt.y, pt.x, depotLat, depotLng) <= 400 : false; };
