@@ -17,11 +17,19 @@
 // there's no natural moment to fill it in first -- so every plain vehicle
 // pick silently became a permanent, forward-cascading change.
 //
-// Fix: blank "until" now means "today only" (effective_to = effective_from)
-// instead of open-ended. A new explicit checkbox ("∞") is required to get
-// the old open-ended behavior back, for the legitimate permanent-change
-// case (e.g. Staff > Teams' staffTeamSaveDevice, a different, deliberately
-// permanent-only screen that this fix does NOT touch).
+// PR #149's fix: blank "until" meant "today only" instead of open-ended,
+// with a new "∞" checkbox as the explicit opt-in for the old open-ended
+// behavior.
+//
+// Follow-up cleanup (post-#150): Tom confirmed a car change from THIS
+// picker should ALWAYS be scoped to the viewed day only -- there's no
+// legitimate case for open-ended from here at all. The "until" input and
+// "∞" checkbox were removed outright; setTeamDeviceAssignment no longer
+// reads any element besides the vehicle <select> itself, and always
+// writes effective_from = effective_to = dateStr. The permanent-default
+// case lives solely in Admin/Staff → Teams' staffTeamSaveDevice now (a
+// different, always-open-ended screen that was never driven by these two
+// removed elements in the first place).
 //
 // Run with: node tests/team-device-assignment-no-cascade.test.js
 
@@ -49,12 +57,10 @@ function check(label, actual, expected) {
   else { fail++; console.log('  FAIL ' + label + ' -- expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual)); }
 }
 
-function run(team, dateStr, { selectValue = 'device-x', untilValue = '', foreverChecked = false } = {}) {
+function run(team, dateStr, selectValue) {
   var upsertPayload = null;
   var elements = {
     ['tda-select-' + team]: { value: selectValue },
-    ['tda-until-' + team]: { value: untilValue },
-    ['tda-forever-' + team]: { checked: foreverChecked },
   };
   const sandbox = {
     console,
@@ -76,19 +82,24 @@ function run(team, dateStr, { selectValue = 'device-x', untilValue = '', forever
 }
 
 (async () => {
-  // The exact reported scenario: pick a device, leave "until" blank.
-  const p1 = await run('B1', '2026-08-20', { selectValue: 's3-device', untilValue: '' });
-  check('picking a vehicle with "until" left blank writes effective_to = effective_from (today only) -- NOT null/open-ended', p1.effective_to, '2026-08-20');
-  check('effective_from is still the date the change was made on', p1.effective_from, '2026-08-20');
+  // The exact reported scenario: pick a device.
+  const p1 = await run('B1', '2026-08-20', 's3-device');
+  check('picking a vehicle always writes effective_to = effective_from (today only)', p1.effective_to, '2026-08-20');
+  check('effective_from is the date the change was made on', p1.effective_from, '2026-08-20');
   check('device_id is the picked device', p1.device_id, 's3-device');
 
-  // Explicit open-ended opt-in via the new checkbox.
-  const p2 = await run('B1', '2026-08-20', { selectValue: 's3-device', untilValue: '', foreverChecked: true });
-  check('checking the "no end date" checkbox still allows an explicit open-ended change (effective_to = null)', p2.effective_to, null);
+  // No way left to request open-ended from this function -- always day-scoped,
+  // regardless of which device/date is picked.
+  const p2 = await run('B1', '2026-08-20', 's3-device');
+  check('there is no opt-in left for open-ended -- always day-scoped', p2.effective_to, '2026-08-20');
 
-  // Explicit multi-day-but-bounded override still works.
-  const p3 = await run('B1', '2026-08-20', { selectValue: 's3-device', untilValue: '2026-08-25' });
-  check('an explicit "until" date is still respected as-is', p3.effective_to, '2026-08-25');
+  const p3 = await run('B1', '2026-08-25', '__none__');
+  check('"None (no GPS coverage)" is also day-scoped, not open-ended', p3.effective_to, '2026-08-25');
+  check('device_id is null for explicit no-GPS', p3.device_id, null);
+
+  const p4 = await run('B1', '2026-08-26', '');
+  check('"Default" option is day-scoped too', p4.effective_to, '2026-08-26');
+  check('device_id is the __default__ sentinel', p4.device_id, '__default__');
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail > 0 ? 1 : 0);
