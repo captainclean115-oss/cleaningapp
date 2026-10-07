@@ -79,6 +79,10 @@ function buildSandbox(opts) {
       return Promise.resolve(opts.resolvedDevice !== undefined ? opts.resolvedDevice : { device: devices[0], source: 'assignment' });
     },
     reverseGeocodeTrips: function (trips) { return Promise.resolve(trips); },
+    // _fetchTeamDayGpsDetail (inside _computeGpsHoursForDay now) also
+    // builds a stop-list timeline -- a boundary dependency this test
+    // doesn't exercise (that's team-hours-gps-timeline.test.js's job).
+    _buildGpsStopList: function () { return []; },
     // getUnifiedRoster for _readArchivedEmpHrsEntries
     getUnifiedRoster: function () { return opts.roster || []; },
   };
