@@ -6940,7 +6940,9 @@ window.PentaGeocodeHistory = (function() {
     docPhotos: 1, signature: 1, signedAt: 1,
     defaultTeam: 1, fromPortal: 1,
     // PR #149 — employee termination/rehire (migration 104).
-    termination_reason: 1, termination_notes: 1, terminated_by: 1, eligible_for_rehire: 1
+    termination_reason: 1, termination_notes: 1, terminated_by: 1, eligible_for_rehire: 1,
+    // Admin/Office designation (migration 113).
+    work_type: 1
   };
 
   function _toRow(emp, opts) {
@@ -7017,6 +7019,13 @@ window.PentaGeocodeHistory = (function() {
     // Sprint 6.9: team_id (FK to teams table) — passed through verbatim.
     // `!== undefined` so an explicit null clears the FK; `!= null` would skip nulling.
     if (emp.team_id !== undefined) row.team_id = emp.team_id || null;
+
+    // Admin/Office designation (migration 113). `!== undefined` so an
+    // explicit falsy value still coerces to the real default ('field')
+    // rather than being skipped -- same convention as team_id just above.
+    if (emp.work_type !== undefined) {
+      row.work_type = (emp.work_type === 'admin') ? 'admin' : 'field';
+    }
 
     // status: pass through if valid, else default to 'invited'
     if (emp.status != null) {
@@ -7110,6 +7119,10 @@ window.PentaGeocodeHistory = (function() {
     emp.is_driver = !!row.is_driver;
     // v9.5: position field for portal read-only / full-access split.
     emp.position = row.position || 'team_member';
+    // Admin/Office designation (migration 113). Defaults to 'field' for
+    // every pre-migration row (the column's own DB DEFAULT), same
+    // fallback the app applies everywhere else this field is read.
+    emp.work_type = (row.work_type === 'admin') ? 'admin' : 'field';
 
     if (row.culture_tag != null) {
       emp.culture_tag = row.culture_tag;
@@ -15997,7 +16010,7 @@ window.addEventListener('DOMContentLoaded', function() {
       if (!sb) return null;
       try {
         var res = await sb.from('employees')
-          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id')
+          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id, work_type')
           .eq('auth_user_id', authId)
           .is('deleted_at', null)
           .maybeSingle();
@@ -16026,6 +16039,7 @@ window.addEventListener('DOMContentLoaded', function() {
           status: m.status || 'active',
           role: [],
           position: m.position || 'team_member',
+          work_type: (m.work_type === 'admin') ? 'admin' : 'field',
           photoUrl: m.photo_url || '',
           photo_url: m.photo_url || '',
           auth_user_id: m.auth_user_id || authId
@@ -24771,7 +24785,14 @@ async function processVoiceCommand(text) {
       if (window.PentaEmployees && window.PentaEmployees.listSync) {
         var rows = window.PentaEmployees.listSync();
         if (rows && rows.length) {
-          return rows.map(function(e){ return e.name + ' ('+(e.team || e.defaultTeam || '')+')'; }).join(', ');
+          // Admin/Office designation (migration 113). Without this,
+          // a teamless Admin employee rendered as "Linda Smith ()" --
+          // no signal either way -- leaving Claire's own reasoning no
+          // way to know she's deliberately not on a team (vs. a data
+          // gap), which is exactly how a "S1 worked..." sweep could
+          // accidentally include her. Naming her directly still works
+          // either way -- this only affects team-level inference.
+          return rows.map(function(e){ return e.name + ' (' + (e.work_type === 'admin' ? 'Admin/Office' : (e.team || e.defaultTeam || '')) + ')'; }).join(', ');
         }
       }
     } catch(e) {}
@@ -24877,6 +24898,7 @@ async function processVoiceCommand(text) {
     +'\nCONTEXT\n'
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
+    +'An employee shown as "(Admin/Office)" is office staff with no field team -- never include them when a team name is used to mean "everyone on that team" (e.g. "S1 worked 8 to 4 today" means only S1\'s field members). You can still name an Admin/Office employee directly (e.g. "Linda worked 9 to 5") and use get_employee_hours/edit_employee_hours/batch_edit_employee_hours for them exactly as for anyone else -- their hours just come from manual entries, never GPS.\n'
     +'Total clients: '+PentaClients.count()+'\n'
     +'Today\'s jobs: '+todayJobs.length;
 
@@ -25969,6 +25991,32 @@ async function _executeClaireToolCallInner(toolCall, message) {
     for (var ghi = 0; ghi < ghDates.length; ghi++) {
       var ghDate = ghDates[ghi];
       var ghDayLabel = new Date(ghDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+
+      // Admin/Office designation (migration 113). getEmployeeTeam
+      // returns null for an Admin employee EVERY day, not just a real
+      // day off -- the `!ghTeam` branch right below would misreport her
+      // as "off" and never even look at her real manual_hour_overrides.
+      // Separate, simpler path: override or blank, no GPS fallback ever.
+      if (ghEmp.work_type === 'admin') {
+        var ghAdminOff = _adminEmpDayOff(ghKeyId, ghDate);
+        if (ghAdminOff) {
+          ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'off', reason: ghAdminOff.label });
+          continue;
+        }
+        var ghAdminOverride = getEmpHours(ghKeyId, ghDate);
+        if (ghAdminOverride) {
+          ghResults.push({ date: ghDate, day_of_week: ghDayLabel,
+            start_time: _hrsFmt12(ghAdminOverride.start), end_time: _hrsFmt12(ghAdminOverride.end),
+            lunch_minutes: ghAdminOverride.lunch || 0,
+            total_hours: ghAdminOverride.hours != null ? Number(ghAdminOverride.hours) : null,
+            source: 'manual_override', team_that_day: 'Admin/Office' });
+        } else {
+          ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'no_data',
+            reason: 'No manual hours entered for this day (Admin/Office has no GPS fallback).', team_that_day: 'Admin/Office' });
+        }
+        continue;
+      }
+
       var ghTeam = getEmployeeTeam(ghKeyId, ghDate);
       if (!ghTeam) {
         var ghOff = getEmployeeDayOffInfo(ghKeyId, ghDate);
@@ -26150,7 +26198,22 @@ async function _executeClaireToolCallInner(toolCall, message) {
       var beTeam = getEmployeeTeam(beKeyId, beDate);
       var beCurrentOverride = getEmpHours(beKeyId, beDate); // null if none on file
       var beCurrentLabel;
-      if (!beTeam) {
+      // Admin/Office designation (migration 113). getEmployeeTeam
+      // returns null for an Admin employee every day, not just a real
+      // day off -- checked FIRST so this preview never mislabels her as
+      // "OFF" just because she has no team. The actual write below
+      // (saveEmpHours) is already team-independent and unaffected
+      // either way; this only fixes what the preview SAYS.
+      if (beEmp.work_type === 'admin') {
+        var beAdminOff = _adminEmpDayOff(beKeyId, beDate);
+        if (beAdminOff) {
+          beCurrentLabel = 'OFF (' + beAdminOff.label + ')';
+        } else if (beCurrentOverride) {
+          beCurrentLabel = _hrsFmt12(beCurrentOverride.start) + ' - ' + _hrsFmt12(beCurrentOverride.end);
+        } else {
+          beCurrentLabel = 'no manual hours entered (Admin/Office -- no GPS fallback)';
+        }
+      } else if (!beTeam) {
         var beOff = getEmployeeDayOffInfo(beKeyId, beDate);
         beCurrentLabel = 'OFF' + ((beOff && beOff.status_type && DAY_OFF_CATEGORY_LABELS[beOff.status_type]) ? ' (' + DAY_OFF_CATEGORY_LABELS[beOff.status_type] + ')' : '');
       } else if (beCurrentOverride) {
@@ -27706,8 +27769,12 @@ async function renderTeamManager(opts) {
   // silently blanking the already-open modal (team cards included, even
   // though those render fine on their own now).
   try {
-  // Floaters / unassigned
-  const unassigned = getUnifiedRoster().filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e));
+  // Floaters / unassigned. Admin/Office employees (migration 113) are
+  // excluded here on purpose -- they have no team by design, not by
+  // oversight, and get their own section (below, outside this try
+  // block) instead of showing up looking like a genuinely-unplaced
+  // field employee.
+  const unassigned = getUnifiedRoster().filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e) && e.work_type !== 'admin');
   if (unassigned.length > 0) {
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
@@ -27746,10 +27813,11 @@ async function renderTeamManager(opts) {
     </div>`;
   }
 
-  // Unassigned employees (no default team and no daily assignment)
+  // Unassigned employees (no default team and no daily assignment).
+  // Same Admin/Office exclusion as `unassigned` just above.
   const unassigned2 = getUnifiedRoster().filter(e => {
     const assigned = getEmployeeTeam(e.id, dateStr);
-    return !assigned || assigned === '';
+    return (!assigned || assigned === '') && e.work_type !== 'admin';
   });
   if (unassigned.length > 0) {
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden;border:1px dashed rgba(255,255,255,0.1)">
@@ -27808,6 +27876,52 @@ async function renderTeamManager(opts) {
     console.error('[TeamMgr] rendering unassigned/archived sections failed -- team cards above still show', e);
     html += '<div style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:14px 16px;color:var(--text);font-size:13px">'
       + '<div style="font-weight:700;margin-bottom:4px;color:var(--red)">Unassigned/archived employees failed to load</div>'
+      + '<div style="color:var(--muted)">' + _adminEsc((e && e.message) || String(e)) + '</div></div>';
+  }
+
+  // Admin / Office section (migration 113) -- deliberately at the very
+  // bottom, and in its OWN try/catch (PR #182/#146 pattern): one bad
+  // admin row must not blank the team cards, Unassigned, or Archived
+  // sections above, which have all already rendered successfully by
+  // this point. No team Move/Assign/quick-pill buttons here on purpose
+  // -- they have no team to move to or from; Off/Vacation stays
+  // available since that's completely team-independent (getEmployeeDayOffInfo/
+  // assignEmployee('OFF',...) already work for any employee regardless
+  // of team).
+  try {
+    const adminEmployees = getUnifiedRoster().filter(e => e.work_type === 'admin' && isActiveEmp(e));
+    if (adminEmployees.length > 0) {
+      html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
+          <span style="font-weight:700;font-size:15px;color:var(--muted)">🏢 Admin / Office</span>
+        </div>
+        <div style="padding:8px 14px">
+          ${adminEmployees.map(emp => {
+            const _offInfo = _adminEmpDayOff(emp.id, dateStr);
+            const _offBadge = _offInfo
+              ? ('<span style="font-size:10px;color:var(--red);background:rgba(239,68,68,0.1);padding:1px 6px;border-radius:8px">🏖 ' + _adminEsc(_offInfo.label) + '</span>')
+              : '';
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:14px">${_adminEsc(emp.name)} ${_offBadge}</span>
+            <div style="display:flex;gap:6px">
+              <button onclick="openDayOffPicker('${emp.id}','${dateStr}')"
+                style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+                🏖 Off
+              </button>
+              <button onclick="openRosterEmpEdit('${emp.id}')"
+                style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
+                Edit
+              </button>
+            </div>
+          </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }
+  } catch (e) {
+    console.error('[TeamMgr] rendering Admin/Office section failed -- everything above still shows', e);
+    html += '<div style="margin-bottom:16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:14px 16px;color:var(--text);font-size:13px">'
+      + '<div style="font-weight:700;margin-bottom:4px;color:var(--red)">Admin/Office section failed to load</div>'
       + '<div style="color:var(--muted)">' + _adminEsc((e && e.message) || String(e)) + '</div></div>';
   }
 
@@ -28297,6 +28411,17 @@ async function _teamHoursRefreshAfterWrite(dateStr) {
 // could silently diverge from it again (same remediation already
 // applied to promptDefaultTeam -> _setEmployeeDefaultTeam, PR #74).
 function quickAssign(empId, team, dateStr) {
+  // Admin/Office employees never appear in the Unassigned list this is
+  // called from any more, but this is reachable from Claire/stray code
+  // paths too -- refuse rather than silently creating a field-team
+  // assignment for someone with no team by design. No silent early-
+  // return: always console.warn first.
+  var _qaEmp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+  if (_qaEmp && _qaEmp.work_type === 'admin') {
+    console.warn('[quickAssign] refusing to assign a field team to an Admin/Office employee', empId, team);
+    alert(_qaEmp.name + ' is Admin/Office and has no field team. Change their Work Type (Staff edit) first if this is wrong.');
+    return;
+  }
   // Anyone with an active Day-Off status shows up in this same
   // "Unassigned" row (getEmployeeTeam returns null for OFF) right next
   // to these one-tap team pills. assignEmployee/assign() unconditionally
@@ -28418,6 +28543,14 @@ async function promptDefaultTeam(empId) {
 async function _setEmployeeDefaultTeam(empId, newTeam) {
   var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
   if (!emp) return false;
+  // Refuse to give an Admin/Office employee a real default team --
+  // clearing (newTeam falsy) is always allowed, since that's exactly
+  // how switchEmployeeWorkType itself unassigns them when flipping to
+  // Admin in the first place.
+  if (newTeam && emp.work_type === 'admin') {
+    console.warn('[_setEmployeeDefaultTeam] refusing to set a default team for an Admin/Office employee', empId, newTeam);
+    return false;
+  }
   emp.defaultTeam = newTeam || null;
   if (emp.fromFacade) {
     try {
@@ -28443,6 +28576,53 @@ async function _setEmployeeDefaultTeam(empId, newTeam) {
     } catch (e) { console.warn('[_setEmployeeDefaultTeam] facade update failed', e); throw e; }
   }
   return true;
+}
+
+// Field ↔ Admin/Office switch (migration 113) -- the SIDE EFFECTS only.
+// work_type itself is written by the caller's own normal save path
+// (saveStaffEmployee's existing dual-write patch, through the real
+// PentaEmployees pipeline) -- this only runs the consequences of that
+// change, after it's already landed, so there's no redundant second
+// write of the same column. The caller is also responsible for
+// confirming with the manager BEFORE any of this runs.
+//
+// Switching TO admin mirrors terminateEmployee's own "clear the
+// permanent team slot + purge future daily_assignments, keep past rows"
+// pattern exactly (same two primitives, same past-preserved guarantee)
+// -- from today forward an Admin/Office employee should look exactly
+// like someone who was never on a team, without erasing the history of
+// when they were. Switching back to field leaves them unassigned (no
+// auto-pick of a team) -- the spec is explicit about not guessing, so
+// this function has nothing at all to do in that direction.
+async function switchEmployeeWorkType(employeeUuid, newWorkType) {
+  var removedCount = 0;
+  if (newWorkType === 'admin') {
+    // Clear the permanent team slot going forward -- PentaEmployees'
+    // cache is already updated by the await above, so _setEmployeeDefaultTeam's
+    // own work_type==='admin' guard (which only blocks SETTING a real
+    // team, not clearing) sees the new value immediately.
+    try {
+      var rosterEntry = getUnifiedRoster().find(function(e){ return e.uuid === employeeUuid; });
+      if (rosterEntry) await _setEmployeeDefaultTeam(rosterEntry.id, '');
+    } catch (e) { console.warn('[switchEmployeeWorkType] default team clear failed (non-fatal)', e); }
+
+    // Purge future daily_assignments (date >= today). Past rows are
+    // untouched -- audit trail preserved, same as termination.
+    try {
+      if (window.PentaAssignments && window.PentaAssignments.unassignFutureForEmployee) {
+        removedCount = await window.PentaAssignments.unassignFutureForEmployee(employeeUuid, dateKey(new Date()));
+      }
+    } catch (e) { console.warn('[switchEmployeeWorkType] future assignment purge failed (non-fatal)', e); }
+  }
+
+  try {
+    await _auditSupplement('manual_override', 'employee', employeeUuid, {
+      description: 'Work type changed to ' + newWorkType,
+      work_type: newWorkType, future_assignments_removed: removedCount
+    });
+  } catch (e) { console.warn('[switchEmployeeWorkType] audit log write failed (non-fatal)', e); }
+
+  return { removedCount: removedCount };
 }
 
 // PR #149 — employee termination/rehire flow.
@@ -29302,7 +29482,12 @@ function getUnifiedRoster(asOfDate) {
           defaultTeam: fe.team || fe.team_text || null,
           role: Array.isArray(fe.role) ? fe.role : [],
           depot: null,
-          fromFacade: true
+          fromFacade: true,
+          // Admin/Office designation (migration 113). Every roster-
+          // scoped consumer (Team Manager, Live/Export Hours, Claire,
+          // the portal) reads this straight off getUnifiedRoster()'s
+          // own rows rather than re-querying the facade itself.
+          work_type: fe.work_type === 'admin' ? 'admin' : 'field'
         });
       }
     });
@@ -29360,6 +29545,24 @@ function getEmployeeDayOffInfo(employeeId, dateStr) {
   const key = dateStr + '_' + employeeId;
   if (dailyAssignments[key] !== 'OFF') return null;
   return dailyAssignmentDetails[key] || null;
+}
+
+// Admin/Office OFF-day check (migration 113). getEmployeeTeam(id, date)
+// ALWAYS returns null for an Admin employee -- not just on a real day
+// off, but every single day, since they have no defaultTeam to fall
+// back to either. That makes "team is null" useless as an OFF signal
+// for them specifically, unlike for a field employee where it's exactly
+// right. Every Admin-aware surface (Live hours, Export, the portal,
+// Claire's get_employee_hours) needs the SAME real check instead: read
+// dailyAssignments directly (what getEmployeeTeam/getEmployeeDayOffInfo
+// both check internally anyway, just without the null-collapsing that
+// makes them ambiguous here) so this can't be gotten right in three
+// places and wrong in a fourth.
+function _adminEmpDayOff(employeeId, dateStr) {
+  if (dailyAssignments[dateStr + '_' + employeeId] !== 'OFF') return null;
+  var info = dailyAssignmentDetails[dateStr + '_' + employeeId] || null;
+  var statusType = info && info.status_type;
+  return { status_type: statusType || null, label: (statusType && DAY_OFF_CATEGORY_LABELS[statusType]) || 'Off' };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -29729,7 +29932,13 @@ function getEmployeeTeam(employeeId, dateStr) {
 }
 
 function getTeamEmployees(team, dateStr) {
-  return getUnifiedRoster(dateStr).filter(e => getEmployeeTeam(e.id, dateStr) === team);
+  // Admin/Office employees never have a real team, so getEmployeeTeam
+  // should already exclude them here -- this is a defensive second
+  // check (not the only guard) because getJobDurationMins divides a
+  // job's quoted minutes by this list's length to estimate a per-stop
+  // duration, and a stray admin-employee row in that count would skew
+  // every job duration on the board, silently and system-wide.
+  return getUnifiedRoster(dateStr).filter(e => getEmployeeTeam(e.id, dateStr) === team && e.work_type !== 'admin');
 }
 
 async function assignEmployee(employeeId, team, dateStr, extra) {
@@ -32345,7 +32554,12 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   var date = new Date(dateMs);
   var dk = dateKey(date);
   var dateLabel = date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-  var teamData = weekHours[team];
+  // Admin/Office designation (migration 113): the Admin/Office Hours
+  // group (renderHoursTable) calls this with team=null as the explicit
+  // signal "no GPS, no team defaults" -- deliberate, not a missing-data
+  // accident. Never read weekHours (GPS-derived) for this employee.
+  var isAdmin = !team;
+  var teamData = isAdmin ? null : weekHours[team];
   var dayIdx = getWeekDates(hoursWeekOffset).findIndex(function(d){ return d.toDateString() === date.toDateString(); });
 
   // Get current values — override or team defaults
@@ -32358,7 +32572,11 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   var startVal = override ? override.start : (teamStart ? String(teamStart.getHours()).padStart(2,'0')+':'+String(teamStart.getMinutes()).padStart(2,'0') : '');
   var endVal = override ? override.end : (teamEnd ? String(teamEnd.getHours()).padStart(2,'0')+':'+String(teamEnd.getMinutes()).padStart(2,'0') : '');
   var lunchVal = override ? (override.lunch || 0) : teamLunch;
-  var hrsVal = override ? override.hours : teamHrs;
+  // No override means blank, not 0 -- only matters for Admin, since a
+  // field employee always has a GPS-derived teamHrs (possibly 0, which
+  // genuinely means "no hours yet") to fall back to.
+  var hrsVal = override ? override.hours : (isAdmin ? null : teamHrs);
+  var hrsDisplay = hrsVal != null ? hrsVal.toFixed(1) : '—';
 
   var old = document.getElementById('emp-hours-overlay');
   if (old) old.remove();
@@ -32369,9 +32587,12 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   overlay.innerHTML = '<div style="background:var(--surface);width:100%;max-height:85vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">'
     +'<div><div style="font-size:17px;font-weight:600">'+empName+'</div>'
-    +'<div style="font-size:13px;color:var(--muted)">'+team+' — '+dateLabel+'</div></div>'
+    +'<div style="font-size:13px;color:var(--muted)">'+(isAdmin ? 'Admin / Office' : team)+' — '+dateLabel+'</div></div>'
     +'<div style="display:flex;align-items:center;gap:6px">'
-    +'<button onclick="openHoursRouteDetail(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+team+'\','+dateMs+')" title="View full GPS route for this day" style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-family:DM Sans,sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">🗺️ Route</button>'
+    // No GPS lookup, no device resolution for Admin -- the Route button
+    // is purely a GPS feature (openHoursRouteDetail fetches a device's
+    // trips), so it's omitted entirely rather than shown disabled.
+    +(isAdmin ? '' : '<button onclick="openHoursRouteDetail(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+team+'\','+dateMs+')" title="View full GPS route for this day" style="background:var(--surface2);border:1px solid var(--border);color:var(--accent);font-family:DM Sans,sans-serif;font-size:12px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer;white-space:nowrap">🗺️ Route</button>')
     +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;flex-shrink:0">×</button>'
     +'</div>'
     +'</div>'
@@ -32385,14 +32606,20 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<div style="display:flex;gap:12px;margin-bottom:14px">'
     +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Lunch (min)</div>'
     +'<input type="number" id="emp-hr-lunch" value="'+lunchVal+'" min="0" step="5" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:DM Sans,sans-serif;font-size:15px;padding:10px 12px;outline:none;box-sizing:border-box"></div>'
-    +'<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Team</div>'
-    +'<select id="emp-hr-team" onchange="onEmpTeamChange(\''+empId+'\',\''+dk+'\',this.value,'+dateMs+')" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:'+(_pentaTeamColor(team, 'var(--text)'))+';font-family:DM Sans,sans-serif;font-size:15px;font-weight:700;padding:10px 8px;outline:none;appearance:none;-webkit-appearance:none;text-align:center;box-sizing:border-box">'
-    +_pentaTeamNames().map(function(t){ return '<option value="'+t+'" style="color:'+(_pentaTeamColor(t, '#fff'))+'"'+(t===team?' selected':'')+'>'+t+'</option>'; }).join('')
-    +'</select></div>'
+    // Admin/Office has no team to reassign -- a static label instead of
+    // the live team-reassignment <select> (onEmpTeamChange is a field-
+    // only action and would have nothing valid to set here).
+    +(isAdmin
+      ? '<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Team</div>'
+        +'<div id="emp-hr-team" data-admin="true" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;font-weight:700;padding:10px 8px;text-align:center;box-sizing:border-box">🏢 Admin</div></div>'
+      : '<div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">Team</div>'
+        +'<select id="emp-hr-team" onchange="onEmpTeamChange(\''+empId+'\',\''+dk+'\',this.value,'+dateMs+')" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:'+(_pentaTeamColor(team, 'var(--text)'))+';font-family:DM Sans,sans-serif;font-size:15px;font-weight:700;padding:10px 8px;outline:none;appearance:none;-webkit-appearance:none;text-align:center;box-sizing:border-box">'
+        +_pentaTeamNames().map(function(t){ return '<option value="'+t+'" style="color:'+(_pentaTeamColor(t, '#fff'))+'"'+(t===team?' selected':'')+'>'+t+'</option>'; }).join('')
+        +'</select></div>')
     +'<div style="flex:1;background:var(--surface2);border-radius:8px;padding:10px 12px;text-align:center">'
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Hours</div>'
-    +'<div id="emp-hr-calc" style="font-size:22px;font-weight:700;color:var(--accent)">'+hrsVal.toFixed(1)+'</div></div></div>'
-    +'<div id="emp-stops-area" style="margin-bottom:16px"></div>'
+    +'<div id="emp-hr-calc" style="font-size:22px;font-weight:700;color:var(--accent)">'+hrsDisplay+'</div></div></div>'
+    +(isAdmin ? '' : '<div id="emp-stops-area" style="margin-bottom:16px"></div>')
     +'<div id="emp-tasks-area" style="margin-bottom:16px"></div>'
     +'<button onclick="showAddTaskMenu(\''+empId+'\',\''+dk+'\')" style="width:100%;padding:12px;background:rgba(108,143,255,0.1);border:1px solid rgba(108,143,255,0.25);border-radius:10px;color:var(--accent);font-family:DM Sans,sans-serif;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:14px">+ Add Task</button>'
     +'<div id="add-task-form" style="display:none;margin-bottom:14px"></div>'
@@ -32400,7 +32627,10 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
     +'<button onclick="document.getElementById(\'emp-hours-overlay\').remove()" style="flex:1;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">Cancel</button>'
     +'<button onclick="saveEmpDayHours(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+dk+'\')" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:10px;color:#fff;font-family:DM Sans,sans-serif;font-size:14px;font-weight:600;cursor:pointer">Save</button>'
     +'</div>'
-    +(override ? '<button onclick="clearEmpDayHours(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+dk+'\')" style="width:100%;margin-top:8px;padding:12px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">Reset to GPS data</button>' : '')
+    // Admin/Office has no GPS data to "reset to" -- clearing the
+    // override just leaves the day blank, so the button is relabeled
+    // to say exactly that instead of a misleading "Reset to GPS data".
+    +(override ? '<button onclick="clearEmpDayHours(\''+empId+'\',\''+_audEsc(empName).replace(/'/g,"\\'")+'\',\''+dk+'\')" style="width:100%;margin-top:8px;padding:12px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:13px;cursor:pointer">'+(isAdmin ? 'Clear hours' : 'Reset to GPS data')+'</button>' : '')
     +'</div></div>';
   document.body.appendChild(overlay);
   overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
@@ -32419,8 +32649,8 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   document.getElementById('emp-hr-end').addEventListener('input', updateCalc);
   document.getElementById('emp-hr-lunch').addEventListener('input', updateCalc);
 
-  // Load team stops for this day
-  showEmpStops(team, dateMs);
+  // Load team stops for this day -- GPS-dependent, skipped entirely for Admin/Office.
+  if (!isAdmin) showEmpStops(team, dateMs);
 
   // Render existing extra tasks
   renderEmpTasks(empId, dk);
@@ -33000,7 +33230,26 @@ async function saveEmpDayHours(empId, empName, dk) {
     s = startEl.value;
     e = endEl.value;
     l = parseInt(lunchEl.value) || 0;
-    t = teamEl ? teamEl.value : '';
+    // Admin/Office's Team field (migration 113) is a static <div>, not
+    // a <select> -- it has no .value at all. data-admin is the explicit
+    // signal that distinguishes "no team field rendered" (plain '') for
+    // a field employee, same as before, is never actually reachable
+    // here -- but for Admin, record 'Admin' deliberately rather than
+    // silently writing an undefined team onto the override row.
+    t = teamEl ? (teamEl.dataset && teamEl.dataset.admin === 'true' ? 'Admin' : teamEl.value) : '';
+    // The Maria Vieira case (21:00 -> 16:27) must be impossible: reject
+    // inverted times with a visible error instead of letting
+    // calcHoursFromTimes's own Math.max(0, …) silently clamp to 0 hours
+    // and save that as if it were a real, intentional entry.
+    if (s && e) {
+      var _sp = s.split(':'), _ep = e.split(':');
+      var _startMins = parseInt(_sp[0]) * 60 + parseInt(_sp[1]);
+      var _endMins = parseInt(_ep[0]) * 60 + parseInt(_ep[1]);
+      if (_endMins <= _startMins) {
+        alert('End time must be after start time (' + e + ' is not after ' + s + '). Nothing was changed.');
+        return;
+      }
+    }
     var hrs = calcHoursFromTimes(s, e, l);
     var tasks = getEmpTasks(empId, dk);
     var taskHrs = tasks.reduce(function(sum, tk) { return sum + calcHoursFromTimes(tk.start, tk.end, 0); }, 0);
@@ -33321,6 +33570,91 @@ function renderHoursTable(days, dayNames) {
     }
     html += '</div>';
   }); // end teams.forEach
+
+  // Admin / Office group (migration 113) -- below the team cards, own
+  // try/catch (PR #182/#146 pattern) so one bad admin row can't blank
+  // the team cards above, which have already rendered successfully.
+  // Deliberately NO GPS lookup, NO device resolution, NO weekHours/
+  // empHoursMap read at all -- hours come exclusively from
+  // manual_hour_overrides (getEmpHours -> PentaHourOverrides, the PR
+  // #171 path). No override means a blank cell, never "0" and never an
+  // error -- getEmpHours returning null IS the normal, common case for
+  // a day nobody has corrected yet. getUnifiedRoster() with no asOfDate
+  // already excludes every terminated employee (PR #148), same as the
+  // team cards above.
+  try {
+    const adminEmployees = getUnifiedRoster().filter(e => e.work_type === 'admin');
+    if (adminEmployees.length > 0) {
+      let adminTotal = 0;
+      const adminRowsHtml = adminEmployees.map(emp => {
+        let empWeekTotal = 0;
+        const dayCells = days.map(function(d, i) {
+          const dk = dateKey(d);
+          const isToday = d.toDateString() === today.toDateString();
+          const offInfo = _adminEmpDayOff(emp.id, dk);
+          if (offInfo) {
+            const inner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+              + '<div class="hrs-day-num">' + d.getDate() + '</div>'
+              + '<div class="hrs-day-hrs is-dash">&#8212;</div>'
+              + '<div class="hrs-day-time" style="color:var(--muted)">' + _audEsc(offInfo.label.toUpperCase()) + '</div>';
+            return '<div class="hrs-day is-off' + (isToday ? ' is-today' : '') + '">' + inner + '</div>';
+          }
+
+          const override = getEmpHours(emp.id, dk);
+          const empH = override ? (override.hours || 0) : 0;
+          empWeekTotal += empH;
+
+          const hrsHtml = override
+            ? '<div class="hrs-day-hrs">' + _hrsFmtHrs(empH) + '<span style="font-size:9px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
+            : '<div class="hrs-day-hrs is-dash">&#8212;</div>'; // no override -- blank, never "0"
+          const sStr = (override && override.start) ? _hrsFmt12(override.start) : '';
+          const eStr = (override && override.end) ? _hrsFmt12(override.end) : '';
+          const lunchMin = override ? (override.lunch || 0) : 0;
+          const timeHtml = (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
+            + (eStr ? '<div class="hrs-day-time hrs-day-time-end">' + _audEsc(eStr) + '</div>' : '')
+            + (lunchMin ? '<div class="hrs-day-time" style="color:#f59e0b">&#127828; ' + lunchMin + 'm</div>' : '')
+            + (override ? '<div class="hrs-day-edited">EDITED</div>' : '');
+
+          const onclick = 'showEmpDayDetail(\'' + emp.id + '\',\'' + _audEsc(emp.name).replace(/'/g,"\\'") + '\',null,' + d.getTime() + ')';
+          return '<div class="hrs-day' + (isToday ? ' is-today' : '') + '" onclick="' + onclick + '">'
+            + '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+            + '<div class="hrs-day-num">' + d.getDate() + '</div>'
+            + hrsHtml + timeHtml + '</div>';
+        }).join('');
+
+        adminTotal += empWeekTotal;
+        const initial = (emp.name || '?').trim().charAt(0).toUpperCase();
+        const isExpanded = !!expanded[emp.id];
+        const totalClass = empWeekTotal > 0 ? 'hrs-emp-total' : 'hrs-emp-total is-zero';
+
+        return '<div class="hrs-emp-row-wrap' + (isExpanded ? ' is-expanded' : '') + '" id="hrs-emp-wrap-' + emp.id + '">'
+          + '<div class="hrs-emp-row" onclick="_hrsToggleEmp(\'' + emp.id + '\')">'
+          + '<div class="hrs-emp-avatar" style="background:#6c8fff">' + _audEsc(initial) + '</div>'
+          + '<div class="hrs-emp-info">'
+          + '<div class="hrs-emp-name">' + _audEsc(emp.name) + '</div>'
+          + '<div class="hrs-emp-sub">' + _hrsFmtHrs(empWeekTotal) + 'h this week</div>'
+          + '</div>'
+          + '<div class="hrs-emp-right">'
+          + '<div class="' + totalClass + '">' + _hrsFmtHrs(empWeekTotal) + '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
+          + '<div class="hrs-emp-chev">&#9656;</div>'
+          + '</div></div>'
+          + '<div class="hrs-days"><div class="hrs-days-grid">' + dayCells + '</div></div>'
+          + '</div>';
+      }).join('');
+
+      html += '<div class="hrs-team-card">'
+        + '<div class="hrs-team-head" style="background:rgba(108,143,255,0.06)">'
+        + '<span class="hrs-team-dot" style="background:#6c8fff"></span>'
+        + '<span class="hrs-team-name" style="color:#6c8fff">🏢 Admin / Office</span>'
+        + '<span class="hrs-team-total">' + _hrsFmtHrs(adminTotal) + '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:1px">h</span></span>'
+        + '</div>' + adminRowsHtml + '</div>';
+    }
+  } catch (e) {
+    console.error('[Hours] Admin/Office section failed to render (team cards above are unaffected)', e);
+    html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:14px 16px;margin-bottom:16px;color:var(--text);font-size:13px">'
+      + '<div style="font-weight:700;margin-bottom:4px;color:var(--red)">Admin/Office hours failed to load</div>'
+      + '<div style="color:var(--muted)">' + _audEsc((e && e.message) || String(e)) + '</div></div>';
+  }
 
   // All Teams summary
   html += '<div class="hrs-totals-bar">'
@@ -33868,6 +34202,76 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
       grandHours += empWeekHours;
     });
   });
+
+  // Admin / Office section (migration 113) -- own try/catch so one bad
+  // admin row can't blank the whole report; every team section above
+  // has already been built successfully by this point. No team-
+  // aggregate GPS data read at all here -- getEmpHours per day only,
+  // blank (not zero, not an error) when nothing's on file, exactly
+  // like the Live tab's Admin/Office group. Included in the SAME
+  // grandHours/empsSeen totals the team sections feed -- this is one
+  // combined report, not two.
+  try {
+    var adminEmployees = getUnifiedRoster().filter(function (e) { return e.work_type === 'admin'; });
+    if (adminEmployees.length > 0) {
+      textLines.push(SEP_THIN);
+      textLines.push('  ADMIN / OFFICE');
+      adminEmployees.forEach(function (emp) {
+        empsSeen++;
+        var empWeekHours = 0;
+        var dayRows = [];
+
+        dates.forEach(function (dk) {
+          var d = new Date(dk + 'T00:00:00');
+          var dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          var offInfo = _adminEmpDayOff(emp.id, dk);
+          if (offInfo) {
+            dayRows.push('  ' + dayLabel.padEnd(14) + offInfo.label.toUpperCase());
+            csvRows.push([_hrCsvField(emp.name || emp.id), 'Admin', dk, '', '', '', '0:00'].join(','));
+            return;
+          }
+
+          var override = getEmpHours(emp.id, dk);
+          if (!override) {
+            dayRows.push('  ' + dayLabel.padEnd(14) + '—'); // no override on file -- blank, not 0, not OFF
+            csvRows.push([_hrCsvField(emp.name || emp.id), 'Admin', dk, '', '', '', '0:00'].join(','));
+            return;
+          }
+
+          var empH = override.hours || 0;
+          var startStr = override.start || '';
+          var endStr = override.end || '';
+          var lunchMin = override.lunch || 0;
+          if (empH > 0 && startStr && endStr) {
+            empWeekHours += empH;
+            var timeRange = startStr + ' – ' + endStr;
+            var durTxt = _hrDecimalHoursText(empH);
+            var lunchTail = lunchMin ? ('lunch ' + Math.floor(lunchMin / 60) + ':' + String(lunchMin % 60).padStart(2, '0')) : '';
+            dayRows.push('  ' + dayLabel.padEnd(14) + timeRange.padEnd(16) + durTxt.padEnd(10) + lunchTail);
+            csvRows.push([
+              _hrCsvField(emp.name || emp.id), 'Admin', dk,
+              _hrTo24hr(startStr), _hrTo24hr(endStr), _hrMinsToHHMM(lunchMin), _hrDecimalHoursToHHMM(empH)
+            ].join(','));
+          } else if ((startStr && !endStr) || (!startStr && endStr)) {
+            dayRows.push('  ' + dayLabel.padEnd(14) + '? (incomplete entry)');
+            csvRows.push([_hrCsvField(emp.name || emp.id), 'Admin', dk, '', '', '', '0:00'].join(','));
+          } else {
+            dayRows.push('  ' + dayLabel.padEnd(14) + '—');
+            csvRows.push([_hrCsvField(emp.name || emp.id), 'Admin', dk, '', '', '', '0:00'].join(','));
+          }
+        });
+
+        if (empsSeen > 1) textLines.push(SEP_THIN);
+        textLines.push((emp.name || emp.id).toUpperCase() + ' (Admin) — ' + _hrDecimalHoursText(empWeekHours));
+        dayRows.forEach(function (row) { textLines.push(row); });
+        grandHours += empWeekHours;
+      });
+    }
+  } catch (e) {
+    console.error('[HoursReport] Admin/Office section failed to build (team sections above are unaffected)', e);
+    textLines.push(SEP_THIN);
+    textLines.push('  ADMIN/OFFICE SECTION FAILED TO LOAD: ' + ((e && e.message) || String(e)));
+  }
 
   textLines.push('');
   if (empsSeen === 0) {
@@ -42806,6 +43210,27 @@ function renderStaffList() {
   } catch (e) { console.warn('[invite-pill] render failed', e); }
 }
 
+// Admin/Office designation (migration 113). Purely a visual affordance
+// on the Staff edit form -- greys out and hides the real Team dropdown
+// behind it when Work Type is Admin, since a team selection there would
+// be meaningless (and saveStaffEmployee ignores/clears it on save for
+// an Admin employee regardless of what's left showing). The dropdown's
+// own onchange calls this directly; openAddStaff/openEditStaff also
+// call it once after setting the initial value so the form opens in a
+// consistent state instead of always starting "Team visible" and only
+// correcting itself if the manager happens to touch the control.
+function _staffToggleTeamFieldForWorkType() {
+  var sel = document.getElementById('staff-work-type');
+  var teamField = document.getElementById('staff-team-field');
+  var hint = document.getElementById('staff-work-type-hint');
+  if (!sel) { console.warn('[_staffToggleTeamFieldForWorkType] #staff-work-type missing'); return; }
+  var isAdmin = sel.value === 'admin';
+  if (teamField) { teamField.style.opacity = isAdmin ? '0.4' : '1'; teamField.style.pointerEvents = isAdmin ? 'none' : ''; }
+  var teamSel = document.getElementById('staff-team');
+  if (teamSel) teamSel.disabled = isAdmin;
+  if (hint) hint.style.display = isAdmin ? '' : 'none';
+}
+
 function openAddStaff() {
   try {
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
@@ -42815,6 +43240,8 @@ function openAddStaff() {
 
     set('staff-edit-idx', '-1');
     set('staff-first-name', ''); set('staff-last-name', '');
+    set('staff-work-type', 'field'); // new hires default to a field team, never Admin
+    if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
     populateEmpTeamDropdown('staff-team', null);
     set('staff-role', 'team_member');  // v9.5: default new hires to team_member
     set('staff-pin', '');     set('staff-pay', '');
@@ -43368,6 +43795,13 @@ function openEditStaff(idx) {
   document.getElementById('staff-zip').value = emp.zip || '';
   // Employment
   populateEmpTeamDropdown('staff-team', emp.team_id || null);
+  // Admin/Office designation (migration 113) -- hydrate before the
+  // toggle call right after so the Team field's visibility matches
+  // this employee's actual work type on open, not the previous
+  // employee's leftover state.
+  var _wtSel = document.getElementById('staff-work-type');
+  if (_wtSel) _wtSel.value = (emp.work_type === 'admin') ? 'admin' : 'field';
+  if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
   // v9.5: hydrate Role dropdown
   var _roleSel = document.getElementById('staff-role');
   if (_roleSel) _roleSel.value = emp.position || 'team_member';
@@ -43517,6 +43951,21 @@ async function saveStaffEmployee() {
   const languages = ['English','Spanish','Portuguese','Kriolu']
     .filter(l => { const el = document.getElementById('staff-spoken-' + l); return el && el.checked; });
 
+  // Admin/Office designation (migration 113) -- confirm BEFORE anything
+  // is written. Only relevant when actually EDITING an existing
+  // employee and the Work Type dropdown differs from what's on file;
+  // openAddStaff always starts a new hire at 'field', so there's never
+  // a switch to confirm for an insert.
+  const newWorkType = ((document.getElementById('staff-work-type')||{}).value === 'admin') ? 'admin' : 'field';
+  const oldWorkType = (idx >= 0 && list[idx] && list[idx].work_type === 'admin') ? 'admin' : 'field';
+  const isWorkTypeSwitch = idx >= 0 && newWorkType !== oldWorkType;
+  if (isWorkTypeSwitch) {
+    const _wtMsg = newWorkType === 'admin'
+      ? ('Switch ' + name + ' to Admin/Office?\n\nThis clears their default team and removes any FUTURE daily team assignments (past history is kept). They will no longer appear in Teams or team schedules, and their hours will come only from hours you enter by hand.')
+      : ('Switch ' + name + ' back to a Field team?\n\nThey will be unassigned -- no team is picked automatically. You\'ll need to assign them to a team afterward.');
+    if (!confirm(_wtMsg)) { return; }
+  }
+
   // Collect new doc photos if taken
   const docPhotos = (idx >= 0 && list[idx] && list[idx].docPhotos) ? {...list[idx].docPhotos} : {};
   const docFields = [['lic-front','License Front'],['lic-back','License Back'],['ssn','Social Security']];
@@ -43539,8 +43988,13 @@ async function saveStaffEmployee() {
     // emergency_contact_name/manager_notes below.
     first_name: firstName,
     last_name: lastName,
-    team_id: document.getElementById('staff-team').value || null,
-    team: (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
+    // Admin/Office designation (migration 113): team_id/team are forced
+    // null/'' for an Admin employee regardless of whatever's left in
+    // the (disabled) Team dropdown -- that field is only visually
+    // disabled, its stale value must never actually get written.
+    team_id: newWorkType === 'admin' ? null : (document.getElementById('staff-team').value || null),
+    team: newWorkType === 'admin' ? '' : (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
+    work_type: newWorkType,
     // v9.5: portal permission role. v9.6: 'manager' also triggers a
     // companion users-row UPSERT below (after the employees row is saved)
     // so the person can sign in with full manager privileges.
@@ -43677,8 +44131,24 @@ async function saveStaffEmployee() {
         if (emp.languages !== undefined) patch.languages_spoken = (Array.isArray(emp.languages) && emp.languages.length) ? emp.languages : null;
         if (emp.prefTime !== undefined) patch.preferred_start_time = emp.prefTime || null;
         if (emp.emRel !== undefined) patch.emergency_contact_relationship = emp.emRel || null;
+        // Admin/Office designation (migration 113). This hand-built
+        // patch is a SEPARATE mapping from _toRow's -- the exact gap
+        // that already dropped `position` (v9.5.1) and is_team_leader/
+        // is_driver (v10.5.40) from this same dual-write once each.
+        // work_type must land here too (team_id/team_text already do,
+        // just above), or the Work Type dropdown silently fails to
+        // persist from this modal specifically, same bug, 6th time.
+        if (emp.work_type !== undefined) patch.work_type = emp.work_type === 'admin' ? 'admin' : 'field';
         await window.PentaEmployees.update(supaRow.id, patch);
         console.log('[Sprint 4.1] Staff edit dual-write OK for', rosterId);
+
+        // Side effects of an actual Field<->Admin switch, confirmed by
+        // the manager earlier in this function -- run only after the
+        // work_type write above has actually landed.
+        if (isWorkTypeSwitch) {
+          try { await switchEmployeeWorkType(supaRow.id, newWorkType); }
+          catch (wtErr) { console.error('[saveStaffEmployee] switchEmployeeWorkType side effects failed (work_type itself was already saved)', wtErr); }
+        }
       } else {
         console.log('[Sprint 4.1] No Supabase row for', rosterId, '— backfill will handle it');
       }
@@ -46335,6 +46805,53 @@ async function renderHours() {
   // hours correctly on the manager's Live tab, but showed a full day of
   // B-team GPS hours on her own portal login.
   var composite = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], status: [null,null,null,null,null], total: 0 };
+
+  // Admin/Office designation (migration 113). An Admin/Office employee
+  // has no team at all, which makes getEmployeeTeam(id, date) return
+  // null for EVERY day, not just a real day off -- the field-employee
+  // branch below would read that as "OFF" unconditionally and never
+  // even reach the per-employee override check (see PR #137's own
+  // comment on composite.status[i] winning unconditionally), silently
+  // hiding her real manual_hour_overrides behind a false "Off" status
+  // every single week. Completely separate path: no weekHours_cache/
+  // empHours_cache localStorage relay at all (that relay only ever
+  // carries GPS-derived team data and manager-session overrides written
+  // by _writeWeekHoursCache -- Admin/Office hours don't depend on any
+  // manager having opened the Hours tab recently), straight to
+  // getEmpHours (PentaHourOverrides, same Supabase-backed source the
+  // manager's Live tab and Export both read). No override means a
+  // blank day (renderHoursData already shows netHrs=0 as "—"), never 0
+  // treated as a real entry and never an error.
+  if (currentEmployee && currentEmployee.work_type === 'admin') {
+    try {
+      days.forEach(function (d, i) {
+        var dk = dateKey(d);
+        var offInfo = _adminEmpDayOff(currentEmployee.id, dk);
+        if (offInfo) {
+          composite.status[i] = { type: offInfo.status_type || 'off', label: offInfo.label };
+          return;
+        }
+        var override = getEmpHours(currentEmployee.id, dk);
+        if (!override) return; // nothing on file -- leave this day blank
+        composite.days[i] = override.hours || 0;
+        if (override.start) {
+          var sp = override.start.split(':');
+          var sd = new Date(d); sd.setHours(parseInt(sp[0]), parseInt(sp[1]), 0, 0);
+          composite.starts[i] = sd.toISOString();
+        }
+        if (override.end) {
+          var ep = override.end.split(':');
+          var ed = new Date(d); ed.setHours(parseInt(ep[0]), parseInt(ep[1]), 0, 0);
+          composite.ends[i] = ed.toISOString();
+        }
+      });
+      composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
+    } catch (e) {
+      console.error('[portal hours] Admin/Office hours failed to load', e);
+    }
+    renderHoursData(composite);
+    return;
+  }
 
   try {
     var weekData = _portalWeekOffset === 0
@@ -54086,8 +54603,16 @@ function _p3dPage(dir) {
 
       <!-- EMPLOYMENT -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Employment</div>
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Work Type</div>
+        <select id="staff-work-type" onchange="_staffToggleTeamFieldForWorkType()" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <option value="field">Field team (default)</option>
+          <option value="admin">Admin / Office</option>
+        </select>
+        <div id="staff-work-type-hint" style="display:none;font-size:11px;color:var(--amber);margin-top:5px">Admin/Office employees have no team. Hours are entered by hand (no GPS); they never appear in Teams or team schedules.</div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team</div>
+        <div id="staff-team-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Team</div>
           <select id="staff-team" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <!-- Sprint 6.9: populated dynamically by populateEmpTeamDropdown('staff-team', team_id) -->
           </select>
