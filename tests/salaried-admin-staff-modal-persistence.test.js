@@ -74,6 +74,22 @@ function buildSandbox(opts) {
     switchEmployeeWorkType: (uuid, newWorkType) => { calls.push(['switchEmployeeWorkType', uuid, newWorkType]); return Promise.resolve({ removedCount: 0 }); },
     closeStaffModal: () => calls.push(['closeStaffModal']),
     renderStaffList: () => calls.push(['renderStaffList']),
+    // Salary amount/period (migration 114 follow-up) -- real bare-global
+    // helpers saveStaffEmployee's body now calls. None of this file's 4
+    // cases populate a salary amount/period input, so the real parser's
+    // "blank is valid" behavior is all that's needed here; the isolated
+    // write itself is covered by its own dedicated test file.
+    _parseSalaryAmountInput: (raw) => {
+      var s = String(raw == null ? '' : raw).trim();
+      if (s === '') return { ok: true, value: null };
+      var cleaned = s.replace(/^\$/, '').replace(/,/g, '').trim();
+      if (!/^\d+(\.\d+)?$/.test(cleaned)) return { ok: false, error: 'Salary amount must be a number.' };
+      return { ok: true, value: Math.round(parseFloat(cleaned) * 100) / 100 };
+    },
+    _staffSaveSalaryFields: (id, empName, oldAmt, oldPer, newAmt, newPer) => {
+      calls.push(['_staffSaveSalaryFields', id, oldAmt, oldPer, newAmt, newPer]);
+      return Promise.resolve();
+    },
   };
 
   vm.createContext(sandbox);
