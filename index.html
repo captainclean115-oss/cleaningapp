@@ -6942,7 +6942,9 @@ window.PentaGeocodeHistory = (function() {
     // PR #149 — employee termination/rehire (migration 104).
     termination_reason: 1, termination_notes: 1, terminated_by: 1, eligible_for_rehire: 1,
     // Admin/Office designation (migration 113).
-    work_type: 1
+    work_type: 1,
+    // Salaried Admin/Office follow-up -- migration 114.
+    salary_amount: 1, salary_period: 1
   };
 
   function _toRow(emp, opts) {
@@ -7065,6 +7067,14 @@ window.PentaGeocodeHistory = (function() {
     if (emp.pay_rate != null) row.pay_rate = emp.pay_rate;
     if (emp.pay_type != null) row.pay_type = emp.pay_type;
 
+    // Salaried Admin/Office follow-up (migration 114). `!== undefined`
+    // so an explicit null can CLEAR a previously-saved value (both
+    // blank is an allowed state) -- callers that don't want to touch
+    // these columns at all (Pay Type isn't Salaried right now) must
+    // simply never set the key on `emp`, not set it to null/undefined.
+    if (emp.salary_amount !== undefined) row.salary_amount = emp.salary_amount;
+    if (emp.salary_period !== undefined) row.salary_period = emp.salary_period;
+
     if (emp.manager_notes != null) row.manager_notes = emp.manager_notes;
 
     // Phase 6.3a Migration 014: form fields with new DB columns
@@ -7154,7 +7164,8 @@ window.PentaGeocodeHistory = (function() {
 
     // Migration 012 pass-through
     ['ssn_last4','address','city','state','zip','emergency_contact_name',
-     'emergency_contact_phone','pay_type','manager_notes'].forEach(function(k){
+     'emergency_contact_phone','pay_type','manager_notes',
+     'salary_amount','salary_period'].forEach(function(k){
       if (row[k] != null) emp[k] = row[k];
     });
     if (row.pay_rate != null) {
@@ -24905,6 +24916,7 @@ async function processVoiceCommand(text) {
     +'Employees: '+empNames+'\n'
     +'An employee shown as "(Admin/Office)" is office staff with no field team -- never include them when a team name is used to mean "everyone on that team" (e.g. "S1 worked 8 to 4 today" means only S1\'s field members). You can still name an Admin/Office employee directly (e.g. "Linda worked 9 to 5") and use get_employee_hours/edit_employee_hours/batch_edit_employee_hours for them exactly as for anyone else -- their hours just come from manual entries, never GPS.\n'
     +'An employee shown as "(Admin/Office, Salaried)" has NO hours tracked at all -- fixed pay, not hourly. get_employee_hours reports "salaried, no hours tracked" for them; edit_employee_hours refuses with a plain message ("X is salaried, so there are no hours to edit"); batch_edit_employee_hours skips them and says so in the preview rather than failing the whole batch. Don\'t try to work around this by editing their hours a different way -- there is nothing to edit. This never applies to a field (non-Admin/Office) employee, even if they happen to also be salaried.\n'
+    +'If ' + _opName + ' asks what someone\'s salary is, what they get paid, or to change a salary amount, tell them plainly that salary amounts are managed on the Staff screen, not something you can see or change. Don\'t guess a number, and don\'t try to derive one from hours or pay rate.\n'
     +'Total clients: '+PentaClients.count()+'\n'
     +'Today\'s jobs: '+todayJobs.length;
 
@@ -29628,6 +29640,74 @@ function _adminEmpDayOff(employeeId, dateStr) {
 function isSalariedAdmin(emp) {
   if (!emp) return false;
   return emp.work_type === 'admin' && emp.pay_type === 'salary';
+}
+
+// Salary amount (migration 114 follow-up). Parses the Staff modal's
+// text input (type=text/inputmode=decimal -- deliberately NOT
+// type=number, so it can never be nudged by a scroll wheel or arrow
+// key the way the Pay Rate field was). Accepts a leading $ and comma
+// thousands separators, strips both, requires the rest to be a plain
+// non-negative decimal number, and rounds to 2 decimals. Blank input
+// is explicitly valid (ok:true, value:null) -- "Salaried with both
+// amount and period blank" is an allowed not-set-yet state.
+function _parseSalaryAmountInput(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (s === '') return { ok: true, value: null };
+  var cleaned = s.replace(/^\$/, '').replace(/,/g, '').trim();
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) {
+    return { ok: false, error: 'Salary amount must be a number (e.g. 13000 or 13,000.00) -- no letters or symbols other than a leading $ and commas.' };
+  }
+  var n = parseFloat(cleaned);
+  if (isNaN(n)) return { ok: false, error: 'Salary amount must be a number.' };
+  if (n < 0) return { ok: false, error: 'Salary amount cannot be negative.' };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
+// Nicely-formatted display string for the input itself, e.g.
+// 13000 -> "13,000.00". null/blank -> ''.
+function _fmtSalaryAmountInput(n) {
+  if (n == null || isNaN(n)) return '';
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+var SALARY_PERIOD_LABEL = { year: 'year', month: 'month', week: 'week' };
+
+// One-line "Salaried - $13,000/month" summary, shared by the Staff
+// list card, Staff subview card, and the Staff detail row -- never
+// shown anywhere outside the Staff screen (Teams modal/Live/portal/
+// Claire all show the plain "Salaried" label with no dollar figure,
+// per spec). Falls back to plain "Salaried" when the amount/period
+// haven't been entered yet (an explicitly allowed state).
+function _fmtSalaryLine(emp) {
+  if (!emp) return 'Salaried';
+  var amt = emp.salary_amount;
+  var per = emp.salary_period;
+  if (amt == null || per == null || !SALARY_PERIOD_LABEL[per]) return 'Salaried';
+  var n = parseFloat(amt);
+  if (isNaN(n)) return 'Salaried';
+  var whole = Math.round(n * 100) / 100;
+  var display = (whole % 1 === 0)
+    ? whole.toLocaleString('en-US')
+    : whole.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return 'Salaried - $' + display + '/' + SALARY_PERIOD_LABEL[per];
+}
+
+// onblur handler for #staff-salary-amount -- reformats valid input to
+// the "13,000.00" display form immediately so Tom sees the number was
+// understood correctly, without waiting for Save. Invalid input is
+// left as typed (so he can see and fix his own mistake) with a visible
+// alert -- never silently cleared or silently accepted.
+function _staffReformatSalaryAmountInput() {
+  try {
+    var el = document.getElementById('staff-salary-amount');
+    if (!el) return;
+    var parsed = _parseSalaryAmountInput(el.value);
+    if (!parsed.ok) { alert(parsed.error); return; }
+    el.value = parsed.value == null ? '' : _fmtSalaryAmountInput(parsed.value);
+  } catch (e) {
+    console.warn('[_staffReformatSalaryAmountInput] failed', e);
+    alert('Could not check the salary amount field -- please re-check it before saving.');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -43310,7 +43390,7 @@ function renderStaffList() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
+          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? `<span style="color:#fbbf24;font-weight:700">${(typeof _fmtSalaryLine === 'function' ? _fmtSalaryLine(emp) : 'Salaried')}</span>` : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
           <span data-invite-pill data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}"></span>
@@ -43387,6 +43467,27 @@ function _staffToggleHourlyFieldsForPayType() {
   var payInput = document.getElementById('staff-pay');
   if (payInput) payInput.disabled = formIsSalariedAdmin;
   if (hint) hint.style.display = formIsSalariedAdmin ? '' : 'none';
+
+  // Salary amount/period (migration 114 follow-up). Shown whenever Pay
+  // Type = Salaried, regardless of Work Type -- unlike the Admin-only
+  // Pay Rate dimming above, the spec is explicit this isn't
+  // Admin-scoped. Switching back to Hourly hides the inputs WITHOUT
+  // clearing their values (saveStaffEmployee simply never writes these
+  // columns when Pay Type isn't Salaried at save time, so whatever was
+  // last saved stays in the database) -- the note below just tells
+  // Tom that's what's happening instead of leaving him to wonder.
+  try {
+    var isSalaried = ptSel.value === 'salary';
+    var salaryFields = document.getElementById('staff-salary-fields');
+    var keptNote = document.getElementById('staff-salary-kept-note');
+    if (salaryFields) salaryFields.style.display = isSalaried ? '' : 'none';
+    if (keptNote) {
+      var amtEl = document.getElementById('staff-salary-amount');
+      var perEl = document.getElementById('staff-salary-period');
+      var hasStoredSalary = !!((amtEl && String(amtEl.value || '').trim()) || (perEl && perEl.value));
+      keptNote.style.display = (!isSalaried && hasStoredSalary) ? '' : 'none';
+    }
+  } catch (e) { console.warn('[_staffToggleHourlyFieldsForPayType] salary fields toggle failed', e); }
 }
 
 function openAddStaff() {
@@ -43400,6 +43501,7 @@ function openAddStaff() {
     set('staff-first-name', ''); set('staff-last-name', '');
     set('staff-work-type', 'field'); // new hires default to a field team, never Admin
     set('staff-pay-type', 'hourly'); // new hires default to hourly, never salaried
+    set('staff-salary-amount', ''); set('staff-salary-period', '');
     if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
     if (typeof _staffToggleHourlyFieldsForPayType === 'function') _staffToggleHourlyFieldsForPayType();
     populateEmpTeamDropdown('staff-team', null);
@@ -43558,7 +43660,9 @@ function renderStaffView() {
 
     ${section('Employment', [
       row('Team', emp.team),
-      row('Pay Rate', emp.payRate ? '$' + emp.payRate + '/hr' : ''),
+      (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp))
+        ? row('Pay', (typeof _fmtSalaryLine === 'function' ? _fmtSalaryLine(emp) : 'Salaried'))
+        : row('Pay Rate', emp.payRate ? '$' + emp.payRate + '/hr' : ''),
       row('Shirt Size', emp.shirtSize),
       row('Pants Size', emp.pantsSize),
       row('Work Auth', emp.workAuth),
@@ -43963,6 +44067,15 @@ function openEditStaff(idx) {
   if (_wtSel) _wtSel.value = (emp.work_type === 'admin') ? 'admin' : 'field';
   var _ptSel = document.getElementById('staff-pay-type');
   if (_ptSel) _ptSel.value = (emp.pay_type === 'salary') ? 'salary' : 'hourly';
+  // Salary amount/period (migration 114 follow-up). Hydrated regardless
+  // of the Pay Type value just set above, so a previously-saved amount
+  // reappears correctly if Tom flips Pay Type back to Salaried later in
+  // this same edit session (see the "kept, not erased" note in the
+  // toggle function).
+  var _salAmtEl = document.getElementById('staff-salary-amount');
+  if (_salAmtEl) _salAmtEl.value = (typeof _fmtSalaryAmountInput === 'function') ? _fmtSalaryAmountInput(emp.salary_amount != null ? emp.salary_amount : null) : (emp.salary_amount != null ? emp.salary_amount : '');
+  var _salPerEl = document.getElementById('staff-salary-period');
+  if (_salPerEl) _salPerEl.value = (emp.salary_period === 'year' || emp.salary_period === 'month' || emp.salary_period === 'week') ? emp.salary_period : '';
   if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
   if (typeof _staffToggleHourlyFieldsForPayType === 'function') _staffToggleHourlyFieldsForPayType();
   // v9.5: hydrate Role dropdown
@@ -44099,6 +44212,39 @@ function previewStaffDoc(input, id) {
   };
   reader.readAsDataURL(file);
 }
+
+// Salary amount/period (migration 114 follow-up) -- isolated write, see
+// module comment above this edit for why it's kept separate from the
+// main Staff dual-write patch. supaRowId is the real employees.id uuid
+// (same one the main patch update just targeted). oldAmount/oldPeriod
+// are what was on file BEFORE this save (read from the pre-update
+// in-memory row); newAmount/newPeriod are the validated values from
+// saveStaffEmployee's own validation step. No-ops (and writes nothing,
+// logs nothing) when nothing actually changed.
+async function _staffSaveSalaryFields(supaRowId, employeeName, oldAmount, oldPeriod, newAmount, newPeriod) {
+  try {
+    var oldAmt = (oldAmount != null) ? oldAmount : null;
+    var oldPer = (oldPeriod != null) ? oldPeriod : null;
+    if (newAmount === oldAmt && newPeriod === oldPer) return;
+    if (!window.PentaEmployees || typeof window.PentaEmployees.update !== 'function') {
+      throw new Error('PentaEmployees.update unavailable');
+    }
+    await window.PentaEmployees.update(supaRowId, { salary_amount: newAmount, salary_period: newPeriod });
+    try {
+      if (typeof _auditSupplement === 'function') {
+        await _auditSupplement('updated', 'employee', supaRowId, {
+          source: 'staff_salary_edit',
+          old_salary_amount: oldAmt, new_salary_amount: newAmount,
+          old_salary_period: oldPer, new_salary_period: newPeriod
+        });
+      }
+    } catch (auditErr) { console.warn('[staff salary] audit supplement failed (non-fatal)', auditErr); }
+  } catch (salErr) {
+    console.error('[staff salary] salary_amount/salary_period save failed', salErr);
+    alert('Everything else for ' + employeeName + ' was saved, but the Salary amount/period could not be saved.\n\n' + (salErr && salErr.message ? salErr.message : String(salErr)) + '\n\nIf this is a brand-new field, the database migration may not be applied yet -- ask your developer.');
+  }
+}
+
 async function saveStaffEmployee() {
   try {
   const idx = parseInt(document.getElementById('staff-edit-idx').value);
@@ -44136,6 +44282,25 @@ async function saveStaffEmployee() {
       ? ('Switch ' + name + ' to Admin/Office?\n\nThis clears their default team and removes any FUTURE daily team assignments (past history is kept). They will no longer appear in Teams or team schedules, and their hours will come only from hours you enter by hand.')
       : ('Switch ' + name + ' back to a Field team?\n\nThey will be unassigned -- no team is picked automatically. You\'ll need to assign them to a team afterward.');
     if (!confirm(_wtMsg)) { return; }
+  }
+
+  // Salary amount/period (migration 114 follow-up). Validated BEFORE
+  // any write, same discipline as the Work Type confirm above -- never
+  // a silent return, always a clear alert naming the problem. Both
+  // blank is an explicitly allowed "not set yet" state; one filled
+  // without the other is not.
+  var salaryAmount = null;
+  var salaryPeriod = null;
+  if (newPayType === 'salary') {
+    var _salParsed = (typeof _parseSalaryAmountInput === 'function')
+      ? _parseSalaryAmountInput((document.getElementById('staff-salary-amount')||{}).value)
+      : { ok: false, error: '_parseSalaryAmountInput missing' };
+    if (!_salParsed.ok) { alert(_salParsed.error); return; }
+    salaryAmount = _salParsed.value;
+    var _salPeriodRaw = (document.getElementById('staff-salary-period')||{}).value || '';
+    salaryPeriod = (_salPeriodRaw === 'year' || _salPeriodRaw === 'month' || _salPeriodRaw === 'week') ? _salPeriodRaw : null;
+    if (salaryAmount != null && !salaryPeriod) { alert('You entered a salary amount for ' + name + ' but didn\'t choose a pay period (per year / per month / per week). Pick one, or clear the amount.'); return; }
+    if (salaryAmount == null && salaryPeriod) { alert('You chose a pay period for ' + name + ' but didn\'t enter a salary amount. Enter one, or clear the period.'); return; }
   }
 
   // Collect new doc photos if taken
@@ -44324,6 +44489,13 @@ async function saveStaffEmployee() {
         if (isWorkTypeSwitch) {
           try { await switchEmployeeWorkType(supaRow.id, newWorkType); }
           catch (wtErr) { console.error('[saveStaffEmployee] switchEmployeeWorkType side effects failed (work_type itself was already saved)', wtErr); }
+        }
+        // Salary amount/period (migration 114 follow-up) -- isolated
+        // write, see _staffSaveSalaryFields for why. newPayType !==
+        // 'salary' means these columns are never touched at all, so a
+        // previously-saved amount/period is left exactly as it was.
+        if (newPayType === 'salary') {
+          await _staffSaveSalaryFields(supaRow.id, name, supaRow.salary_amount, supaRow.salary_period, salaryAmount, salaryPeriod);
         }
       } else {
         console.log('[Sprint 4.1] No Supabase row for', rosterId, '— backfill will handle it');
@@ -49330,7 +49502,7 @@ function renderStaffSubview() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
+          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? `<span style="color:#fbbf24;font-weight:700">${(typeof _fmtSalaryLine === 'function' ? _fmtSalaryLine(emp) : 'Salaried')}</span>` : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
         </div>
@@ -54857,9 +55029,21 @@ function _p3dPage(dir) {
           <option value="salary">Salaried</option>
         </select>
         <div id="staff-pay-type-hint" style="display:none;font-size:11px;color:var(--amber);margin-top:5px">Salaried Admin/Office employees have a fixed pay rate and no hours tracked anywhere -- the hourly rate below doesn't apply.</div>
+        <div id="staff-salary-fields" style="display:none;margin-top:10px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Salary amount ($)</div>
+          <input type="text" inputmode="decimal" id="staff-salary-amount" placeholder="e.g. 13,000.00" onblur="_staffReformatSalaryAmountInput()" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none">
+          <div style="font-size:12px;color:var(--muted);margin:10px 0 6px">Pay period</div>
+          <select id="staff-salary-period" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+            <option value="">Choose one…</option>
+            <option value="year">Per year</option>
+            <option value="month">Per month</option>
+            <option value="week">Per week</option>
+          </select>
+        </div>
+        <div id="staff-salary-kept-note" style="display:none;font-size:11px;color:var(--muted);margin-top:8px">💰 Salary amount/period is kept on file, just hidden while Pay Type is Hourly.</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" onwheel="this.blur()" onkeydown="if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();}" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
           <select id="staff-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="en">English</option><option value="es">Spanish</option>
