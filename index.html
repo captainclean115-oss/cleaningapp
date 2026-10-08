@@ -16010,7 +16010,7 @@ window.addEventListener('DOMContentLoaded', function() {
       if (!sb) return null;
       try {
         var res = await sb.from('employees')
-          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id, work_type')
+          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id, work_type, pay_type')
           .eq('auth_user_id', authId)
           .is('deleted_at', null)
           .maybeSingle();
@@ -16040,6 +16040,7 @@ window.addEventListener('DOMContentLoaded', function() {
           role: [],
           position: m.position || 'team_member',
           work_type: (m.work_type === 'admin') ? 'admin' : 'field',
+          pay_type: m.pay_type || null,
           photoUrl: m.photo_url || '',
           photo_url: m.photo_url || '',
           auth_user_id: m.auth_user_id || authId
@@ -24792,7 +24793,11 @@ async function processVoiceCommand(text) {
           // gap), which is exactly how a "S1 worked..." sweep could
           // accidentally include her. Naming her directly still works
           // either way -- this only affects team-level inference.
-          return rows.map(function(e){ return e.name + ' (' + (e.work_type === 'admin' ? 'Admin/Office' : (e.team || e.defaultTeam || '')) + ')'; }).join(', ');
+          return rows.map(function(e){
+            var _teamLabel = e.work_type === 'admin' ? 'Admin/Office' : (e.team || e.defaultTeam || '');
+            if (e.work_type === 'admin' && e.pay_type === 'salary') _teamLabel += ', Salaried';
+            return e.name + ' (' + _teamLabel + ')';
+          }).join(', ');
         }
       }
     } catch(e) {}
@@ -24899,6 +24904,7 @@ async function processVoiceCommand(text) {
     +'Teams: B1, B3, B5, S1, S3, M1, M2, M3\n'
     +'Employees: '+empNames+'\n'
     +'An employee shown as "(Admin/Office)" is office staff with no field team -- never include them when a team name is used to mean "everyone on that team" (e.g. "S1 worked 8 to 4 today" means only S1\'s field members). You can still name an Admin/Office employee directly (e.g. "Linda worked 9 to 5") and use get_employee_hours/edit_employee_hours/batch_edit_employee_hours for them exactly as for anyone else -- their hours just come from manual entries, never GPS.\n'
+    +'An employee shown as "(Admin/Office, Salaried)" has NO hours tracked at all -- fixed pay, not hourly. get_employee_hours reports "salaried, no hours tracked" for them; edit_employee_hours refuses with a plain message ("X is salaried, so there are no hours to edit"); batch_edit_employee_hours skips them and says so in the preview rather than failing the whole batch. Don\'t try to work around this by editing their hours a different way -- there is nothing to edit. This never applies to a field (non-Admin/Office) employee, even if they happen to also be salaried.\n'
     +'Total clients: '+PentaClients.count()+'\n'
     +'Today\'s jobs: '+todayJobs.length;
 
@@ -25992,6 +25998,15 @@ async function _executeClaireToolCallInner(toolCall, message) {
       var ghDate = ghDates[ghi];
       var ghDayLabel = new Date(ghDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
 
+      // Salaried Admin/Office (follow-up to migration 113). Checked
+      // BEFORE the plain (hourly) Admin/Office branch right below --
+      // no hours are ever tracked for a salaried employee, so there's
+      // no override/GPS distinction to make at all.
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(ghEmp)) {
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'salaried', reason: ghEmp.name + ' is salaried, no hours tracked.' });
+        continue;
+      }
+
       // Admin/Office designation (migration 113). getEmployeeTeam
       // returns null for an Admin employee EVERY day, not just a real
       // day off -- the `!ghTeam` branch right below would misreport her
@@ -26063,6 +26078,14 @@ async function _executeClaireToolCallInner(toolCall, message) {
       return;
     }
     var ehEmp = ehLookup.matches[0];
+    // Salaried Admin/Office (follow-up to migration 113): hard refusal
+    // before any read/write -- there is nothing to edit.
+    if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(ehEmp)) {
+      var ehSalMsg = ehEmp.name + ' is salaried, so there are no hours to edit.';
+      _claireLastToolResult = ehSalMsg;
+      claireReply(message || ehSalMsg);
+      return;
+    }
     // PR #134 -- every empHrs_* reader/writer (renderHoursTable,
     // showEmpDayDetail, the employee portal) keys off getUnifiedRoster()
     // -style ids -- legacy_roster_id when the employee has one, which
@@ -26179,6 +26202,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     }
     var beResolved = [];
     var beErrors = [];
+    // Salaried Admin/Office entries are SKIPPED, not an error -- they
+    // don't abort the whole batch (beErrors does), they just never
+    // make it into beResolved, so the confirmed-write loop below
+    // (which only iterates beResolved) can never write hours for them.
+    var beSkipped = [];
     for (var bi = 0; bi < beEntries.length; bi++) {
       var beEnt = beEntries[bi] || {};
       var beLookup = findEmployeeWithSuggestions(beEnt.employee || '');
@@ -26193,6 +26221,10 @@ async function _executeClaireToolCallInner(toolCall, message) {
         continue;
       }
       var beEmp = beLookup.matches[0];
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(beEmp)) {
+        beSkipped.push({ index: bi, employee: beEmp.name, date: beEnt.date || dateKey(new Date()), reason: 'salaried -- no hours tracked' });
+        continue;
+      }
       var beKeyId = beEmp.legacy_roster_id || beEmp.id;
       var beDate = beEnt.date || dateKey(new Date());
       var beTeam = getEmployeeTeam(beKeyId, beDate);
@@ -26246,7 +26278,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
           var proposedLabel = (r.proposed.start || r.proposed.end) ? (_hrsFmt12(pStart) + ' - ' + _hrsFmt12(pEnd))
             : (r.proposed.lunch ? 'lunch: ' + r.proposed.lunch + 'min' : '(no change specified)');
           return { employee: r.employee.name, date: r.date, current: r.currentLabel, proposed: proposedLabel };
-        })
+        }),
+        skipped: beSkipped
       });
       return;
     }
@@ -27901,8 +27934,11 @@ async function renderTeamManager(opts) {
             const _offBadge = _offInfo
               ? ('<span style="font-size:10px;color:var(--red);background:rgba(239,68,68,0.1);padding:1px 6px;border-radius:8px">🏖 ' + _adminEsc(_offInfo.label) + '</span>')
               : '';
+            const _salariedBadge = (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp))
+              ? '<span style="font-size:10px;color:#fbbf24;font-weight:700;background:rgba(251,191,36,0.1);padding:1px 6px;border-radius:8px">Salaried</span>'
+              : '';
             return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-            <span style="font-size:14px">${_adminEsc(emp.name)} ${_offBadge}</span>
+            <span style="font-size:14px">${_adminEsc(emp.name)} ${_salariedBadge} ${_offBadge}</span>
             <div style="display:flex;gap:6px">
               <button onclick="openDayOffPicker('${emp.id}','${dateStr}')"
                 style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">
@@ -28013,7 +28049,14 @@ function _teamHoursEligibility(team, dateStr) {
   var termData = getRosterTermData();
   var isActive = function(e) { return (termData[e.id]?.status || 'active') !== 'terminated'; };
   var roster = getUnifiedRoster();
-  var included = roster.filter(function(e) { return getEmployeeTeam(e.id, dateStr) === team && isActive(e); });
+  // Defensive second guard (matches getTeamEmployees' own pattern) --
+  // getEmployeeTeam already can't return a real team for an Admin/
+  // Office employee (verified: no defaultTeam, and both
+  // _setEmployeeDefaultTeam and quickAssign refuse to ever set one),
+  // so this can't change observable behavior today. It's here so this
+  // modal can never silently include an Admin/Office employee (salaried
+  // or not) even if that guard chain ever changes.
+  var included = roster.filter(function(e) { return getEmployeeTeam(e.id, dateStr) === team && isActive(e) && e.work_type !== 'admin'; });
   var includedIds = {};
   included.forEach(function(e) { includedIds[e.id] = true; });
   var skipped = [];
@@ -29487,7 +29530,13 @@ function getUnifiedRoster(asOfDate) {
           // scoped consumer (Team Manager, Live/Export Hours, Claire,
           // the portal) reads this straight off getUnifiedRoster()'s
           // own rows rather than re-querying the facade itself.
-          work_type: fe.work_type === 'admin' ? 'admin' : 'field'
+          work_type: fe.work_type === 'admin' ? 'admin' : 'field',
+          // Salaried Admin/Office follow-up: pay_type (existing column,
+          // employee_pay_type enum -- 'hourly' | 'salary') carried
+          // through the same way, so isSalariedAdmin() below can read
+          // it straight off this roster row without a second facade
+          // lookup.
+          pay_type: fe.pay_type || null
         });
       }
     });
@@ -29563,6 +29612,22 @@ function _adminEmpDayOff(employeeId, dateStr) {
   var info = dailyAssignmentDetails[dateStr + '_' + employeeId] || null;
   var statusType = info && info.status_type;
   return { status_type: statusType || null, label: (statusType && DAY_OFF_CATEGORY_LABELS[statusType]) || 'Off' };
+}
+
+// Salaried Admin/Office (follow-up to migration 113). THE single check
+// every hours surface in this file uses to decide "does this employee
+// get hours tracked at all" -- duplicated copies of this exact check
+// are what has diverged on us before (work_type's own "no team = OFF"
+// bug existed in 3 separate places until it was fixed once each).
+// `pay_type` is the existing employees.pay_type column -- a Postgres
+// enum (employee_pay_type: 'hourly' | 'salary', confirmed live via
+// information_schema; NOT the string "salaried"). Field employees with
+// pay_type='salary' are deliberately NOT matched here -- commissions/
+// salaried-field behavior is out of scope, and the spec is explicit
+// that only the admin+salary combination changes anything.
+function isSalariedAdmin(emp) {
+  if (!emp) return false;
+  return emp.work_type === 'admin' && emp.pay_type === 'salary';
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -31427,6 +31492,9 @@ function _writeWeekHoursCache(days) {
     // and the portal's own currentEmployee.id) already uses.
     var empCache = {};
     getUnifiedRoster().forEach(function(emp) {
+      // Salaried Admin/Office: never counts in hours/payroll totals
+      // anywhere, including this manager-session->portal relay cache.
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) return;
       days.forEach(function(d, i) {
         var dk = dateKey(d);
         var override = getEmpHours(emp.id, dk);
@@ -32550,6 +32618,18 @@ function calcHoursFromTimes(startStr, endStr, lunchMins) {
 }
 
 function showEmpDayDetail(empId, empName, team, dateMs) {
+  // Salaried Admin/Office (follow-up to migration 113): no hours entry
+  // anywhere, ever -- the normal Live Hours UI can no longer even
+  // reach this function for a salaried admin (no day cells, no
+  // onclick), but refuse explicitly rather than silently opening a
+  // sheet that would let someone save hours for them anyway.
+  try {
+    var _sedEmp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+    if (_sedEmp && typeof isSalariedAdmin === 'function' && isSalariedAdmin(_sedEmp)) {
+      alert(_sedEmp.name + ' is salaried -- there are no hours to enter.');
+      return;
+    }
+  } catch (e) { console.warn('[showEmpDayDetail] salaried-admin check failed (non-fatal, continuing to open)', e); }
   localStorage.removeItem('_empLunchStop');
   var date = new Date(dateMs);
   var dk = dateKey(date);
@@ -33198,6 +33278,17 @@ function onEmpTeamChange(empId, dk, newTeam, dateMs) {
 }
 
 async function saveEmpDayHours(empId, empName, dk) {
+  // Salaried Admin/Office (follow-up to migration 113): hard-block the
+  // actual write too, not just the UI entry point above -- defense in
+  // depth, since this is reachable by id/name/date alone from
+  // anywhere, not only from showEmpDayDetail's own Save button.
+  try {
+    var _sehEmp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+    if (_sehEmp && typeof isSalariedAdmin === 'function' && isSalariedAdmin(_sehEmp)) {
+      alert(_sehEmp.name + ' is salaried, so there are no hours to save. Nothing was changed.');
+      return;
+    }
+  } catch (e) { console.warn('[saveEmpDayHours] salaried-admin check failed (non-fatal, continuing to save)', e); }
   // v11.0.30 -- this had NO error handling at all, and re-rendered via a
   // bare renderHoursTable() call instead of the safer loadWeekHours()
   // pattern clearEmpDayHours (right below) was already fixed to use for
@@ -33587,6 +33678,27 @@ function renderHoursTable(days, dayNames) {
     if (adminEmployees.length > 0) {
       let adminTotal = 0;
       const adminRowsHtml = adminEmployees.map(emp => {
+        // Salaried Admin/Office: no hours entry, no clock status, never
+        // counts toward any total -- return BEFORE building any day
+        // cells or touching empWeekTotal/adminTotal at all, so there's
+        // nothing to zero out after the fact, just nothing added in
+        // the first place. Existing manual_hour_overrides rows (if any
+        // survive from before this employee became salaried) are
+        // deliberately left alone -- never read here, never deleted.
+        if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
+          const salInitial = (emp.name || '?').trim().charAt(0).toUpperCase();
+          return '<div class="hrs-emp-row-wrap" id="hrs-emp-wrap-' + emp.id + '">'
+            + '<div class="hrs-emp-row">'
+            + '<div class="hrs-emp-avatar" style="background:#6c8fff">' + _audEsc(salInitial) + '</div>'
+            + '<div class="hrs-emp-info">'
+            + '<div class="hrs-emp-name">' + _audEsc(emp.name) + '</div>'
+            + '<div class="hrs-emp-sub" style="color:#fbbf24">Salaried — no hours tracked</div>'
+            + '</div>'
+            + '<div class="hrs-emp-right">'
+            + '<div class="hrs-emp-total" style="color:#fbbf24;font-size:12px;font-weight:600;background:none">Salaried</div>'
+            + '</div></div>'
+            + '</div>';
+        }
         let empWeekTotal = 0;
         const dayCells = days.map(function(d, i) {
           const dk = dateKey(d);
@@ -34218,6 +34330,16 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
       textLines.push('  ADMIN / OFFICE');
       adminEmployees.forEach(function (emp) {
         empsSeen++;
+        // Salaried Admin/Office: no hours cells, no CSV rows at all --
+        // there's nothing day-shaped to report for them, so this
+        // returns before the day loop even starts rather than
+        // producing a run of zeroed rows. Counted in empsSeen (a real
+        // employee appeared in this report) but never in grandHours.
+        if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
+          if (empsSeen > 1) textLines.push(SEP_THIN);
+          textLines.push((emp.name || emp.id).toUpperCase() + ' (Admin, Salaried) — no hours tracked');
+          return;
+        }
         var empWeekHours = 0;
         var dayRows = [];
 
@@ -41504,10 +41626,21 @@ function appUnlockEmployee(emp) {
   const color = (_ptBadgeP && _ptBadgeP.color) || COLORS[emp.team] || '#6b7280';
   const badge = document.getElementById('team-badge');
   if (badge) {
-    badge.textContent = emp.team || 'No team';
-    badge.style.background = color + '22';
-    badge.style.color = color;
-    badge.style.border = '1px solid ' + color + '44';
+    // Salaried Admin/Office (follow-up to migration 113): "No team" is
+    // literal team language the spec says a salaried employee must
+    // never see -- this badge is visible on every portal tab, not just
+    // Hours, so it needed its own fix separate from renderHours().
+    if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
+      badge.textContent = 'Salaried';
+      badge.style.background = '#fbbf2422';
+      badge.style.color = '#fbbf24';
+      badge.style.border = '1px solid #fbbf2444';
+    } else {
+      badge.textContent = emp.team || 'No team';
+      badge.style.background = color + '22';
+      badge.style.color = color;
+      badge.style.border = '1px solid ' + color + '44';
+    }
   }
   const dateEl = document.getElementById('portal-date');
   if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
@@ -43177,7 +43310,7 @@ function renderStaffList() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
+          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
           <span data-invite-pill data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}"></span>
@@ -43229,6 +43362,31 @@ function _staffToggleTeamFieldForWorkType() {
   var teamSel = document.getElementById('staff-team');
   if (teamSel) teamSel.disabled = isAdmin;
   if (hint) hint.style.display = isAdmin ? '' : 'none';
+  // Switching Work Type can change whether the Admin+Salaried
+  // combination applies (e.g. an already-salaried employee switching
+  // to Admin should immediately hide the pay-rate field too).
+  try { if (typeof _staffToggleHourlyFieldsForPayType === 'function') _staffToggleHourlyFieldsForPayType(); }
+  catch (e) { console.warn('[_staffToggleTeamFieldForWorkType] pay-type re-check failed', e); }
+}
+
+// Salaried Admin/Office (follow-up to migration 113). Hides/disables
+// the hourly Pay Rate field ONLY for the Admin+Salaried combination
+// (isSalariedAdmin's own rule, re-read from the two form controls
+// directly since nothing has been saved yet at this point) -- a
+// salaried FIELD employee's pay-rate field is explicitly left alone,
+// unchanged, per spec. Called by staff-pay-type's own onchange, and by
+// _staffToggleTeamFieldForWorkType whenever Work Type changes too.
+function _staffToggleHourlyFieldsForPayType() {
+  var wtSel = document.getElementById('staff-work-type');
+  var ptSel = document.getElementById('staff-pay-type');
+  var payField = document.getElementById('staff-pay-rate-field');
+  var hint = document.getElementById('staff-pay-type-hint');
+  if (!ptSel) { console.warn('[_staffToggleHourlyFieldsForPayType] #staff-pay-type missing'); return; }
+  var formIsSalariedAdmin = !!(wtSel && wtSel.value === 'admin' && ptSel.value === 'salary');
+  if (payField) { payField.style.opacity = formIsSalariedAdmin ? '0.4' : '1'; payField.style.pointerEvents = formIsSalariedAdmin ? 'none' : ''; }
+  var payInput = document.getElementById('staff-pay');
+  if (payInput) payInput.disabled = formIsSalariedAdmin;
+  if (hint) hint.style.display = formIsSalariedAdmin ? '' : 'none';
 }
 
 function openAddStaff() {
@@ -43241,7 +43399,9 @@ function openAddStaff() {
     set('staff-edit-idx', '-1');
     set('staff-first-name', ''); set('staff-last-name', '');
     set('staff-work-type', 'field'); // new hires default to a field team, never Admin
+    set('staff-pay-type', 'hourly'); // new hires default to hourly, never salaried
     if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
+    if (typeof _staffToggleHourlyFieldsForPayType === 'function') _staffToggleHourlyFieldsForPayType();
     populateEmpTeamDropdown('staff-team', null);
     set('staff-role', 'team_member');  // v9.5: default new hires to team_member
     set('staff-pin', '');     set('staff-pay', '');
@@ -43801,7 +43961,10 @@ function openEditStaff(idx) {
   // employee's leftover state.
   var _wtSel = document.getElementById('staff-work-type');
   if (_wtSel) _wtSel.value = (emp.work_type === 'admin') ? 'admin' : 'field';
+  var _ptSel = document.getElementById('staff-pay-type');
+  if (_ptSel) _ptSel.value = (emp.pay_type === 'salary') ? 'salary' : 'hourly';
   if (typeof _staffToggleTeamFieldForWorkType === 'function') _staffToggleTeamFieldForWorkType();
+  if (typeof _staffToggleHourlyFieldsForPayType === 'function') _staffToggleHourlyFieldsForPayType();
   // v9.5: hydrate Role dropdown
   var _roleSel = document.getElementById('staff-role');
   if (_roleSel) _roleSel.value = emp.position || 'team_member';
@@ -43959,6 +44122,15 @@ async function saveStaffEmployee() {
   const newWorkType = ((document.getElementById('staff-work-type')||{}).value === 'admin') ? 'admin' : 'field';
   const oldWorkType = (idx >= 0 && list[idx] && list[idx].work_type === 'admin') ? 'admin' : 'field';
   const isWorkTypeSwitch = idx >= 0 && newWorkType !== oldWorkType;
+
+  // Salaried Admin/Office (follow-up to migration 113). Reuses the
+  // existing employees.pay_type column (employee_pay_type enum:
+  // 'hourly' | 'salary' -- confirmed live via information_schema, not
+  // guessed). No confirm dialog for this one on its own -- only the
+  // Work Type switch above has manager-visible consequences (team/
+  // assignment changes); Pay Type alone just changes how this
+  // employee's hours/pay are tracked going forward.
+  const newPayType = ((document.getElementById('staff-pay-type')||{}).value === 'salary') ? 'salary' : 'hourly';
   if (isWorkTypeSwitch) {
     const _wtMsg = newWorkType === 'admin'
       ? ('Switch ' + name + ' to Admin/Office?\n\nThis clears their default team and removes any FUTURE daily team assignments (past history is kept). They will no longer appear in Teams or team schedules, and their hours will come only from hours you enter by hand.')
@@ -43995,6 +44167,7 @@ async function saveStaffEmployee() {
     team_id: newWorkType === 'admin' ? null : (document.getElementById('staff-team').value || null),
     team: newWorkType === 'admin' ? '' : (function(){ var _id = document.getElementById('staff-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     work_type: newWorkType,
+    pay_type: newPayType,
     // v9.5: portal permission role. v9.6: 'manager' also triggers a
     // companion users-row UPSERT below (after the employees row is saved)
     // so the person can sign in with full manager privileges.
@@ -44139,6 +44312,9 @@ async function saveStaffEmployee() {
         // just above), or the Work Type dropdown silently fails to
         // persist from this modal specifically, same bug, 6th time.
         if (emp.work_type !== undefined) patch.work_type = emp.work_type === 'admin' ? 'admin' : 'field';
+        // Salaried Admin/Office follow-up -- same gap, same fix, for
+        // the Pay Type dropdown's pay_type column.
+        if (emp.pay_type !== undefined) patch.pay_type = emp.pay_type === 'salary' ? 'salary' : 'hourly';
         await window.PentaEmployees.update(supaRow.id, patch);
         console.log('[Sprint 4.1] Staff edit dual-write OK for', rosterId);
 
@@ -46822,6 +46998,51 @@ async function renderHours() {
   // manager's Live tab and Export both read). No override means a
   // blank day (renderHoursData already shows netHrs=0 as "—"), never 0
   // treated as a real entry and never an error.
+  // Salaried Admin/Office (follow-up to migration 113). Checked BEFORE
+  // the plain (hourly) Admin/Office branch right below -- a salaried
+  // employee gets a dedicated view with NO hours/clock/weekly total/
+  // team/vehicle language at all, not the hourly branch's day-by-day
+  // blank-or-hours grid. OFF/vacation status still shows -- that's
+  // genuinely useful and completely independent of pay type.
+  if (currentEmployee && typeof isSalariedAdmin === 'function' && isSalariedAdmin(currentEmployee)) {
+    try {
+      var _salDayOff = [];
+      days.forEach(function (d, i) {
+        var dk = dateKey(d);
+        var offInfo = _adminEmpDayOff(currentEmployee.id, dk);
+        _salDayOff[i] = offInfo ? offInfo.label : null;
+      });
+      var daysFullSal = {
+        en: ['Monday','Tuesday','Wednesday','Thursday','Friday'],
+        es: ['Lunes','Martes','Miércoles','Jueves','Viernes'],
+        pt: ['Segunda','Terça','Quarta','Quinta','Sexta'],
+        cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta']
+      };
+      var salLabel = { en: 'Salaried', es: 'Asalariado/a', pt: 'Assalariado(a)', cv: 'Salariadu' }[currentLang] || 'Salaried';
+      var salSub = { en: 'No hours are tracked for salaried staff.', es: 'No se registran horas para el personal asalariado.', pt: 'Não há controle de horas para funcionários assalariados.', cv: 'Ka ten ora ta rejistradu pa pesoal salariadu.' }[currentLang] || 'No hours are tracked for salaried staff.';
+      var totalLabelEl = document.getElementById('total-label');
+      if (totalLabelEl) totalLabelEl.textContent = salLabel;
+      var totalHrsEl = document.getElementById('total-hrs');
+      if (totalHrsEl) totalHrsEl.textContent = '—';
+      var breakdownEl = document.getElementById('hours-breakdown');
+      if (breakdownEl) {
+        var salHtml = '<div style="text-align:center;padding:16px 0 4px;color:#fbbf24;font-weight:700;font-size:16px">' + salLabel + '</div>'
+          + '<div style="font-size:12px;color:var(--muted);text-align:center;margin-bottom:16px">' + salSub + '</div>';
+        salHtml += (daysFullSal[currentLang] || daysFullSal.en).map(function (dayName, i) {
+          var offLbl = _salDayOff[i];
+          return '<div class="hours-row"><div style="flex:1"><div class="hours-day">' + dayName + '</div>'
+            + (offLbl ? '<div class="hours-time" style="color:var(--muted)">' + offLbl + '</div>' : '') + '</div></div>';
+        }).join('');
+        breakdownEl.innerHTML = salHtml;
+      }
+    } catch (e) {
+      console.error('[portal hours] Salaried view failed to render', e);
+      var breakdownElErr = document.getElementById('hours-breakdown');
+      if (breakdownElErr) breakdownElErr.innerHTML = '<div style="color:var(--red);text-align:center;padding:16px 0;font-size:13px">Could not load your status. Please reload.</div>';
+    }
+    return;
+  }
+
   if (currentEmployee && currentEmployee.work_type === 'admin') {
     try {
       days.forEach(function (d, i) {
@@ -49109,7 +49330,7 @@ function renderStaffSubview() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : ''}
+          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
         </div>
@@ -54629,8 +54850,16 @@ function _p3dPage(dir) {
         <input type="checkbox" id="staff-driver" style="width:18px;height:18px;accent-color:var(--accent);cursor:pointer">
         <label for="staff-driver" style="font-size:14px;cursor:pointer;flex:1">🚗 Driver — shows car icon next to name in team views</label>
       </div>
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Type</div>
+        <select id="staff-pay-type" onchange="_staffToggleHourlyFieldsForPayType()" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <option value="hourly">Hourly (default)</option>
+          <option value="salary">Salaried</option>
+        </select>
+        <div id="staff-pay-type-hint" style="display:none;font-size:11px;color:var(--amber);margin-top:5px">Salaried Admin/Office employees have a fixed pay rate and no hours tracked anywhere -- the hourly rate below doesn't apply.</div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
           <select id="staff-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="en">English</option><option value="es">Spanish</option>
