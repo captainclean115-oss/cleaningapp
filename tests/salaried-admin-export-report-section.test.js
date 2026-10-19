@@ -23,7 +23,7 @@ function extract(startMarker, endMarker, label) {
 }
 
 const blockSrc = extract(
-  "  try {\n    var adminEmployees = getUnifiedRoster().filter(function (e) { return e.work_type === 'admin'; });",
+  "  try {\n    var adminEmployees = getUnifiedRoster(dates[0]).filter(function (e) { return e.work_type === 'admin'; });",
   "\n\n  textLines.push('');",
   '_buildHoursReportFromData Admin/Office block'
 );
@@ -59,6 +59,7 @@ function buildSandbox(opts) {
     SEP_THIN,
     getUnifiedRoster: () => roster,
     isSalariedAdmin: (emp) => emp && emp.work_type === 'admin' && emp.pay_type === 'salary',
+    _employeeExcludedAsOf: (emp, dateStr) => !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at),
     _adminEmpDayOff: (empId, dk) => offDays[empId + '|' + dk] || null,
     getEmpHours: (empId, dk) => (overrides[empId] && overrides[empId][dk]) || null,
     _hrCsvField: (s) => (s == null ? '' : String(s)),

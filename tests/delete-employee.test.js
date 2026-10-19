@@ -76,6 +76,10 @@ const hardDeleteFn = extract('async function hardDelete(id) {', '\n  }\n', 'hard
 const confirmFnSource = extract('async function confirmDeleteEmployee() {', '\n\n// PR #149 — Rehire', 'confirmDeleteEmployee');
 
 // --- Behavioral: _renderDeleteEmployeeCounts discloses the linked login account ---
+// Hard Delete fix: _renderDeleteEmployeeCounts and confirmDeleteEmployee
+// now both call the shared _deleteEmployeeHistoryCounts() -- extract it
+// once and run it in both sandboxes below, same as the real file.
+const historyCountsHelperSrc = extract('var _DELETE_EMPLOYEE_HISTORY_CHECKS = [', '\n\nasync function _renderDeleteEmployeeCounts', '_deleteEmployeeHistoryCounts helper');
 const countsFnSource = extract('async function _renderDeleteEmployeeCounts(uuid, hasAuthAccount) {', '\n\nasync function confirmDeleteEmployee', '_renderDeleteEmployeeCounts');
 
 function buildCountsSandbox() {
@@ -90,6 +94,7 @@ function buildCountsSandbox() {
     },
   };
   vm.createContext(sandbox);
+  vm.runInContext(historyCountsHelperSrc, sandbox);
   vm.runInContext(countsFnSource, sandbox);
   return { sandbox, els };
 }
@@ -146,9 +151,20 @@ function buildCountsSandbox() {
       console,
       _deleteEmployeeCtx: { uuid: 'emp-1', name: 'Test Emp', source: 'staff' },
       document: { getElementById: (id) => elements[id] || null },
+      // Hard Delete fix: _auditSupplement is called before the RPC now
+      // (zero-history path only reaches it after the gate re-check passes).
+      _auditSupplement: (action_type, entity_type, entity_id, new_values) => {
+        calls.push(['_auditSupplement', action_type, entity_type, entity_id, new_values]);
+        return Promise.resolve();
+      },
       window: {
         supabaseClient: {
           from: (table) => ({
+            // Hard Delete fix: the gate re-check (_deleteEmployeeHistoryCounts)
+            // selects counts from 8 tables before anything else runs --
+            // resolve those to 0 (zero history, gate passes) alongside the
+            // pre-existing job_applications update mock.
+            select: () => ({ eq: () => Promise.resolve({ count: 0, error: null }) }),
             update: (patch) => ({ eq: (col, val) => { calls.push(['update', table, patch, col, val]); return Promise.resolve({ error: null }); } }),
           }),
         },
@@ -162,6 +178,7 @@ function buildCountsSandbox() {
       showToast: () => calls.push(['toast']),
     };
     vm.createContext(sandbox);
+    vm.runInContext(historyCountsHelperSrc, sandbox);
     vm.runInContext(confirmFnSource, sandbox);
     await sandbox.confirmDeleteEmployee();
 
@@ -183,9 +200,13 @@ function buildCountsSandbox() {
       console,
       _deleteEmployeeCtx: { uuid: 'emp-1', name: 'Test Emp', source: 'main' },
       document: { getElementById: (id) => elements[id] || null },
+      _auditSupplement: () => Promise.resolve(),
       window: {
         supabaseClient: {
-          from: () => ({ update: () => ({ eq: () => Promise.resolve({ error: null }) }) }),
+          from: () => ({
+            select: () => ({ eq: () => Promise.resolve({ count: 0, error: null }) }),
+            update: () => ({ eq: () => Promise.resolve({ error: null }) }),
+          }),
         },
         PentaEmployees: { hardDelete: () => Promise.reject(new Error('permission denied')) },
       },
@@ -193,6 +214,7 @@ function buildCountsSandbox() {
       showToast: () => {},
     };
     vm.createContext(sandbox);
+    vm.runInContext(historyCountsHelperSrc, sandbox);
     vm.runInContext(confirmFnSource, sandbox);
     await sandbox.confirmDeleteEmployee();
     check('a hardDelete failure surfaces its real error message', elements['del-emp-error'].textContent, 'permission denied');

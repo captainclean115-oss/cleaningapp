@@ -91,6 +91,13 @@ function buildSandbox(opts) {
       var st = info && info.status_type;
       return { status_type: st || null, label: (st && sandbox.DAY_OFF_CATEGORY_LABELS[st]) || 'Off' };
     },
+    // Terminated-employee date-awareness fix: the Archived section now
+    // reads the facade directly (window.PentaEmployees.listSync()) with
+    // its real .status/.terminated_at fields, not the dead termData
+    // mechanism -- `roster` doubles as that facade mock here.
+    getStaffList: function () { return opts.staffList || [{ id: 'e2', name: 'Linda' }]; },
+    _terminationReasonLabel: function (v) { return v || 'Terminated'; },
+    _pentaFormatDateOnly: function (d) { return d || ''; },
   };
   vm.createContext(sandbox);
   vm.runInContext(renderSrc, sandbox);
@@ -139,7 +146,12 @@ async function main() {
   // -- and show up in Archived instead, consistent with how the rest
   // of this modal already treats termination. ----
   {
-    const { sandbox, contentEl } = buildSandbox({ termData: { e2: { status: 'terminated' } } });
+    const terminatedRoster = [
+      { id: 'e1', uuid: 'u1', name: 'Alice', defaultTeam: 'B1', role: [], work_type: 'field' },
+      { id: 'e2', uuid: 'u2', name: 'Linda', defaultTeam: null, role: [], work_type: 'admin', status: 'terminated', terminated_at: DATE, legacy_roster_id: null, eligible_for_rehire: true },
+      { id: 'e3', uuid: 'u3', name: 'Pat',   defaultTeam: null, role: [], work_type: 'field' },
+    ];
+    const { sandbox, contentEl } = buildSandbox({ roster: terminatedRoster, termData: { e2: { status: 'terminated' } } });
     await sandbox.renderTeamManager();
     const html = contentEl.innerHTML;
     check('the Admin/Office section does not render at all (Linda was its only member, and she\'s excluded)', /🏢 Admin \/ Office/.test(html), false);

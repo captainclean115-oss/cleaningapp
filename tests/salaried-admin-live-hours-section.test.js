@@ -26,7 +26,7 @@ function extract(startMarker, endMarker, label) {
 }
 
 const blockSrc = extract(
-  '  try {\n    const adminEmployees = getUnifiedRoster().filter(e => e.work_type === \'admin\');',
+  '  try {\n    const adminEmployees = getUnifiedRoster(_hrsRangeStartKey).filter(e => e.work_type === \'admin\');',
   '\n\n  // All Teams summary',
   'renderHoursTable Admin/Office block'
 );
@@ -34,6 +34,7 @@ const blockSrc = extract(
 const harnessSrc = `
 function runAdminGroup(days, dayNames, today, expanded) {
   var html = '';
+  var _hrsRangeStartKey = dateKey(days[0]);
 ${blockSrc}
   return html;
 }
@@ -58,6 +59,7 @@ function buildSandbox(opts) {
     console,
     getUnifiedRoster: () => roster,
     isSalariedAdmin: (emp) => emp && emp.work_type === 'admin' && emp.pay_type === 'salary',
+    _employeeExcludedAsOf: (emp, dateStr) => !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at),
     _adminEmpDayOff: (empId, dk) => offDays[empId + '|' + dk] || null,
     getEmpHours: (empId, dk) => (overrides[empId] && overrides[empId][dk]) || null,
     dateKey: (d) => d.toISOString().slice(0, 10),

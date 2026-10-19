@@ -46,7 +46,7 @@ if (cnStart === -1) { console.error('FAIL: could not find _cleanName'); process.
 const cnEnd = src.indexOf('\n}', cnStart) + 2;
 const cnSource = src.slice(cnStart, cnEnd);
 
-const feStart = src.indexOf('function findEmployees(query)');
+const feStart = src.indexOf('function findEmployees(query, asOfDate)');
 if (feStart === -1) { console.error('FAIL: could not find findEmployees'); process.exit(1); }
 const feEnd = src.indexOf('\nfunction findEmployeeWithSuggestions', feStart);
 if (feEnd === -1) { console.error('FAIL: could not find end boundary after findEmployees'); process.exit(1); }

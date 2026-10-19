@@ -76,6 +76,11 @@ function buildSandbox(opts) {
     _auditSupplement: () => Promise.resolve(),
     weekHours: undefined,
     hoursWeekOffset: undefined,
+    // Terminated-employee date-awareness fix: real bare-global helper
+    // the extracted get_employee_hours branch now calls. None of this
+    // file's roster entries carry status/terminated_at, so this
+    // correctly never excludes any of them -- same behavior as before.
+    _employeeExcludedAsOf: (emp, dateStr) => !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at),
   };
   vm.createContext(sandbox);
   vm.runInContext(harnessSrc, sandbox);
