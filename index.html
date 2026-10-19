@@ -5448,6 +5448,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <button class="week-nav-btn" onclick="hoursWeekMove(1)">&#8250;</button>
     </div>
     <div class="hours-title">Hours Worked</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0 10px;flex-wrap:wrap">
+      <div id="hours-published-indicator" style="font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:6px">
+        <button onclick="publishWeekHoursNow()" id="hours-publish-now-btn" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer">Publish now</button>
+        <button onclick="publishLast4Weeks()" id="hours-publish-backfill-btn" style="background:none;border:1px solid var(--border);color:var(--muted);font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer">Publish last 4 weeks</button>
+      </div>
+    </div>
     <div id="hours-table"><div class="hours-loading">Loading hours...</div></div>
   </div>
   <div class="bottom-pad"></div>
@@ -26264,6 +26271,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
         }
       }
     } catch (e) {}
+    // Published Hours: this write never goes through loadWeekHours() on
+    // its own -- explicitly republish so it reaches the employee's
+    // published table without waiting on an unrelated later refresh.
+    if (typeof _republishAfterHoursEdit === 'function') {
+      _republishAfterHoursEdit(ehDate).catch(function (e) { console.error('[publish] Claire edit_employee_hours republish failed', e); });
+    }
     var dayL3 = new Date(ehDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     var changes = [];
     if (input.start) changes.push('start: '+input.start);
@@ -26458,6 +26471,14 @@ async function _executeClaireToolCallInner(toolCall, message) {
     }
 
     var beDayList = beApplied.map(function(r) { return r.employee.name + ' (' + r.date + ')'; }).join(', ');
+    // Published Hours: none of these writes went through loadWeekHours()
+    // on their own -- republish every distinct date this batch actually
+    // touched (grouped by week internally) so the batch reaches the
+    // employee-facing published table without waiting on an unrelated
+    // later refresh.
+    if (typeof _republishAfterHoursEdit === 'function') {
+      _republishAfterHoursEdit(beApplied.map(function (r) { return r.date; })).catch(function (e) { console.error('[publish] Claire batch_edit_employee_hours republish failed', e); });
+    }
     _claireLastToolResult = JSON.stringify({ success: true, count: beApplied.length, updated: beApplied.map(function(r){ return { employee: r.employee.name, date: r.date }; }) });
     claireReply(message || ('Updated hours for ' + beApplied.length + ': ' + beDayList + '. Done.'));
 
@@ -28565,14 +28586,14 @@ async function teamHoursResetToGps() {
 // doesn't block or get blamed on the other.
 async function _teamHoursRefreshAfterWrite(dateStr) {
   try {
-    if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined') {
-      var gv = document.getElementById('gps-view');
-      var days = getWeekDates(hoursWeekOffset);
-      var d = new Date(dateStr + 'T00:00:00');
-      var inView = days.length && d >= days[0] && d <= days[4];
-      if (gv && gv.classList.contains('active') && inView && typeof loadWeekHours === 'function') {
-        await loadWeekHours();
-      }
+    // Published Hours: was gated on the Live tab being the active view
+    // AND showing this date's week -- a Team Hours edit made from
+    // anywhere else in the app never recomputed weekHours, so the
+    // employee-facing publish (hooked into loadWeekHours()'s own tail)
+    // never fired for it either. Unconditional now; still restores
+    // whatever week the manager was actually looking at afterward.
+    if (typeof loadWeekHours === 'function') {
+      await _republishAfterHoursEdit(dateStr);
     }
   } catch (e) {
     console.error('[TeamHours] post-write Live hours refresh failed (the save itself already succeeded)', e);
@@ -32417,6 +32438,14 @@ async function _loadWeekHoursInner() {
 
     renderHoursTable(days, DAYS_SHORT);
 
+    // Published Hours -- schedule a debounced publish of exactly what
+    // was just rendered. Captured now (not re-read when the debounce
+    // timer fires) so a newer loadWeekHours() call for a different week,
+    // started before this timer fires, can never cause the wrong week's
+    // data to be published under this week's key.
+    try { _schedulePublishWeekHours(days, weekHours, window._empHoursMap); }
+    catch (e) { console.warn('[publish] could not schedule auto-publish', e); }
+
   } catch(e) {
     if (_myWeekHoursToken !== _weekHoursLoadToken) return; // superseded -- don't paint a stale error over a newer in-flight load
     document.getElementById('hours-table').innerHTML =
@@ -33859,6 +33888,273 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
     hours: hours, startStr: startStr, endStr: endStr, startDate: startDate, endDate: endDate,
     lunchMin: lunchMin, isOpenShift: isOpenShift, isOverride: !!override
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Published Hours (migrations/114_published_employee_hours.sql).
+//
+// The employee portal no longer computes anything -- it reads ONLY this
+// table, filtered by RLS to the logged-in employee's own employee_id. No
+// Geotab call, no whole-business manual_hour_overrides/daily_assignments
+// fetch, ever reaches a field employee's own phone again (confirmed
+// during the portal-hours-match-manager PR review that those WERE
+// reaching it, even though only the employee's own slice was rendered --
+// the full business-wide fetch itself was the exposure, not the render).
+//
+// publishWeekHours() never computes a second copy of anything: it reads
+// whatever resolveEmployeeDayHours() (field employees) or getEmpHours/
+// _adminEmpDayOff (Admin/Office, same functions the admin portal branch
+// already reads) already resolved from weekHoursData/empHoursMapData --
+// passed in explicitly by the caller, exactly like resolveEmployeeDayHours
+// itself, so this can never silently read a different week than the one
+// that was actually just computed.
+function _toInstant(dayDate, hhmm) {
+  if (!hhmm) return null;
+  var p = hhmm.split(':');
+  var d = new Date(dayDate);
+  d.setHours(parseInt(p[0], 10), parseInt(p[1], 10), 0, 0);
+  return d.toISOString();
+}
+
+function _isUuidLike(s) {
+  return typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
+// Reverse of getWeekDates(offset): which offset (relative to "this
+// week" = 0) contains dateStr. Used only by _republishAfterHoursEdit,
+// to realign the manager's global hoursWeekOffset to whatever week an
+// edit (Claire, Team Hours modal) actually landed in before recomputing.
+function _weekOffsetForDate(dateStr) {
+  var d = new Date(dateStr + 'T00:00:00');
+  var day = d.getDay();
+  var mon = new Date(d);
+  mon.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  mon.setHours(0, 0, 0, 0);
+  var thisMon = getWeekDates(0)[0];
+  return Math.round((mon - thisMon) / (7 * 86400000));
+}
+
+async function publishWeekHours(days, weekHoursData, empHoursMapData) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) throw new Error('Not connected -- cannot publish hours.');
+
+  var currentUserId = (window.PentaAuth && window.PentaAuth.session && window.PentaAuth.session.user && window.PentaAuth.session.user.id) || null;
+  if (!currentUserId) {
+    try { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; } catch (e) {}
+  }
+
+  var todayKey = dateKey(new Date());
+  var now = new Date();
+  var candidates = [];
+  var skipped = [];
+
+  days.forEach(function (d, dayIdx) {
+    if (d > now) return; // never publish a day that hasn't happened yet
+    var dk = dateKey(d);
+    var roster = getUnifiedRoster(dk);
+    roster.forEach(function (emp) {
+      var empUuid = emp.uuid || emp.id;
+      if (!_isUuidLike(empUuid)) { skipped.push({ emp: emp.name, date: dk, reason: 'no resolvable uuid' }); return; }
+      var base = { business_id: bid, employee_id: empUuid, work_date: dk, published_by: currentUserId };
+
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: null, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: 'salaried', source: null }) });
+        return;
+      }
+
+      if (emp.work_type === 'admin') {
+        var offInfo = _adminEmpDayOff(emp.id, dk);
+        if (offInfo) {
+          candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (offInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+          return;
+        }
+        var override = getEmpHours(emp.id, dk);
+        if (!override) { if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'no manual hours on file' }); return; }
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
+          hours: override.hours || 0, start_time: _toInstant(d, override.start), end_time: _toInstant(d, override.end),
+          lunch_minutes: override.lunch || 0, team_label: null, status: 'worked', source: 'manual'
+        }) });
+        return;
+      }
+
+      // Field employee -- the exact function renderHoursTable itself reads.
+      var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
+      if (rd.isOff) {
+        var fOffInfo = (typeof getEmployeeDayOffInfo === 'function') ? getEmployeeDayOffInfo(emp.id, dk) : null;
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (fOffInfo && fOffInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+        return;
+      }
+      // An unresolved ambiguous zero (no override, no personal GPS/clock
+      // cell, team's own source is time_entries) means "no data yet", not
+      // a verified zero-hour day -- never publish a fake zero. A REAL
+      // override of 0 is a deliberate manager entry and still publishes
+      // (isOverride is what tells the two apart).
+      if (rd.hours === 0 && !rd.isOverride) {
+        if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'unresolved -- no GPS/clock data yet' });
+        return;
+      }
+      candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
+        hours: rd.hours, start_time: rd.startDate ? rd.startDate.toISOString() : null, end_time: rd.endDate ? rd.endDate.toISOString() : null,
+        lunch_minutes: rd.lunchMin || 0, team_label: rd.dayTeam || null, status: 'worked', source: rd.isOverride ? 'override' : 'gps'
+      }) });
+    });
+  });
+
+  if (!candidates.length) return { published: 0, skipped: skipped.length, skippedDetail: skipped };
+
+  // Diff against what's already published: only changed/new rows are
+  // written, so published_at (the employee-visible "Updated" time) only
+  // moves when a value actually changed -- not on every routine 60s Live
+  // recompute, which would otherwise bump it constantly for no reason.
+  var mon = dateKey(days[0]), fri = dateKey(days[days.length - 1]);
+  var existingRes = await sb.from('published_employee_hours')
+    .select('employee_id, work_date, hours, start_time, end_time, lunch_minutes, team_label, status, source')
+    .eq('business_id', bid).gte('work_date', mon).lte('work_date', fri);
+  if (existingRes.error) throw new Error('Could not read current published hours before publishing: ' + existingRes.error.message);
+  var existingByKey = {};
+  (existingRes.data || []).forEach(function (r) { existingByKey[r.employee_id + '|' + r.work_date] = r; });
+
+  function _sameRow(a, b) {
+    return a.hours == b.hours && a.start_time == b.start_time && a.end_time == b.end_time
+      && a.lunch_minutes == b.lunch_minutes && a.team_label == b.team_label && a.status == b.status && a.source == b.source;
+  }
+
+  var toWrite = candidates.filter(function (c) {
+    var existing = existingByKey[c.key];
+    return !existing || !_sameRow(existing, c.row);
+  }).map(function (c) { return c.row; });
+
+  if (!toWrite.length) return { published: 0, skipped: skipped.length, skippedDetail: skipped, unchanged: candidates.length };
+
+  var CHUNK = 200;
+  var publishedCount = 0;
+  for (var i = 0; i < toWrite.length; i += CHUNK) {
+    var chunk = toWrite.slice(i, i + CHUNK);
+    var res = await sb.from('published_employee_hours').upsert(chunk, { onConflict: 'business_id,employee_id,work_date' });
+    if (res.error) throw new Error('Publish failed partway through (' + publishedCount + '/' + toWrite.length + ' rows written): ' + res.error.message);
+    publishedCount += chunk.length;
+  }
+  return { published: publishedCount, skipped: skipped.length, skippedDetail: skipped };
+}
+
+function _updatePublishIndicator(weekKey, info) {
+  var el = document.getElementById('hours-published-indicator');
+  if (!el) return;
+  if (info && info.error) { el.style.color = 'var(--red)'; el.textContent = 'Could not publish to employees.'; return; }
+  if (info && info.backfill) { el.style.color = 'var(--muted)'; el.textContent = info.backfill; return; }
+  el.style.color = 'var(--muted)';
+  el.textContent = 'Published to employees ' + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    + (info && typeof info.count === 'number' ? ' (' + info.count + (info.count === 1 ? ' day' : ' days') + ' updated)' : '');
+}
+
+var _publishDebounceTimers = {};
+// Debounced so several rapid edits in the same week (a Sunday payroll
+// batch via Claire, a manager clicking through several Team Hours
+// edits) collapse into one write instead of one upsert per edit.
+function _schedulePublishWeekHours(days, weekHoursData, empHoursMapData) {
+  try {
+    var weekKey = dateKey(days[0]);
+    if (_publishDebounceTimers[weekKey]) clearTimeout(_publishDebounceTimers[weekKey]);
+    _publishDebounceTimers[weekKey] = setTimeout(function () {
+      delete _publishDebounceTimers[weekKey];
+      publishWeekHours(days, weekHoursData, empHoursMapData)
+        .then(function (result) {
+          // Only touch the visible indicator if this week is still the
+          // one on screen -- an auto-publish for a week the manager
+          // navigated away from shouldn't rewrite her current view.
+          if (typeof hoursWeekOffset !== 'undefined' && dateKey(getWeekDates(hoursWeekOffset)[0]) === weekKey) {
+            _updatePublishIndicator(weekKey, { ok: true, count: result.published });
+          }
+        })
+        .catch(function (e) {
+          console.error('[publish] auto-publish failed for week', weekKey, e);
+          if (typeof hoursWeekOffset !== 'undefined' && dateKey(getWeekDates(hoursWeekOffset)[0]) === weekKey) {
+            _updatePublishIndicator(weekKey, { error: true });
+          }
+        });
+    }, 1500);
+  } catch (e) { console.warn('[publish] schedule failed', e); }
+}
+
+// Write paths that write a manual_hour_overrides row WITHOUT already
+// calling loadWeekHours() unconditionally afterward (Claire's tools, and
+// the Team Hours modal's own refresh, previously gated on the Live tab
+// being the active view) call this instead, so the automatic publish
+// hook at the tail of _loadWeekHoursInner (which ALWAYS runs on every
+// loadWeekHours() call, from any caller) actually fires for the correct
+// week. Accepts one date or an array -- a Claire batch touching several
+// dates in the same week republishes that week exactly once.
+async function _republishAfterHoursEdit(dateStrs) {
+  var list = Array.isArray(dateStrs) ? dateStrs : [dateStrs];
+  list = list.filter(Boolean);
+  if (!list.length || typeof hoursWeekOffset === 'undefined') return;
+  try {
+    var offsets = {};
+    list.forEach(function (ds) { offsets[_weekOffsetForDate(ds)] = true; });
+    var savedOffset = hoursWeekOffset;
+    var gv = document.getElementById('gps-view');
+    var wasActive = gv && gv.classList.contains('active');
+    var touchedOther = false;
+    for (var off in offsets) {
+      var numOff = Number(off);
+      hoursWeekOffset = numOff;
+      await loadWeekHours();
+      if (numOff !== savedOffset) touchedOther = true;
+    }
+    hoursWeekOffset = savedOffset;
+    if (touchedOther && wasActive) await loadWeekHours(); // restore the manager's own on-screen week
+  } catch (e) { console.error('[publish] republish-after-edit failed', e); }
+}
+
+// Manager-facing "Publish now" button -- publishes the currently-viewed
+// week immediately instead of waiting for the debounce.
+async function publishWeekHoursNow() {
+  var btn = document.getElementById('hours-publish-now-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+  try {
+    if (typeof weekHours === 'undefined' || !Object.keys(weekHours).length) {
+      await loadWeekHours();
+    }
+    var days = getWeekDates(hoursWeekOffset);
+    var result = await publishWeekHours(days, weekHours, window._empHoursMap);
+    _updatePublishIndicator(dateKey(days[0]), { ok: true, count: result.published });
+  } catch (e) {
+    console.error('[publish] Publish now failed', e);
+    alert('Hours calculated but could not be published to employees: ' + (e && e.message || 'unknown error'));
+    _updatePublishIndicator(null, { error: true });
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Publish now'; }
+  }
+}
+
+// Manager-facing "Publish last 4 weeks" backfill button. Built per spec
+// but NOT run by this patch -- Tom runs it himself when ready. Sequential
+// (one week at a time), skips a failed week rather than aborting the
+// whole backfill, restores the manager's own on-screen week afterward.
+async function publishLast4Weeks() {
+  if (!confirm('Publish hours to employees for the last 4 completed weeks? This does not change any manager-side numbers.')) return;
+  var savedOffset = (typeof hoursWeekOffset !== 'undefined') ? hoursWeekOffset : 0;
+  var results = [];
+  for (var w = -4; w <= -1; w++) {
+    _updatePublishIndicator(null, { backfill: 'Publishing week ' + (w + 5) + ' of 4…' });
+    try {
+      hoursWeekOffset = w;
+      await loadWeekHours();
+      var days = getWeekDates(w);
+      var result = await publishWeekHours(days, weekHours, window._empHoursMap);
+      results.push({ week: dateKey(days[0]), ok: true, published: result.published, skipped: result.skipped });
+    } catch (e) {
+      console.error('[publish] backfill week offset ' + w + ' failed', e);
+      results.push({ week: 'week offset ' + w, ok: false, error: e && e.message });
+    }
+  }
+  hoursWeekOffset = savedOffset;
+  try { await loadWeekHours(); } catch (e) {}
+  _updatePublishIndicator(dateKey(getWeekDates(savedOffset)[0]), { ok: true, count: 0 });
+  alert('Backfill done:\n' + results.map(function (r) {
+    return r.week + ': ' + (r.ok ? (r.published + ' published, ' + r.skipped + ' skipped') : ('FAILED -- ' + r.error));
+  }).join('\n'));
 }
 
 function renderHoursTable(days, dayNames) {
@@ -47337,6 +47633,42 @@ function portalWeekNav(dir) {
   renderHours();
 }
 
+// Published Hours -- realtime, scoped to ONE employee's own rows only
+// (employee_id=eq.<uuid> filter), same pattern as PentaSettings/
+// PentaAssignments/PentaChatMessages's own _setupRealtime elsewhere in
+// this file. Re-renders the portal Hours screen on any change to her own
+// published rows so a manager's "Publish now" (or the automatic
+// publish cycle) shows up without the employee reloading. If the
+// subscribe call itself fails (offline, etc.) this is non-fatal --
+// renderHours() already re-fetches fresh on every tab-open/week-nav, and
+// the portal's existing pull-to-refresh covers the rest.
+var _publishedHoursRealtimeChannel = null;
+var _publishedHoursRealtimeEmpId = null;
+function _setupPublishedHoursRealtime(empUuid) {
+  try {
+    if (_publishedHoursRealtimeEmpId === empUuid && _publishedHoursRealtimeChannel) return;
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb || !empUuid) return;
+    if (_publishedHoursRealtimeChannel) { try { sb.removeChannel(_publishedHoursRealtimeChannel); } catch (e) {} }
+    _publishedHoursRealtimeEmpId = empUuid;
+    _publishedHoursRealtimeChannel = sb.channel('penta-published-hours-' + empUuid)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'published_employee_hours', filter: 'employee_id=eq.' + empUuid },
+        function () { try { renderHours(); } catch (e) { console.warn('[portal hours] realtime re-render failed', e); } })
+      .subscribe(function (status) { console.log('[PublishedHours realtime] status=' + status); });
+  } catch (e) { console.warn('[portal hours] realtime subscribe failed (non-fatal -- falls back to refresh-on-open/pull-to-refresh)', e); }
+}
+
+function _renderPortalHoursUpdatedLabel(publishedAtIso) {
+  var el = document.getElementById('portal-hours-updated');
+  if (!el) return;
+  if (!publishedAtIso) { el.textContent = ''; return; }
+  try {
+    var d = new Date(publishedAtIso);
+    el.textContent = 'Updated ' + d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { el.textContent = ''; }
+}
+
 async function renderHours() {
   // PR #134 -- same PentaAssignments/PentaEmployees hydration race
   // PR #128/#133 fixed for the manager's Live tab, present here too:
@@ -47516,61 +47848,61 @@ async function renderHours() {
   if (_hoursBreakdownEl) _hoursBreakdownEl.innerHTML = '<div style="color:var(--muted);text-align:center;padding:16px 0;font-size:13px">Loading your hours...</div>';
 
   try {
-    // Portal-hours-match-manager fix: compute LIVE via the exact same
-    // function the manager's Hours table uses, instead of reading a
-    // stale, device-local localStorage snapshot that a real employee's
-    // own phone never populated in the first place (that snapshot is
-    // only ever written by a MANAGER's own loadWeekHours() call, on
-    // the manager's own device). hoursWeekOffset is the manager's own
-    // global week pointer -- temporarily align it to this portal's own
-    // _portalWeekOffset, then restore it, so a concurrent manager
-    // session (e.g. "Preview as employee", which runs in the very same
-    // browser tab) is never left pointed at the wrong week.
-    var _savedHoursWeekOffset = (typeof hoursWeekOffset !== 'undefined') ? hoursWeekOffset : 0;
-    try {
-      hoursWeekOffset = _portalWeekOffset;
-      await loadWeekHours();
-    } finally {
-      hoursWeekOffset = _savedHoursWeekOffset;
-    }
+    // Published Hours: reads ONLY published_employee_hours, filtered to
+    // THIS employee's own employee_id. No loadWeekHours(), no Geotab
+    // call, no whole-business manual_hour_overrides/daily_assignments
+    // fetch -- none of that reaches this device anymore (see
+    // migrations/114_published_employee_hours.sql and this feature's PR
+    // description for why the live-compute version this replaces did).
+    var _sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var _bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    var _myUuid = (currentEmployee && currentEmployee.uuid)
+      || (currentEmployee && window.PentaEmployees && window.PentaEmployees.getByLegacyRosterId
+          ? (function () { var r = window.PentaEmployees.getByLegacyRosterId(currentEmployee.id); return r && r.id; })()
+          : null);
+    if (!_sb || !_bid || !_myUuid) throw new Error('Not connected -- cannot load published hours.');
 
-    // weekHours/_empHoursMap are the SAME globals renderHoursTable
-    // itself reads -- loadWeekHours() just finished populating them
-    // fresh, for this employee's own week. Only HER slice is ever read
-    // out (resolveEmployeeDayHours(currentEmployee.id, ...)) -- every
-    // other employee's data loadWeekHours() computed along the way
-    // stays in memory, never rendered here.
-    var _liveWeekHours = (typeof weekHours !== 'undefined') ? weekHours : {};
-    var _liveEmpHoursMap = (typeof window !== 'undefined' && window._empHoursMap) ? window._empHoursMap : {};
+    var _phMon = dateKey(days[0]), _phFri = dateKey(days[4]);
+    var _phRes = await _sb.from('published_employee_hours')
+      .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at')
+      .eq('employee_id', _myUuid)
+      .gte('work_date', _phMon)
+      .lte('work_date', _phFri);
+    if (_phRes.error) throw _phRes.error;
 
-    if (currentEmployee && currentEmployee.id) {
-      days.forEach(function (d, i) {
-        var _rd = resolveEmployeeDayHours(currentEmployee.id, d, i, _liveWeekHours, _liveEmpHoursMap);
-        if (_rd.isOff) {
-          // PR #137 -- an explicit OFF override, not "no data." Match
-          // renderHoursTable's own semantics: show the off status, zero
-          // hours, no GPS fallback of any kind for this day.
-          var offInfo = (typeof getEmployeeDayOffInfo === 'function') ? getEmployeeDayOffInfo(currentEmployee.id, dateKey(d)) : null;
-          var offType = offInfo && offInfo.status_type;
-          composite.status[i] = {
-            type: offType || 'off',
-            label: (offType && typeof DAY_OFF_CATEGORY_LABELS !== 'undefined' && DAY_OFF_CATEGORY_LABELS[offType]) || 'Off'
-          };
-          return;
-        }
-        composite.days[i] = _rd.hours || 0;
-        composite.starts[i] = _rd.startDate ? _rd.startDate.toISOString() : null;
-        composite.ends[i] = _rd.endDate ? _rd.endDate.toISOString() : null;
-        composite.lunch[i] = _rd.lunchMin ? { duration: _rd.lunchMin } : null;
-      });
-      composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
-    }
+    var _phByDate = {};
+    (_phRes.data || []).forEach(function (row) { _phByDate[row.work_date] = row; });
+
+    var _todayKey = dateKey(new Date());
+    var _maxPublishedAt = null;
+    days.forEach(function (d, i) {
+      var dk = dateKey(d);
+      var row = _phByDate[dk];
+      if (row && row.published_at && (!_maxPublishedAt || row.published_at > _maxPublishedAt)) _maxPublishedAt = row.published_at;
+
+      if (!row) {
+        composite.status[i] = (dk === _todayKey)
+          ? { type: 'in_progress', label: 'In progress, updates after your manager reviews' }
+          : { type: 'not_published', label: 'Not updated yet' };
+        return;
+      }
+      if (row.status === 'off' || row.status === 'vacation') {
+        composite.status[i] = { type: row.status, label: (row.status === 'vacation' ? 'Vacation' : 'Off') };
+        return;
+      }
+      composite.days[i] = row.hours || 0;
+      composite.starts[i] = row.start_time || null;
+      composite.ends[i] = row.end_time || null;
+      composite.lunch[i] = row.lunch_minutes ? { duration: row.lunch_minutes } : null;
+    });
+    composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
+
+    _renderPortalHoursUpdatedLabel(_maxPublishedAt);
+    _setupPublishedHoursRealtime(_myUuid);
   } catch (e) {
-    // No silent early return: a failed live fetch must never fall back
-    // to the stale cache this fix removes (that would silently
-    // reintroduce the exact bug), and must never show a blank or a
-    // zero that looks like a real answer.
-    console.error('[portal hours] live hours computation failed', e);
+    // No silent early return, and never a blank/fake-zero on failure --
+    // same contract as the live-fetch version this replaces.
+    console.error('[portal hours] published hours fetch failed', e);
     if (_hoursBreakdownEl) _hoursBreakdownEl.innerHTML = '<div style="color:var(--red);text-align:center;padding:16px 0;font-size:13px">Could not load your hours. Pull to refresh or try again.</div>';
     return;
   }
@@ -56078,6 +56410,7 @@ function _p3dPage(dir) {
       <div style="text-align:center">
         <div class="section-title" id="week-label" style="margin:0">THIS WEEK</div>
         <div id="portal-week-dates" style="font-size:11px;color:var(--muted)"></div>
+        <div id="portal-hours-updated" style="font-size:10px;color:var(--muted);margin-top:2px"></div>
       </div>
       <button onclick="portalWeekNav(1)" id="portal-week-fwd" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:36px;height:36px;border-radius:50%;font-size:18px;cursor:pointer">›</button>
     </div>
