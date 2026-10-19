@@ -95,11 +95,17 @@ check('exactly 3 occurrences of the call exist (2 real + 1 documented-dead-code 
 // The first two are real (inside the live _bootRouteWithRoleCheck IIFE);
 // the third is inside the "(legacy paths below kept as dead code...)"
 // block, unreachable because of the `return;` immediately before it.
+// Terminated-employee date-awareness fix: the literal status==='terminated'
+// check was replaced with _bootIsTerminatedLoginBlocked(emp), which blocks
+// only on/after her actual termination date (today, business timezone) --
+// a future-dated termination must not lock her out early. Structural check
+// updated to match; see employee-portal-login-gate-date-aware.test.js for
+// behavioral coverage of the new function itself.
 callSites.slice(0, 2).forEach(function (idx, i) {
-  const window_ = src.slice(idx, idx + 400);
+  const window_ = src.slice(idx, idx + 650);
   check(
-    'call site #' + (i + 1) + ' checks status===\'terminated\' before unlocking, and routes to the terminated-account message',
-    /status\s*===\s*'terminated'/.test(window_) && window_.indexOf('_bootShowTerminatedAccountMessage') !== -1,
+    'call site #' + (i + 1) + ' checks _bootIsTerminatedLoginBlocked before unlocking, and routes to the terminated-account message',
+    /_bootIsTerminatedLoginBlocked\(/.test(window_) && window_.indexOf('_bootShowTerminatedAccountMessage') !== -1,
     true
   );
 });

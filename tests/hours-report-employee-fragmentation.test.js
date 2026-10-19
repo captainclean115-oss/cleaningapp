@@ -68,6 +68,19 @@ function buildSandbox(opts) {
       return Object.prototype.hasOwnProperty.call(assignments, key) ? assignments[key] : null;
     },
     getEmpHours: function (empId, dk) { return overrides[empId + '_' + dk] || null; },
+    // Terminated-employee date-awareness fix: now-separate top-level
+    // helpers _buildHoursReportFromData calls into.
+    _hrsEffectiveTeamForRange: function (emp, dateKeys) {
+      if (emp.defaultTeam) return emp.defaultTeam;
+      for (var i = dateKeys.length - 1; i >= 0; i--) {
+        var t = sandbox.getEmployeeTeam(emp.id, dateKeys[i]);
+        if (t) return t;
+      }
+      return null;
+    },
+    _employeeExcludedAsOf: function (emp, dateStr) {
+      return !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at);
+    },
   };
   vm.createContext(sandbox);
   vm.runInContext(helpersSrc, sandbox);

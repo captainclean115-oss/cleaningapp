@@ -39,7 +39,7 @@ const levSrc = extract('function _lev(a, b) {', '\n\n// Returns { matches:');
 
 // findEmployees/findEmployeeWithSuggestions are two separate function
 // declarations back to back -- extract through the end of the second one.
-const bothStart = src.indexOf('function findEmployees(query) {');
+const bothStart = src.indexOf('function findEmployees(query, asOfDate) {');
 const bothEnd = src.indexOf('\n\n// Tools that return information to Claire');
 if (bothStart === -1 || bothEnd === -1) { console.error('FAIL: could not find findEmployees/findEmployeeWithSuggestions block'); process.exit(1); }
 const findEmployeesBothSrc = src.slice(bothStart, bothEnd);

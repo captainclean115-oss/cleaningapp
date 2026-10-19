@@ -5205,6 +5205,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div style="margin-bottom:14px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Termination date *</div>
       <input type="date" id="term-modal-date" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none">
+      <div style="font-size:11px;color:var(--muted);margin-top:5px">This is the date she stops appearing in schedules, hours, and team views -- not her last worked day. Example: pick Oct 15 and she's still shown normally through Oct 14, excluded starting Oct 15.</div>
     </div>
     <div style="margin-bottom:14px">
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Notes <span id="term-modal-notes-required" style="display:none;color:var(--red)">(required for "Other")</span></div>
@@ -9008,18 +9009,33 @@ window.PentaAssignments = (function() {
   // query (not a loop over unassign() per date). Past assignments
   // (date < fromDate) are untouched -- the audit trail requirement from
   // the termination spec. Returns the count removed.
+  //
+  // Fix (terminated-employee date-awareness follow-up): fromDate (the
+  // termination date D) is manager-entered with no min/max on the date
+  // picker -- a backdated D used to mean "purge every real, already-
+  // worked day between D and today" too, destroying genuine history.
+  // The effective purge floor is now max(fromDate, tomorrow) in
+  // business timezone: a FUTURE D still purges from D itself
+  // (unchanged -- those days haven't happened yet, purging them early
+  // is exactly the point); a D that's today or in the past purges only
+  // STRICTLY future rows, leaving every day that already happened --
+  // today included -- untouched no matter how far back D is set.
   async function unassignFutureForEmployee(employeeId, fromDate) {
     var sb = SB();
     if (!sb) throw new Error('PentaAssignments.unassignFutureForEmployee: no Supabase client');
     var dbEmpId = await _resolveEmployeeId(employeeId);
     if (!dbEmpId) return 0;
-    var toRemove = _cache.filter(function(r){ return r.employee_id === dbEmpId && r.date >= fromDate; });
+    var _tp = _bizTodayParts(_pentaBusinessTimezone());
+    var _tomorrow = new Date(_tp.y, _tp.m - 1, _tp.d + 1);
+    var _tomorrowKey = _tomorrow.getFullYear() + '-' + String(_tomorrow.getMonth() + 1).padStart(2, '0') + '-' + String(_tomorrow.getDate()).padStart(2, '0');
+    var effectiveFloor = fromDate > _tomorrowKey ? fromDate : _tomorrowKey;
+    var toRemove = _cache.filter(function(r){ return r.employee_id === dbEmpId && r.date >= effectiveFloor; });
     if (!toRemove.length) return 0;
     var actorId = await _currentUserId();
     var nowIso = new Date().toISOString();
     var res = await sb.from('daily_assignments')
       .update({ deleted_at: nowIso, deleted_by: actorId })
-      .eq('employee_id', dbEmpId).gte('date', fromDate).is('deleted_at', null);
+      .eq('employee_id', dbEmpId).gte('date', effectiveFloor).is('deleted_at', null);
     if (res.error) throw res.error;
     var removedIds = {};
     toRemove.forEach(function(r){ removedIds[r.id] = true; });
@@ -15996,6 +16012,19 @@ window.addEventListener('DOMContentLoaded', function() {
     } catch (e) {}
   }
 
+  // Terminated-employee date-awareness fix. Mirrors getUnifiedRoster's
+  // own isTerminatedAsOf comparison, but fails toward BLOCKED (not
+  // shown) when terminated_at is missing -- deliberately the opposite
+  // default from the historical-display contexts, since this gates
+  // live portal access, not a report.
+  function _bootIsTerminatedLoginBlocked(emp) {
+    if (!emp || emp.status !== 'terminated') return false;
+    if (!emp.terminated_at) return true;
+    var p = _bizTodayParts(_pentaBusinessTimezone());
+    var todayKey = p.y + '-' + String(p.m).padStart(2, '0') + '-' + String(p.d).padStart(2, '0');
+    return todayKey >= emp.terminated_at;
+  }
+
   function _bootResolveEmployeeFromAuth(parsed) {
     return (async function() {
       var authId = parsed && parsed.user && parsed.user.id;
@@ -16010,7 +16039,7 @@ window.addEventListener('DOMContentLoaded', function() {
       if (!sb) return null;
       try {
         var res = await sb.from('employees')
-          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, auth_user_id, work_type, pay_type')
+          .select('id, legacy_roster_id, first_name, last_name, team_text, team_id, culture_tag, position, photo_url, status, terminated_at, auth_user_id, work_type, pay_type')
           .eq('auth_user_id', authId)
           .is('deleted_at', null)
           .maybeSingle();
@@ -16037,6 +16066,7 @@ window.addEventListener('DOMContentLoaded', function() {
           team_id: m.team_id || null,
           lang: langMap[m.culture_tag] || 'en',
           status: m.status || 'active',
+          terminated_at: m.terminated_at || null,
           role: [],
           position: m.position || 'team_member',
           work_type: (m.work_type === 'admin') ? 'admin' : 'field',
@@ -16285,7 +16315,10 @@ window.addEventListener('DOMContentLoaded', function() {
           // PR #149: status was already fetched/returned here but never
           // checked -- any employee with valid Supabase auth credentials
           // could log into the portal indefinitely after termination.
-          if (emp && emp.status === 'terminated') {
+          // Terminated-employee date-awareness fix: _bootIsTerminatedLoginBlocked
+          // only blocks on/after her actual termination date (today, business
+          // timezone) -- a future-dated termination must not lock her out early.
+          if (_bootIsTerminatedLoginBlocked(emp)) {
             _bootShowTerminatedAccountMessage();
           } else if (emp) {
             appUnlockEmployee(emp);
@@ -16321,7 +16354,7 @@ window.addEventListener('DOMContentLoaded', function() {
         (async function(){
           try {
             var emp2 = await _bootResolveEmployeeFromAuth(_sbParsed);
-            if (emp2 && emp2.status === 'terminated') _bootShowTerminatedAccountMessage();
+            if (_bootIsTerminatedLoginBlocked(emp2)) _bootShowTerminatedAccountMessage();
             else if (emp2) appUnlockEmployee(emp2);
             else appUnlockManager();
           } catch (_e) { appUnlockManager(); }
@@ -25220,13 +25253,13 @@ function findClientWithSuggestions(query) {
 // excludes every terminated employee (PR #148 -- see its own comment),
 // so a terminated duplicate can't silently win or force a
 // disambiguation prompt for a name only one ACTIVE employee actually has.
-function findEmployees(query) {
+function findEmployees(query, asOfDate) {
   if (!query) return [];
   var q = _cleanName(query);
   if (!q) return [];
   var tokens = q.split(/\s+/).filter(Boolean);
   var scored = [];
-  getUnifiedRoster().forEach(function(e) {
+  getUnifiedRoster(asOfDate).forEach(function(e) {
     var full = _cleanName(e.name);
     if (!full) return;
     var nameTokens = full.split(/\s+/).filter(Boolean);
@@ -25258,19 +25291,39 @@ function findEmployees(query) {
 // findClientWithSuggestions, for the ambiguity-prone employee tool
 // handlers (get_employee_hours, edit_employee_hours) to surface a
 // disambiguation prompt via the LLM round instead of guessing.
-function findEmployeeWithSuggestions(query) {
-  var matches = findEmployees(query);
+function findEmployeeWithSuggestions(query, asOfDate) {
+  var matches = findEmployees(query, asOfDate);
   if (matches.length) return { matches: matches, suggestions: [] };
   var q = _cleanName(query);
   if (!q) return { matches: [], suggestions: [] };
   var all = [];
-  getUnifiedRoster().forEach(function(e) {
+  getUnifiedRoster(asOfDate).forEach(function(e) {
     var full = _cleanName(e.name);
     if (!full) return;
     all.push({ emp: e, dist: _lev(q, full) });
   });
   all.sort(function(a, b) { return a.dist - b.dist; });
   return { matches: [], suggestions: all.slice(0, 3).map(function(x) { return x.emp; }) };
+}
+
+// Terminated-employee date-awareness fix. Called only when a dated
+// lookup found nothing -- checks whether that's because the name
+// belongs to someone who was already terminated as of asOfDate (a real,
+// explainable reason), as opposed to a genuinely unknown name. Re-runs
+// findEmployeeWithSuggestions itself with _ROSTER_ALL_HISTORY_ASOF
+// (not a reimplementation of its scoring/ambiguity logic) so an
+// ambiguous historical name still reports ambiguous_employee the
+// normal way instead of this shortcut guessing a winner. Returns null
+// when there's no such explanation.
+function _claireTerminatedExplanation(query, asOfDate) {
+  try {
+    var hist = findEmployeeWithSuggestions(query, _ROSTER_ALL_HISTORY_ASOF);
+    if (hist.matches.length !== 1) return null;
+    var fe = hist.matches[0];
+    if (fe.status !== 'terminated' || !fe.terminated_at) return null;
+    if (asOfDate < fe.terminated_at) return null; // not yet terminated as of asOfDate -- not the explanation
+    return { name: fe.name, terminated_at: fe.terminated_at };
+  } catch (e) { return null; }
 }
 
 // Tools that return information to Claire rather than perform an action.
@@ -25962,23 +26015,10 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── EDIT EMPLOYEE HOURS ──
   } else if (name === 'get_employee_hours') {
-    var ghLookup = findEmployeeWithSuggestions(input.employee || '');
-    if (ghLookup.matches.length > 1) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'ambiguous_employee', query: input.employee,
-        candidates: ghLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; })
-      });
-      return;
-    }
-    if (ghLookup.matches.length === 0) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'employee_not_found', query: input.employee,
-        suggestions: ghLookup.suggestions.map(function(e){ return e.name; })
-      });
-      return;
-    }
-    var ghEmp = ghLookup.matches[0];
-    var ghKeyId = ghEmp.legacy_roster_id || ghEmp.id;
+    // Terminated-employee date-awareness fix: parse the requested date
+    // range FIRST (this used to run after the lookup below) so name
+    // resolution can use the EARLIEST date in it -- a terminated
+    // employee must still resolve by name for a date before she left.
     var ghDates = [];
     if (input.from && input.to) {
       var _ghCur = new Date(input.from + 'T00:00:00');
@@ -25993,10 +26033,52 @@ async function _executeClaireToolCallInner(toolCall, message) {
     } else {
       ghDates = [input.date || dateKey(new Date())];
     }
+    var ghLookupDate = ghDates[0];
+    var ghLookup = findEmployeeWithSuggestions(input.employee || '', ghLookupDate);
+    if (ghLookup.matches.length > 1) {
+      _claireLastToolResult = JSON.stringify({
+        error: 'ambiguous_employee', query: input.employee,
+        candidates: ghLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; })
+      });
+      return;
+    }
+    if (ghLookup.matches.length === 0) {
+      // Terminated-employee date-awareness fix: a plain, specific
+      // explanation when the name belongs to someone terminated by
+      // ghLookupDate, instead of a generic not-found.
+      var ghTermExp = _claireTerminatedExplanation(input.employee || '', ghLookupDate);
+      if (ghTermExp) {
+        _claireLastToolResult = JSON.stringify({
+          error: 'employee_terminated', query: input.employee, terminated_at: ghTermExp.terminated_at,
+          message: ghTermExp.name + ' was terminated on ' + _pentaFormatDateOnly(ghTermExp.terminated_at) + ' -- there\'s nothing to report after that date.'
+        });
+        return;
+      }
+      _claireLastToolResult = JSON.stringify({
+        error: 'employee_not_found', query: input.employee,
+        suggestions: ghLookup.suggestions.map(function(e){ return e.name; })
+      });
+      return;
+    }
+    var ghEmp = ghLookup.matches[0];
+    var ghKeyId = ghEmp.legacy_roster_id || ghEmp.id;
     var ghResults = [];
     for (var ghi = 0; ghi < ghDates.length; ghi++) {
       var ghDate = ghDates[ghi];
       var ghDayLabel = new Date(ghDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+
+      // Terminated-employee date-awareness fix: a multi-day range can
+      // extend past her termination even though ghLookupDate (the
+      // range's first day) resolved her fine -- guard each day
+      // individually so a day on/after her exclusion date reports
+      // "terminated" plainly instead of falling through to a stale/
+      // misleading GPS-team lookup (getEmployeeTeam already resolves
+      // null for her on these days, which would otherwise misreport as
+      // a plain "off" day with no explanation).
+      if (_employeeExcludedAsOf(ghEmp, ghDate)) {
+        ghResults.push({ date: ghDate, day_of_week: ghDayLabel, status: 'terminated', reason: ghEmp.name + ' was terminated on ' + _pentaFormatDateOnly(ghEmp.terminated_at) + '.' });
+        continue;
+      }
 
       // Salaried Admin/Office (follow-up to migration 113). Checked
       // BEFORE the plain (hourly) Admin/Office branch right below --
@@ -26062,7 +26144,12 @@ async function _executeClaireToolCallInner(toolCall, message) {
     _claireLastToolResult = JSON.stringify({ employee: ghEmp.name, days: ghResults });
 
   } else if (name === 'edit_employee_hours') {
-    var ehLookup = findEmployeeWithSuggestions(input.employee || '');
+    // Terminated-employee date-awareness fix: resolve the edit date
+    // BEFORE name resolution (used to be computed after) so the lookup
+    // can use it -- a terminated employee must still resolve by name
+    // for a date before she left.
+    var ehDate = input.date || dateKey(new Date());
+    var ehLookup = findEmployeeWithSuggestions(input.employee || '', ehDate);
     if (ehLookup.matches.length > 1) {
       _claireLastToolResult = JSON.stringify({
         error: 'ambiguous_employee', query: input.employee,
@@ -26071,6 +26158,16 @@ async function _executeClaireToolCallInner(toolCall, message) {
       return;
     }
     if (ehLookup.matches.length === 0) {
+      // Terminated-employee date-awareness fix: a plain, specific
+      // explanation when the name belongs to someone terminated by
+      // ehDate, instead of a generic not-found.
+      var ehTermExp = _claireTerminatedExplanation(input.employee || '', ehDate);
+      if (ehTermExp) {
+        var ehTermMsg = ehTermExp.name + ' was terminated on ' + _pentaFormatDateOnly(ehTermExp.terminated_at) + ', so no hours can be added after that date.';
+        _claireLastToolResult = ehTermMsg;
+        claireReply(message || ehTermMsg);
+        return;
+      }
       _claireLastToolResult = JSON.stringify({
         error: 'employee_not_found', query: input.employee,
         suggestions: ehLookup.suggestions.map(function(e){ return e.name; })
@@ -26094,7 +26191,6 @@ async function _executeClaireToolCallInner(toolCall, message) {
     // under the Supabase uuid instead silently wrote to a key nothing
     // else ever read -- a live, confirmed bug, not a hypothetical one.
     var ehKeyId = ehEmp.legacy_roster_id || ehEmp.id;
-    var ehDate = input.date || dateKey(new Date());
     var existing = getEmpHours(ehKeyId, ehDate) || {};
     if (input.start) existing.start = input.start;
     if (input.end) existing.end = input.end;
@@ -26209,24 +26305,38 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var beSkipped = [];
     for (var bi = 0; bi < beEntries.length; bi++) {
       var beEnt = beEntries[bi] || {};
-      var beLookup = findEmployeeWithSuggestions(beEnt.employee || '');
+      // Terminated-employee date-awareness fix: resolve this entry's own
+      // date BEFORE its lookup (used to be computed after) so a
+      // terminated employee still resolves by name for a date before
+      // she left. Each entry already carries its own date, so this is a
+      // pure reordering, not new state.
+      var beDate = beEnt.date || dateKey(new Date());
+      var beLookup = findEmployeeWithSuggestions(beEnt.employee || '', beDate);
       if (beLookup.matches.length > 1) {
         beErrors.push({ index: bi, employee: beEnt.employee, error: 'ambiguous_employee',
           candidates: beLookup.matches.slice(0, 5).map(function(e){ return { name: e.name, id: e.id }; }) });
         continue;
       }
       if (beLookup.matches.length === 0) {
+        // Terminated-employee date-awareness fix: a plain, specific
+        // reason when the name belongs to someone terminated by this
+        // entry's own date, instead of a generic not-found.
+        var beTermExp = _claireTerminatedExplanation(beEnt.employee || '', beDate);
+        if (beTermExp) {
+          beErrors.push({ index: bi, employee: beEnt.employee, error: 'employee_terminated',
+            message: beTermExp.name + ' was terminated on ' + _pentaFormatDateOnly(beTermExp.terminated_at) + ', so no hours can be added after that date.' });
+          continue;
+        }
         beErrors.push({ index: bi, employee: beEnt.employee, error: 'employee_not_found',
           suggestions: beLookup.suggestions.map(function(e){ return e.name; }) });
         continue;
       }
       var beEmp = beLookup.matches[0];
       if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(beEmp)) {
-        beSkipped.push({ index: bi, employee: beEmp.name, date: beEnt.date || dateKey(new Date()), reason: 'salaried -- no hours tracked' });
+        beSkipped.push({ index: bi, employee: beEmp.name, date: beDate, reason: 'salaried -- no hours tracked' });
         continue;
       }
       var beKeyId = beEmp.legacy_roster_id || beEmp.id;
-      var beDate = beEnt.date || dateKey(new Date());
       var beTeam = getEmployeeTeam(beKeyId, beDate);
       var beCurrentOverride = getEmpHours(beKeyId, beDate); // null if none on file
       var beCurrentLabel;
@@ -27695,7 +27805,7 @@ async function renderTeamManager(opts) {
    // other team (and Unassigned) too.
    try {
     const color = _pentaTeamColor(team, '#6b7280');
-    const employees = getUnifiedRoster().filter(e => getEmployeeTeam(e.id, dateStr) === team && isActiveEmp(e));
+    const employees = getUnifiedRoster(dateStr).filter(e => getEmployeeTeam(e.id, dateStr) === team && isActiveEmp(e));
     const stats = _teamDayStats(team, dateStr);
     const hLabel = stats.mins >= 60
       ? Math.floor(stats.mins / 60) + 'h' + (stats.mins % 60 ? ' ' + (stats.mins % 60) + 'm' : '')
@@ -27807,7 +27917,7 @@ async function renderTeamManager(opts) {
   // oversight, and get their own section (below, outside this try
   // block) instead of showing up looking like a genuinely-unplaced
   // field employee.
-  const unassigned = getUnifiedRoster().filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e) && e.work_type !== 'admin');
+  const unassigned = getUnifiedRoster(dateStr).filter(e => !getEmployeeTeam(e.id, dateStr) && isActiveEmp(e) && e.work_type !== 'admin');
   if (unassigned.length > 0) {
     html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
       <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
@@ -27848,7 +27958,7 @@ async function renderTeamManager(opts) {
 
   // Unassigned employees (no default team and no daily assignment).
   // Same Admin/Office exclusion as `unassigned` just above.
-  const unassigned2 = getUnifiedRoster().filter(e => {
+  const unassigned2 = getUnifiedRoster(dateStr).filter(e => {
     const assigned = getEmployeeTeam(e.id, dateStr);
     return (!assigned || assigned === '') && e.work_type !== 'admin';
   });
@@ -27884,23 +27994,34 @@ async function renderTeamManager(opts) {
     </div>`;
   }
 
-  // Archived / terminated section
-  const terminated = getUnifiedRoster().filter(e => (termData[e.id]?.status) === 'terminated');
+  // Archived / terminated section (migration 104). Reads the facade
+  // DIRECTLY rather than through getUnifiedRoster() -- this section's
+  // job is the exact opposite of every other roster read in this
+  // function: it wants the employees who ARE excluded as of dateStr,
+  // not the ones who aren't. See module comment above (edit_06) for
+  // why this never rendered a row before this fix.
+  const _tmFacadeAll = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+  const terminated = _tmFacadeAll.filter(fe => fe.status === 'terminated' && (!fe.terminated_at || dateStr >= fe.terminated_at));
   if (terminated.length > 0) {
+    const _tmStaffList = getStaffList();
     html += `<div style="margin-bottom:16px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">📁 Archived — Former Employees (${terminated.length})</div>
-      ${terminated.map(emp => {
-        const td = termData[emp.id] || {};
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px">📁 Archived — Former Employees as of ${_adminEsc(dateStr)} (${terminated.length})</div>
+      ${terminated.map(fe => {
+        const rosterId = fe.legacy_roster_id || fe.id;
+        const idx = _tmStaffList.findIndex(x => x.id === rosterId || x.id === fe.id);
+        const rehireBtn = idx >= 0
+          ? `<button onclick="rehireEmployeeWithConfirm(${idx},'staff')"
+              style="background:rgba(52,211,153,0.18);border:1px solid rgba(52,211,153,0.45);color:#34d399;font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">Rehire</button>`
+          : '';
         return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;margin-bottom:6px;background:var(--surface2);border-radius:10px;border-left:3px solid var(--red);opacity:0.7">
           <div>
-            <div style="font-size:14px;color:var(--text)">${emp.name}</div>
+            <div style="font-size:14px;color:var(--text)">${_adminEsc(fe.name)}</div>
             <div style="font-size:11px;color:var(--muted);margin-top:2px">
-              ${td.reason || 'No reason'} · ${td.termDate || ''}
-              ${td.rehire ? ' · <span style="color:var(--green)">✓ Rehire OK</span>' : ' · <span style="color:var(--red)">✗ No rehire</span>'}
+              ${_adminEsc(_terminationReasonLabel(fe.termination_reason))} · ${_adminEsc(_pentaFormatDateOnly(fe.terminated_at))}
+              ${fe.eligible_for_rehire === false ? ' · <span style="color:var(--red)">✗ No rehire</span>' : ' · <span style="color:var(--green)">✓ Rehire OK</span>'}
             </div>
           </div>
-          <button onclick="openRosterEmpEdit('${emp.id}')"
-            style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:'DM Sans',sans-serif;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer">Edit</button>
+          ${rehireBtn}
         </div>`;
       }).join('')}
     </div>`;
@@ -27922,7 +28043,7 @@ async function renderTeamManager(opts) {
   // assignEmployee('OFF',...) already work for any employee regardless
   // of team).
   try {
-    const adminEmployees = getUnifiedRoster().filter(e => e.work_type === 'admin' && isActiveEmp(e));
+    const adminEmployees = getUnifiedRoster(dateStr).filter(e => e.work_type === 'admin' && isActiveEmp(e));
     if (adminEmployees.length > 0) {
       html += `<div style="margin-bottom:16px;background:var(--surface2);border-radius:12px;overflow:hidden">
         <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
@@ -28048,7 +28169,10 @@ async function setTeamDeviceAssignment(team, dateStr) {
 function _teamHoursEligibility(team, dateStr) {
   var termData = getRosterTermData();
   var isActive = function(e) { return (termData[e.id]?.status || 'active') !== 'terminated'; };
-  var roster = getUnifiedRoster();
+  // Terminated-employee date-awareness fix: dateStr is this function's
+  // own parameter -- an employee not yet terminated as of dateStr
+  // belongs in this modal at all, exactly like any other employee.
+  var roster = getUnifiedRoster(dateStr);
   // Defensive second guard (matches getTeamEmployees' own pattern) --
   // getEmployeeTeam already can't return a real team for an Admin/
   // Office employee (verified: no defaultTeam, and both
@@ -28067,6 +28191,28 @@ function _teamHoursEligibility(team, dateStr) {
     if (off) {
       skipped.push({ emp: e, reason: (off.status_type && DAY_OFF_CATEGORY_LABELS[off.status_type]) || 'Day Off' });
     }
+  });
+  // Terminated-employee date-awareness fix: an employee excluded from
+  // `roster` above specifically because she's terminated as of dateStr
+  // (not a day-off/unassigned case) still needs to show up as
+  // "skipped: Terminated" per spec, not just silently vanish. `roster`
+  // (dated) can never contain her for this branch by construction, so
+  // this reads the raw facade directly and checks the exact same
+  // isTerminatedAsOf-style comparison. Her defaultTeam is already
+  // cleared at termination, so "was she on THIS team" is resolved via
+  // getEmployeeTeam for the day before her termination (her actual last
+  // working day under the documented D-exclusive rule), not her
+  // current row.
+  var facadeAll = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+  facadeAll.forEach(function(fe) {
+    var rosterId = fe.legacy_roster_id || fe.id;
+    if (includedIds[rosterId] || includedIds[fe.id]) return;
+    if (fe.status !== 'terminated' || !fe.terminated_at || dateStr < fe.terminated_at) return;
+    var lastDay = new Date(fe.terminated_at + 'T00:00:00');
+    lastDay.setDate(lastDay.getDate() - 1);
+    var lastTeam = getEmployeeTeam(rosterId, dateKey(lastDay));
+    if (lastTeam !== team) return;
+    skipped.push({ emp: { id: rosterId, uuid: fe.id, name: fe.name, role: [] }, reason: 'Terminated' });
   });
   return { included: included, skipped: skipped };
 }
@@ -28584,7 +28730,12 @@ async function promptDefaultTeam(empId) {
 // PentaTeams and writes both fields together, so they can never
 // disagree again.
 async function _setEmployeeDefaultTeam(empId, newTeam) {
-  var emp = getUnifiedRoster().find(function(e){ return e.id === empId; });
+  // Terminated-employee date-awareness fix (confirmed live production
+  // bug, see module comment above this edit): this lookup resolves a
+  // specific employee BY ID to update her record -- her current
+  // active/terminated status must never make that resolution fail,
+  // especially right after terminateEmployee() has just flipped it.
+  var emp = getUnifiedRoster(_ROSTER_ALL_HISTORY_ASOF).find(function(e){ return e.id === empId; });
   if (!emp) return false;
   // Refuse to give an Admin/Office employee a real default team --
   // clearing (newTeam falsy) is always allowed, since that's exactly
@@ -28789,8 +28940,17 @@ async function terminateEmployee(employeeId, opts) {
 
   // Clear the permanent team slot going forward -- reuses the existing,
   // dual-field-safe (team_text + team_id) unassign path.
+  //
+  // Terminated-employee date-awareness fix (confirmed live production
+  // bug): this lookup runs AFTER the status flip just above has already
+  // landed in the in-memory facade cache, so a bare getUnifiedRoster()
+  // here always excluded her -- this step has never actually executed
+  // for a real termination. Confirmed live: Elvia Tonato (terminated
+  // 2026-08-19) still has team_id/team_text = 'B1' in production today.
+  // _ROSTER_ALL_HISTORY_ASOF resolves her by id regardless of the
+  // status we just set.
   try {
-    var rosterEntry = getUnifiedRoster().find(function(e){ return e.uuid === employeeId; });
+    var rosterEntry = getUnifiedRoster(_ROSTER_ALL_HISTORY_ASOF).find(function(e){ return e.uuid === employeeId; });
     if (rosterEntry) await _setEmployeeDefaultTeam(rosterEntry.id, '');
   } catch (e) { console.warn('[terminateEmployee] team clear failed (non-fatal)', e); }
 
@@ -28803,14 +28963,18 @@ async function terminateEmployee(employeeId, opts) {
     }
   } catch (e) { console.warn('[terminateEmployee] future assignment purge failed (non-fatal)', e); }
 
+  var auditFailed = false;
   try {
     await _auditSupplement('terminated', 'employee', employeeId, {
       reason: reason, notes: notes || null, eligible_for_rehire: eligibleForRehire,
       terminated_at: date, terminated_by: currentUserId, future_assignments_removed: removedCount
     });
-  } catch (e) { console.warn('[terminateEmployee] audit log write failed (non-fatal)', e); }
+  } catch (e) {
+    console.warn('[terminateEmployee] audit log write failed (non-fatal)', e);
+    auditFailed = true;
+  }
 
-  return { removedCount: removedCount };
+  return { removedCount: removedCount, auditFailed: auditFailed };
 }
 
 // Restores an employee to active. Does NOT restore daily_assignments
@@ -28871,11 +29035,26 @@ async function confirmTerminateEmployee() {
   var notes = document.getElementById('term-modal-notes').value.trim();
   var eligibleForRehire = document.getElementById('term-modal-rehire').checked;
 
+  // Terminated-employee date-awareness fix: a backdated termination date
+  // purges real, already-happened daily_assignments between D and
+  // today (never anything dated today or earlier, per
+  // unassignFutureForEmployee's own fix -- but D..yesterday is still
+  // real history if D is far enough back). Confirm explicitly rather
+  // than silently proceeding.
+  try {
+    var _tp = _bizTodayParts(_pentaBusinessTimezone());
+    var _todayKey = _tp.y + '-' + String(_tp.m).padStart(2, '0') + '-' + String(_tp.d).padStart(2, '0');
+    if (date && date < _todayKey) {
+      var _pastMsg = 'Setting a past termination date (' + date + ').\n\nHours and assignments on or before ' + date + ' stay. She will no longer appear on days after ' + date + '.';
+      if (!confirm(_pastMsg)) return;
+    }
+  } catch (e) { console.warn('[confirmTerminateEmployee] past-date confirm check failed (non-fatal)', e); }
+
   var btn = document.getElementById('term-modal-confirm-btn');
   btn.disabled = true;
   btn.textContent = 'Terminating…';
   try {
-    await terminateEmployee(_terminateEmployeeCtx.uuid, { reason: reason, date: date, notes: notes, eligibleForRehire: eligibleForRehire });
+    var result = await terminateEmployee(_terminateEmployeeCtx.uuid, { reason: reason, date: date, notes: notes, eligibleForRehire: eligibleForRehire });
     var source = _terminateEmployeeCtx.source;
     closeTerminateEmployeeModal();
     if (source === 'staff') {
@@ -28887,6 +29066,13 @@ async function confirmTerminateEmployee() {
       if (typeof renderMainEmployees === 'function') renderMainEmployees();
     }
     if (typeof showToast === 'function') showToast('Employee terminated.', 'success');
+    // Terminate flow fix: the audit_log write is best-effort (the
+    // termination itself already happened and must not be rolled back
+    // over this) but its failure must be VISIBLE, not console-only.
+    if (result && result.auditFailed) {
+      if (typeof showToast === 'function') showToast('Employee terminated, but the audit log entry could not be saved -- let your developer know.', 'error');
+      else alert('Employee terminated, but the audit log entry could not be saved -- let your developer know.');
+    }
   } catch (e) {
     errEl.textContent = (e && e.message) || 'Termination failed — try again.';
     errEl.style.display = 'block';
@@ -28930,27 +29116,52 @@ function closeDeleteEmployeeModal() {
   _deleteEmployeeCtx = null;
 }
 
+// Hard Delete fix: the counted tables, shared between the UI
+// (_renderDeleteEmployeeCounts) and the write-path gate
+// (confirmDeleteEmployee) so both always agree. Originally missed
+// manual_hour_overrides/lunch_breaks/reward_redemptions/
+// reward_submissions entirely -- an employee with months of
+// hand-entered hours and nothing in the other four tables showed
+// "looks safe to delete."
+var _DELETE_EMPLOYEE_HISTORY_CHECKS = [
+  ['Team assignments', 'daily_assignments'],
+  ['Hours entries', 'time_entries'],
+  ['Manual hour overrides', 'manual_hour_overrides'],
+  ['Lunch breaks', 'lunch_breaks'],
+  ['Reward points records', 'reward_ledger'],
+  ['Reward redemptions', 'reward_redemptions'],
+  ['Reward submissions', 'reward_submissions'],
+  ['Submitted forms', 'forms'],
+];
+
+// Hard Delete fix: single source of truth for "does this employee have
+// real history" -- called from the UI AND re-checked at the actual
+// write path, so a stale modal (left open while history accumulates
+// elsewhere) can never bypass the gate.
+async function _deleteEmployeeHistoryCounts(uuid) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) throw new Error('Could not check associated data — Supabase not ready.');
+  var results = await Promise.all(_DELETE_EMPLOYEE_HISTORY_CHECKS.map(function (c) {
+    return sb.from(c[1]).select('id', { count: 'exact', head: true }).eq('employee_id', uuid)
+      .then(function (r) { return { label: c[0], count: (r && r.count) || 0 }; })
+      .catch(function () { return { label: c[0], count: null }; });
+  }));
+  var totalReal = results.reduce(function (s, r) { return s + (r.count || 0); }, 0);
+  return { results: results, totalReal: totalReal };
+}
+
 async function _renderDeleteEmployeeCounts(uuid, hasAuthAccount) {
   var countsEl = document.getElementById('del-emp-counts');
   var btn = document.getElementById('del-emp-confirm-btn');
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { countsEl.textContent = 'Could not check associated data — Supabase not ready.'; return; }
-  var checks = [
-    ['Team assignments', 'daily_assignments'],
-    ['Hours entries', 'time_entries'],
-    ['Reward points records', 'reward_ledger'],
-    ['Submitted forms', 'forms'],
-  ];
   try {
-    var results = await Promise.all(checks.map(function (c) {
-      return sb.from(c[1]).select('id', { count: 'exact', head: true }).eq('employee_id', uuid)
-        .then(function (r) { return { label: c[0], count: (r && r.count) || 0 }; })
-        .catch(function () { return { label: c[0], count: null }; });
-    }));
+    var counts = await _deleteEmployeeHistoryCounts(uuid);
+    var results = counts.results;
+    var totalReal = counts.totalReal;
     var hiredRes = await sb.from('job_applications').select('id', { count: 'exact', head: true }).eq('hired_employee_id', uuid);
     var hiredCount = (hiredRes && hiredRes.count) || 0;
 
-    var totalReal = results.reduce(function (s, r) { return s + (r.count || 0); }, 0);
     var rowsHtml = results.map(function (r) {
       return '<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:var(--muted)">' + r.label + '</span><span style="font-weight:600;color:' + (r.count ? 'var(--red)' : 'var(--muted)') + '">' + (r.count == null ? '?' : r.count) + '</span></div>';
     }).join('');
@@ -28967,8 +29178,13 @@ async function _renderDeleteEmployeeCounts(uuid, hasAuthAccount) {
       : '';
     countsEl.innerHTML = rowsHtml + hiredNote + authNote
       + (totalReal === 0 ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--green)">No associated activity found — looks safe to delete.</div>'
-        : '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-weight:600">This employee has real associated data. Consider Terminate Employee instead unless you\'re sure this is a test record.</div>');
-    btn.disabled = false; btn.textContent = 'Delete Permanently'; btn.style.opacity = '1';
+        : '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-weight:600">This employee has history. Use Terminate instead.</div>');
+    // Hard Delete fix: actually gate the button on real history --
+    // before this fix it was always re-enabled regardless of the
+    // counts above; the red warning text was copy only, not a block.
+    btn.disabled = totalReal > 0;
+    btn.textContent = totalReal > 0 ? 'Use Terminate Instead' : 'Delete Permanently';
+    btn.style.opacity = totalReal > 0 ? '0.5' : '1';
   } catch (e) {
     countsEl.textContent = 'Could not check associated data: ' + ((e && e.message) || 'unknown error');
   }
@@ -28982,11 +29198,34 @@ async function confirmDeleteEmployee() {
   btn.disabled = true;
   btn.textContent = 'Deleting…';
   try {
+    // Hard Delete fix: re-check history at the ACTUAL write path, not
+    // just the UI -- a stale modal (left open while history
+    // accumulates elsewhere) must not be able to bypass the gate by
+    // reaching this function with a disabled-in-appearance-only button.
+    var _gateCounts = await _deleteEmployeeHistoryCounts(_deleteEmployeeCtx.uuid);
+    if (_gateCounts.totalReal > 0) {
+      throw new Error('This employee has history. Use Terminate instead.');
+    }
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
     if (sb) {
       await sb.from('job_applications').update({ hired_employee_id: null }).eq('hired_employee_id', _deleteEmployeeCtx.uuid);
     }
     if (!window.PentaEmployees || !window.PentaEmployees.hardDelete) throw new Error('Delete is unavailable right now — refresh and try again.');
+    // Hard Delete fix: best-effort audit_log write BEFORE the RPC
+    // (nothing destructive has happened yet at this point, unlike
+    // terminate's audit-after-the-fact case) -- carries the employee's
+    // name/id and the exact zero-history counts just confirmed. A
+    // failure here shows a visible warning, not just a console line,
+    // but does not block the delete itself.
+    try {
+      await _auditSupplement('deleted', 'employee', _deleteEmployeeCtx.uuid, {
+        employee_name: _deleteEmployeeCtx.name, counts: _gateCounts.results
+      });
+    } catch (auditErr) {
+      console.warn('[confirmDeleteEmployee] audit log write failed (non-fatal)', auditErr);
+      if (typeof showToast === 'function') showToast('Proceeding with delete, but the audit log entry could not be saved -- let your developer know.', 'error');
+      else alert('Proceeding with delete, but the audit log entry could not be saved -- let your developer know.');
+    }
     await window.PentaEmployees.hardDelete(_deleteEmployeeCtx.uuid);
     var source = _deleteEmployeeCtx.source;
     closeDeleteEmployeeModal();
@@ -29536,12 +29775,65 @@ function getUnifiedRoster(asOfDate) {
           // through the same way, so isSalariedAdmin() below can read
           // it straight off this roster row without a second facade
           // lookup.
-          pay_type: fe.pay_type || null
+          pay_type: fe.pay_type || null,
+          // Terminated-employee date-awareness fix -- same passthrough
+          // pattern as work_type/pay_type just above. Lets a consumer
+          // that already has a roster row (e.g. Claire's name
+          // resolution) tell a real termination date apart from a
+          // genuinely-unknown name without a second facade read.
+          status: fe.status || 'active',
+          terminated_at: fe.terminated_at || null
         });
       }
     });
   } catch(e) { console.warn('[6.5b] getUnifiedRoster failed:', e); }
   return rows;
+}
+
+// Terminated-employee date-awareness fix. A sentinel asOfDate far
+// before any real termination_at -- passing it to getUnifiedRoster()
+// makes isTerminatedAsOf's own `asOfDate >= fe.terminated_at` check
+// false for every real employee, so EVERY employee this business has
+// ever had (active or terminated, any date) is included. Used only by
+// the few surfaces that genuinely need "has this name ever belonged to
+// anyone, regardless of status" (the Archived/Former Employees list,
+// and Claire's "she was terminated on X" fallback message) -- not a
+// second exclusion rule, just the existing one's own documented
+// "fails toward shown" branch, forced open deliberately.
+var _ROSTER_ALL_HISTORY_ASOF = '0001-01-01';
+
+// Returns the team CARD an employee should be grouped under for a
+// multi-day view (Hours table, Export Hours Report). An active
+// employee: her current default team, unchanged -- identical to the
+// pre-existing `e.defaultTeam` check this replaces, same result, same
+// cost. A terminated employee's default team is cleared to '' at
+// termination (terminateEmployee -> _setEmployeeDefaultTeam(id, '')),
+// so `e.defaultTeam` alone would land her in no card at all (effectively
+// "Unassigned") for a week she actually worked a real team -- this
+// falls back to the most recent day IN THE VIEWED RANGE she had a
+// real resolved team (getEmployeeTeam, already date-aware), so she
+// lands in the team she actually worked, never Unassigned, and still
+// appears under exactly ONE card (PR #109's single-row guarantee is
+// preserved: this returns one team, not a set).
+function _hrsEffectiveTeamForRange(emp, dateKeys) {
+  if (emp.defaultTeam) return emp.defaultTeam;
+  for (var i = dateKeys.length - 1; i >= 0; i--) {
+    var t = getEmployeeTeam(emp.id, dateKeys[i]);
+    if (t) return t;
+  }
+  return null;
+}
+
+// Mirrors getUnifiedRoster's own isTerminatedAsOf comparison exactly
+// (see its comment just above), for gating a SINGLE per-day cell/row
+// without rebuilding the whole roster array for every day in a range --
+// needed specifically for Admin/Office hours, which have no team-based
+// null-fallthrough to ride on the way field employees' day cells do
+// (getEmployeeTeam already resolves null for a date on/after
+// termination on its own; manual_hour_overrides has no such built-in
+// cutoff, since termination never touches that table).
+function _employeeExcludedAsOf(emp, dateStr) {
+  return !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at);
 }
 
 
@@ -32623,16 +32915,21 @@ function showEmpDayDetail(empId, empName, team, dateMs) {
   // reach this function for a salaried admin (no day cells, no
   // onclick), but refuse explicitly rather than silently opening a
   // sheet that would let someone save hours for them anyway.
+  localStorage.removeItem('_empLunchStop');
+  var date = new Date(dateMs);
+  var dk = dateKey(date);
+  // Terminated-employee date-awareness fix: dk (this day's date) is now
+  // computed before this check, and passed to getUnifiedRoster -- a
+  // bare call used to exclude a terminated salaried admin regardless of
+  // which day was clicked, silently skipping this guard for any day
+  // before her termination too.
   try {
-    var _sedEmp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+    var _sedEmp = getUnifiedRoster(dk).find(function(e) { return e.id === empId; });
     if (_sedEmp && typeof isSalariedAdmin === 'function' && isSalariedAdmin(_sedEmp)) {
       alert(_sedEmp.name + ' is salaried -- there are no hours to enter.');
       return;
     }
   } catch (e) { console.warn('[showEmpDayDetail] salaried-admin check failed (non-fatal, continuing to open)', e); }
-  localStorage.removeItem('_empLunchStop');
-  var date = new Date(dateMs);
-  var dk = dateKey(date);
   var dateLabel = date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
   // Admin/Office designation (migration 113): the Admin/Office Hours
   // group (renderHoursTable) calls this with team=null as the explicit
@@ -33283,7 +33580,11 @@ async function saveEmpDayHours(empId, empName, dk) {
   // depth, since this is reachable by id/name/date alone from
   // anywhere, not only from showEmpDayDetail's own Save button.
   try {
-    var _sehEmp = getUnifiedRoster().find(function(e) { return e.id === empId; });
+    // Terminated-employee date-awareness fix: dk (this function's own
+    // parameter) passed to getUnifiedRoster -- a bare call used to
+    // exclude a terminated salaried admin regardless of which day was
+    // being saved.
+    var _sehEmp = getUnifiedRoster(dk).find(function(e) { return e.id === empId; });
     if (_sehEmp && typeof isSalariedAdmin === 'function' && isSalariedAdmin(_sehEmp)) {
       alert(_sehEmp.name + ' is salaried, so there are no hours to save. Nothing was changed.');
       return;
@@ -33508,6 +33809,14 @@ function renderHoursTable(days, dayNames) {
   var _hrsCellAssertions = [];
 
   let html = '';
+  // Terminated-employee date-awareness fix. The FIRST day of the
+  // viewed range is getUnifiedRoster's asOfDate for this whole render:
+  // an employee not yet terminated as of that day belongs in this
+  // week's table at all (even if she left partway through it) -- the
+  // existing per-day cell logic below already correctly blanks out any
+  // day on/after her actual termination date on its own.
+  var _hrsDayKeys = days.map(dateKey);
+  var _hrsRangeStartKey = _hrsDayKeys[0];
 
   teams.forEach(team => {
     const data = weekHours[team];
@@ -33521,8 +33830,8 @@ function renderHoursTable(days, dayNames) {
     // teams and got a fully separate row rendered under each team's
     // card. Still require they worked at least one day this week (any
     // team) so employees with zero activity don't get an all-dash row.
-    const teamEmployees = getUnifiedRoster().filter(e => {
-      return e.defaultTeam === team && days.some(d => !!getEmployeeTeam(e.id, dateKey(d)));
+    const teamEmployees = getUnifiedRoster(_hrsRangeStartKey).filter(e => {
+      return _hrsEffectiveTeamForRange(e, _hrsDayKeys) === team && days.some(d => !!getEmployeeTeam(e.id, dateKey(d)));
     });
     if (!data && teamEmployees.length === 0) return;
 
@@ -33674,7 +33983,7 @@ function renderHoursTable(days, dayNames) {
   // already excludes every terminated employee (PR #148), same as the
   // team cards above.
   try {
-    const adminEmployees = getUnifiedRoster().filter(e => e.work_type === 'admin');
+    const adminEmployees = getUnifiedRoster(_hrsRangeStartKey).filter(e => e.work_type === 'admin');
     if (adminEmployees.length > 0) {
       let adminTotal = 0;
       const adminRowsHtml = adminEmployees.map(emp => {
@@ -33703,6 +34012,19 @@ function renderHoursTable(days, dayNames) {
         const dayCells = days.map(function(d, i) {
           const dk = dateKey(d);
           const isToday = d.toDateString() === today.toDateString();
+          // Terminated-employee date-awareness fix: Admin/Office hours
+          // have no team-based null-fallthrough the way field employees'
+          // day cells do (getEmployeeTeam already resolves null for a
+          // date on/after termination on its own) -- manual_hour_overrides
+          // has no such built-in cutoff (termination never touches that
+          // table), so this day must be force-blanked explicitly.
+          if (_employeeExcludedAsOf(emp, dk)) {
+            const exInner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
+              + '<div class="hrs-day-num">' + d.getDate() + '</div>'
+              + '<div class="hrs-day-hrs is-dash">&#8212;</div>'
+              + '<div class="hrs-day-time" style="color:var(--muted)">&#8212;</div>';
+            return '<div class="hrs-day is-off' + (isToday ? ' is-today' : '') + '">' + exInner + '</div>';
+          }
           const offInfo = _adminEmpDayOff(emp.id, dk);
           if (offInfo) {
             const inner = '<div class="hrs-day-label">' + dayNames[i] + '</div>'
@@ -34253,8 +34575,15 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
   // is grouped under, and label each day/CSV row with that real
   // dayTeam so a cross-team day still shows correctly, just once.
   teams.forEach(function (team) {
-    var teamEmployees = getUnifiedRoster().filter(function (e) {
-      return e.defaultTeam === team && dates.some(function (dk) { return !!getEmployeeTeam(e.id, dk); });
+    // Terminated-employee date-awareness fix: dates[0] (the first day of
+    // the range) is getUnifiedRoster's asOfDate here -- an employee not
+    // yet terminated as of that day belongs in this report at all, even
+    // if she left partway through the range. _hrsEffectiveTeamForRange
+    // groups her under the team she actually worked (not her now-cleared
+    // default team) without reintroducing PR #186's old per-team-touched
+    // duplicate-row bug.
+    var teamEmployees = getUnifiedRoster(dates[0]).filter(function (e) {
+      return _hrsEffectiveTeamForRange(e, dates) === team && dates.some(function (dk) { return !!getEmployeeTeam(e.id, dk); });
     });
     if (teamEmployees.length === 0) return;
 
@@ -34324,7 +34653,7 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
   // grandHours/empsSeen totals the team sections feed -- this is one
   // combined report, not two.
   try {
-    var adminEmployees = getUnifiedRoster().filter(function (e) { return e.work_type === 'admin'; });
+    var adminEmployees = getUnifiedRoster(dates[0]).filter(function (e) { return e.work_type === 'admin'; });
     if (adminEmployees.length > 0) {
       textLines.push(SEP_THIN);
       textLines.push('  ADMIN / OFFICE');
@@ -34346,6 +34675,15 @@ function _buildHoursReportFromData(dates, weekHoursData, teams) {
         dates.forEach(function (dk) {
           var d = new Date(dk + 'T00:00:00');
           var dayLabel = d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          // Terminated-employee date-awareness fix: same reasoning as
+          // the Hours table's admin branch -- manual_hour_overrides has
+          // no built-in cutoff at termination, so force-blank any day
+          // on/after her exclusion date explicitly.
+          if (_employeeExcludedAsOf(emp, dk)) {
+            dayRows.push('  ' + dayLabel.padEnd(14) + '—');
+            csvRows.push([_hrCsvField(emp.name || emp.id), 'Admin', dk, '', '', '', '0:00'].join(','));
+            return;
+          }
           var offInfo = _adminEmpDayOff(emp.id, dk);
           if (offInfo) {
             dayRows.push('  ' + dayLabel.padEnd(14) + offInfo.label.toUpperCase());

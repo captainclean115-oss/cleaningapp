@@ -73,6 +73,11 @@ function buildSandbox(opts) {
       return Promise.resolve();
     },
     getUnifiedRoster: function () { return [rosterEntry]; },
+    // Terminated-employee date-awareness fix: terminateEmployee's
+    // rosterEntry lookup now passes this sentinel so it can resolve her
+    // regardless of the status it just set (a real getUnifiedRoster()
+    // bare call would otherwise already exclude her by this point).
+    _ROSTER_ALL_HISTORY_ASOF: '0001-01-01',
     _setEmployeeDefaultTeam: function (id, team) { state.setDefaultTeamCalls.push({ id: id, team: team }); return Promise.resolve(true); },
     getMainEmpList: function () { return opts.list || [rosterEntry]; },
     getStaffList: function () { return opts.list || [rosterEntry]; },

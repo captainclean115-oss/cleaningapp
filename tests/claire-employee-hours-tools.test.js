@@ -74,6 +74,12 @@ function buildSandbox(opts) {
     jobs: [],
     DAY_OFF_CATEGORY_LABELS: { vacation: 'Vacation', unexcused_absence: 'Unexcused absence' },
     findEmployeeWithSuggestions: findEmployeeWithSuggestionsMock(roster),
+    // Terminated-employee date-awareness fix: real bare-global helpers
+    // the extracted get_employee_hours/edit_employee_hours branches now
+    // call. This file's mock lookup doesn't model termination, so these
+    // are no-ops that preserve this test's existing behavior exactly.
+    _employeeExcludedAsOf: function () { return false; },
+    _claireTerminatedExplanation: function () { return null; },
     getEmployeeTeam: function (empId, date) {
       var k = empId + '_' + date;
       return Object.prototype.hasOwnProperty.call(teamByKey, k) ? teamByKey[k] : 'B3';
