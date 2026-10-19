@@ -29148,6 +29148,11 @@ var _DELETE_EMPLOYEE_HISTORY_CHECKS = [
   ['Team assignments', 'daily_assignments'],
   ['Hours entries', 'time_entries'],
   ['Manual hour overrides', 'manual_hour_overrides'],
+  // Published Hours feature: published_employee_hours.employee_id is
+  // ON DELETE RESTRICT (migration 115) -- any row here would already
+  // block the RPC outright, but this count lets the manager see it and
+  // choose Terminate instead, rather than hitting a raw FK error.
+  ['Published hours', 'published_employee_hours'],
   ['Lunch breaks', 'lunch_breaks'],
   ['Reward points records', 'reward_ledger'],
   ['Reward redemptions', 'reward_redemptions'],
@@ -33891,7 +33896,7 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Published Hours (migrations/114_published_employee_hours.sql).
+// Published Hours (migrations/115_published_employee_hours.sql).
 //
 // The employee portal no longer computes anything -- it reads ONLY this
 // table, filtered by RLS to the logged-in employee's own employee_id. No
@@ -44044,7 +44049,19 @@ function renderStaffList() {
     </div>`;
   };
 
-  let html = active.map((emp) => card(emp, list.indexOf(emp))).join('');
+  // Published Hours feature: active employees with no login account
+  // linked at all -- distinct from "status === 'inactive'" above, and
+  // distinct from the portal's own red "not linked" message (which only
+  // a logged-in employee with a BROKEN link would ever see -- these
+  // employees can't log in to the portal at all yet).
+  var _noAuthLinkActive = list.filter(function (e) { return e.status === 'active' && !e.auth_user_id; });
+  var _noAuthLinkBanner = _noAuthLinkActive.length
+    ? '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#ef4444"><strong>'
+      + _noAuthLinkActive.length + ' active employee' + (_noAuthLinkActive.length === 1 ? '' : 's') + ' not linked to a login account</strong> — they cannot use the employee portal or see Published Hours until invited: '
+      + _noAuthLinkActive.map(function (e) { return e.name; }).join(', ') + '</div>'
+    : '';
+
+  let html = _noAuthLinkBanner + active.map((emp) => card(emp, list.indexOf(emp))).join('');
   if (terminated.length > 0) {
     html += `<div style="margin:16px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">📁 Archived (${terminated.length})</div>`;
     html += terminated.map((emp) => card(emp, list.indexOf(emp))).join('');
@@ -47852,7 +47869,7 @@ async function renderHours() {
     // THIS employee's own employee_id. No loadWeekHours(), no Geotab
     // call, no whole-business manual_hour_overrides/daily_assignments
     // fetch -- none of that reaches this device anymore (see
-    // migrations/114_published_employee_hours.sql and this feature's PR
+    // migrations/115_published_employee_hours.sql and this feature's PR
     // description for why the live-compute version this replaces did).
     var _sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
     var _bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
@@ -47861,6 +47878,19 @@ async function renderHours() {
           ? (function () { var r = window.PentaEmployees.getByLegacyRosterId(currentEmployee.id); return r && r.id; })()
           : null);
     if (!_sb || !_bid || !_myUuid) throw new Error('Not connected -- cannot load published hours.');
+
+    // Published Hours: distinguish "not linked to a login account" from
+    // "nothing published yet" -- see this edit's own file header comment.
+    var _isPreviewSession = !!document.getElementById('pentaPreviewChip');
+    if (!_isPreviewSession) {
+      var _authLinkId = (typeof _empUserId === 'function')
+        ? await _empUserId(currentEmployee, _sb)
+        : ((currentEmployee && currentEmployee.auth_user_id) || null);
+      if (!_authLinkId) {
+        if (_hoursBreakdownEl) _hoursBreakdownEl.innerHTML = '<div style="color:var(--red);text-align:center;padding:16px 0;font-size:13px">Your account is not linked to your employee record. Contact the office.</div>';
+        return;
+      }
+    }
 
     var _phMon = dateKey(days[0]), _phFri = dateKey(days[4]);
     var _phRes = await _sb.from('published_employee_hours')
