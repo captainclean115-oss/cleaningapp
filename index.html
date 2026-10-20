@@ -4641,9 +4641,15 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
 
     <form id="penta-login-form" autocomplete="on">
-      <div style="margin-bottom:14px">
+      <div style="margin-bottom:14px" id="penta-login-email-field">
         <label for="penta-login-email" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Email</label>
         <input id="penta-login-email" type="email" name="email" autocomplete="email" required
+          style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
+      </div>
+
+      <div style="margin-bottom:14px;display:none" id="penta-login-phone-field">
+        <label for="penta-login-phone" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Phone Number</label>
+        <input id="penta-login-phone" type="tel" name="phone" autocomplete="tel" inputmode="numeric" placeholder="(555) 555-5555"
           style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
       </div>
 
@@ -4663,6 +4669,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
     <div style="margin-top:20px;text-align:center;display:flex;flex-direction:column;gap:10px">
       <a href="#" id="penta-login-forgot-link" style="color:var(--muted);font-size:13px;text-decoration:none">Forgot password?</a>
+      <a href="#" id="penta-login-mode-toggle" style="color:var(--muted);font-size:13px;text-decoration:none">Sign in with phone number instead</a>
       <button onclick="appGoApply()" style="background:none;border:none;color:var(--muted);font-family:inherit;font-size:13px;cursor:pointer;text-decoration:underline">
         Interested in joining our team? Apply here
       </button>
@@ -14545,6 +14552,25 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
       alert('No phone number on file for ' + (emp.first_name || 'this employee') + '. Add a phone in the Staff edit form first.');
       return;
     }
+    // Phone + password login feature: block the invite if this phone is
+    // shared with another ACTIVE employee -- phone login/reset need it
+    // to uniquely resolve an account for invites going forward.
+    try {
+      var _normInv = String(emp.phone || '').replace(/\D/g, '');
+      if (_normInv.length === 11 && _normInv[0] === '1') _normInv = _normInv.slice(1);
+      if (_normInv.length === 10 && window.PentaEmployees && window.PentaEmployees.listSync) {
+        var _dupOwner = window.PentaEmployees.listSync().find(function (e) {
+          if (!e || e.id === emp.id || e.status !== 'active') return false;
+          var n2 = String(e.phone || '').replace(/\D/g, '');
+          if (n2.length === 11 && n2[0] === '1') n2 = n2.slice(1);
+          return n2.length === 10 && n2 === _normInv;
+        });
+        if (_dupOwner) {
+          alert((emp.first_name || 'This employee') + '\'s phone number is shared with ' + (_dupOwner.first_name || 'another active employee') + '. Fix one of their phone numbers in the Staff edit form before inviting -- phone sign-in needs each active employee to have her own number.');
+          return;
+        }
+      }
+    } catch (e) { console.warn('[pentaSendInvite] duplicate-phone check failed (non-fatal, proceeding)', e); }
 
     // Generate token + expiry
     var token, expires;
@@ -42941,13 +42967,21 @@ async function pentaSignOut() {
 }
 
 // Wire manager login form handlers. Called once on boot when no session exists.
+// Phone + password login feature: gained phone-mode handling alongside
+// the original email mode. Email mode (default on load) is byte-for-byte
+// the same signIn()/resetPassword() calls as before this feature.
 function pentaWireLoginForm() {
   var form = document.getElementById('penta-login-form');
   if (!form) return;
   var errEl = document.getElementById('penta-login-error');
   var pwEl  = document.getElementById('penta-login-password');
   var emEl  = document.getElementById('penta-login-email');
+  var phEl  = document.getElementById('penta-login-phone');
   var btn   = document.getElementById('penta-login-submit');
+  var emailField = document.getElementById('penta-login-email-field');
+  var phoneField = document.getElementById('penta-login-phone-field');
+  var modeToggle = document.getElementById('penta-login-mode-toggle');
+  var _loginMode = 'email'; // 'email' | 'phone'
 
   function showErr(msg) {
     if (!errEl) return;
@@ -42966,11 +43000,40 @@ function pentaWireLoginForm() {
     errEl.style.borderColor = 'rgba(52,211,153,0.35)';
   }
 
+  if (modeToggle) modeToggle.addEventListener('click', function(e){
+    e.preventDefault();
+    showErr('');
+    _loginMode = (_loginMode === 'email') ? 'phone' : 'email';
+    if (emailField) emailField.style.display = (_loginMode === 'email') ? '' : 'none';
+    if (phoneField) phoneField.style.display = (_loginMode === 'phone') ? '' : 'none';
+    if (emEl) emEl.required = (_loginMode === 'email');
+    modeToggle.textContent = (_loginMode === 'email') ? 'Sign in with phone number instead' : 'Sign in with email instead';
+  });
+
   form.addEventListener('submit', async function(e){
     e.preventDefault();
     showErr('');
-    var email = (emEl.value || '').trim();
     var password = pwEl.value || '';
+
+    if (_loginMode === 'phone') {
+      var phone = (phEl && phEl.value || '').trim();
+      if (!phone || !password) { showErr('Enter your phone number and password.'); return; }
+      if (!window.PentaAuth || !window.PentaAuth.signInWithPhone) {
+        showErr('Auth not ready — refresh and try again.'); return;
+      }
+      if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+      var rp = await window.PentaAuth.signInWithPhone(phone, password);
+      if (rp && rp.error) {
+        showErr(rp.error);
+        if (pwEl) pwEl.value = '';
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
+        return;
+      }
+      window.location.reload();
+      return;
+    }
+
+    var email = (emEl.value || '').trim();
     if (!email || !password) { showErr('Enter email and password.'); return; }
     if (!window.PentaAuth || !window.PentaAuth.signIn) {
       showErr('Auth not ready — refresh and try again.'); return;
@@ -42991,6 +43054,16 @@ function pentaWireLoginForm() {
   var forgot = document.getElementById('penta-login-forgot-link');
   if (forgot) forgot.addEventListener('click', async function(e){
     e.preventDefault();
+    if (_loginMode === 'phone') {
+      var phone2 = (phEl && phEl.value || '').trim();
+      if (!phone2) { showErr('Enter your phone number first.'); return; }
+      if (!window.PentaAuth || !window.PentaAuth.requestPhoneReset) {
+        showErr('Auth not ready — refresh and try again.'); return;
+      }
+      var rr = await window.PentaAuth.requestPhoneReset(phone2);
+      showOk((rr && rr.message) || 'If that number is on file, a text is on its way.');
+      return;
+    }
     var email = (emEl.value || '').trim();
     if (!email) { showErr('Enter your email first.'); return; }
     if (!window.PentaAuth || !window.PentaAuth.resetPassword) {
@@ -44015,6 +44088,21 @@ function renderStaffList() {
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
+  // Phone + password login feature: same normalization rule as the
+  // login/invite/reset Edge Functions (strip to digits, drop a leading
+  // US "1"). Used here only to flag duplicates/missing numbers on the
+  // Staff screen -- never written back to any employee row.
+  function _normPhoneForStaffCard(raw) {
+    var digits = String(raw || '').replace(/\D/g, '');
+    if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+    return digits.length === 10 ? digits : null;
+  }
+  var _phoneCounts = {};
+  active.forEach(function (e) {
+    var n = _normPhoneForStaffCard(e.phone);
+    if (n) _phoneCounts[n] = (_phoneCounts[n] || 0) + 1;
+  });
+
   const card = (emp, i) => {
     const { color, name: _teamName } = _teamFor(emp);
     if (emp.status === 'terminated') {
@@ -44033,6 +44121,14 @@ function renderStaffList() {
     const _leaderStar = (emp.position === 'team_leader')
       ? ' <span title="Team Leader" style="color:#F59E0B;font-size:13px;margin-left:2px">★</span>'
       : '';
+    // Phone + password login feature: phone display + duplicate/missing warning.
+    const _normPhone = _normPhoneForStaffCard(emp.phone);
+    const _phoneShared = _normPhone && _phoneCounts[_normPhone] > 1;
+    const _phoneHtml = !emp.phone
+      ? '<span style="color:var(--red)">⚠ No phone on file</span>'
+      : _phoneShared
+        ? `<span style="color:var(--red)" title="Shared with another active employee">⚠ ${emp.phone} (shared)</span>`
+        : `<span>${emp.phone}</span>`;
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;${emp.status==='inactive'?'opacity:0.5':''}">
       <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
       <div style="flex:1;min-width:0">
@@ -44042,6 +44138,7 @@ function renderStaffList() {
           ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
+          ${_phoneHtml}
           <span data-invite-pill data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}"></span>
         </div>
       </div>
@@ -50090,6 +50187,19 @@ function renderStaffSubview() {
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
+  // Phone + password login feature: same normalization/duplicate check
+  // as renderStaffList's own copy -- see that function's comment.
+  function _normPhoneForSubviewCard(raw) {
+    var digits = String(raw || '').replace(/\D/g, '');
+    if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+    return digits.length === 10 ? digits : null;
+  }
+  var _subviewPhoneCounts = {};
+  active.forEach(function (e) {
+    var n = _normPhoneForSubviewCard(e.phone);
+    if (n) _subviewPhoneCounts[n] = (_subviewPhoneCounts[n] || 0) + 1;
+  });
+
   const card = (emp, i) => {
     const { color, name: _teamName } = _teamFor(emp);
     const langLabel = {en:'EN',es:'ES',pt:'PT',cv:'KR'}[emp.lang||'en']||'EN';
@@ -50118,7 +50228,13 @@ function renderStaffSubview() {
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
         </div>
-        ${emp.phone ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">📱 ${emp.phone}</div>` : ''}
+        ${(function () {
+          var n = _normPhoneForSubviewCard(emp.phone);
+          var shared = n && _subviewPhoneCounts[n] > 1;
+          if (!emp.phone) return '<div style="font-size:12px;color:var(--red);margin-top:4px">⚠ No phone on file</div>';
+          if (shared) return '<div style="font-size:12px;color:var(--red);margin-top:4px" title="Shared with another active employee">⚠ 📱 ' + emp.phone + ' (shared)</div>';
+          return '<div style="font-size:12px;color:var(--muted);margin-top:4px">📱 ' + emp.phone + '</div>';
+        })()}
       </div>
       <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
     </div>`;
@@ -57713,6 +57829,54 @@ function _p3dPage(dir) {
         });
         if (r.error) return { error: r.error.message };
         return { ok: true };
+      },
+
+      // Phone + password login feature. Raw fetch, not functions.invoke --
+      // invoke swallows non-2xx response bodies (bit this app before on
+      // claire-chat/geotab, see PentaClientHealth.runScoring's own
+      // comment) and the whole point of phone-login's 401/429 bodies is
+      // the generic-but-present error message this needs to show.
+      signInWithPhone: async function(phone, password){
+        try {
+          var resp = await fetch(PROJECT_URL + '/functions/v1/phone-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': PUBLISHABLE_KEY },
+            body: JSON.stringify({ phone: phone, password: password })
+          });
+          var body = null;
+          try { body = await resp.json(); } catch (e) {}
+          if (!resp.ok) return { error: (body && body.error) || ('Sign-in failed (HTTP ' + resp.status + ')') };
+          if (!body || !body.access_token || !body.refresh_token) return { error: 'Sign-in failed -- no session returned.' };
+          var setRes = await client.auth.setSession({ access_token: body.access_token, refresh_token: body.refresh_token });
+          if (setRes.error) return { error: setRes.error.message };
+          this.session = setRes.data.session;
+          return { ok: true };
+        } catch (e) {
+          return { error: 'Network error -- check your connection and try again.' };
+        }
+      },
+
+      // Phone + password login feature. Always resolves to { ok: true }
+      // with the SAME generic message on any outcome except a genuine
+      // RingCentral-unreachable error (502, see that Edge Function's own
+      // comment for why that one case is allowed to differ) -- never
+      // throws, never reveals whether the phone was found.
+      requestPhoneReset: async function(phone){
+        try {
+          var resp = await fetch(PROJECT_URL + '/functions/v1/request-password-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': PUBLISHABLE_KEY },
+            body: JSON.stringify({ phone: phone })
+          });
+          var body = null;
+          try { body = await resp.json(); } catch (e) {}
+          if (resp.status === 502 && body && body.error === 'sms_unavailable') {
+            return { ok: true, message: body.message };
+          }
+          return { ok: true, message: (body && body.message) || 'If that number is on file, a text is on its way.' };
+        } catch (e) {
+          return { ok: true, message: 'Could not reach the server. Please call the office.' };
+        }
       },
 
       signOut: async function(){

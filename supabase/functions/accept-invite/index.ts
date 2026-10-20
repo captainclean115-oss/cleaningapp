@@ -73,7 +73,7 @@ serve(async (req) => {
 
   const { data: employee, error: empErr } = await admin
     .from("employees")
-    .select("id, business_id, email, first_name, last_name, auth_user_id")
+    .select("id, business_id, email, phone, first_name, last_name, auth_user_id")
     .eq("id", invite.employee_id)
     .maybeSingle();
 
@@ -81,9 +81,23 @@ serve(async (req) => {
 
   let authUserId = employee.auth_user_id;
 
+  // Phone + password login feature: a brand-new account gets a phone-
+  // derived email (<10digits>@phone.penta.internal) instead of the old
+  // name-based slug, so two employees who happen to share a name can
+  // never collide -- two different 10-digit numbers can't either. Falls
+  // back to whatever's already in employees.email if no usable 10-digit
+  // US phone is on file.
+  function phoneDerivedEmail(raw: unknown): string | null {
+    const digits = String(raw || "").replace(/\D/g, "");
+    const ten = digits.length === 11 && digits[0] === "1" ? digits.slice(1) : digits;
+    if (ten.length !== 10) return null;
+    return `${ten}@phone.penta.internal`;
+  }
+  const newAccountEmail = !authUserId ? (phoneDerivedEmail(employee.phone) || employee.email) : employee.email;
+
   if (!authUserId) {
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email: employee.email,
+      email: newAccountEmail,
       password,
       email_confirm: true,
       user_metadata: {
@@ -98,9 +112,13 @@ serve(async (req) => {
     }
     authUserId = created.user.id;
 
+    // Persist the SAME email the auth account actually got -- phone-login
+    // reads employees.email to resolve who to sign in, so these two must
+    // never drift apart. email_is_internal=true matches this app's
+    // existing convention for a synthetic (non-deliverable) address.
     const { error: linkErr } = await admin
       .from("employees")
-      .update({ auth_user_id: authUserId, status: "active" })
+      .update({ auth_user_id: authUserId, status: "active", email: newAccountEmail, email_is_internal: true })
       .eq("id", employee.id);
     if (linkErr) return json(500, { error: "Failed to link employee", detail: linkErr.message });
   } else {
@@ -151,7 +169,7 @@ serve(async (req) => {
         auth_user_id: authUserId,
         business_id: employee.business_id,
         role: preserveRole,
-        email: employee.email,
+        email: newAccountEmail,
         first_name: employee.first_name,
         last_name: employee.last_name,
         ...(preserveRole === "manager" ? { manager_permissions: preservePerms } : {}),
@@ -169,5 +187,5 @@ serve(async (req) => {
     .eq("id", invite.id);
   if (acceptErr) return json(500, { error: "Failed to mark invite accepted" });
 
-  return json(200, { success: true, email: employee.email });
+  return json(200, { success: true, email: newAccountEmail });
 });
