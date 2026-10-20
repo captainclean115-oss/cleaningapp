@@ -1,14 +1,16 @@
-// PR #134 — regression test: an employee's own portal must show the
-// override team for a specific date, not their static default team.
-// Extracts and runs the ACTUAL renderHours() + getEmployeeTeam() source
-// from index.html (not a reimplementation — see team-cell-override.test.js
-// for why that matters) against a mocked DOM/localStorage/PentaAssignments
-// boundary. renderHoursData (the actual DOM-writing tail of the pipeline)
-// is stubbed as a spy so this asserts on the composite object renderHours
-// builds, not on rendered HTML strings.
+// Published Hours feature -- re-targeted AGAIN. renderHours() no longer
+// calls loadWeekHours()/resolveEmployeeDayHours at all for a field
+// employee: it reads published_employee_hours directly, filtered to her
+// own employee_id, via a mocked Supabase client. Extracts and runs the
+// ACTUAL renderHours() source from index.html, not a reimplementation.
+//
+// The sandbox deliberately provides NO getEmpHours/dailyAssignments/
+// Geotab-shaped globals at all, and the mocked `from()` throws loudly if
+// the code ever queries any table other than published_employee_hours --
+// proving the portal's own in-memory state and requests contain nothing
+// but her own published rows (Published Hours TESTS item 1).
 //
 // Run with: node tests/portal-hours-override.test.js
-// No dependencies beyond Node's built-ins (fs, vm).
 
 const fs = require('fs');
 const vm = require('vm');
@@ -17,21 +19,18 @@ const path = require('path');
 const INDEX_HTML = path.join(__dirname, '..', 'index.html');
 const src = fs.readFileSync(INDEX_HTML, 'utf8');
 
-function extract(startMarker, endMarker) {
+function extract(startMarker, endMarker, label) {
   const startIdx = src.indexOf(startMarker);
-  if (startIdx === -1) throw new Error('extraction failed: could not find start marker: ' + startMarker);
+  if (startIdx === -1) throw new Error('extraction failed: could not find start marker (' + label + '): ' + startMarker);
   const endIdx = src.indexOf(endMarker, startIdx);
-  if (endIdx === -1) throw new Error('extraction failed: could not find end marker after start: ' + endMarker);
+  if (endIdx === -1) throw new Error('extraction failed: could not find end marker after start (' + label + '): ' + endMarker);
   return src.slice(startIdx, endIdx);
 }
 
-const getEmployeeTeamSrc = extract('\nfunction getEmployeeTeam(employeeId, dateStr) {', '\nfunction getTeamEmployees(');
-const renderHoursSrc = extract('\nasync function renderHours() {', '\nfunction getPortalWeekDates(');
-// PR #137 -- real source for the OFF-status helpers renderHours() now
-// calls, not reimplemented (same reasoning as getEmployeeTeam above).
-const dayOffSrc = extract(
-  '\nconst DAY_OFF_CATEGORY_LABELS = {',
-  '\n// ═══════════════════════════════════════════════════════════════════════\n// Sprint 9 Phase A'
+const renderHoursSrc = extract(
+  '\nasync function renderHours() {',
+  '\nfunction getPortalWeekDates(',
+  'renderHours'
 );
 
 let pass = 0, fail = 0;
@@ -41,9 +40,6 @@ function check(label, actual, expected) {
   else { fail++; console.log('  FAIL ' + label + ' -- expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual)); }
 }
 
-// Minimal DOM stub -- renderHours writes text/style to several header
-// elements before reaching the logic under test. A shared object per id
-// so repeated getElementById calls for the same id see the same node.
 function makeDocStub() {
   const nodes = {};
   return {
@@ -54,142 +50,178 @@ function makeDocStub() {
   };
 }
 
-function makeLocalStorageStub(initial) {
-  const store = Object.assign({}, initial);
+function dk(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+// Builds a Supabase client stub whose from() THROWS for any table other
+// than published_employee_hours (proving nothing else is ever queried),
+// and whose published_employee_hours query returns the supplied rows,
+// filtered in-memory by the (employee_id, work_date range) the real
+// query call actually applies -- so a row for a DIFFERENT employee in
+// the fixture would never come back even if the code forgot to filter.
+function makeSupabaseStub(allRows, opts) {
+  opts = opts || {};
+  const calls = [];
   return {
-    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
-    setItem: function (k, v) { store[k] = String(v); },
+    calls: calls,
+    client: {
+      from: function (table) {
+        if (table !== 'published_employee_hours') {
+          throw new Error('UNEXPECTED QUERY to table "' + table + '" -- the published-hours portal must never query anything else');
+        }
+        const call = { table: table, eq: {}, gte: null, lte: null };
+        calls.push(call);
+        const builder = {
+          select: function () { return builder; },
+          eq: function (col, val) { call.eq[col] = val; return builder; },
+          gte: function (col, val) { call.gte = [col, val]; return builder; },
+          lte: function (col, val) {
+            call.lte = [col, val];
+            if (opts.error) return Promise.resolve({ data: null, error: opts.error });
+            const empId = call.eq.employee_id;
+            const filtered = allRows.filter(function (r) {
+              return r.employee_id === empId && r.work_date >= call.gte[1] && r.work_date <= call.lte[1];
+            });
+            return Promise.resolve({ data: filtered, error: null });
+          },
+        };
+        return builder;
+      },
+    },
   };
 }
 
-// Runs the real renderHours() against a given weekHours_cache blob and
-// dailyAssignments state, for a given employee, and returns whatever
-// composite object it handed to renderHoursData (spied, not executed).
 async function runRenderHours(opts) {
   let capturedComposite = null;
-  const days = opts.days; // array of 5 real Date objects, Mon-Fri
-  const dk = function (d) {
-    // Same shape as the real app's dateKey: YYYY-MM-DD, LOCAL not UTC.
-    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
-    return y + '-' + m + '-' + day;
-  };
+  const days = opts.days;
+  const sbStub = makeSupabaseStub(opts.publishedRows || [], opts.sbOpts);
 
   const sandbox = {
     console: console,
     document: makeDocStub(),
-    window: {},
-    dailyAssignments: opts.dailyAssignments,
-    dailyAssignmentDetails: opts.dailyAssignmentDetails || {}, // PR #137 -- status_type/notes for OFF days
-    getUnifiedRoster: function () { return [{ id: opts.employeeId, defaultTeam: opts.defaultTeam }]; },
-    getEmployeeTeam: null, // filled in below after compiling
-    getEmployeeDayOffInfo: null, // filled in below after compiling
-    currentEmployee: { id: opts.employeeId, team: opts.defaultTeam, team_text: opts.defaultTeam, team_id: null },
+    window: {
+      supabaseClient: sbStub.client,
+      PentaTenant: { current: function () { return 'biz-1'; } },
+      PentaEmployees: { getByLegacyRosterId: function () { return null; } },
+    },
+    currentEmployee: { id: opts.employeeId, uuid: opts.employeeUuid },
     currentLang: 'en',
     _portalWeekOffset: 0,
     t: function (k) { return k; },
     dateKey: dk,
     getPortalWeekDates: function () { return days; },
-    localStorage: makeLocalStorageStub(opts.localStorage || {}),
     renderHoursData: function (composite) { capturedComposite = composite; },
+    _renderPortalHoursUpdatedLabel: function () {},
+    _setupPublishedHoursRealtime: function () {},
+    isSalariedAdmin: function () { return false; },
   };
   sandbox.window.PentaAssignments = { ready: function () { return Promise.resolve(); } };
-  sandbox.window.PentaEmployees = { ready: function () { return Promise.resolve(); } };
-  sandbox.window.PentaTeams = undefined;
-  sandbox._mirrorPentaAssignmentsToInMemory = function () {}; // dailyAssignments seeded directly, no real mirror needed
+  sandbox._mirrorPentaAssignmentsToInMemory = function () {};
 
   vm.createContext(sandbox);
-  vm.runInContext(dayOffSrc, sandbox);
-  vm.runInContext(getEmployeeTeamSrc, sandbox);
   vm.runInContext(renderHoursSrc, sandbox);
   await vm.runInContext('renderHours()', sandbox);
-  return capturedComposite;
+  return { composite: capturedComposite, queryCalls: sbStub.calls };
 }
 
 (async function () {
-  console.log('Testing extracted renderHours() from index.html\n');
+  console.log('Testing extracted renderHours() (published-hours read) from index.html\n');
 
-  // Fixed Mon-Fri so dateKey() output is deterministic across machines.
   const days = [
     new Date(2026, 7, 17), // Mon Aug 17
-    new Date(2026, 7, 18), // Tue Aug 18 -- the override day
-    new Date(2026, 7, 19),
+    new Date(2026, 7, 18), // Tue Aug 18
+    new Date(2026, 7, 19), // Wed -- "today" in the no-row case below
     new Date(2026, 7, 20),
     new Date(2026, 7, 21),
   ];
-  const dkAug18 = '2026-08-18';
-
-  const weekHoursCache = {
-    B1: { days: [8, 8, 8, 8, 8], starts: ['2026-08-17T13:12:00.000Z', '2026-08-18T13:12:00.000Z', null, null, null], ends: ['2026-08-17T21:46:00.000Z', '2026-08-18T14:46:00.000Z', null, null, null], lunch: [null, null, null, null, null], total: 40 },
-    B5: { days: [0, 6, 0, 0, 0], starts: [null, '2026-08-18T12:59:00.000Z', null, null, null], ends: [null, '2026-08-18T18:49:00.000Z', null, null, null], lunch: [null, null, null, null, null], total: 6 },
+  const mk = function (workDate, fields) {
+    return Object.assign({ employee_id: 'elvia-uuid', work_date: workDate, published_at: '2026-08-21T12:00:00.000Z' }, fields);
   };
 
-  // Case 1 (THE Elvia scenario): default team B1, but an active
-  // daily_assignments-style override to B5 on Aug 18 -- the portal must
-  // show B5's numbers for that one day, B1's for the rest.
-  const composite1 = await runRenderHours({
-    employeeId: 'elvia-legacy-id',
-    defaultTeam: 'B1',
-    dailyAssignments: { ['2026-08-18_elvia-legacy-id']: 'B5' },
-    localStorage: { weekHours_cache: JSON.stringify(weekHoursCache) },
-    days: days,
-  });
-  check('Aug 18 (override day) hours come from B5, not the default B1', composite1.days[1], 6);
-  check('Aug 18 start time comes from B5\'s blob', composite1.starts[1], '2026-08-18T12:59:00.000Z');
-  check('Aug 17 (no override) hours still come from default team B1', composite1.days[0], 8);
+  // Case 1: a worked day with a published row -- portal shows exactly
+  // what was published, nothing recomputed.
+  {
+    const { composite, queryCalls } = await runRenderHours({
+      employeeId: 'elvia-legacy-id', employeeUuid: 'elvia-uuid', days: days,
+      publishedRows: [
+        mk('2026-08-17', { hours: 8, start_time: '2026-08-17T13:12:00.000Z', end_time: '2026-08-17T21:46:00.000Z', lunch_minutes: 0, status: 'worked' }),
+      ],
+    });
+    check('worked day: hours come straight from the published row', composite.days[0], 8);
+    check('worked day: start_time comes straight from the published row', composite.starts[0], '2026-08-17T13:12:00.000Z');
+    check('the query was scoped to this employee\'s own uuid only', queryCalls[0].eq.employee_id, 'elvia-uuid');
+    check('no other table was ever queried (sandbox would have thrown otherwise)', queryCalls.length, 1);
+  }
 
-  // Case 2: no override at all -- every day should fall through to the
-  // default team's numbers, matching pre-PR-#134 behavior for the
-  // common case (nothing should regress for employees without overrides).
-  const composite2 = await runRenderHours({
-    employeeId: 'elvia-legacy-id',
-    defaultTeam: 'B1',
-    dailyAssignments: {},
-    localStorage: { weekHours_cache: JSON.stringify(weekHoursCache) },
-    days: days,
-  });
-  check('no override anywhere -> every day uses the default team', composite2.days, [8, 8, 8, 8, 8]);
+  // Case 2: OFF / vacation status rows.
+  {
+    const { composite } = await runRenderHours({
+      employeeId: 'elvia-legacy-id', employeeUuid: 'elvia-uuid', days: days,
+      publishedRows: [
+        mk('2026-08-17', { status: 'off', hours: 0 }),
+        mk('2026-08-18', { status: 'vacation', hours: 0 }),
+      ],
+    });
+    check('a published "off" row shows a generic Off status, zero hours', composite.status[0], { type: 'off', label: 'Off' });
+    check('a published "vacation" row shows Vacation, zero hours', composite.status[1], { type: 'vacation', label: 'Vacation' });
+    check('off day has no start/end carried over', composite.days[0], 0);
+  }
 
-  // Case 3 (PR #137 -- THE Blanca scenario): an explicit OFF day must
-  // show zero hours and an off status, NOT the default team's GPS
-  // hours. This is exactly what PR #134 got wrong -- getEmployeeTeam
-  // returning null (OFF) was being treated the same as "no row, use
-  // default."
-  const daysB = [
-    new Date(2026, 7, 10), // Mon Aug 10 -- the OFF day
-    new Date(2026, 7, 11),
-    new Date(2026, 7, 12),
-    new Date(2026, 7, 13),
-    new Date(2026, 7, 14),
-  ];
-  const weekHoursCacheB = {
-    B3: { days: [8, 8, 8, 8, 8], starts: ['2026-08-10T13:00:00.000Z', null, null, null, null], ends: ['2026-08-10T21:00:00.000Z', null, null, null, null], lunch: [null, null, null, null, null], total: 40 },
-  };
-  const composite3 = await runRenderHours({
-    employeeId: 'blanca-legacy-id',
-    defaultTeam: 'B3',
-    dailyAssignments: { ['2026-08-10_blanca-legacy-id']: 'OFF' },
-    dailyAssignmentDetails: { ['2026-08-10_blanca-legacy-id']: { status_type: 'vacation', notes: null } },
-    localStorage: { weekHours_cache: JSON.stringify(weekHoursCacheB) },
-    days: daysB,
-  });
-  check('OFF day shows zero hours, not the default team\'s GPS hours', composite3.days[0], 0);
-  check('OFF day has no start time carried over from the default team', composite3.starts[0], null);
-  check('OFF day status is captured with its real category', composite3.status[0], { type: 'vacation', label: 'Vacation' });
-  check('non-OFF days in the same week are unaffected', composite3.days[1], 8);
+  // Case 3: no row at all for a past day -> "Not updated yet", never a
+  // blank or a zero that looks like a real answer.
+  {
+    const { composite } = await runRenderHours({
+      employeeId: 'elvia-legacy-id', employeeUuid: 'elvia-uuid', days: days,
+      publishedRows: [],
+    });
+    check('a completed day with no published row shows "Not updated yet"', composite.status[0], { type: 'not_published', label: 'Not updated yet' });
+    check('that day\'s hours stay 0 (never a fake-looking number)', composite.days[0], 0);
+  }
 
-  // Case 4: OFF with no status_type on the row at all (a legacy/plain
-  // OFF row, or one saved before the category feature existed) must
-  // still show a generic "Off" status, not silently fall through.
-  const composite4 = await runRenderHours({
-    employeeId: 'blanca-legacy-id',
-    defaultTeam: 'B3',
-    dailyAssignments: { ['2026-08-10_blanca-legacy-id']: 'OFF' },
-    dailyAssignmentDetails: {},
-    localStorage: { weekHours_cache: JSON.stringify(weekHoursCacheB) },
-    days: daysB,
-  });
-  check('OFF with no category still shows a generic Off status, not the default team\'s hours', composite4.status[0], { type: 'off', label: 'Off' });
-  check('OFF with no category still shows zero hours', composite4.days[0], 0);
+  // Case 4: no row for TODAY specifically -> "in progress", distinct
+  // wording from a day that's simply missed publication. Uses the real
+  // current date (not a fixed fixture date) as one of the viewed week's
+  // days -- renderHours() itself calls dateKey(new Date()) internally,
+  // inside the vm sandbox's own realm, which a Node-level Date override
+  // in the outer process cannot reach.
+  {
+    const today = new Date();
+    const todayWeek = [0, 1, 2, 3, 4].map(function (offset) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - today.getDay() + 1 + offset); // Monday of this real week
+      return d;
+    });
+    const todayIdx = todayWeek.findIndex(function (d) { return dk(d) === dk(today); });
+    if (todayIdx === -1) {
+      console.log('  skip (weekend -- real "today" is not Mon-Fri, nothing to assert)');
+    } else {
+      const { composite } = await runRenderHours({
+        employeeId: 'elvia-legacy-id', employeeUuid: 'elvia-uuid', days: todayWeek,
+        publishedRows: [],
+      });
+      check('today with no published row shows "in progress", not "Not updated yet"', composite.status[todayIdx], { type: 'in_progress', label: 'In progress, updates after your manager reviews' });
+    }
+  }
+
+  // Case 5: a fetch failure shows the visible error path, never a blank
+  // table and never a fake zero.
+  {
+    let threw = false;
+    let result = null;
+    try {
+      result = await runRenderHours({
+        employeeId: 'elvia-legacy-id', employeeUuid: 'elvia-uuid', days: days,
+        publishedRows: [], sbOpts: { error: { message: 'network down' } },
+      });
+    } catch (e) { threw = true; }
+    // renderHours() itself catches this internally (writes the red
+    // message into #hours-breakdown and returns) -- it must NOT throw
+    // out to the caller, and must NOT have called renderHoursData.
+    check('a query error is handled inside renderHours(), never thrown out', threw, false);
+    check('renderHoursData() was never called on a fetch failure (no fake numbers rendered)', result && result.composite, null);
+  }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail > 0 ? 1 : 0);
