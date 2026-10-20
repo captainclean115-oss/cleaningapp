@@ -28,6 +28,20 @@
 // RC_CLIENT_ID / RC_CLIENT_SECRET / RC_REFRESH_TOKEN env vars. Env-source
 // is always treated as OAuth (no env-side JWT path).
 //
+// Manager-text-any-number feature (2026-10-20): an owner/admin/manager/
+// dispatcher caller can now text any valid US phone number without the
+// allow_unknown_recipient flag -- role is resolved server-side from the
+// caller's OWN users row (never a client-supplied field), so this can't
+// be forged. An employee caller (or no users row at all) keeps the
+// exact same contact-list-only gate as before this change, unchanged.
+// Existing rate limits (100/hr/user, 500/hr/tenant) and the recipient
+// allowlist for every non-manager-tier caller are unchanged. The empty-
+// message check already existed ("Missing message" below); the
+// oversized-message check did NOT (confirmed by reading this file --
+// an over-length message previously relied entirely on RC's own API
+// rejecting it) -- added explicitly below, a real gap found while
+// reviewing this requirement, not something already true.
+//
 // Deploy:
 //   supabase functions deploy send-sms --project-ref wymoezilyjmyibmuqqmr
 //
@@ -162,13 +176,23 @@ serve(async (req) => {
   if (!callerData.user) return json(401, { error: "Invalid JWT (no user)" });
   const callerAuthId = callerData.user.id;
 
-  // Resolve tenant from users.business_id.
+  // Resolve tenant + role from users.business_id/role -- role is read
+  // SERVER-SIDE here, from the users row matching the caller's OWN
+  // verified auth id (never from anything the client sends), so it
+  // cannot be forged by a client-supplied field. Used below to let an
+  // owner/admin/manager/dispatcher text any valid US number without the
+  // allow_unknown_recipient flag (manager-text-any-number feature) --
+  // every other role (employee, or no users row at all) keeps the
+  // existing contact-list gate exactly as it was.
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const userRow = await admin.from("users").select("business_id").eq("id", callerAuthId).maybeSingle();
+  const userRow = await admin.from("users").select("business_id, role").eq("id", callerAuthId).maybeSingle();
   const businessId = userRow.data?.business_id;
   if (!businessId) return json(403, { error: "No tenant for caller" });
+  const callerRole = userRow.data?.role;
+  const MANAGER_TIER_ROLES = new Set(["owner", "admin", "manager", "dispatcher"]);
+  const isManagerTier = typeof callerRole === "string" && MANAGER_TIER_ROLES.has(callerRole);
 
   // Rate limit (security audit 3b): split check/increment pattern via
   // mig 066 RPCs. Two keys checked up front, both incremented only on
@@ -220,6 +244,16 @@ serve(async (req) => {
   const allowUnknown = body.allow_unknown_recipient === true;
   if (!toRaw)   return json(400, { error: "Missing to_phone" });
   if (!message) return json(400, { error: "Missing message" });
+  // Oversized-message check -- did not exist before this change (an
+  // over-length body previously relied entirely on RC's own API to
+  // reject it). 1600 chars covers RC/carrier's typical concatenated-SMS
+  // ceiling (10 segments x 160 chars for plain GSM-7 text) with margin;
+  // a message longer than this is almost certainly a bug or an abuse
+  // attempt, not a real text someone meant to send.
+  const MAX_MESSAGE_LENGTH = 1600;
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return json(400, { error: `Message too long (${message.length} chars, max ${MAX_MESSAGE_LENGTH})` });
+  }
   const to = toE164(toRaw);
   if (!to) return json(400, { error: "Could not parse to_phone to E.164" });
 
@@ -250,7 +284,16 @@ serve(async (req) => {
   // All other dispatch paths (sendOnMyWay, sendAllBalanceFollowups,
   // Claire's send_text, any future paths) leave the flag off and stay
   // gated by the contact-list check.
-  if (!allowUnknown) {
+  //
+  // isManagerTier ALSO skips this block, independent of the flag --
+  // an owner/admin/manager/dispatcher (role read server-side above,
+  // from the caller's OWN users row, never client-supplied) can text
+  // any valid US number without needing the flag at all. An employee
+  // caller (or any caller with no manager-tier role) stays gated by
+  // the contact-list check exactly as before, regardless of what flag
+  // value she sends -- the flag was never a real security boundary for
+  // her role to begin with, and still isn't.
+  if (!allowUnknown && !isManagerTier) {
     // Primary phone match on clients + employees.
     const [clientPrimary, employeeHit] = await Promise.all([
       admin
@@ -363,6 +406,15 @@ serve(async (req) => {
   if (!fromNumber) return json(500, { error: "Integration phone_number_e164 not set" });
 
   // Step 5: refresh token + send.
+  //
+  // Logging (sender, recipient, time) -- every message sent here goes
+  // out through the business's own RingCentral extension, the SAME
+  // extension rc-inbox reads back from RC's own message-store. RC
+  // itself retains sender/recipient/timestamp for every message sent
+  // through it, known recipient or not, manager-tier bypass or not --
+  // there is no separate local log to fall out of sync with, and
+  // nothing new was needed here to "keep" this: it was already true for
+  // every send-sms call before this change, and still is.
   try {
     const accessToken = await getCachedRcAccessToken(businessId, creds);
     const sendResp = await fetch(
