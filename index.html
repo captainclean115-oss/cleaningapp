@@ -5123,7 +5123,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         </select>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Portal PIN (4 digits)</div><input type="text" id="main-emp-pin" maxlength="4" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="number" id="main-emp-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="text" inputmode="decimal" id="main-emp-pay" placeholder="e.g. 22.50" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
         <select id="main-emp-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="en">English</option><option value="es">Spanish</option>
@@ -27490,6 +27490,23 @@ function openMainEmpEdit(idx) {
   document.getElementById('main-emp-modal').style.display = 'flex';
 }
 
+// Pay rate input hardening. Pure function, no DOM access -- callers
+// decide what to do with the result. Blank input means "no rate set"
+// (null), never 0 -- a real $0/hr wage is never silently implied by an
+// empty field. Strips $ and commas before parsing (e.g. "$1,200.50").
+function _parsePayRateInput(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (s === '') return { ok: true, value: null };
+  var cleaned = s.replace(/[$,]/g, '').trim();
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) {
+    return { ok: false, message: 'Enter a valid pay rate (numbers only), e.g. 22.50. Nothing was saved.' };
+  }
+  var n = parseFloat(cleaned);
+  if (isNaN(n)) return { ok: false, message: 'Enter a valid pay rate (numbers only). Nothing was saved.' };
+  if (n < 0) return { ok: false, message: 'Pay rate cannot be negative. Nothing was saved.' };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
 async function saveMainEmp() {
   const idx = parseInt(document.getElementById('main-emp-idx').value);
   const name = document.getElementById('main-emp-name').value.trim();
@@ -27504,13 +27521,22 @@ async function saveMainEmp() {
     if (conflict) { alert('PIN ' + pin + ' already used by ' + conflict.name); return; }
   }
 
+  // Pay rate input hardening: validate BEFORE building the patch object
+  // -- a rejected value must change nothing, not clamp to 0 or whatever
+  // parseFloat() could salvage from garbage input.
+  const payRateResult = _parsePayRateInput(document.getElementById('main-emp-pay').value);
+  if (!payRateResult.ok) { alert(payRateResult.message); return; }
+  if (payRateResult.value != null && payRateResult.value > 100) {
+    if (!confirm('$' + payRateResult.value.toFixed(2) + '/hr -- is that right?')) return;
+  }
+
   const status = document.getElementById('main-emp-status').value;
   const emp = {
     name,
     team_id: document.getElementById('main-emp-team').value || null,
     team: (function(){ var _id = document.getElementById('main-emp-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     pin: pin || String(Math.floor(1000 + Math.random() * 9000)),
-    payRate: parseFloat(document.getElementById('main-emp-pay').value) || 0,
+    payRate: payRateResult.value || 0,
     lang: document.getElementById('main-emp-lang').value,
     phone: document.getElementById('main-emp-phone').value.trim(),
     status,
@@ -45140,6 +45166,15 @@ async function saveStaffEmployee() {
     if (!confirm(_wtMsg)) { return; }
   }
 
+  // Pay rate input hardening: validate BEFORE building the patch object
+  // -- a rejected value must change nothing, not clamp to 0 or whatever
+  // parseFloat() could salvage from garbage input.
+  const payRateResult = _parsePayRateInput(document.getElementById('staff-pay').value);
+  if (!payRateResult.ok) { alert(payRateResult.message); return; }
+  if (payRateResult.value != null && payRateResult.value > 100) {
+    if (!confirm('$' + payRateResult.value.toFixed(2) + '/hr -- is that right?')) return;
+  }
+
   // Collect new doc photos if taken
   const docPhotos = (idx >= 0 && list[idx] && list[idx].docPhotos) ? {...list[idx].docPhotos} : {};
   const docFields = [['lic-front','License Front'],['lic-back','License Back'],['ssn','Social Security']];
@@ -45183,7 +45218,7 @@ async function saveStaffEmployee() {
     // TL who also drives, or a team member who drives). _toRow picks this up
     // and writes employees.is_driver on dual-write.
     is_driver: !!((document.getElementById('staff-driver')||{}).checked),
-    payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
+    payRate: payRateResult.value || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
     address: (document.getElementById('staff-address')||{}).value||'',
@@ -56069,7 +56104,7 @@ function _p3dPage(dir) {
         <div id="staff-pay-type-hint" style="display:none;font-size:11px;color:var(--amber);margin-top:5px">Salaried Admin/Office employees have a fixed pay rate and no hours tracked anywhere -- the hourly rate below doesn't apply.</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="text" inputmode="decimal" id="staff-pay" placeholder="e.g. 22.50" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
           <select id="staff-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="en">English</option><option value="es">Spanish</option>
