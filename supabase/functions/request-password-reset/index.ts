@@ -187,8 +187,20 @@ serve(async (req) => {
   // One text per matching account (handles the confirmed-live edge case
   // of two active employees sharing a phone number -- see this
   // function's own file header). Each link is independently single-use.
-  let anySendFailed = false;
-  let anyInfraFailure = false;
+  //
+  // CORRECTION (caught in review before this ever shipped): an earlier
+  // draft of this function returned a DISTINCT response (502
+  // "sms_unavailable") when RingCentral itself was unreachable, reasoning
+  // that it "describes a system state, not a per-phone fact." That
+  // reasoning was wrong -- this loop only ever runs AT ALL when
+  // `candidates.length > 0`, i.e. only for a phone that matched a real
+  // employee. A made-up phone number NEVER reaches this code, so it can
+  // never produce that 502 either. During a real RingCentral outage, a
+  // real employee's number would get a DIFFERENT response than a fake
+  // one -- exactly the enumeration leak this endpoint exists to prevent.
+  // Every outcome below is now logged for operators (never the raw
+  // link/token) but never changes what the CALLER receives -- that is
+  // always the one GENERIC_RESPONSE, returned once, after the loop.
   for (const emp of candidates) {
     if (!emp.email) continue;
     try {
@@ -199,30 +211,14 @@ serve(async (req) => {
       });
       if (linkRes.error || !linkRes.data?.properties?.action_link) {
         console.error("[request-password-reset] generateLink failed for an employee (id redacted from log)");
-        anySendFailed = true;
         continue;
       }
       const link = linkRes.data.properties.action_link;
       const sent = await sendResetText(admin, emp.business_id as unknown as string, normalized, link);
-      if (!sent) anyInfraFailure = true;
+      if (!sent) console.error("[request-password-reset] SMS send failed for an employee (id redacted from log) -- RingCentral unreachable or misconfigured for this business");
     } catch (e) {
       console.error("[request-password-reset] reset attempt threw:", (e as Error).message);
-      anySendFailed = true;
     }
-  }
-
-  // anyInfraFailure (RingCentral unreachable / not configured) is a real
-  // system problem unrelated to any specific phone -- during a real
-  // outage, a random guess and a real employee's own number would BOTH
-  // hit this same failure (the guess never reaches this far at all, so
-  // in practice only a real match can trigger it) -- but to keep the
-  // response shape from ever depending on "was a match found", this
-  // distinct message is honest and acceptable here specifically because
-  // it describes a SYSTEM state (RingCentral is unreachable right now),
-  // not a per-phone fact. It still never says anything about whether a
-  // particular phone matched an employee.
-  if (anyInfraFailure) {
-    return json(502, { error: "sms_unavailable", message: "We could not send a text right now. Please call the office." });
   }
 
   return json(200, GENERIC_RESPONSE);

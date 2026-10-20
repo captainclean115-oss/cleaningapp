@@ -57857,10 +57857,16 @@ function _p3dPage(dir) {
       },
 
       // Phone + password login feature. Always resolves to { ok: true }
-      // with the SAME generic message on any outcome except a genuine
-      // RingCentral-unreachable error (502, see that Edge Function's own
-      // comment for why that one case is allowed to differ) -- never
-      // throws, never reveals whether the phone was found.
+      // with the SAME generic message every time the Edge Function itself
+      // responds at all -- the function never reveals whether the phone
+      // was found or whether its own SMS send succeeded (see that
+      // function's own comment: an earlier draft had a distinguishable
+      // "RingCentral unreachable" response here, which was a real
+      // enumeration leak caught in review and removed). The ONLY
+      // different message this ever shows is for a genuine failure to
+      // reach the Edge Function at all (network down, DNS, etc.) --
+      // that's a transport-layer fact about THIS DEVICE'S connection,
+      // never about any specific phone number.
       requestPhoneReset: async function(phone){
         try {
           var resp = await fetch(PROJECT_URL + '/functions/v1/request-password-reset', {
@@ -57870,9 +57876,6 @@ function _p3dPage(dir) {
           });
           var body = null;
           try { body = await resp.json(); } catch (e) {}
-          if (resp.status === 502 && body && body.error === 'sms_unavailable') {
-            return { ok: true, message: body.message };
-          }
           return { ok: true, message: (body && body.message) || 'If that number is on file, a text is on its way.' };
         } catch (e) {
           return { ok: true, message: 'Could not reach the server. Please call the office.' };
