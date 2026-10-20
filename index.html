@@ -5447,6 +5447,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <span class="week-nav-label" id="hours-week-label">This Week's Hours</span>
       <button class="week-nav-btn" onclick="hoursWeekMove(1)">&#8250;</button>
     </div>
+    <div id="payroll-cost-card" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px"></div>
     <div class="hours-title">Hours Worked</div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0 10px;flex-wrap:wrap">
       <div id="hours-published-indicator" style="font-size:11px;color:var(--muted)"></div>
@@ -24945,6 +24946,7 @@ async function processVoiceCommand(text) {
     +'Employees: '+empNames+'\n'
     +'An employee shown as "(Admin/Office)" is office staff with no field team -- never include them when a team name is used to mean "everyone on that team" (e.g. "S1 worked 8 to 4 today" means only S1\'s field members). You can still name an Admin/Office employee directly (e.g. "Linda worked 9 to 5") and use get_employee_hours/edit_employee_hours/batch_edit_employee_hours for them exactly as for anyone else -- their hours just come from manual entries, never GPS.\n'
     +'An employee shown as "(Admin/Office, Salaried)" has NO hours tracked at all -- fixed pay, not hourly. get_employee_hours reports "salaried, no hours tracked" for them; edit_employee_hours refuses with a plain message ("X is salaried, so there are no hours to edit"); batch_edit_employee_hours skips them and says so in the preview rather than failing the whole batch. Don\'t try to work around this by editing their hours a different way -- there is nothing to edit. This never applies to a field (non-Admin/Office) employee, even if they happen to also be salaried.\n'
+    +'If '+_opName+' asks about payroll cost, gross wages, employer taxes, or "what will payroll cost this week" -- you have no tool for this and should never try to estimate it yourself from get_employee_hours calls (that would be a second, possibly different answer from what the Hours tab already shows). Tell them plainly: that\'s on the Hours tab, under "Payroll cost this week."\n'
     +'Total clients: '+PentaClients.count()+'\n'
     +'Today\'s jobs: '+todayJobs.length;
 
@@ -29802,6 +29804,12 @@ function getUnifiedRoster(asOfDate) {
           // it straight off this roster row without a second facade
           // lookup.
           pay_type: fe.pay_type || null,
+          // Payroll cost tally feature: same passthrough pattern as
+          // work_type/pay_type above. publishWeekHours() and the
+          // payroll cost card both need an hourly rate per roster row
+          // without a second facade lookup. null (not 0) when unset or
+          // non-positive -- a $0/hr rate is never treated as real.
+          pay_rate: (fe.pay_rate != null && fe.pay_rate > 0) ? fe.pay_rate : null,
           // Terminated-employee date-awareness fix -- same passthrough
           // pattern as work_type/pay_type just above. Lets a consumer
           // that already has a roster row (e.g. Claire's name
@@ -32443,6 +32451,14 @@ async function _loadWeekHoursInner() {
 
     renderHoursTable(days, DAYS_SHORT);
 
+    // Payroll cost tally feature: same globals the Hours table itself
+    // just rendered from -- never a second calculation of hours. Async
+    // (fetches payroll settings) but not awaited here -- the Hours table
+    // itself must not wait on it, same reasoning as the publish schedule
+    // right below.
+    try { renderPayrollCostCard(days, weekHours, window._empHoursMap); }
+    catch (e) { console.warn('[payroll card] render call failed', e); }
+
     // Published Hours -- schedule a debounced publish of exactly what
     // was just rendered. Captured now (not re-read when the debounce
     // timer fires) so a newer loadWeekHours() call for a different week,
@@ -33939,6 +33955,145 @@ function _weekOffsetForDate(dateStr) {
   return Math.round((mon - thisMon) / (7 * 86400000));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Payroll cost tally feature (migrations 117/118).
+//
+// _computeDayPayCents is the ONE place gross pay is ever computed, in
+// CENTS (integer), rounded once at the end -- used by BOTH
+// publishWeekHours (to snapshot est_rate/est_gross) and the payroll
+// cost card (for live display of the currently-viewed week, published
+// or not). Overtime, when enabled, is split within the 5 displayed
+// Mon-Fri days ONLY -- not a true Monday-Sunday pay week. See migration
+// 117's own "OVERTIME SCOPE" comment for why: getWeekDates() never
+// returns Saturday/Sunday, and nothing in this app surfaces a weekend
+// hour anywhere today, so true 7-day overtime cannot be computed
+// correctly yet. This is a disclosed limitation, not an oversight.
+function _computeDayPayCents(hoursToday, rate, cumHoursBeforeToday, overtimeEnabled) {
+  if (!overtimeEnabled) return Math.round(hoursToday * rate * 100);
+  var regularCap = 40;
+  var before = cumHoursBeforeToday || 0;
+  var after = before + hoursToday;
+  if (before >= regularCap) {
+    return Math.round(hoursToday * rate * 1.5 * 100);
+  } else if (after <= regularCap) {
+    return Math.round(hoursToday * rate * 100);
+  } else {
+    var regularPortion = regularCap - before;
+    var otPortion = hoursToday - regularPortion;
+    return Math.round((regularPortion * rate + otPortion * rate * 1.5) * 100);
+  }
+}
+
+// One combined employer-tax percentage, or null if ANY of the 5 rate
+// fields hasn't been entered yet -- "no default values, nothing is
+// estimated until Tom enters it" means a partially-filled settings row
+// must never silently compute a partial total that looks complete.
+function _employerTaxPct(settings) {
+  if (!settings) return null;
+  var fields = [settings.social_security_pct, settings.medicare_pct, settings.federal_unemployment_pct, settings.state_unemployment_pct, settings.other_employer_costs_pct];
+  if (fields.some(function (f) { return f == null; })) return null;
+  return fields.reduce(function (s, f) { return s + f; }, 0);
+}
+
+var _payrollSettingsCache = null;
+var _payrollSettingsCacheAt = 0;
+// Cached 60s -- cheap enough to re-fetch on every publish/card-render,
+// but avoids a network round trip on every single keystroke-driven
+// re-render of the payroll card while a manager has the Hours tab open.
+async function _getPayrollSettings() {
+  var now = Date.now();
+  if (_payrollSettingsCache && (now - _payrollSettingsCacheAt) < 60000) return _payrollSettingsCache;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) return null;
+  try {
+    var res = await sb.from('business_payroll_settings')
+      .select('social_security_pct, medicare_pct, federal_unemployment_pct, state_unemployment_pct, other_employer_costs_pct, overtime_enabled')
+      .eq('business_id', bid).maybeSingle();
+    if (res.error) { console.warn('[payroll] could not load business_payroll_settings', res.error); return null; }
+    _payrollSettingsCache = res.data || { overtime_enabled: false };
+    _payrollSettingsCacheAt = now;
+    return _payrollSettingsCache;
+  } catch (e) { console.warn('[payroll] business_payroll_settings fetch threw', e); return null; }
+}
+
+// Shared payroll computation -- the Hours tab's "Payroll cost this
+// week" card and publishWeekHours's own est_rate/est_gross snapshot
+// both call this, so there is exactly one place gross pay is ever
+// computed from hours+rate, never two copies that could diverge.
+// Reads resolveEmployeeDayHours/getEmpHours the SAME way
+// renderHoursTable/publishWeekHours already do -- never a second
+// calculation of HOURS, only of pay.
+function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettings) {
+  var overtimeEnabled = !!(payrollSettings && payrollSettings.overtime_enabled);
+  var todayKey = dateKey(new Date());
+  var now = new Date();
+
+  // Union of every employee who appears in the roster on ANY day this
+  // week -- handles a mid-week termination correctly (she's included
+  // for the days before her exclusion date, same as publishWeekHours).
+  var empsByUuid = {};
+  days.forEach(function (d) {
+    if (d > now) return;
+    getUnifiedRoster(dateKey(d)).forEach(function (emp) {
+      var key = emp.uuid || emp.id;
+      if (!empsByUuid[key]) empsByUuid[key] = emp;
+    });
+  });
+
+  var perEmployee = [];
+  Object.keys(empsByUuid).forEach(function (key) {
+    var emp = empsByUuid[key];
+    if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
+      perEmployee.push({ empId: key, name: emp.name, status: 'salaried', hours: 0, grossCents: null });
+      return;
+    }
+    var rate = (emp.pay_rate != null && emp.pay_rate > 0) ? emp.pay_rate : null;
+    var totalHours = 0, totalGrossCents = 0, cumBefore = 0, anyDayIncluded = false;
+    days.forEach(function (d, dayIdx) {
+      if (d > now) return;
+      var dk = dateKey(d);
+      var inRosterToday = getUnifiedRoster(dk).some(function (e) { return (e.uuid || e.id) === key; });
+      if (!inRosterToday) return; // terminated before this date, or hired after it
+      var hrs;
+      if (emp.work_type === 'admin') {
+        var offInfo = _adminEmpDayOff(emp.id, dk);
+        if (offInfo) { hrs = 0; }
+        else {
+          var override = getEmpHours(emp.id, dk);
+          if (!override) return; // nothing on file -- not counted, not a fake zero
+          hrs = override.hours || 0;
+        }
+      } else {
+        var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
+        if (rd.isOff) { hrs = 0; }
+        else if (rd.hours === 0 && !rd.isOverride) { return; } // unresolved -- same skip rule as publishWeekHours
+        else { hrs = rd.hours; }
+      }
+      anyDayIncluded = true;
+      totalHours += hrs;
+      if (rate != null && hrs > 0) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
+      cumBefore += hrs;
+    });
+    if (!anyDayIncluded) return; // nothing at all this week for her -- omit entirely
+    perEmployee.push({
+      empId: key, name: emp.name,
+      status: rate == null ? 'missing_rate' : 'included',
+      hours: totalHours,
+      grossCents: rate == null ? null : totalGrossCents
+    });
+  });
+
+  var included = perEmployee.filter(function (e) { return e.status === 'included'; });
+  var missingRate = perEmployee.filter(function (e) { return e.status === 'missing_rate'; });
+  var salaried = perEmployee.filter(function (e) { return e.status === 'salaried'; });
+  return {
+    perEmployee: perEmployee, included: included, missingRate: missingRate, salaried: salaried,
+    totalHours: included.reduce(function (s, e) { return s + e.hours; }, 0),
+    totalGrossCents: included.reduce(function (s, e) { return s + (e.grossCents || 0); }, 0)
+  };
+}
+
 async function publishWeekHours(days, weekHoursData, empHoursMapData) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
@@ -33949,10 +34104,23 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
     try { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; } catch (e) {}
   }
 
+  // Payroll cost tally feature: fetched once per run, used to snapshot
+  // est_rate/est_gross onto every worked day below via the SAME
+  // _computeDayPayCents function the payroll cost card uses for
+  // display. A failure here is non-fatal -- est_rate/est_gross just
+  // stay null for this run (same as "no pay rate on file").
+  var payrollSettings = null;
+  try { payrollSettings = await _getPayrollSettings(); } catch (e) { console.warn('[publish] could not load payroll settings (non-fatal)', e); }
+  var overtimeEnabled = !!(payrollSettings && payrollSettings.overtime_enabled);
+
   var todayKey = dateKey(new Date());
   var now = new Date();
   var candidates = [];
   var skipped = [];
+  // Cumulative hours per employee, carried forward day-to-day IN ORDER
+  // (days[] is already Mon..Fri) so a shift crossing the 40-hour line
+  // splits correctly. Declared outside the days loop so it persists.
+  var cumHoursByEmp = {};
 
   days.forEach(function (d, dayIdx) {
     if (d > now) return; // never publish a day that hasn't happened yet
@@ -33964,21 +34132,26 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       var base = { business_id: bid, employee_id: empUuid, work_date: dk, published_by: currentUserId };
 
       if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
-        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: null, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: 'salaried', source: null }) });
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: null, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: 'salaried', source: null, est_rate: null, est_gross: null }) });
         return;
       }
 
       if (emp.work_type === 'admin') {
         var offInfo = _adminEmpDayOff(emp.id, dk);
         if (offInfo) {
-          candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (offInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+          candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (offInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null, est_rate: null, est_gross: null }) });
           return;
         }
         var override = getEmpHours(emp.id, dk);
         if (!override) { if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'no manual hours on file' }); return; }
+        var adminHrs = override.hours || 0;
+        var adminCumBefore = cumHoursByEmp[empUuid] || 0;
+        var adminPay = (emp.pay_rate != null && adminHrs > 0) ? _computeDayPayCents(adminHrs, emp.pay_rate, adminCumBefore, overtimeEnabled) : null;
+        cumHoursByEmp[empUuid] = adminCumBefore + adminHrs;
         candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
-          hours: override.hours || 0, start_time: _toInstant(d, override.start), end_time: _toInstant(d, override.end),
-          lunch_minutes: override.lunch || 0, team_label: null, status: 'worked', source: 'manual'
+          hours: adminHrs, start_time: _toInstant(d, override.start), end_time: _toInstant(d, override.end),
+          lunch_minutes: override.lunch || 0, team_label: null, status: 'worked', source: 'manual',
+          est_rate: emp.pay_rate != null ? emp.pay_rate : null, est_gross: adminPay
         }) });
         return;
       }
@@ -33987,7 +34160,7 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
       if (rd.isOff) {
         var fOffInfo = (typeof getEmployeeDayOffInfo === 'function') ? getEmployeeDayOffInfo(emp.id, dk) : null;
-        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (fOffInfo && fOffInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (fOffInfo && fOffInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null, est_rate: null, est_gross: null }) });
         return;
       }
       // An unresolved ambiguous zero (no override, no personal GPS/clock
@@ -33999,9 +34172,13 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
         if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'unresolved -- no GPS/clock data yet' });
         return;
       }
+      var fieldCumBefore = cumHoursByEmp[empUuid] || 0;
+      var fieldPay = (emp.pay_rate != null && rd.hours > 0) ? _computeDayPayCents(rd.hours, emp.pay_rate, fieldCumBefore, overtimeEnabled) : null;
+      cumHoursByEmp[empUuid] = fieldCumBefore + rd.hours;
       candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
         hours: rd.hours, start_time: rd.startDate ? rd.startDate.toISOString() : null, end_time: rd.endDate ? rd.endDate.toISOString() : null,
-        lunch_minutes: rd.lunchMin || 0, team_label: rd.dayTeam || null, status: 'worked', source: rd.isOverride ? 'override' : 'gps'
+        lunch_minutes: rd.lunchMin || 0, team_label: rd.dayTeam || null, status: 'worked', source: rd.isOverride ? 'override' : 'gps',
+        est_rate: emp.pay_rate != null ? emp.pay_rate : null, est_gross: fieldPay
       }) });
     });
   });
@@ -34012,9 +34189,13 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
   // written, so published_at (the employee-visible "Updated" time) only
   // moves when a value actually changed -- not on every routine 60s Live
   // recompute, which would otherwise bump it constantly for no reason.
+  // Payroll cost tally feature: est_rate/est_gross are now part of this
+  // diff too, so a pure pay-rate change (no hours change at all) still
+  // triggers a rewrite through the EXISTING "Publish now" button -- no
+  // separate "Republish week" button needed.
   var mon = dateKey(days[0]), fri = dateKey(days[days.length - 1]);
   var existingRes = await sb.from('published_employee_hours')
-    .select('employee_id, work_date, hours, start_time, end_time, lunch_minutes, team_label, status, source')
+    .select('employee_id, work_date, hours, start_time, end_time, lunch_minutes, team_label, status, source, est_rate, est_gross')
     .eq('business_id', bid).gte('work_date', mon).lte('work_date', fri);
   if (existingRes.error) throw new Error('Could not read current published hours before publishing: ' + existingRes.error.message);
   var existingByKey = {};
@@ -34022,7 +34203,8 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
 
   function _sameRow(a, b) {
     return a.hours == b.hours && a.start_time == b.start_time && a.end_time == b.end_time
-      && a.lunch_minutes == b.lunch_minutes && a.team_label == b.team_label && a.status == b.status && a.source == b.source;
+      && a.lunch_minutes == b.lunch_minutes && a.team_label == b.team_label && a.status == b.status && a.source == b.source
+      && a.est_rate == b.est_rate && a.est_gross == b.est_gross;
   }
 
   var toWrite = candidates.filter(function (c) {
@@ -34041,6 +34223,85 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
     publishedCount += chunk.length;
   }
   return { published: publishedCount, skipped: skipped.length, skippedDetail: skipped };
+}
+
+var _payrollCardSort = 'name'; // 'name' | 'hours' | 'gross'
+var _payrollCardExpanded = false;
+var _payrollCardLastArgs = null; // { days, weekHoursData, empHoursMapData } -- so sort/expand toggles can re-render without recomputing
+
+function _centsToDollarsStr(cents) {
+  if (cents == null) return '$0.00';
+  var neg = cents < 0;
+  var abs = Math.abs(Math.round(cents));
+  var s = (abs / 100).toFixed(2);
+  return (neg ? '-$' : '$') + s;
+}
+
+function togglePayrollCardExpanded() {
+  _payrollCardExpanded = !_payrollCardExpanded;
+  if (_payrollCardLastArgs) renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+}
+function setPayrollCardSort(mode) {
+  _payrollCardSort = mode;
+  if (_payrollCardLastArgs) renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+}
+
+async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
+  var el = document.getElementById('payroll-cost-card');
+  if (!el) return;
+  _payrollCardLastArgs = { days: days, weekHoursData: weekHoursData, empHoursMapData: empHoursMapData };
+  try {
+    var settings = await _getPayrollSettings();
+    var result = _computeWeekPayroll(days, weekHoursData, empHoursMapData, settings);
+    var taxPct = _employerTaxPct(settings);
+    var taxCents = taxPct != null ? Math.round(result.totalGrossCents * taxPct / 100) : null;
+    var totalCostCents = result.totalGrossCents + (taxCents || 0);
+
+    var rows = result.included.slice();
+    rows.sort(function (a, b) {
+      if (_payrollCardSort === 'hours') return b.hours - a.hours;
+      if (_payrollCardSort === 'gross') return (b.grossCents || 0) - (a.grossCents || 0);
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    var detailHtml = '';
+    if (_payrollCardExpanded) {
+      detailHtml = '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">'
+        + '<div style="display:flex;gap:10px;font-size:11px;color:var(--muted);margin-bottom:6px">'
+        + '<span>Sort:</span>'
+        + '<a href="#" onclick="setPayrollCardSort(\'name\');return false" style="color:' + (_payrollCardSort === 'name' ? 'var(--accent)' : 'var(--muted)') + '">Name</a>'
+        + '<a href="#" onclick="setPayrollCardSort(\'hours\');return false" style="color:' + (_payrollCardSort === 'hours' ? 'var(--accent)' : 'var(--muted)') + '">Hours</a>'
+        + '<a href="#" onclick="setPayrollCardSort(\'gross\');return false" style="color:' + (_payrollCardSort === 'gross' ? 'var(--accent)' : 'var(--muted)') + '">Gross</a>'
+        + '</div>'
+        + rows.map(function (r) {
+          return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">'
+            + '<span>' + r.name + '</span>'
+            + '<span style="color:var(--muted)">' + r.hours.toFixed(2) + 'h</span>'
+            + '<span style="font-weight:600">' + _centsToDollarsStr(r.grossCents) + '</span>'
+            + '</div>';
+        }).join('')
+        + (result.missingRate.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-size:11px;font-weight:700">Missing pay rate (excluded)</div>'
+          + result.missingRate.map(function (r) { return '<div style="font-size:12px;color:var(--red)">' + r.name + ' -- ' + r.hours.toFixed(2) + 'h</div>'; }).join('') : '')
+        + (result.salaried.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:700">Salaried (not included)</div>'
+          + result.salaried.map(function (r) { return '<div style="font-size:12px;color:var(--muted)">' + r.name + '</div>'; }).join('') : '')
+        + '</div>';
+    }
+
+    el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">'
+      + '<div style="font-size:13px;font-weight:700">Payroll cost this week</div>'
+      + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Estimate, based on hours so far</div>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Total hours</span><span style="font-weight:600">' + result.totalHours.toFixed(2) + 'h</span></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Gross wages</span><span style="font-weight:600">' + _centsToDollarsStr(result.totalGrossCents) + '</span></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Employer taxes &amp; costs' + (taxPct != null ? ' (' + taxPct.toFixed(2) + '%)' : '') + '</span><span style="font-weight:600">' + (taxPct != null ? _centsToDollarsStr(taxCents) : 'not configured') + '</span></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><span>Total cost</span><span>' + _centsToDollarsStr(totalCostCents) + '</span></div>'
+      + (result.missingRate.length ? '<div style="margin-top:6px;font-size:11px;color:var(--red)">' + result.missingRate.length + ' employee' + (result.missingRate.length === 1 ? '' : 's') + ' with no pay rate on file, excluded from this total.</div>' : '')
+      + '<button type="button" onclick="togglePayrollCardExpanded()" style="margin-top:8px;width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:6px;border-radius:8px;cursor:pointer">' + (_payrollCardExpanded ? 'Hide details' : 'Show per-employee breakdown') + '</button>'
+      + detailHtml;
+  } catch (e) {
+    console.error('[payroll card] render failed', e);
+    el.innerHTML = '<div style="color:var(--red);font-size:12px">Could not load payroll cost. Pull to refresh or try again.</div>';
+  }
 }
 
 function _updatePublishIndicator(weekKey, info) {
@@ -47686,6 +47947,35 @@ function _renderPortalHoursUpdatedLabel(publishedAtIso) {
   } catch (e) { el.textContent = ''; }
 }
 
+// Payroll cost tally feature: employee-facing estimated gross pay line.
+// Never shows the rate, employer taxes, or anyone else's pay -- only
+// the one summed number, and only when the business has explicitly
+// turned this on (default OFF). This function does its own small
+// Supabase read (businesses.show_estimated_pay_to_employees) -- that
+// table's SELECT policy already has no role restriction, so this is
+// not a new attack surface, just reading a flag that was already
+// readable.
+async function _renderPortalEstimatedPay(estGrossCentsSoFar, anyDayIncomplete) {
+  var el = document.getElementById('portal-estimated-pay');
+  if (!el) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!sb || !bid) { el.innerHTML = ''; return; }
+    var res = await sb.from('businesses').select('show_estimated_pay_to_employees').eq('id', bid).maybeSingle();
+    var show = !!(res.data && res.data.show_estimated_pay_to_employees);
+    if (!show) { el.innerHTML = ''; return; }
+    var dollars = (Math.round(estGrossCentsSoFar) / 100).toFixed(2);
+    el.innerHTML = '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+      + '<div style="font-size:13px;font-weight:600">Estimated gross pay this ' + (anyDayIncomplete ? 'week so far' : 'week') + ': $' + dollars + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">Estimate before taxes and deductions. Your actual paycheck may differ.</div>'
+      + '</div>';
+  } catch (e) {
+    console.warn('[portal estimated pay] failed (non-fatal)', e);
+    el.innerHTML = '';
+  }
+}
+
 async function renderHours() {
   // PR #134 -- same PentaAssignments/PentaEmployees hydration race
   // PR #128/#133 fixed for the manager's Live tab, present here too:
@@ -47894,7 +48184,7 @@ async function renderHours() {
 
     var _phMon = dateKey(days[0]), _phFri = dateKey(days[4]);
     var _phRes = await _sb.from('published_employee_hours')
-      .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at')
+      .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at, est_gross')
       .eq('employee_id', _myUuid)
       .gte('work_date', _phMon)
       .lte('work_date', _phFri);
@@ -47905,12 +48195,15 @@ async function renderHours() {
 
     var _todayKey = dateKey(new Date());
     var _maxPublishedAt = null;
+    var _estGrossCentsSoFar = 0;
+    var _anyDayIncomplete = false;
     days.forEach(function (d, i) {
       var dk = dateKey(d);
       var row = _phByDate[dk];
       if (row && row.published_at && (!_maxPublishedAt || row.published_at > _maxPublishedAt)) _maxPublishedAt = row.published_at;
 
       if (!row) {
+        _anyDayIncomplete = true;
         composite.status[i] = (dk === _todayKey)
           ? { type: 'in_progress', label: 'In progress, updates after your manager reviews' }
           : { type: 'not_published', label: 'Not updated yet' };
@@ -47924,10 +48217,12 @@ async function renderHours() {
       composite.starts[i] = row.start_time || null;
       composite.ends[i] = row.end_time || null;
       composite.lunch[i] = row.lunch_minutes ? { duration: row.lunch_minutes } : null;
+      if (row.status === 'worked' && row.est_gross != null) _estGrossCentsSoFar += row.est_gross;
     });
     composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
 
     _renderPortalHoursUpdatedLabel(_maxPublishedAt);
+    _renderPortalEstimatedPay(_estGrossCentsSoFar, _anyDayIncomplete);
     _setupPublishedHoursRealtime(_myUuid);
   } catch (e) {
     // No silent early return, and never a blank/fake-zero on failure --
@@ -54358,6 +54653,137 @@ async function renderGeotabIntegrationStatus() {
   }
 }
 
+async function openPayrollSettingsModal() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved -- refresh and try again.'); return; }
+  var existing = null, showEstPay = false;
+  try {
+    var pr = await sb.from('business_payroll_settings')
+      .select('social_security_pct, medicare_pct, federal_unemployment_pct, state_unemployment_pct, other_employer_costs_pct, overtime_enabled')
+      .eq('business_id', bid).maybeSingle();
+    if (pr.error && (pr.error.code === '42501' || /permission/i.test(pr.error.message || ''))) {
+      alert('Only owners and managers can view or edit payroll settings.');
+      return;
+    }
+    existing = pr.data || null;
+    var br = await sb.from('businesses').select('show_estimated_pay_to_employees').eq('id', bid).maybeSingle();
+    showEstPay = !!(br.data && br.data.show_estimated_pay_to_employees);
+  } catch (e) {
+    alert('Could not load payroll settings: ' + (e.message || e));
+    return;
+  }
+  var pctField = function (id, label, value) {
+    return '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + label + ' %</div>'
+      + '<input type="text" inputmode="decimal" id="' + id + '" value="' + (value != null ? value : '') + '" placeholder="not set" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">';
+  };
+  var overlay = document.createElement('div');
+  overlay.id = 'payroll-settings-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:540px;max-height:90vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">💰 Payroll Settings</div>'
+    +     '<button type="button" onclick="document.getElementById(\'payroll-settings-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#fde68a;line-height:1.5">'
+    +     'Leave a field blank until you know the real number -- nothing is estimated for employer taxes until every field below is filled in. The Payroll cost card on the Hours tab will show gross wages either way, just without an employer-tax line until then.'
+    +   '</div>'
+    + pctField('pr-ss', 'Social Security', existing && existing.social_security_pct)
+    + pctField('pr-medicare', 'Medicare', existing && existing.medicare_pct)
+    + pctField('pr-futa', 'Federal unemployment (FUTA)', existing && existing.federal_unemployment_pct)
+    + pctField('pr-suta', 'State unemployment (SUTA)', existing && existing.state_unemployment_pct)
+    + pctField('pr-other', 'Other employer costs', existing && existing.other_employer_costs_pct)
+    + '<div id="pr-total-line" style="font-size:12px;color:var(--muted);margin-bottom:16px"></div>'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;cursor:pointer">'
+    +   '<input type="checkbox" id="pr-overtime" ' + (existing && existing.overtime_enabled ? 'checked' : '') + '>'
+    +   'Overtime: pay 1.5x for hours over 40 in the viewed Mon-Fri week'
+    + '</label>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-8px 0 14px 26px;line-height:1.4">This is within the 5 days the Hours tab shows, not a true Monday-Sunday pay week -- this app does not track Saturday/Sunday hours anywhere yet. If anyone also works a weekend, her real weekly total (and real overtime) would be higher than what this shows.</div>'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;font-size:13px;cursor:pointer">'
+    +   '<input type="checkbox" id="pr-show-estimate" ' + (showEstPay ? 'checked' : '') + '>'
+    +   'Show estimated pay to employees (off by default)'
+    + '</label>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-10px 0 14px 26px;line-height:1.4">When on, each employee sees her own estimated gross pay (before taxes) for the week on her own Hours screen. She never sees the rate, employer taxes, or anyone else\'s pay.</div>'
+    + '<div style="display:flex;gap:8px">'
+    +   '<button type="button" onclick="document.getElementById(\'payroll-settings-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +   '<button type="button" onclick="savePayrollSettings()" style="flex:2;background:#fbbf24;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    + '</div>'
+    + '<div id="pr-save-status" style="font-size:12px;color:var(--muted);min-height:18px;margin-top:10px"></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+
+  function recomputeTotalLine() {
+    var ids = ['pr-ss', 'pr-medicare', 'pr-futa', 'pr-suta', 'pr-other'];
+    var vals = ids.map(function (id) { var v = document.getElementById(id).value.trim(); return v === '' ? null : parseFloat(v); });
+    var lineEl = document.getElementById('pr-total-line');
+    if (vals.some(function (v) { return v == null || isNaN(v); })) { lineEl.textContent = 'Total employer tax %: not fully configured yet'; return; }
+    var total = vals.reduce(function (s, v) { return s + v; }, 0);
+    lineEl.innerHTML = '<strong>Total employer tax %: ' + total.toFixed(3) + '%</strong>';
+  }
+  ['pr-ss', 'pr-medicare', 'pr-futa', 'pr-suta', 'pr-other'].forEach(function (id) {
+    document.getElementById(id).addEventListener('input', recomputeTotalLine);
+  });
+  recomputeTotalLine();
+}
+
+async function savePayrollSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  var statusEl = document.getElementById('pr-save-status');
+  if (!sb || !bid) { if (statusEl) statusEl.textContent = 'Not connected -- refresh and try again.'; return; }
+
+  function pctVal(id) {
+    var v = (document.getElementById(id).value || '').trim();
+    if (v === '') return null;
+    var n = parseFloat(v);
+    if (isNaN(n) || n < 0 || n > 100) throw new Error('Enter a percent between 0 and 100 (or leave blank), e.g. 6.2, not ' + v);
+    return n;
+  }
+
+  var currentUserId = null;
+  try { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; } catch (e) {}
+
+  var payload;
+  try {
+    payload = {
+      business_id: bid,
+      social_security_pct: pctVal('pr-ss'),
+      medicare_pct: pctVal('pr-medicare'),
+      federal_unemployment_pct: pctVal('pr-futa'),
+      state_unemployment_pct: pctVal('pr-suta'),
+      other_employer_costs_pct: pctVal('pr-other'),
+      overtime_enabled: !!document.getElementById('pr-overtime').checked,
+      updated_by: currentUserId
+    };
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = e.message; statusEl.style.color = 'var(--red)'; }
+    return;
+  }
+
+  if (statusEl) { statusEl.textContent = 'Saving...'; statusEl.style.color = 'var(--muted)'; }
+  try {
+    var res = await sb.from('business_payroll_settings').upsert(payload, { onConflict: 'business_id' });
+    if (res.error) throw new Error(res.error.message);
+    var showEst = !!document.getElementById('pr-show-estimate').checked;
+    var bres = await sb.from('businesses').update({ show_estimated_pay_to_employees: showEst }).eq('id', bid);
+    if (bres.error) throw new Error(bres.error.message);
+    // Clear the cache so the Hours tab/payroll card pick up the new
+    // settings on their next render instead of waiting out the 60s TTL.
+    _payrollSettingsCache = null;
+    if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'var(--green)'; }
+    setTimeout(function () {
+      var ov = document.getElementById('payroll-settings-overlay');
+      if (ov) ov.remove();
+      if (typeof renderPayrollCostCard === 'function' && _payrollCardLastArgs) {
+        renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+      }
+    }, 600);
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Could not save: ' + (e.message || e); statusEl.style.color = 'var(--red)'; }
+  }
+}
+
 async function openGeotabIntegrationSettings() {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
@@ -56448,6 +56874,7 @@ function _p3dPage(dir) {
       <div class="hours-total-val" id="total-hrs">0h</div>
       <div class="hours-total-label" id="total-label">Total hours this week</div>
     </div>
+    <div id="portal-estimated-pay"></div>
     <div class="hours-card" id="hours-breakdown" style="touch-action:pan-y">
       <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px" id="hours-loading-text">Connect GPS to see hours</div>
     </div>
@@ -57404,6 +57831,19 @@ function _p3dPage(dir) {
         <button onclick="openGeotabIntegrationSettings()" style="flex:1;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">🚗 Configure Geotab integration</button>
       </div>
       <div id="admin-geotab-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
+    <!-- Payroll cost tally feature (migrations 117/118). Employer tax
+         rates + overtime toggle. RLS (business_payroll_settings) is
+         owner/admin/manager/dispatcher -- same manager-tier convention
+         as every other table this app gates this way; employees can
+         never read a row of it, not even their own business's. -->
+    <div class="admin-sec" id="admin-payroll-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Payroll</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openPayrollSettingsModal()" style="flex:1;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">💰 Configure payroll settings</button>
+      </div>
+      <div id="admin-payroll-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
     <!-- Client Health Scoring. Config lives in
