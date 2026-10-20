@@ -4641,15 +4641,9 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
 
     <form id="penta-login-form" autocomplete="on">
-      <div style="margin-bottom:14px" id="penta-login-email-field">
+      <div style="margin-bottom:14px">
         <label for="penta-login-email" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Email</label>
         <input id="penta-login-email" type="email" name="email" autocomplete="email" required
-          style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
-      </div>
-
-      <div style="margin-bottom:14px;display:none" id="penta-login-phone-field">
-        <label for="penta-login-phone" style="display:block;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">Phone Number</label>
-        <input id="penta-login-phone" type="tel" name="phone" autocomplete="tel" inputmode="numeric" placeholder="(555) 555-5555"
           style="width:100%;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;font-family:inherit;box-sizing:border-box">
       </div>
 
@@ -4669,7 +4663,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 
     <div style="margin-top:20px;text-align:center;display:flex;flex-direction:column;gap:10px">
       <a href="#" id="penta-login-forgot-link" style="color:var(--muted);font-size:13px;text-decoration:none">Forgot password?</a>
-      <a href="#" id="penta-login-mode-toggle" style="color:var(--muted);font-size:13px;text-decoration:none">Sign in with phone number instead</a>
       <button onclick="appGoApply()" style="background:none;border:none;color:var(--muted);font-family:inherit;font-size:13px;cursor:pointer;text-decoration:underline">
         Interested in joining our team? Apply here
       </button>
@@ -5300,7 +5293,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
           style="flex:1;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;outline:none">
         <button id="inbox-search-clear" onclick="document.getElementById('inbox-search').value='';filterInbox('')" style="display:none;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0">×</button>
       </div>
-      <button onclick="openNewTextComposer()" style="width:100%;margin-top:8px;background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:9px;border-radius:10px;cursor:pointer">✎ New text</button>
     </div>
     <div id="inbox-list"></div>
   </div>
@@ -14511,161 +14503,118 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
     }).catch(function() { target.textContent = _chipText({ state: 'none' }); });
   }
 
-  // Server-side invites feature: in-memory (never localStorage) guards
-  // against a double-click and against resending within 60 seconds.
-  // Keyed by rosterId -- cleared on page reload, which is fine, this is
-  // a UI-only speed bump, not a security control (the Edge Function has
-  // its own real rate limit regardless).
-  var _inviteInFlight = {};
-  var _inviteLastSentAt = {};
-
-  function _renderInviteResult(rosterId, html) {
-    var el = document.querySelector('[id="invite-send-result"][data-roster-id="' + CSS.escape(rosterId) + '"]');
-    if (el) el.innerHTML = html;
-  }
-
-  function _maskPhone(phone) {
-    var digits = String(phone || '').replace(/\D/g, '');
-    var last4 = digits.slice(-4);
-    return last4.length === 4 ? ('***-***-' + last4) : 'her phone';
-  }
-
-  // Manager-only fallback when the server send fails: reads the token
-  // through the SAME RLS the rest of the Staff screen already relies on
-  // (employee_invites_select: owner/admin/manager) -- send-invite itself
-  // never returns the token, this is a separate, already-permitted read.
-  async function copyInviteLink(employeeUuid, rosterId) {
-    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-    if (!sb) { alert('Not connected -- refresh and try again.'); return; }
-    try {
-      var res = await sb.from('employee_invites')
-        .select('token, created_at')
-        .eq('employee_id', employeeUuid)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (res.error || !res.data || !res.data.token) {
-        alert('Could not find an invite link to copy. Try Send Invite again.');
-        return;
-      }
-      var url = 'https://captainclean115-oss.github.io/cleaningapp/accept-invite.html?token=' + res.data.token;
-      await navigator.clipboard.writeText(url);
-      _renderInviteResult(rosterId, '<span style="color:var(--green)">Link copied to clipboard.</span>');
-    } catch (e) {
-      alert('Could not copy the link: ' + ((e && e.message) || 'unknown error'));
-    }
-  }
-
   async function pentaSendInvite(rosterId) {
-    // Double-click guard: set the flag SYNCHRONOUSLY, before any await,
-    // so two back-to-back clicks (both still running synchronously when
-    // the second one starts) can't both pass this check -- an async
-    // function's body runs synchronously up to its first await, so a
-    // flag set any later than this would let a true double-click race
-    // right through it. Everything else lives inside one try/finally so
-    // EVERY exit path (an early return, a thrown error, or the normal
-    // end) clears the flag exactly once -- no return statement has to
-    // remember to reset it itself.
-    if (_inviteInFlight[rosterId]) return;
-    _inviteInFlight[rosterId] = true;
+    var resolved;
     try {
-      var lastSent = _inviteLastSentAt[rosterId];
-      if (lastSent && (Date.now() - lastSent) < 60000) {
-        var waitSec = Math.ceil((60000 - (Date.now() - lastSent)) / 1000);
-        _renderInviteResult(rosterId, '<span style="color:var(--amber)">Please wait ' + waitSec + 's before resending.</span>');
-        return;
-      }
-
-      var resolved;
-      try {
-        resolved = await _resolveEmployeeByRoster(rosterId);
-      } catch (e) {
-        alert('Send Invite failed (resolver crashed):\n' + (e && e.message));
-        console.error('[pentaSendInvite] resolver crash', e);
-        return;
-      }
-
-      if (resolved.error) {
-        var err = resolved.error;
-        var detail;
-        switch (err.kind) {
-          case 'not_in_cache':
-            detail = 'Employee not found in Supabase.\n\n' + err.msg + '\n\nIf this is a new employee, the backfill may not have run on this device yet. Try signing out and back in.';
-            break;
-          case 'list_threw':
-          case 'list_threw_2':
-          case 'hydrate_threw':
-          case 'rehydrate_threw':
-            detail = 'Could not load employees from Supabase.\n\n' + err.msg + '\n\nThis is usually an auth/session issue. Sign out and back in.';
-            break;
-          case 'list_not_array':
-            detail = 'Employees query returned unexpected data. Sign out and back in.\n\n' + err.msg;
-            break;
-          case 'facade_missing':
-            detail = 'PentaEmployees facade did not load. Reload the page.';
-            break;
-          default:
-            detail = 'Unexpected error: ' + (err.msg || JSON.stringify(err));
-        }
-        alert('Send Invite failed.\n\n' + detail);
-        console.error('[pentaSendInvite]', err);
-        return;
-      }
-
-      var emp = resolved.employee;
-      if (!emp.phone) {
-        _renderInviteResult(rosterId, '<span style="color:var(--red)">No phone number on file for ' + (emp.first_name || 'this employee') + '. Add one in the Staff edit form first.</span>');
-        return;
-      }
-      // Phone + password login feature: block the invite if this phone
-      // is shared with another ACTIVE employee -- phone login/reset
-      // need it to uniquely resolve an account for invites going
-      // forward.
-      try {
-        var _normInv = String(emp.phone || '').replace(/\D/g, '');
-        if (_normInv.length === 11 && _normInv[0] === '1') _normInv = _normInv.slice(1);
-        if (_normInv.length === 10 && window.PentaEmployees && window.PentaEmployees.listSync) {
-          var _dupOwner = window.PentaEmployees.listSync().find(function (e) {
-            if (!e || e.id === emp.id || e.status !== 'active') return false;
-            var n2 = String(e.phone || '').replace(/\D/g, '');
-            if (n2.length === 11 && n2[0] === '1') n2 = n2.slice(1);
-            return n2.length === 10 && n2 === _normInv;
-          });
-          if (_dupOwner) {
-            _renderInviteResult(rosterId, '<span style="color:var(--red)">' + (emp.first_name || 'This employee') + '\'s phone number is shared with ' + (_dupOwner.first_name || 'another active employee') + '. Fix one of their phone numbers first.</span>');
-            return;
-          }
-        }
-      } catch (e) { console.warn('[pentaSendInvite] duplicate-phone check failed (non-fatal, proceeding)', e); }
-
-      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-      if (!sb) {
-        alert('Supabase client not ready. Reload the page.');
-        return;
-      }
-
-      _renderInviteResult(rosterId, '<span style="color:var(--muted)">Sending…</span>');
-      try {
-        var res = await sb.functions.invoke('send-invite', { body: { employee_id: emp.id } });
-        _inviteLastSentAt[rosterId] = Date.now();
-        if (res.error || !res.data || !res.data.success) {
-          var reason = (res.data && res.data.error) || (res.error && res.error.message) || 'Could not send the invite.';
-          _renderInviteResult(rosterId,
-            '<span style="color:var(--red)">' + _adminEsc(reason) + '</span>'
-            + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
-          return;
-        }
-        var sentTime = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-        _renderInviteResult(rosterId, '<span style="color:var(--green)">Sent to ' + _maskPhone(emp.phone) + ' at ' + sentTime + '.</span>');
-      } catch (e) {
-        _renderInviteResult(rosterId,
-          '<span style="color:var(--red)">Network error -- could not reach the server.</span>'
-          + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
-        console.error('[pentaSendInvite] send-invite call threw', e);
-      }
-    } finally {
-      _inviteInFlight[rosterId] = false;
+      resolved = await _resolveEmployeeByRoster(rosterId);
+    } catch (e) {
+      alert('Send Invite failed (resolver crashed):\n' + (e && e.message));
+      console.error('[pentaSendInvite] resolver crash', e);
+      return;
     }
+
+    if (resolved.error) {
+      var err = resolved.error;
+      var detail;
+      switch (err.kind) {
+        case 'not_in_cache':
+          detail = 'Employee not found in Supabase.\n\n' + err.msg + '\n\nIf this is a new employee, the backfill may not have run on this device yet. Try signing out and back in.';
+          break;
+        case 'list_threw':
+        case 'list_threw_2':
+        case 'hydrate_threw':
+        case 'rehydrate_threw':
+          detail = 'Could not load employees from Supabase.\n\n' + err.msg + '\n\nThis is usually an auth/session issue. Sign out and back in.';
+          break;
+        case 'list_not_array':
+          detail = 'Employees query returned unexpected data. Sign out and back in.\n\n' + err.msg;
+          break;
+        case 'facade_missing':
+          detail = 'PentaEmployees facade did not load. Reload the page.';
+          break;
+        default:
+          detail = 'Unexpected error: ' + (err.msg || JSON.stringify(err));
+      }
+      alert('Send Invite failed.\n\n' + detail);
+      console.error('[pentaSendInvite]', err);
+      return;
+    }
+
+    var emp = resolved.employee;
+    if (!emp.phone) {
+      alert('No phone number on file for ' + (emp.first_name || 'this employee') + '. Add a phone in the Staff edit form first.');
+      return;
+    }
+
+    // Generate token + expiry
+    var token, expires;
+    try {
+      token = await pentaGenerateInviteToken();
+      expires = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    } catch (e) {
+      alert('Could not generate invite token: ' + (e && e.message));
+      return;
+    }
+
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) {
+      alert('Supabase client not ready. Reload the page.');
+      return;
+    }
+
+    var insertResult;
+    try {
+      insertResult = await sb.from('employee_invites').insert({
+        business_id: emp.business_id,
+        employee_id: emp.id,
+        token: token,
+        phone_sent_to: emp.phone,
+        expires_at: expires
+      });
+    } catch (e) {
+      alert('Could not create invite row: ' + (e && e.message));
+      console.error('[pentaSendInvite] insert threw', e);
+      return;
+    }
+    if (insertResult && insertResult.error) {
+      alert('Could not create invite row.\n\n' + insertResult.error.message + '\n\nThis is usually an RLS/permissions issue.');
+      console.error('[pentaSendInvite] insert error', insertResult.error);
+      return;
+    }
+
+    var url = 'https://captainclean115-oss.github.io/cleaningapp/accept-invite.html?token=' + token;
+    var body = 'Hi ' + (emp.first_name || 'there') + ', welcome to Penta! Set your password: ' + url + ' Link expires in 48 hours.';
+
+    if (typeof pentaShowInviteSendModal === 'function') {
+      pentaShowInviteSendModal(emp, body, url);
+    } else {
+      alert('Invite created but send modal helper missing. Token URL:\n' + url);
+    }
+  }
+
+  function pentaShowInviteSendModal(emp, smsBody, url) {
+    var existing = document.getElementById('penta-invite-send-overlay');
+    if (existing) existing.remove();
+
+    var phone = String(emp.phone || '').replace(/\D/g, '');
+    if (phone.length === 10) phone = '1' + phone;
+    var rcHref = 'sms:+' + phone + '&body=' + encodeURIComponent(smsBody);
+    var safeBody = String(smsBody).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    var ov = document.createElement('div');
+    ov.id = 'penta-invite-send-overlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:24px;';
+    ov.innerHTML = ''
+      + '<div style="max-width:440px;width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:24px;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif">'
+      +   '<div style="font-size:18px;font-weight:700;margin-bottom:6px">Send invite to ' + (emp.first_name || '') + '</div>'
+      +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tap to open Messages with the SMS pre-filled, then hit Send.</div>'
+      +   '<div style="background:var(--surface2);border-radius:10px;padding:12px;font-size:13px;line-height:1.4;margin-bottom:16px;white-space:pre-wrap;word-break:break-word">' + safeBody + '</div>'
+      +   '<a href="' + rcHref + '" style="display:block;text-align:center;padding:14px;background:#FF7A00;color:#fff;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:10px">📱 Open Messages</a>'
+      +   '<div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:16px">Sending to ' + (emp.phone || '—') + '</div>'
+      +   '<button type="button" id="penta-invite-send-close" style="width:100%;padding:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer">Close</button>'
+      + '</div>';
+    document.body.appendChild(ov);
+    document.getElementById('penta-invite-send-close').addEventListener('click', function() { ov.remove(); });
   }
 
   function _randomPassword() {
@@ -41605,203 +41554,6 @@ function renderInbox() {
   }).join('');
 }
 
-function openNewTextComposer() {
-  var existing = document.getElementById('new-text-overlay');
-  if (existing) existing.remove();
-  var overlay = document.createElement('div');
-  overlay.id = 'new-text-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
-  overlay.innerHTML = ''
-    + '<div style="background:var(--surface);width:100%;max-width:420px;border-radius:14px;border:1px solid var(--border2);padding:22px">'
-    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
-    +     '<div style="font-size:17px;font-weight:700">✎ New text</div>'
-    +     '<button type="button" onclick="document.getElementById(\'new-text-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
-    +   '</div>'
-    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Phone number</div>'
-    +   '<input type="tel" id="new-text-phone" placeholder="(555) 555-5555" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:15px;padding:11px 14px;border-radius:8px;margin-bottom:14px;outline:none">'
-    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Message</div>'
-    +   '<textarea id="new-text-message" rows="4" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:15px;padding:11px 14px;border-radius:8px;margin-bottom:14px;outline:none;resize:vertical"></textarea>'
-    +   '<button type="button" id="new-text-send-btn" onclick="sendNewText()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Send</button>'
-    +   '<div id="new-text-status" style="font-size:12px;min-height:18px;margin-top:10px"></div>'
-    + '</div>';
-  document.body.appendChild(overlay);
-  setTimeout(function () { var el = document.getElementById('new-text-phone'); if (el) el.focus(); }, 50);
-}
-
-async function sendNewText() {
-  var statusEl = document.getElementById('new-text-status');
-  var btn = document.getElementById('new-text-send-btn');
-  var phoneEl = document.getElementById('new-text-phone');
-  var msgEl = document.getElementById('new-text-message');
-  if (!phoneEl || !msgEl) return;
-  var digits = (phoneEl.value || '').replace(/\D/g, '');
-  if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
-  if (digits.length !== 10) {
-    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Enter a valid 10-digit phone number.'; }
-    return;
-  }
-  var msg = (msgEl.value || '').trim();
-  if (!msg) {
-    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Enter a message.'; }
-    return;
-  }
-  var e164 = '+1' + digits;
-  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
-  if (statusEl) { statusEl.style.color = 'var(--muted)'; statusEl.textContent = ''; }
-  try {
-    var res = await _sendSMS(e164, msg, { allowUnknown: true });
-    if (res.kind === 'native') {
-      var overlay = document.getElementById('new-text-overlay');
-      if (overlay) overlay.remove();
-      return; // the phone's own SMS app is now open; nothing left to confirm here
-    }
-    if (statusEl) { statusEl.style.color = 'var(--green)'; statusEl.textContent = 'Sent.'; }
-    setTimeout(function () {
-      var overlay2 = document.getElementById('new-text-overlay');
-      if (overlay2) overlay2.remove();
-      try { if (typeof loadInbox === 'function') loadInbox(); } catch (e) {}
-    }, 700);
-  } catch (e) {
-    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Could not send: ' + ((e && e.message) || 'unknown error'); }
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
-  }
-}
-
-var _bulkInviteSending = false;
-
-function _bulkNormPhone(raw) {
-  var d = String(raw || '').replace(/\D/g, '');
-  if (d.length === 11 && d[0] === '1') d = d.slice(1);
-  return d.length === 10 ? d : null;
-}
-
-function openBulkInviteModal() {
-  var existing = document.getElementById('bulk-invite-overlay');
-  if (existing) existing.remove();
-
-  var list = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
-  var phoneCounts = {};
-  list.forEach(function (e) {
-    if (e.status !== 'active') return;
-    var n = _bulkNormPhone(e.phone);
-    if (n) phoneCounts[n] = (phoneCounts[n] || 0) + 1;
-  });
-
-  var eligible = [];
-  var skipped = [];
-  list.forEach(function (e) {
-    if (e.status !== 'active') return;
-    if (e.auth_user_id) return; // already linked -- not a bulk-invite target
-    var n = _bulkNormPhone(e.phone);
-    if (!n) { skipped.push({ name: e.name, reason: 'no phone on file' }); return; }
-    if (phoneCounts[n] > 1) { skipped.push({ name: e.name, reason: 'phone shared with another active employee' }); return; }
-    eligible.push({ id: e.id, name: e.name, phone: e.phone });
-  });
-
-  var rowsHtml = eligible.map(function (e, i) {
-    var checked = i < 10 ? 'checked' : '';
-    return '<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">'
-      + '<input type="checkbox" class="bulk-invite-check" value="' + e.id + '" ' + checked + ' onchange="_bulkInviteCapCheck(this)">'
-      + '<span style="flex:1">' + _adminEsc(e.name) + '</span>'
-      + '<span style="font-size:11px;color:var(--muted)">' + _adminEsc(e.phone) + '</span>'
-      + '</label>';
-  }).join('');
-
-  var skippedHtml = skipped.length
-    ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)">'
-      + '<div style="font-weight:700;margin-bottom:4px">Skipped (' + skipped.length + ')</div>'
-      + skipped.map(function (s) { return _adminEsc(s.name) + ' — ' + s.reason; }).join('<br>')
-      + '</div>'
-    : '';
-
-  var overlay = document.createElement('div');
-  overlay.id = 'bulk-invite-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
-  overlay.innerHTML = ''
-    + '<div style="background:var(--surface);width:100%;max-width:480px;max-height:85vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
-    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-    +     '<div style="font-size:17px;font-weight:700">✉️ Bulk invite</div>'
-    +     '<button type="button" onclick="document.getElementById(\'bulk-invite-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
-    +   '</div>'
-    +   (eligible.length
-          ? '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Up to 10 at a time. ' + eligible.length + ' eligible (active, has a phone, not yet linked).</div>'
-            + '<div id="bulk-invite-list">' + rowsHtml + '</div>'
-          : '<div style="font-size:13px;color:var(--muted);padding:16px 0">No eligible employees right now -- everyone active either already has a login or has no phone/a shared phone on file.</div>')
-    + skippedHtml
-    +   '<button type="button" id="bulk-invite-send-btn" onclick="sendBulkInvites()" ' + (eligible.length ? '' : 'disabled') + ' style="width:100%;margin-top:16px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Send invites to selected</button>'
-    +   '<div id="bulk-invite-progress" style="font-size:12px;color:var(--muted);margin-top:10px;min-height:18px"></div>'
-    +   '<div id="bulk-invite-summary" style="font-size:12px;margin-top:6px;max-height:160px;overflow-y:auto"></div>'
-    + '</div>';
-  document.body.appendChild(overlay);
-}
-
-// Enforces the 10-per-click cap by unchecking anything past the 10th
-// checked box, with a visible message -- never a silent no-op.
-function _bulkInviteCapCheck(changedEl) {
-  var checks = Array.prototype.slice.call(document.querySelectorAll('.bulk-invite-check:checked'));
-  if (checks.length > 10) {
-    changedEl.checked = false;
-    var progressEl = document.getElementById('bulk-invite-progress');
-    if (progressEl) { progressEl.style.color = 'var(--amber)'; progressEl.textContent = 'Maximum 10 per click -- uncheck one first.'; }
-  }
-}
-
-async function sendBulkInvites() {
-  if (_bulkInviteSending) return;
-  var checks = Array.prototype.slice.call(document.querySelectorAll('.bulk-invite-check:checked'));
-  if (!checks.length) { alert('Select at least one employee.'); return; }
-  if (checks.length > 10) { alert('Select 10 or fewer at a time.'); return; }
-
-  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
-  if (!sb) { alert('Not connected -- refresh and try again.'); return; }
-
-  var btn = document.getElementById('bulk-invite-send-btn');
-  var progressEl = document.getElementById('bulk-invite-progress');
-  var summaryEl = document.getElementById('bulk-invite-summary');
-  _bulkInviteSending = true;
-  if (btn) btn.disabled = true;
-  if (summaryEl) summaryEl.innerHTML = '';
-
-  var list = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
-  var results = [];
-  for (var i = 0; i < checks.length; i++) {
-    var empId = checks[i].value;
-    var emp = list.find(function (e) { return e.id === empId; });
-    var name = emp ? emp.name : empId;
-    if (progressEl) progressEl.textContent = 'Sending ' + (i + 1) + ' of ' + checks.length + '…';
-    try {
-      var res = await sb.functions.invoke('send-invite', { body: { employee_id: empId } });
-      if (res.error || !res.data || !res.data.success) {
-        var reason = (res.data && res.data.error) || (res.error && res.error.message) || 'unknown error';
-        results.push({ name: name, ok: false, reason: reason });
-      } else {
-        results.push({ name: name, ok: true });
-      }
-    } catch (e) {
-      results.push({ name: name, ok: false, reason: (e && e.message) || 'network error' });
-    }
-    // Short delay between sends -- paces real SMS sends instead of
-    // firing all N simultaneously, and keeps "Sending N of M" readable.
-    if (i < checks.length - 1) await new Promise(function (r) { setTimeout(r, 700); });
-  }
-
-  if (progressEl) progressEl.textContent = '';
-  var sentCount = results.filter(function (r) { return r.ok; }).length;
-  var failCount = results.length - sentCount;
-  if (summaryEl) {
-    summaryEl.innerHTML = '<div style="font-weight:700;margin-bottom:4px">' + sentCount + ' sent, ' + failCount + ' failed</div>'
-      + results.map(function (r) {
-          return r.ok
-            ? '<div style="color:var(--green)">✓ ' + _adminEsc(r.name) + '</div>'
-            : '<div style="color:var(--red)">✗ ' + _adminEsc(r.name) + ' — ' + _adminEsc(r.reason) + '</div>';
-        }).join('');
-  }
-  _bulkInviteSending = false;
-  if (btn) btn.disabled = false;
-  try { if (typeof renderStaffList === 'function') renderStaffList(); } catch (e) {}
-}
-
 function matchClientByPhone(phone) {
   if (!phone) return null;
   const digits = phone.replace(/\D/g,'').slice(-10);
@@ -43189,21 +42941,13 @@ async function pentaSignOut() {
 }
 
 // Wire manager login form handlers. Called once on boot when no session exists.
-// Phone + password login feature: gained phone-mode handling alongside
-// the original email mode. Email mode (default on load) is byte-for-byte
-// the same signIn()/resetPassword() calls as before this feature.
 function pentaWireLoginForm() {
   var form = document.getElementById('penta-login-form');
   if (!form) return;
   var errEl = document.getElementById('penta-login-error');
   var pwEl  = document.getElementById('penta-login-password');
   var emEl  = document.getElementById('penta-login-email');
-  var phEl  = document.getElementById('penta-login-phone');
   var btn   = document.getElementById('penta-login-submit');
-  var emailField = document.getElementById('penta-login-email-field');
-  var phoneField = document.getElementById('penta-login-phone-field');
-  var modeToggle = document.getElementById('penta-login-mode-toggle');
-  var _loginMode = 'email'; // 'email' | 'phone'
 
   function showErr(msg) {
     if (!errEl) return;
@@ -43222,40 +42966,11 @@ function pentaWireLoginForm() {
     errEl.style.borderColor = 'rgba(52,211,153,0.35)';
   }
 
-  if (modeToggle) modeToggle.addEventListener('click', function(e){
-    e.preventDefault();
-    showErr('');
-    _loginMode = (_loginMode === 'email') ? 'phone' : 'email';
-    if (emailField) emailField.style.display = (_loginMode === 'email') ? '' : 'none';
-    if (phoneField) phoneField.style.display = (_loginMode === 'phone') ? '' : 'none';
-    if (emEl) emEl.required = (_loginMode === 'email');
-    modeToggle.textContent = (_loginMode === 'email') ? 'Sign in with phone number instead' : 'Sign in with email instead';
-  });
-
   form.addEventListener('submit', async function(e){
     e.preventDefault();
     showErr('');
-    var password = pwEl.value || '';
-
-    if (_loginMode === 'phone') {
-      var phone = (phEl && phEl.value || '').trim();
-      if (!phone || !password) { showErr('Enter your phone number and password.'); return; }
-      if (!window.PentaAuth || !window.PentaAuth.signInWithPhone) {
-        showErr('Auth not ready — refresh and try again.'); return;
-      }
-      if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
-      var rp = await window.PentaAuth.signInWithPhone(phone, password);
-      if (rp && rp.error) {
-        showErr(rp.error);
-        if (pwEl) pwEl.value = '';
-        if (btn) { btn.disabled = false; btn.textContent = 'Sign in'; }
-        return;
-      }
-      window.location.reload();
-      return;
-    }
-
     var email = (emEl.value || '').trim();
+    var password = pwEl.value || '';
     if (!email || !password) { showErr('Enter email and password.'); return; }
     if (!window.PentaAuth || !window.PentaAuth.signIn) {
       showErr('Auth not ready — refresh and try again.'); return;
@@ -43276,16 +42991,6 @@ function pentaWireLoginForm() {
   var forgot = document.getElementById('penta-login-forgot-link');
   if (forgot) forgot.addEventListener('click', async function(e){
     e.preventDefault();
-    if (_loginMode === 'phone') {
-      var phone2 = (phEl && phEl.value || '').trim();
-      if (!phone2) { showErr('Enter your phone number first.'); return; }
-      if (!window.PentaAuth || !window.PentaAuth.requestPhoneReset) {
-        showErr('Auth not ready — refresh and try again.'); return;
-      }
-      var rr = await window.PentaAuth.requestPhoneReset(phone2);
-      showOk((rr && rr.message) || 'If that number is on file, a text is on its way.');
-      return;
-    }
     var email = (emEl.value || '').trim();
     if (!email) { showErr('Enter your email first.'); return; }
     if (!window.PentaAuth || !window.PentaAuth.resetPassword) {
@@ -44310,21 +44015,6 @@ function renderStaffList() {
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
-  // Phone + password login feature: same normalization rule as the
-  // login/invite/reset Edge Functions (strip to digits, drop a leading
-  // US "1"). Used here only to flag duplicates/missing numbers on the
-  // Staff screen -- never written back to any employee row.
-  function _normPhoneForStaffCard(raw) {
-    var digits = String(raw || '').replace(/\D/g, '');
-    if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
-    return digits.length === 10 ? digits : null;
-  }
-  var _phoneCounts = {};
-  active.forEach(function (e) {
-    var n = _normPhoneForStaffCard(e.phone);
-    if (n) _phoneCounts[n] = (_phoneCounts[n] || 0) + 1;
-  });
-
   const card = (emp, i) => {
     const { color, name: _teamName } = _teamFor(emp);
     if (emp.status === 'terminated') {
@@ -44343,14 +44033,6 @@ function renderStaffList() {
     const _leaderStar = (emp.position === 'team_leader')
       ? ' <span title="Team Leader" style="color:#F59E0B;font-size:13px;margin-left:2px">★</span>'
       : '';
-    // Phone + password login feature: phone display + duplicate/missing warning.
-    const _normPhone = _normPhoneForStaffCard(emp.phone);
-    const _phoneShared = _normPhone && _phoneCounts[_normPhone] > 1;
-    const _phoneHtml = !emp.phone
-      ? '<span style="color:var(--red)">⚠ No phone on file</span>'
-      : _phoneShared
-        ? `<span style="color:var(--red)" title="Shared with another active employee">⚠ ${emp.phone} (shared)</span>`
-        : `<span>${emp.phone}</span>`;
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;${emp.status==='inactive'?'opacity:0.5':''}">
       <div style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></div>
       <div style="flex:1;min-width:0">
@@ -44360,7 +44042,6 @@ function renderStaffList() {
           ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
-          ${_phoneHtml}
           <span data-invite-pill data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}"></span>
         </div>
       </div>
@@ -44661,8 +44342,7 @@ function renderStaffView() {
       `<div style="display:flex;gap:8px;margin-top:6px">
         <button type="button" data-permission="send_employee_invites" data-permission-role="manager" data-action="send-invite" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
         <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
-      </div>`,
-      `<div id="invite-send-result" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="font-size:12px;margin-top:8px;min-height:18px"></div>`
+      </div>`
     ])}
 
     <!-- v11.0.25: Recent Forms preview — last 5 forms with status pills.
@@ -50410,19 +50090,6 @@ function renderStaffSubview() {
   const active = list.filter(e => e.status !== 'terminated');
   const terminated = list.filter(e => e.status === 'terminated');
 
-  // Phone + password login feature: same normalization/duplicate check
-  // as renderStaffList's own copy -- see that function's comment.
-  function _normPhoneForSubviewCard(raw) {
-    var digits = String(raw || '').replace(/\D/g, '');
-    if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
-    return digits.length === 10 ? digits : null;
-  }
-  var _subviewPhoneCounts = {};
-  active.forEach(function (e) {
-    var n = _normPhoneForSubviewCard(e.phone);
-    if (n) _subviewPhoneCounts[n] = (_subviewPhoneCounts[n] || 0) + 1;
-  });
-
   const card = (emp, i) => {
     const { color, name: _teamName } = _teamFor(emp);
     const langLabel = {en:'EN',es:'ES',pt:'PT',cv:'KR'}[emp.lang||'en']||'EN';
@@ -50451,13 +50118,7 @@ function renderStaffSubview() {
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
         </div>
-        ${(function () {
-          var n = _normPhoneForSubviewCard(emp.phone);
-          var shared = n && _subviewPhoneCounts[n] > 1;
-          if (!emp.phone) return '<div style="font-size:12px;color:var(--red);margin-top:4px">⚠ No phone on file</div>';
-          if (shared) return '<div style="font-size:12px;color:var(--red);margin-top:4px" title="Shared with another active employee">⚠ 📱 ' + emp.phone + ' (shared)</div>';
-          return '<div style="font-size:12px;color:var(--muted);margin-top:4px">📱 ' + emp.phone + '</div>';
-        })()}
+        ${emp.phone ? `<div style="font-size:12px;color:var(--muted);margin-top:4px">📱 ${emp.phone}</div>` : ''}
       </div>
       <button onclick="openStaffProfile(${i})" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">View / Edit</button>
     </div>`;
@@ -56333,7 +55994,6 @@ function _p3dPage(dir) {
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
         <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
         <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
-        <button onclick="openBulkInviteModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">✉️ Bulk invite</button>
         <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">+ Add</button>
         <button onclick="closeStaffSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
       </div>
@@ -58053,57 +57713,6 @@ function _p3dPage(dir) {
         });
         if (r.error) return { error: r.error.message };
         return { ok: true };
-      },
-
-      // Phone + password login feature. Raw fetch, not functions.invoke --
-      // invoke swallows non-2xx response bodies (bit this app before on
-      // claire-chat/geotab, see PentaClientHealth.runScoring's own
-      // comment) and the whole point of phone-login's 401/429 bodies is
-      // the generic-but-present error message this needs to show.
-      signInWithPhone: async function(phone, password){
-        try {
-          var resp = await fetch(PROJECT_URL + '/functions/v1/phone-login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': PUBLISHABLE_KEY },
-            body: JSON.stringify({ phone: phone, password: password })
-          });
-          var body = null;
-          try { body = await resp.json(); } catch (e) {}
-          if (!resp.ok) return { error: (body && body.error) || ('Sign-in failed (HTTP ' + resp.status + ')') };
-          if (!body || !body.access_token || !body.refresh_token) return { error: 'Sign-in failed -- no session returned.' };
-          var setRes = await client.auth.setSession({ access_token: body.access_token, refresh_token: body.refresh_token });
-          if (setRes.error) return { error: setRes.error.message };
-          this.session = setRes.data.session;
-          return { ok: true };
-        } catch (e) {
-          return { error: 'Network error -- check your connection and try again.' };
-        }
-      },
-
-      // Phone + password login feature. Always resolves to { ok: true }
-      // with the SAME generic message every time the Edge Function itself
-      // responds at all -- the function never reveals whether the phone
-      // was found or whether its own SMS send succeeded (see that
-      // function's own comment: an earlier draft had a distinguishable
-      // "RingCentral unreachable" response here, which was a real
-      // enumeration leak caught in review and removed). The ONLY
-      // different message this ever shows is for a genuine failure to
-      // reach the Edge Function at all (network down, DNS, etc.) --
-      // that's a transport-layer fact about THIS DEVICE'S connection,
-      // never about any specific phone number.
-      requestPhoneReset: async function(phone){
-        try {
-          var resp = await fetch(PROJECT_URL + '/functions/v1/request-password-reset', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': PUBLISHABLE_KEY },
-            body: JSON.stringify({ phone: phone })
-          });
-          var body = null;
-          try { body = await resp.json(); } catch (e) {}
-          return { ok: true, message: (body && body.message) || 'If that number is on file, a text is on its way.' };
-        } catch (e) {
-          return { ok: true, message: 'Could not reach the server. Please call the office.' };
-        }
       },
 
       signOut: async function(){
