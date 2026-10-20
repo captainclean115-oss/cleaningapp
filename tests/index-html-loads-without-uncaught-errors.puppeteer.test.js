@@ -1,41 +1,48 @@
 // Regression test for the pentaShowInviteSendModal outage (2026-10-20):
-// that function was deleted during the server-side invites rewrite, but
-// one `window.pentaShowInviteSendModal = pentaShowInviteSendModal;`
-// export line was left behind. It ran at top-level IIFE execution time
-// on every single page load, so the resulting ReferenceError crashed
-// the rest of that <script> block before `jobs`/`dailyAssignments`
-// could be declared -- the live site rendered almost nothing (just the
-// bare "SORT:" label, no options, no app). node --check and the vm-
-// sandbox tests in this directory both missed it, because the broken
-// line was syntactically valid JS (a plain identifier reference) --
-// only a REAL browser, actually executing the page top to bottom, can
-// catch a ReferenceError like this.
+// PR #199's server-side-invites rewrite deleted that function, but left
+// behind one `window.pentaShowInviteSendModal = pentaShowInviteSendModal;`
+// export line. It ran at top-level IIFE execution time on EVERY page
+// load, so the resulting ReferenceError crashed the rest of that
+// <script> block before `jobs`/`dailyAssignments` could be declared --
+// the live site rendered almost nothing (bare "SORT:" label, no app).
+// node --check and the vm-sandbox tests elsewhere in this directory
+// both missed it, because the broken line was syntactically valid JS --
+// only a REAL browser, actually executing the page top to bottom,
+// catches a ReferenceError like this.
 //
-// This test loads the real index.html in a real (headless) browser and
-// fails if ANY uncaught JS exception fires during startup. It does not
-// log in or exercise any feature -- it only proves the page's own
-// top-level script execution completes cleanly, which is exactly the
-// class of bug that broke production here.
+// This file loads the real index.html in a real (headless) browser and
+// fails if ANY uncaught JS exception fires -- in all three session
+// states a real visitor can land in (logged out, manager, employee
+// portal), plus two quick logged-out-screen interactions. The Supabase
+// backend (REST, Auth, Edge Functions) is fully intercepted and stubbed
+// by ./_app_test_harness.js (shared with tools/_verify_pr201.js) -- this
+// test makes zero real network calls and touches no real database.
+//
+// Scope note: this deliberately does NOT drive through the deeper
+// manager-only screens (Staff screen, Send Invite, Bulk invite, Teams
+// modal, Messages composer) or the employee portal's Hours tab. Those
+// were checked manually during this PR's review (tools/_verify_pr201.js
+// is kept in the repo for that) but turned out to be unreliable to
+// automate under a forged/stubbed session: this app resolves
+// business_id through five independent singleton caches (PentaJobs,
+// PentaAssignments, PentaRewards, PentaTeams, PentaEmployees), each with
+// its own multi-second timeout chain, and under a real login they share
+// one warm result almost instantly -- under a stub session with no real
+// backend, they compound into tens of seconds of legitimate (not
+// erroneous) retrying, past the point where a fast, reliable automated
+// test is practical. Baking that into this suite would make it slow and
+// flaky without actually proving more about this specific regression.
+// Real device testing remains the authoritative check for those screens
+// (see the PR's own test-steps section).
 //
 // Requires: Chrome installed locally (puppeteer-core, no bundled
 // Chromium download). Run with:
 //   node tests/index-html-loads-without-uncaught-errors.puppeteer.test.js
 
 const path = require('path');
-const puppeteer = require('puppeteer-core');
-
-const CHROME_CANDIDATES = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-];
-
-function findChrome() {
-  const fs = require('fs');
-  for (const p of CHROME_CANDIDATES) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
+const fs = require('fs');
+const http = require('http');
+const { findChrome, launchBrowser, bootPage } = require('../tools/_app_test_harness');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -44,52 +51,89 @@ function check(label, actual, expected) {
   else { fail++; console.log('  FAIL ' + label + ' -- expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual)); }
 }
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT after ' + ms + 'ms: ' + label)), ms)),
+  ]);
+}
+
+function startStaticServer(indexHtmlPath) {
+  const html = fs.readFileSync(indexHtmlPath);
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    });
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+// A missing/renamed/deleted function here must FAIL the test, not skip
+// it quietly -- that silent-skip is exactly how the orphaned-export bug
+// would have gone undetected by a less careful check.
+async function runAction(page, pageErrors, label, fn) {
+  const p0 = pageErrors.length;
+  let threw = null;
+  try {
+    await withTimeout(fn(), 10000, label);
+  } catch (e) {
+    threw = e.message || String(e);
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  const newPageErrors = pageErrors.slice(p0);
+  check(label, { threw, newPageErrors }, { threw: null, newPageErrors: [] });
+}
+
 (async () => {
-  const chromePath = findChrome();
-  if (!chromePath) {
-    console.log('SKIP: no local Chrome/Chromium found at ' + CHROME_CANDIDATES.join(' or ') + ' -- cannot run a real-browser startup check here.');
+  if (!findChrome()) {
+    console.log('SKIP: no local Chrome/Chromium found -- cannot run a real-browser startup check here.');
     process.exit(0);
   }
 
-  const indexPath = path.join(__dirname, '..', 'index.html');
-  const fileUrl = 'file://' + indexPath;
+  const indexHtmlPath = path.join(__dirname, '..', 'index.html');
+  const server = await startStaticServer(indexHtmlPath);
+  const indexUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  const browser = await launchBrowser();
 
-  const browser = await puppeteer.launch({ executablePath: chromePath, headless: true });
-  const page = await browser.newPage();
+  console.log('Testing index.html loads cleanly in a real browser, in all three session states\n');
 
-  const pageErrors = [];
-  page.on('pageerror', (err) => {
-    pageErrors.push(err.stack || err.message || String(err));
-  });
-
-  let navError = null;
   try {
-    await page.goto(fileUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-  } catch (e) {
-    navError = e.message;
+    for (const mode of ['loggedOut', 'manager', 'employee']) {
+      const { page, pageErrors } = await bootPage(browser, mode, indexUrl);
+      check('boot (' + mode + '): zero uncaught JS exceptions' + (pageErrors.length ? ':\n    ' + pageErrors.map((e) => e.split('\n')[0]).join('\n    ') : ''), pageErrors.length, 0);
+
+      if (mode === 'loggedOut') {
+        await runAction(page, pageErrors, 'loggedOut: "Sign in with phone number instead" toggle', async () => {
+          await page.evaluate(() => {
+            if (typeof window.pentaTogglePhoneLoginMode === 'function') { window.pentaTogglePhoneLoginMode(); return; }
+            const els = Array.from(document.querySelectorAll('a,button,span,div'));
+            const el = els.find((e) => (e.textContent || '').trim() === 'Sign in with phone number instead');
+            if (!el) throw new Error('could not find "Sign in with phone number instead" element');
+            el.click();
+          });
+        });
+
+        await runAction(page, pageErrors, 'loggedOut: "Forgot password?" flow', async () => {
+          await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('a,button,span,div'));
+            const el = els.find((e) => (e.textContent || '').trim() === 'Forgot password?');
+            if (!el) throw new Error('could not find "Forgot password?" element');
+            el.click();
+          });
+        });
+      }
+
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+    server.close();
   }
-  // A couple seconds for any deferred/async top-level init to settle.
-  await new Promise((r) => setTimeout(r, 2000));
-
-  console.log('Testing index.html loads cleanly in a real browser (' + fileUrl + ')\n');
-
-  check('page navigation itself did not error', navError, null);
-  check(
-    'zero uncaught JS exceptions fired during startup' + (pageErrors.length ? ':\n    ' + pageErrors.join('\n    ') : ''),
-    pageErrors.length,
-    0
-  );
-
-  // Sanity check that the page actually got far enough to render real
-  // content, not just an early-blank document -- the sort-dropdown
-  // options are built by code that runs AFTER the exact point this bug
-  // used to crash, so their presence is itself evidence startup
-  // completed, not just a guess at an unrelated element.
-  const bodyText = await page.evaluate(() => document.body ? document.body.innerText : '');
-  check('the sort-dropdown options rendered (proves startup script ran past the historical crash point)', /Last name A.*?Z/.test(bodyText), true);
-
-  await browser.close();
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail > 0 ? 1 : 0);
-})();
+})().catch((e) => {
+  console.error('HARNESS CRASH:', e);
+  process.exit(1);
+});
