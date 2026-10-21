@@ -92,11 +92,14 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Credentials': 'true',
 };
 
-async function installInterception(page, mode) {
+async function installInterception(page, mode, requestLog) {
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const url = req.url();
     try {
+      if (requestLog && url.indexOf('supabase.co') !== -1 && req.method() !== 'OPTIONS') {
+        requestLog.push(url);
+      }
       if (url.indexOf('supabase.co') === -1) {
         req.continue();
         return;
@@ -202,6 +205,7 @@ async function bootPage(browser, mode, indexFileUrl) {
   const pageErrors = [];
   const consoleErrors = [];
   const consoleWarnings = [];
+  const requestLog = [];
 
   page.on('pageerror', (err) => pageErrors.push(err.stack || err.message || String(err)));
   page.on('console', (msg) => {
@@ -209,7 +213,7 @@ async function bootPage(browser, mode, indexFileUrl) {
     if (msg.type() === 'warning') consoleWarnings.push(msg.text());
   });
 
-  await installInterception(page, mode);
+  await installInterception(page, mode, requestLog);
 
   // Supabase Realtime opens a persistent WebSocket; Puppeteer's HTTP
   // request interception doesn't see it (not a plain HTTP request), and
@@ -265,12 +269,24 @@ async function bootPage(browser, mode, indexFileUrl) {
         const sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
         if (sb) await sb.auth.getUser();
       } catch (e) {}
-      try {
-        if (window.PentaEmployees && window.PentaEmployees.ready) await window.PentaEmployees.ready();
-      } catch (e) {}
-      try {
-        if (window.PentaTeams && window.PentaTeams.load) await window.PentaTeams.load();
-      } catch (e) {}
+      // Warm every independent singleton cache's own ready()/load() IN
+      // PARALLEL (not sequentially) -- each pays its own up-to-6s Path
+      // A/B cost under this stub session, but since they're independent
+      // of each other, running them together costs roughly the slowest
+      // one, not the sum of all five.
+      const modules = [
+        ['PentaEmployees', 'ready'],
+        ['PentaTeams', 'load'],
+        ['PentaJobs', 'ready'],
+        ['PentaAssignments', 'ready'],
+        ['PentaRewards', 'ready'],
+      ];
+      await Promise.all(modules.map(([name, method]) => (async () => {
+        try {
+          const mod = window[name];
+          if (mod && typeof mod[method] === 'function') await mod[method]();
+        } catch (e) {}
+      })()));
     });
     // Node-level safety cap: never let a stuck warm-up hang bootPage()
     // forever, even though every step above already has its own
@@ -280,7 +296,7 @@ async function bootPage(browser, mode, indexFileUrl) {
 
   await new Promise((r) => setTimeout(r, 2000));
 
-  return { page, pageErrors, consoleErrors, consoleWarnings };
+  return { page, pageErrors, consoleErrors, consoleWarnings, requestLog };
 }
 
 module.exports = {
