@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#F7F7F5">
+<title>Reset your password — Penta</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    background: #F7F7F5;
+    color: #1a1a1a;
+    min-height: 100vh;
+    padding: 24px;
+    padding-top: calc(24px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  .card {
+    max-width: 420px;
+    margin: 32px auto;
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 32px 24px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  }
+  h1 { margin: 0 0 8px; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+  p.sub { color: #6b7280; margin: 0 0 24px; font-size: 14px; line-height: 1.5; }
+  label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 600; color: #374151; }
+  input[type=password] {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #1a1a1a;
+    -webkit-appearance: none;
+  }
+  input:focus {
+    outline: none;
+    border-color: #5E5CE6;
+    box-shadow: 0 0 0 3px rgba(94, 92, 230, 0.15);
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    background: #5E5CE6;
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    margin-top: 20px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  .err {
+    color: #b91c1c;
+    background: rgba(220, 38, 38, 0.08);
+    border: 1px solid rgba(220, 38, 38, 0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-top: 14px;
+    line-height: 1.4;
+  }
+  a.cta {
+    display: block;
+    text-align: center;
+    margin-top: 24px;
+    padding: 14px;
+    background: #5E5CE6;
+    color: #ffffff;
+    border-radius: 10px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+
+  <div id="loading-step">
+    <h1>One moment…</h1>
+    <p class="sub">Checking your reset link.</p>
+  </div>
+
+  <div id="form-step" style="display:none">
+    <h1>Set a new password</h1>
+    <p class="sub">Choose a new password for your Penta account.</p>
+    <label for="pw">New password (8+ characters)</label>
+    <div style="position:relative">
+      <input type="password" id="pw" autocomplete="new-password" autofocus style="padding-right:56px;width:100%;box-sizing:border-box">
+      <button type="button" id="pw-toggle" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);width:auto;margin-top:0;background:none;border:none;color:#6b7280;font-size:12px;font-weight:600;cursor:pointer;padding:4px 6px">Show</button>
+    </div>
+    <label for="pw2">Confirm new password</label>
+    <div style="position:relative">
+      <input type="password" id="pw2" autocomplete="new-password" style="padding-right:56px;width:100%;box-sizing:border-box">
+      <button type="button" id="pw2-toggle" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);width:auto;margin-top:0;background:none;border:none;color:#6b7280;font-size:12px;font-weight:600;cursor:pointer;padding:4px 6px">Show</button>
+    </div>
+    <button id="submit-btn" type="button">Set new password</button>
+    <div class="err" id="err" style="display:none"></div>
+  </div>
+
+  <div id="expired-step" style="display:none">
+    <h1>Link expired</h1>
+    <p class="sub">This reset link is no longer valid — it may have already been used, or it's older than 60 minutes. Go back to the sign-in screen and tap "Forgot password?" again for a new one.</p>
+  </div>
+
+  <div id="done-step" style="display:none">
+    <h1>Password updated ✓</h1>
+    <p class="sub">You're signed in with your new password.</p>
+    <a class="cta" href="https://captainclean115-oss.github.io/cleaningapp/">Open Penta →</a>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(function () {
+  var PROJECT_URL = 'https://wymoezilyjmyibmuqqmr.supabase.co';
+  var PUBLISHABLE_KEY = 'sb_publishable_lsRZrYHU00rFbZ7S4Jkc7w_TlI3WvEz';
+
+  var loadingStep = document.getElementById('loading-step');
+  var formStep    = document.getElementById('form-step');
+  var expiredStep = document.getElementById('expired-step');
+  var doneStep    = document.getElementById('done-step');
+  var pwEl  = document.getElementById('pw');
+  var pw2El = document.getElementById('pw2');
+  var btn   = document.getElementById('submit-btn');
+  var errEl = document.getElementById('err');
+
+  function showErr(msg) { errEl.textContent = msg; errEl.style.display = 'block'; }
+  function hideErr()    { errEl.textContent = '';  errEl.style.display = 'none';  }
+  function showStep(step) {
+    [loadingStep, formStep, expiredStep, doneStep].forEach(function (s) { s.style.display = 'none'; });
+    step.style.display = 'block';
+  }
+
+  function wireToggle(inputEl, btnEl) {
+    btnEl.addEventListener('click', function () {
+      var showing = inputEl.type === 'text';
+      inputEl.type = showing ? 'password' : 'text';
+      btnEl.textContent = showing ? 'Show' : 'Hide';
+    });
+  }
+  wireToggle(pwEl, document.getElementById('pw-toggle'));
+  wireToggle(pw2El, document.getElementById('pw2-toggle'));
+
+  if (!window.supabase || !window.supabase.createClient) {
+    showStep(expiredStep);
+    document.getElementById('expired-step').innerHTML =
+      '<h1>Could not load</h1><p class="sub">This page could not load its sign-in library. Check your connection and reload.</p>';
+    return;
+  }
+
+  var client = window.supabase.createClient(PROJECT_URL, PUBLISHABLE_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+
+  // Supabase's recovery link redirects here with the session encoded in
+  // the URL hash (#access_token=...&type=recovery) -- detectSessionInUrl
+  // above picks that up automatically and fires onAuthStateChange with a
+  // 'PASSWORD_RECOVERY' event once it's processed. If the link was
+  // already used or has expired, no session ever arrives -- the timeout
+  // below treats that as "expired", the same wording an actually-expired
+  // link gets, since the two cases look identical from here.
+  var resolved = false;
+  client.auth.onAuthStateChange(function (event, session) {
+    if (resolved) return;
+    if (event === 'PASSWORD_RECOVERY' && session) {
+      resolved = true;
+      showStep(formStep);
+    }
+  });
+
+  setTimeout(function () {
+    if (resolved) return;
+    client.auth.getSession().then(function (r) {
+      if (resolved) return;
+      if (r && r.data && r.data.session) {
+        resolved = true;
+        showStep(formStep);
+      } else {
+        resolved = true;
+        showStep(expiredStep);
+      }
+    });
+  }, 2500);
+
+  btn.addEventListener('click', async function () {
+    hideErr();
+    var pw  = pwEl.value || '';
+    var pw2 = pw2El.value || '';
+    if (pw.length < 8)   { showErr('Password must be at least 8 characters.'); return; }
+    if (pw !== pw2)      { showErr('Passwords do not match.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      var r = await client.auth.updateUser({ password: pw });
+      if (r.error) {
+        showErr(r.error.message || 'Could not update your password. Try the link again.');
+        btn.disabled = false;
+        btn.textContent = 'Set new password';
+        return;
+      }
+      showStep(doneStep);
+    } catch (e) {
+      showErr('Network error. Check your connection and try again.');
+      btn.disabled = false;
+      btn.textContent = 'Set new password';
+    }
+  });
+})();
+</script>
+</body>
+</html>

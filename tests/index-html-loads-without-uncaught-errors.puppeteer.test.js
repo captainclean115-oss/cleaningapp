@@ -1,0 +1,139 @@
+// Regression test for the pentaShowInviteSendModal outage (2026-10-20):
+// PR #199's server-side-invites rewrite deleted that function, but left
+// behind one `window.pentaShowInviteSendModal = pentaShowInviteSendModal;`
+// export line. It ran at top-level IIFE execution time on EVERY page
+// load, so the resulting ReferenceError crashed the rest of that
+// <script> block before `jobs`/`dailyAssignments` could be declared --
+// the live site rendered almost nothing (bare "SORT:" label, no app).
+// node --check and the vm-sandbox tests elsewhere in this directory
+// both missed it, because the broken line was syntactically valid JS --
+// only a REAL browser, actually executing the page top to bottom,
+// catches a ReferenceError like this.
+//
+// This file loads the real index.html in a real (headless) browser and
+// fails if ANY uncaught JS exception fires -- in all three session
+// states a real visitor can land in (logged out, manager, employee
+// portal), plus two quick logged-out-screen interactions. The Supabase
+// backend (REST, Auth, Edge Functions) is fully intercepted and stubbed
+// by ./_app_test_harness.js (shared with tools/_verify_pr201.js) -- this
+// test makes zero real network calls and touches no real database.
+//
+// Scope note: this deliberately does NOT drive through the deeper
+// manager-only screens (Staff screen, Send Invite, Bulk invite, Teams
+// modal, Messages composer) or the employee portal's Hours tab. Those
+// were checked manually during this PR's review (tools/_verify_pr201.js
+// is kept in the repo for that) but turned out to be unreliable to
+// automate under a forged/stubbed session: this app resolves
+// business_id through five independent singleton caches (PentaJobs,
+// PentaAssignments, PentaRewards, PentaTeams, PentaEmployees), each with
+// its own multi-second timeout chain, and under a real login they share
+// one warm result almost instantly -- under a stub session with no real
+// backend, they compound into tens of seconds of legitimate (not
+// erroneous) retrying, past the point where a fast, reliable automated
+// test is practical. Baking that into this suite would make it slow and
+// flaky without actually proving more about this specific regression.
+// Real device testing remains the authoritative check for those screens
+// (see the PR's own test-steps section).
+//
+// Requires: Chrome installed locally (puppeteer-core, no bundled
+// Chromium download). Run with:
+//   node tests/index-html-loads-without-uncaught-errors.puppeteer.test.js
+
+const path = require('path');
+const fs = require('fs');
+const http = require('http');
+const { findChrome, launchBrowser, bootPage } = require('../tools/_app_test_harness');
+
+let pass = 0, fail = 0;
+function check(label, actual, expected) {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  if (ok) { pass++; console.log('  ok   ' + label); }
+  else { fail++; console.log('  FAIL ' + label + ' -- expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual)); }
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT after ' + ms + 'ms: ' + label)), ms)),
+  ]);
+}
+
+function startStaticServer(indexHtmlPath) {
+  const html = fs.readFileSync(indexHtmlPath);
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    });
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+// A missing/renamed/deleted function here must FAIL the test, not skip
+// it quietly -- that silent-skip is exactly how the orphaned-export bug
+// would have gone undetected by a less careful check.
+async function runAction(page, pageErrors, label, fn) {
+  const p0 = pageErrors.length;
+  let threw = null;
+  try {
+    await withTimeout(fn(), 10000, label);
+  } catch (e) {
+    threw = e.message || String(e);
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  const newPageErrors = pageErrors.slice(p0);
+  check(label, { threw, newPageErrors }, { threw: null, newPageErrors: [] });
+}
+
+(async () => {
+  if (!findChrome()) {
+    console.log('SKIP: no local Chrome/Chromium found -- cannot run a real-browser startup check here.');
+    process.exit(0);
+  }
+
+  const indexHtmlPath = path.join(__dirname, '..', 'index.html');
+  const server = await startStaticServer(indexHtmlPath);
+  const indexUrl = 'http://127.0.0.1:' + server.address().port + '/';
+  const browser = await launchBrowser();
+
+  console.log('Testing index.html loads cleanly in a real browser, in all three session states\n');
+
+  try {
+    for (const mode of ['loggedOut', 'manager', 'employee']) {
+      const { page, pageErrors } = await bootPage(browser, mode, indexUrl);
+      check('boot (' + mode + '): zero uncaught JS exceptions' + (pageErrors.length ? ':\n    ' + pageErrors.map((e) => e.split('\n')[0]).join('\n    ') : ''), pageErrors.length, 0);
+
+      if (mode === 'loggedOut') {
+        await runAction(page, pageErrors, 'loggedOut: "Sign in with phone number instead" toggle', async () => {
+          await page.evaluate(() => {
+            if (typeof window.pentaTogglePhoneLoginMode === 'function') { window.pentaTogglePhoneLoginMode(); return; }
+            const els = Array.from(document.querySelectorAll('a,button,span,div'));
+            const el = els.find((e) => (e.textContent || '').trim() === 'Sign in with phone number instead');
+            if (!el) throw new Error('could not find "Sign in with phone number instead" element');
+            el.click();
+          });
+        });
+
+        await runAction(page, pageErrors, 'loggedOut: "Forgot password?" flow', async () => {
+          await page.evaluate(() => {
+            const els = Array.from(document.querySelectorAll('a,button,span,div'));
+            const el = els.find((e) => (e.textContent || '').trim() === 'Forgot password?');
+            if (!el) throw new Error('could not find "Forgot password?" element');
+            el.click();
+          });
+        });
+      }
+
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+    server.close();
+  }
+
+  console.log('\n' + pass + ' passed, ' + fail + ' failed');
+  process.exit(fail > 0 ? 1 : 0);
+})().catch((e) => {
+  console.error('HARNESS CRASH:', e);
+  process.exit(1);
+});
