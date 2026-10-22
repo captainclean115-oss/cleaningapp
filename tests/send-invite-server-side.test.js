@@ -60,7 +60,13 @@ function extractFn(startMarker) {
 
   console.log('\nStructural guarantees (real file text, not a behavioral mock)\n');
 
-  check('the payload type accepts ONLY employee_id -- no phone, no message field exists to ignore', /payload: \{ employee_id\?: string \}/.test(src), true);
+  // Claire portal-links feature: payload grew an `action` field
+  // ('invite' default or 'reset'), still never phone/message -- the
+  // action value itself is validated (`payload.action === "reset" ? ...
+  // : "invite"`), never used to branch into accepting anything else
+  // client-supplied.
+  check('the payload type accepts ONLY employee_id and action -- no phone, no message field exists to ignore', /payload: \{ employee_id\?: string; action\?: string \}/.test(src), true);
+  check('action is validated to exactly "invite" or "reset", never passed through as an arbitrary client string', /const action = payload\.action === "reset" \? "reset" : "invite";/.test(src), true);
   check('the text message is built from employee.first_name + businessName + link -- never from payload', /const text = `Hi \$\{firstName\}, \$\{businessName\} set up your Penta account\. Create your password here: \$\{link\}`/.test(src), true);
   check('the phone sent to RC comes from the EMPLOYEE ROW (normalized), never from payload', /sendInviteText\(admin, callerBusinessId, normalized, text\)/.test(src), true);
   check('role check is exactly owner or manager (not employee, not any other role)', /callerRole !== "owner" && callerRole !== "manager"/.test(src), true);
@@ -84,12 +90,22 @@ function extractFn(startMarker) {
   // an already-static error string (e.g. "Empty bearer token", "Copy
   // invite link") -- those are never followed by the ${...} syntax that
   // would actually interpolate a value.
-  const leakyCall = jsonCalls.find(function (c) { return /\$\{token\}/.test(c) || /\$\{link\}/.test(c); });
-  check('no return json(...) response body ever contains the token or link variable', leakyCall, undefined);
-  check('the token/link variables are never passed as console.error arguments', !/console\.error\([^)]*,\s*(token|link)\)/.test(src), true);
+  const leakyCall = jsonCalls.find(function (c) { return /\$\{token\}/.test(c) || /\$\{link\}/.test(c) || /\$\{resetLink\}/.test(c); });
+  check('no return json(...) response body ever contains the invite token, invite link, or reset link variable', leakyCall, undefined);
+  check('the token/link/resetLink variables are never passed as console.error arguments', !/console\.error\([^)]*,\s*(token|link|resetLink)\)/.test(src), true);
+  // Claire portal-links feature: the reset action's own server-side
+  // eligibility + leak-safety guarantees, independent of what the
+  // client (Claire or anyone else) sends.
+  check('reset requires the employee to ALREADY have a login (auth_user_id), checked server-side', /if \(!employee\.auth_user_id\) \{\s*\n\s*return json\(409/.test(src), true);
+  check('a recovery link is generated the SAME way request-password-reset already does (generateLink type:"recovery")', /type: "recovery"/.test(src), true);
+  check('reset does NOT write an employee_invites row (no token table needed -- Supabase\'s own recovery link already handles single-use/expiry)', !/action === "reset"[\s\S]{0,400}employee_invites/.test(src), true);
   check('rate limiting uses the same generic rate_limit_check/increment RPCs every other Edge Function in this app uses (no new table)', /rate_limit_check/.test(src) && /rate_limit_increment/.test(src), true);
-  check('an employee-keyed rate limit exists (stops spamming one person)', /invite:employee:/.test(src), true);
-  check('a caller-keyed rate limit also exists (stops one manager session from mass-spamming)', /invite:caller:/.test(src), true);
+  // Claire portal-links feature: the rate-limit key is now templated on
+  // `action` so invite and reset get separate budgets (`${action}:
+  // employee:...` / `${action}:caller:...`) -- was a literal
+  // "invite:employee:"/"invite:caller:" string before this changed.
+  check('an employee-keyed rate limit exists (stops spamming one person), separately per action', /`\$\{action\}:employee:\$\{employeeId\}`/.test(src), true);
+  check('a caller-keyed rate limit also exists (stops one manager session from mass-spamming), separately per action', /`\$\{action\}:caller:\$\{callerAuthId\}`/.test(src), true);
   check('sendInviteText mirrors sendResetText\'s RC call shape (same provider, same credentials resolution) -- not a second integration', /get_active_phone_integration/.test(src) && /platform\.ringcentral\.com\/restapi\/v1\.0\/account\/~\/extension\/~\/sms/.test(src), true);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
