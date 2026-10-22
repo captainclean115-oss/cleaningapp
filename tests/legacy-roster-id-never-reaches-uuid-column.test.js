@@ -228,6 +228,10 @@ function buildSandboxFromSource(fromRowSrc, resolverSrc, extra) {
       _adminEsc: (s) => String(s),
       _renderInviteResult: (rosterId, html) => { el('[id="invite-send-result"][data-roster-id="' + rosterId + '"]').innerHTML = html; },
       _maskPhone: (phone) => String(phone || '').replace(/\d(?=\d{4})/g, '*'),
+      // pentaSendInvite now calls this shared helper instead of its own
+      // inline duplicate-phone check -- stub returns "no duplicate"
+      // since this test isn't exercising that check.
+      _findDuplicateActivePhoneOwnerReason: () => null,
       window: {
         PentaEmployees: { listSync: () => [] },
         supabaseClient: {
