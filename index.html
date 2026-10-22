@@ -42580,7 +42580,30 @@ function appUnlockEmployee(emp) {
   if (topbar) topbar.style.display = 'none';
 
   currentEmployee = emp;
-  currentLang = appSelectedLang || emp.lang || 'en';
+  // Employee portal polish: her own per-device choice (if any) wins
+  // first -- synchronous, always available, never blocks boot. The
+  // dead PIN-screen picker (appSelectedLang) and culture_tag-derived
+  // default are the same fallback chain as before this change.
+  currentLang = (function () {
+    try { var saved = localStorage.getItem('penta_portal_lang'); if (saved) return saved; } catch (e) {}
+    return appSelectedLang || emp.lang || 'en';
+  })();
+  // Best-effort upgrade to her REAL saved preferred_language column,
+  // once migration 117 is applied -- fire-and-forget, never blocks
+  // boot, and the .catch swallows "column does not exist" cleanly if
+  // the migration hasn't shipped yet (never breaks login either way).
+  try {
+    var _sbLang = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (_sbLang && emp && emp.uuid) {
+      _sbLang.from('employees').select('preferred_language').eq('id', emp.uuid).maybeSingle()
+        .then(function (r) {
+          if (r && r.data && r.data.preferred_language && r.data.preferred_language !== currentLang) {
+            try { setPortalLang(r.data.preferred_language); } catch (e2) {}
+          }
+        })
+        .catch(function () {});
+    }
+  } catch (e) {}
 
   var loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'none';
@@ -42619,7 +42642,8 @@ function appUnlockEmployee(emp) {
     }
   }
   const dateEl = document.getElementById('portal-date');
-  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+  // Employee portal polish: display-only -- no chevron, not tappable.
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const h = new Date().getHours();
   const greet = h < 12 ? { en:'Good morning', es:'Buenos días', pt:'Bom dia', cv:'Bon matin' }
     : h < 17 ? { en:'Good afternoon', es:'Buenas tardes', pt:'Boa tarde', cv:'Bon tardis' }
@@ -45502,6 +45526,38 @@ const T = {
     goodAfternoon: 'Good afternoon',
     goodEvening: 'Good evening',
     logout: 'Log out',
+    scheduleComingSoon: 'Your schedule will be available here soon.',
+    formsComingSoon: 'Forms will be available here soon.',
+    menuTitle: 'Menu',
+    menuAccount: 'Account',
+    menuAboutMe: 'About me',
+    menuLanguage: 'Language',
+    menuLogout: 'Log out',
+    logoutConfirm: 'Are you sure you want to log out?',
+    accountTitle: 'Account',
+    accountAddress: 'Home address',
+    accountCity: 'City',
+    accountState: 'State',
+    accountZip: 'Zip code',
+    accountEmergencyName: 'Emergency contact name',
+    accountEmergencyPhone: 'Emergency contact phone',
+    accountPhoneLabel: 'Phone number',
+    accountNameLabel: 'Name',
+    accountReadonlyNote: 'To change your number or name, contact the office.',
+    accountSave: 'Save',
+    accountSaved: 'Saved.',
+    accountSaveFailed: 'Could not save',
+    aboutMeTitle: 'About me',
+    aboutMeRole: 'Role / Team',
+    aboutMeTenure: 'Time employed',
+    aboutMePay: 'Pay',
+    aboutMePayHourly: 'per hour',
+    aboutMeSalaried: 'Salaried',
+    aboutMeNotSet: 'Not set',
+    aboutMeVacation: 'Vacation / PTO',
+    aboutMeNotAvailable: "This isn't available yet.",
+    languageTitle: 'Language',
+    menuClose: 'Close',
     todayJobs: "TODAY'S JOBS",
     noJobs: 'No jobs scheduled for today',
     directions: '🗺 Directions',
@@ -45562,6 +45618,38 @@ const T = {
     goodAfternoon: 'Buenas tardes',
     goodEvening: 'Buenas noches',
     logout: 'Cerrar sesión',
+    scheduleComingSoon: 'Tu horario estará disponible aquí próximamente.',
+    formsComingSoon: 'Los formularios estarán disponibles aquí próximamente.',
+    menuTitle: 'Menú',
+    menuAccount: 'Cuenta',
+    menuAboutMe: 'Sobre mí',
+    menuLanguage: 'Idioma',
+    menuLogout: 'Cerrar sesión',
+    logoutConfirm: '¿Seguro que quieres cerrar sesión?',
+    accountTitle: 'Cuenta',
+    accountAddress: 'Dirección',
+    accountCity: 'Ciudad',
+    accountState: 'Estado',
+    accountZip: 'Código postal',
+    accountEmergencyName: 'Nombre de contacto de emergencia',
+    accountEmergencyPhone: 'Teléfono de contacto de emergencia',
+    accountPhoneLabel: 'Número de teléfono',
+    accountNameLabel: 'Nombre',
+    accountReadonlyNote: 'Para cambiar tu número o nombre, contacta a la oficina.',
+    accountSave: 'Guardar',
+    accountSaved: 'Guardado.',
+    accountSaveFailed: 'No se pudo guardar',
+    aboutMeTitle: 'Sobre mí',
+    aboutMeRole: 'Rol / Equipo',
+    aboutMeTenure: 'Tiempo empleado',
+    aboutMePay: 'Pago',
+    aboutMePayHourly: 'por hora',
+    aboutMeSalaried: 'Asalariado/a',
+    aboutMeNotSet: 'No establecido',
+    aboutMeVacation: 'Vacaciones / PTO',
+    aboutMeNotAvailable: 'Esto no está disponible todavía.',
+    languageTitle: 'Idioma',
+    menuClose: 'Cerrar',
     todayJobs: 'TRABAJOS DE HOY',
     noJobs: 'No hay trabajos programados para hoy',
     directions: '🗺 Cómo llegar',
@@ -45622,6 +45710,38 @@ const T = {
     goodAfternoon: 'Boa tarde',
     goodEvening: 'Boa noite',
     logout: 'Sair',
+    scheduleComingSoon: 'Sua agenda estará disponível aqui em breve.',
+    formsComingSoon: 'Os formulários estarão disponíveis aqui em breve.',
+    menuTitle: 'Menu',
+    menuAccount: 'Conta',
+    menuAboutMe: 'Sobre mim',
+    menuLanguage: 'Idioma',
+    menuLogout: 'Sair',
+    logoutConfirm: 'Tem certeza que deseja sair?',
+    accountTitle: 'Conta',
+    accountAddress: 'Endereço',
+    accountCity: 'Cidade',
+    accountState: 'Estado',
+    accountZip: 'CEP',
+    accountEmergencyName: 'Nome do contato de emergência',
+    accountEmergencyPhone: 'Telefone do contato de emergência',
+    accountPhoneLabel: 'Número de telefone',
+    accountNameLabel: 'Nome',
+    accountReadonlyNote: 'Para alterar seu número ou nome, contate o escritório.',
+    accountSave: 'Salvar',
+    accountSaved: 'Salvo.',
+    accountSaveFailed: 'Não foi possível salvar',
+    aboutMeTitle: 'Sobre mim',
+    aboutMeRole: 'Função / Equipe',
+    aboutMeTenure: 'Tempo empregado',
+    aboutMePay: 'Pagamento',
+    aboutMePayHourly: 'por hora',
+    aboutMeSalaried: 'Assalariado(a)',
+    aboutMeNotSet: 'Não definido',
+    aboutMeVacation: 'Férias / PTO',
+    aboutMeNotAvailable: 'Isso ainda não está disponível.',
+    languageTitle: 'Idioma',
+    menuClose: 'Fechar',
     todayJobs: 'TRABALHOS DE HOJE',
     noJobs: 'Nenhum trabalho agendado para hoje',
     directions: '🗺 Direções',
@@ -45683,6 +45803,38 @@ const T = {
     goodAfternoon: 'Bon tardi',
     goodEvening: 'Bon noti',
     logout: 'Sai',
+    scheduleComingSoon: 'Bu orariu ta disponivel li en brevi.',
+    formsComingSoon: 'Formulariu ta disponivel li en brevi.',
+    menuTitle: 'Menu',
+    menuAccount: 'Conta',
+    menuAboutMe: 'Sobre mi',
+    menuLanguage: 'Lingua',
+    menuLogout: 'Sai',
+    logoutConfirm: 'Bu tene certeza ki bu krê sai?',
+    accountTitle: 'Conta',
+    accountAddress: 'Endereçu',
+    accountCity: 'Sidadi',
+    accountState: 'Estadu',
+    accountZip: 'Kódigu postal',
+    accountEmergencyName: 'Nómi di kontaktu di emerjénsia',
+    accountEmergencyPhone: 'Telefoni di kontaktu di emerjénsia',
+    accountPhoneLabel: 'Numeru di telefoni',
+    accountNameLabel: 'Nómi',
+    accountReadonlyNote: 'Pa mudа bu numeru o nómi, kontata skritóriu.',
+    accountSave: 'Guarda',
+    accountSaved: 'Guardadu.',
+    accountSaveFailed: 'Ka pudi guarda',
+    aboutMeTitle: 'Sobre mi',
+    aboutMeRole: 'Funson / Ekipa',
+    aboutMeTenure: 'Tempu empregadu',
+    aboutMePay: 'Pagamentu',
+    aboutMePayHourly: 'pa ora',
+    aboutMeSalaried: 'Salariadu(a)',
+    aboutMeNotSet: 'Ka stabelesidu',
+    aboutMeVacation: 'Féria / PTO',
+    aboutMeNotAvailable: 'Kel li ka ta disponivel ainda.',
+    languageTitle: 'Lingua',
+    menuClose: 'Fecha',
     todayJobs: 'TRABALHU DI OJI',
     noJobs: 'Ka ten trabalhu marcadu pa oji',
     directions: '🗺 Diresaun',
@@ -45758,6 +45910,13 @@ function setLang(lang) {
   } catch(e) {}
 }
 
+// Employee portal polish -- any tab listed here shows a "Coming
+// soon" screen instead of its real content, and fetches no data
+// while hidden (showPortalTab returns before any of that tab's own
+// render/fetch branches run). Empty this array to turn a tab back
+// on -- no other code change needed anywhere.
+var PORTAL_TABS_COMING_SOON = ['schedule', 'forms'];
+
 function t(key) {
   return (T[currentLang] || T.en)[key] || T.en[key] || key;
 }
@@ -45829,11 +45988,17 @@ function setPortalLang(lang) {
   });
   // Re-render all portal content
   updatePortalText();
-  renderSchedule();
+  // Employee portal polish: don't fetch schedule data while that tab
+  // is gated -- just re-render its (already-visible-or-not)
+  // coming-soon text in the new language instead.
+  if (PORTAL_TABS_COMING_SOON.indexOf('schedule') === -1) { renderSchedule(); }
+  else { try { _renderPortalComingSoon('schedule'); } catch (e) {} }
   renderHandbook();
   checkExistingSignature();
   // Re-render forms tab labels
   updateFormLabels();
+  if (PORTAL_TABS_COMING_SOON.indexOf('forms') !== -1) { try { _renderPortalComingSoon('forms'); } catch (e) {} }
+  try { if (typeof _renderPortalMenuTexts === 'function') _renderPortalMenuTexts(); } catch (e) {}
 }
 
 function updateFormLabels() {
@@ -46269,7 +46434,8 @@ function loginSuccess() {
 
   // Set date
   const now = new Date();
-  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+  // Employee portal polish: display-only -- no chevron, not tappable.
+  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   updatePortalText();
   renderSchedule();
@@ -47084,7 +47250,9 @@ function renderSchedule() {
   var portalDate = document.getElementById('portal-date');
   if (portalDate) {
     var pdPrefix = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '');
-    portalDate.textContent = pdPrefix + viewDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+    // Employee portal polish: display-only -- no chevron, not tappable,
+    // even once Schedule is re-enabled (PORTAL_TABS_COMING_SOON emptied).
+    portalDate.textContent = pdPrefix + viewDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
     // Belt-and-suspenders: force pill styling via setProperty('important')
     // every render. CSS + inline-style attribute already cover this, but
     // iOS Safari has a history of caching <style> blocks past hard-refresh;
@@ -49491,6 +49659,34 @@ function showPortalTab(tab) {
     return;
   }
   if (screen) screen.classList.add('in-subpage');
+
+  // Employee portal polish: a gated tab shows a "Coming soon" screen
+  // instead of its real content div, and returns BEFORE any of this
+  // tab's own render/fetch branches below ever run -- no data fetched
+  // for it while hidden. PORTAL_TABS_COMING_SOON is the single flag;
+  // emptying it is the only change needed to turn a tab back on.
+  if (PORTAL_TABS_COMING_SOON.indexOf(tab) !== -1) {
+    ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
+      var el = document.getElementById('tab-' + t);
+      if (el) el.style.display = 'none';
+      var pt = document.getElementById('ptab-' + t);
+      if (pt) pt.classList.toggle('active', t === tab);
+    });
+    PORTAL_TABS_COMING_SOON.forEach(function(t) {
+      var cs = document.getElementById('tab-' + t + '-comingsoon');
+      if (cs) cs.style.display = (t === tab) ? 'block' : 'none';
+    });
+    try { _renderPortalComingSoon(tab); } catch (e) { console.error('[portal] coming-soon render failed', e); }
+    currentTab = tab;
+    return;
+  }
+  // Not gated -- make sure any coming-soon host from a PRIOR tab switch
+  // is hidden (only relevant while some tabs are gated and others not).
+  PORTAL_TABS_COMING_SOON.forEach(function(t) {
+    var cs = document.getElementById('tab-' + t + '-comingsoon');
+    if (cs) cs.style.display = 'none';
+  });
+
   ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
     var el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
@@ -49528,6 +49724,254 @@ function showPortalTab(tab) {
 
 // Back-to-home helper called from the portal back button.
 function portalGoHome() { showPortalTab('home'); }
+
+// Employee portal polish — owner-only toggle: whether About me shows
+// pay at all. Real enforcement is server-side (set_show_pay_in_about_me
+// itself refuses a non-owner caller) -- this button stays visible to
+// any manager-tier user; a non-owner just gets a plain refusal here,
+// same message the RPC itself would give.
+async function openPayVisibilitySetting() {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) { alert('Not connected — reload and try again.'); return; }
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    var cur = true;
+    try {
+      var biz = bid ? await sb.from('businesses').select('business_settings').eq('id', bid).maybeSingle() : null;
+      if (biz && biz.data && biz.data.business_settings && biz.data.business_settings.show_pay_in_about_me === false) cur = false;
+    } catch (e) {}
+    var next = !cur;
+    if (!confirm((cur ? 'Pay is currently SHOWN' : 'Pay is currently HIDDEN') + ' in employees\' About me screen.\n\n' + (next ? 'Turn it ON (show pay)?' : 'Turn it OFF (hide pay)?'))) return;
+    var res = await sb.rpc('set_show_pay_in_about_me', { p_enabled: next });
+    if (res.error) { alert('Could not change this setting: ' + res.error.message); return; }
+    alert('Done — pay is now ' + (next ? 'shown' : 'hidden') + ' in About me.');
+  } catch (e) {
+    console.error('[pay visibility setting] failed', e);
+    alert('Could not change this setting: ' + ((e && e.message) || String(e)));
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Employee portal polish — hamburger menu + Account / About me / Language
+// ═══════════════════════════════════════════════════════════════════════
+function openPortalMenu() {
+  try {
+    _renderPortalMenuTexts();
+    var ov = document.getElementById('portal-menu-overlay');
+    if (ov) ov.style.display = 'block';
+  } catch (e) { console.error('[portal menu] open failed', e); alert('Could not open the menu.'); }
+}
+function closePortalMenu() {
+  var ov = document.getElementById('portal-menu-overlay');
+  if (ov) ov.style.display = 'none';
+}
+function _renderPortalMenuTexts() {
+  try {
+    var map = { 'portal-menu-title': 'menuTitle', 'portal-menu-account': 'menuAccount', 'portal-menu-aboutme': 'menuAboutMe', 'portal-menu-language': 'menuLanguage', 'portal-menu-logout': 'menuLogout' };
+    Object.keys(map).forEach(function (id) { var el = document.getElementById(id); if (el) el.textContent = t(map[id]); });
+  } catch (e) { console.error('[portal menu] text render failed', e); }
+}
+function portalMenuLogout() {
+  try {
+    if (!confirm(t('logoutConfirm'))) return;
+    closePortalMenu();
+    logout();
+  } catch (e) { console.error('[portal menu] logout failed', e); alert('Could not log out. Try again.'); }
+}
+
+// ── ACCOUNT ──
+var _portalAccountRow = null;
+async function openPortalAccount() {
+  var ov = document.getElementById('portal-account-overlay');
+  var body = document.getElementById('portal-account-body');
+  var titleEl = document.getElementById('portal-account-title');
+  try { if (titleEl) titleEl.textContent = t('accountTitle'); } catch (e) {}
+  if (ov) ov.style.display = 'flex';
+  if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Loading…</div>';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected');
+    if (!currentEmployee || !currentEmployee.uuid) throw new Error('No employee record');
+    // READ: her own row, every column -- already permitted by RLS
+    // (employees_select's auth_user_id = auth.uid() branch), unchanged
+    // by migration 117 (which only tightens UPDATE). Only the SAVE
+    // below goes through the whitelist RPC.
+    var res = await sb.from('employees')
+      .select('phone, first_name, last_name, address, city, state, zip, emergency_contact_name, emergency_contact_phone')
+      .eq('id', currentEmployee.uuid)
+      .maybeSingle();
+    if (res.error || !res.data) throw new Error((res.error && res.error.message) || 'No data');
+    _portalAccountRow = res.data;
+    renderPortalAccount();
+  } catch (e) {
+    console.error('[portal account] load failed', e);
+    if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">' + _adminEsc(t('aboutMeNotAvailable')) + '</div>';
+  }
+}
+function closePortalAccount() { var ov = document.getElementById('portal-account-overlay'); if (ov) ov.style.display = 'none'; }
+function _portalAccountField(id, label, value) {
+  return '<div style="margin-bottom:14px">'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(label) + '</div>'
+    + '<input type="text" id="' + id + '" value="' + _adminEsc(value || '') + '" style="width:100%;box-sizing:border-box;min-height:44px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:15px">'
+    + '</div>';
+}
+function renderPortalAccount() {
+  try {
+    var body = document.getElementById('portal-account-body');
+    if (!body || !_portalAccountRow) return;
+    var r = _portalAccountRow;
+    var fullName = ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || '—';
+    body.innerHTML = ''
+      + '<div style="margin-bottom:14px">'
+      +   '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(t('accountNameLabel')) + '</div>'
+      +   '<div style="font-size:15px;color:var(--text);padding:10px 0">' + _adminEsc(fullName) + '</div>'
+      + '</div>'
+      + '<div style="margin-bottom:10px">'
+      +   '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(t('accountPhoneLabel')) + '</div>'
+      +   '<div style="font-size:15px;color:var(--text);padding:10px 0">' + _adminEsc(r.phone || '—') + '</div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:16px;padding:8px 10px;background:var(--surface2);border-radius:8px">' + _adminEsc(t('accountReadonlyNote')) + '</div>'
+      + _portalAccountField('pa-address', t('accountAddress'), r.address)
+      + _portalAccountField('pa-city', t('accountCity'), r.city)
+      + _portalAccountField('pa-state', t('accountState'), r.state)
+      + _portalAccountField('pa-zip', t('accountZip'), r.zip)
+      + _portalAccountField('pa-ecname', t('accountEmergencyName'), r.emergency_contact_name)
+      + _portalAccountField('pa-ecphone', t('accountEmergencyPhone'), r.emergency_contact_phone)
+      + '<div id="portal-account-result" style="min-height:18px;font-size:13px;margin:10px 0"></div>'
+      + '<button type="button" onclick="savePortalAccount()" style="width:100%;min-height:44px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer">' + _adminEsc(t('accountSave')) + '</button>';
+  } catch (e) { console.error('[portal account] render failed', e); }
+}
+async function savePortalAccount() {
+  var resultEl = document.getElementById('portal-account-result');
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected — reload and try again.');
+    var val = function (id) { var el = document.getElementById(id); return (el && el.value) ? el.value : null; };
+    var res = await sb.rpc('update_my_employee_profile', {
+      p_address: val('pa-address'),
+      p_city: val('pa-city'),
+      p_state: val('pa-state'),
+      p_zip: val('pa-zip'),
+      p_emergency_contact_name: val('pa-ecname'),
+      p_emergency_contact_phone: val('pa-ecphone')
+    });
+    if (res.error) throw new Error(res.error.message || 'Save failed');
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--green)">' + _adminEsc(t('accountSaved')) + '</span>';
+  } catch (e) {
+    console.error('[portal account] save failed', e);
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">' + _adminEsc(t('accountSaveFailed')) + ': ' + _adminEsc((e && e.message) || String(e)) + '</span>';
+  }
+}
+
+// ── ABOUT ME ──
+async function openPortalAboutMe() {
+  var ov = document.getElementById('portal-aboutme-overlay');
+  var body = document.getElementById('portal-aboutme-body');
+  var titleEl = document.getElementById('portal-aboutme-title');
+  try { if (titleEl) titleEl.textContent = t('aboutMeTitle'); } catch (e) {}
+  if (ov) ov.style.display = 'flex';
+  if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Loading…</div>';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected');
+    var res = await sb.rpc('get_my_about_me');
+    if (res.error) throw new Error(res.error.message || 'Not available');
+    renderPortalAboutMe(res.data);
+  } catch (e) {
+    console.error('[portal about-me] load failed', e);
+    // Deploy safety: if the RPC/migration isn't live yet, this is the
+    // ONLY thing that happens -- a plain message, never a blank page.
+    if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">' + _adminEsc(t('aboutMeNotAvailable')) + '</div>';
+  }
+}
+function closePortalAboutMe() { var ov = document.getElementById('portal-aboutme-overlay'); if (ov) ov.style.display = 'none'; }
+function _portalAboutMeRow(label, value) {
+  return '<div style="display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">'
+    + '<div style="font-size:13px;color:var(--muted)">' + _adminEsc(label) + '</div>'
+    + '<div style="font-size:14px;font-weight:600;color:var(--text);text-align:right">' + _adminEsc(value) + '</div>'
+    + '</div>';
+}
+function renderPortalAboutMe(d) {
+  try {
+    var body = document.getElementById('portal-aboutme-body');
+    if (!body || !d) return;
+    var payRow = '';
+    if (d.show_pay !== false) {
+      if (d.pay_type === 'salary') {
+        payRow = _portalAboutMeRow(t('aboutMePay'), t('aboutMeSalaried'));
+      } else if (d.pay_rate == null || Number(d.pay_rate) === 0) {
+        payRow = _portalAboutMeRow(t('aboutMePay'), t('aboutMeNotSet'));
+      } else {
+        payRow = _portalAboutMeRow(t('aboutMePay'), '$' + Number(d.pay_rate).toFixed(2) + ' ' + t('aboutMePayHourly'));
+      }
+    }
+    body.innerHTML = ''
+      + _portalAboutMeRow(t('accountNameLabel'), d.name)
+      + _portalAboutMeRow(t('aboutMeRole'), d.team_label)
+      + _portalAboutMeRow(t('aboutMeTenure'), d.tenure_text)
+      + payRow
+      + _portalAboutMeRow(t('aboutMeVacation'), d.vacation_text);
+  } catch (e) { console.error('[portal about-me] render failed', e); }
+}
+
+// ── LANGUAGE ──
+function openPortalLanguage() {
+  try {
+    var ov = document.getElementById('portal-language-overlay');
+    var titleEl = document.getElementById('portal-language-title');
+    if (titleEl) titleEl.textContent = t('languageTitle');
+    if (ov) ov.style.display = 'flex';
+    renderPortalLanguage();
+  } catch (e) { console.error('[portal language] open failed', e); }
+}
+function closePortalLanguage() { var ov = document.getElementById('portal-language-overlay'); if (ov) ov.style.display = 'none'; }
+function renderPortalLanguage() {
+  try {
+    var body = document.getElementById('portal-language-body');
+    if (!body) return;
+    var langs = [['en', 'English'], ['es', 'Español'], ['pt', 'Português'], ['cv', 'Kriolu']];
+    body.innerHTML = langs.map(function (l) {
+      var active = currentLang === l[0];
+      return '<button type="button" onclick="choosePortalLanguage(\'' + l[0] + '\')" style="display:block;width:100%;text-align:left;min-height:44px;padding:12px 14px;margin-bottom:8px;border-radius:10px;cursor:pointer;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:600;border:1px solid ' + (active ? 'var(--accent)' : 'var(--border)') + ';background:' + (active ? 'rgba(108,143,255,0.12)' : 'var(--surface2)') + ';color:var(--text)">' + (active ? '✓ ' : '') + l[1] + '</button>';
+    }).join('');
+  } catch (e) { console.error('[portal language] render failed', e); }
+}
+async function choosePortalLanguage(lang) {
+  try {
+    setPortalLang(lang);
+    renderPortalLanguage();
+    try { localStorage.setItem('penta_portal_lang', lang); } catch (e) {}
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      // Best-effort: saves to her real employees row once migration 117
+      // is applied. If the RPC doesn't exist yet, this fails quietly --
+      // the choice already took effect above and is already saved
+      // per-device via localStorage either way.
+      sb.rpc('update_my_employee_profile', { p_preferred_language: lang })
+        .then(function (res) {
+          if (res && res.error) console.warn('[portal language] could not save to her record yet (per-device only for now):', res.error.message);
+        })
+        .catch(function () {});
+    }
+  } catch (e) { console.error('[portal language] choose failed', e); }
+}
+
+
+// Employee portal polish -- renders the bilingual "Coming soon" message
+// for a gated tab. Never fetches anything; pure DOM text.
+function _renderPortalComingSoon(tab) {
+  try {
+    var host = document.getElementById('tab-' + tab + '-comingsoon');
+    if (!host) return;
+    var key = tab === 'schedule' ? 'scheduleComingSoon' : 'formsComingSoon';
+    host.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--muted)">'
+      + '<div style="font-size:32px;margin-bottom:12px">🚧</div>'
+      + '<div style="font-size:15px;font-weight:600;color:var(--text)">' + _adminEsc(t(key)) + '</div>'
+      + '</div>';
+  } catch (e) { console.error('[portal] _renderPortalComingSoon failed', e); }
+}
+
 
 // Inline SVG glyphs for the employee launcher (exact spec strings — no
 // Lucide CDN, no <img> tags). Every glyph is 24×24 viewBox, stroke="white",
@@ -49615,9 +50059,21 @@ function renderEmployeeHome() {
     if (count > 0) { el.textContent = String(count); el.style.display = 'inline-block'; }
     else { el.style.display = 'none'; }
   }
-  setBadge('emp-badge-schedule', _empTodayJobsCount());
-  setBadge('emp-badge-chat',     _empUnreadChatCount());
-  setBadge('emp-badge-forms',    _empPendingForms());
+  // Employee portal polish: no count is fetched for a gated tab's
+  // badge -- it just stays hidden, matching "no data fetched while
+  // hidden" for schedule/forms specifically. Chat's badge is unaffected
+  // (chat is never gated).
+  if (PORTAL_TABS_COMING_SOON.indexOf('schedule') === -1) {
+    setBadge('emp-badge-schedule', _empTodayJobsCount());
+  } else {
+    var _sbEl = document.getElementById('emp-badge-schedule'); if (_sbEl) _sbEl.style.display = 'none';
+  }
+  setBadge('emp-badge-chat', _empUnreadChatCount());
+  if (PORTAL_TABS_COMING_SOON.indexOf('forms') === -1) {
+    setBadge('emp-badge-forms', _empPendingForms());
+  } else {
+    var _fbEl = document.getElementById('emp-badge-forms'); if (_fbEl) _fbEl.style.display = 'none';
+  }
 
   // Today's Jobs preview card removed 2026-04-24 — Schedule icon above is the
   // single entry point now. Report Low Supplies home shortcut removed same
@@ -56333,6 +56789,7 @@ function _p3dPage(dir) {
         <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
         <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
         <button onclick="openBulkInviteModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">✉️ Bulk invite</button>
+        <button onclick="openPayVisibilitySetting()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Pay in About me</button>
         <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">+ Add</button>
         <button onclick="closeStaffSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
       </div>
@@ -56613,14 +57070,19 @@ function _p3dPage(dir) {
         <div class="portal-greeting" id="portal-greeting">Good morning!</div>
         <div class="portal-team">
           <span class="team-badge" id="team-badge"></span>
-          <button type="button" id="portal-date" onclick="empSchedOpenPicker()" style="-webkit-appearance:none !important;appearance:none !important;background:rgba(108,143,255,0.10) !important;border:1px solid rgba(108,143,255,0.30) !important;border-radius:999px !important;padding:5px 14px !important;color:var(--text) !important;font-family:inherit !important;font-size:13px !important;font-weight:600 !important;cursor:pointer !important;line-height:1.2 !important">Tap for date ▾</button>
+          <!-- Employee portal polish: display-only -- not tappable, no
+               chevron, no onclick. A plain <span>, same visual pill as
+               before, just no longer an interactive button. -->
+          <span id="portal-date" style="display:inline-block;background:rgba(108,143,255,0.10);border:1px solid rgba(108,143,255,0.30);border-radius:999px;padding:5px 14px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;line-height:1.2"></span>
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
         <!-- Share button removed 2026-04-19 — the Content tile in the icon
-             grid is the single entry point now. -->
-        <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">
-          <span id="logout-text">Log out</span>
+             grid is the single entry point now. Visible "Log out" button
+             replaced by a hamburger menu (employee portal polish) -- Log
+             out lives inside that menu now, reachable from every screen. -->
+        <button type="button" onclick="openPortalMenu()" aria-label="Menu" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:44px;height:44px;min-width:44px;min-height:44px;border-radius:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
       </div>
     </div>
@@ -56772,6 +57234,11 @@ function _p3dPage(dir) {
     </div>
   </div>
 
+  <!-- SCHEDULE "COMING SOON" (employee portal polish) -- sibling of
+       tab-schedule, never overwrites it. Shown instead of tab-schedule
+       while 'schedule' is in PORTAL_TABS_COMING_SOON. -->
+  <div id="tab-schedule-comingsoon" class="section" style="display:none"></div>
+
   <!-- HOURS TAB -->
   <div id="tab-hours" class="section" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -56814,6 +57281,15 @@ function _p3dPage(dir) {
       </div>
     </div>
   </div>
+
+  <!-- FORMS "COMING SOON" (employee portal polish) -- sibling of
+       tab-forms, never overwrites it. Shown instead of tab-forms while
+       'forms' is in PORTAL_TABS_COMING_SOON. NOTE: the handbook
+       acknowledgment/signature flow is rendered INSIDE tab-forms today
+       (see "Hidden handbook tab (content moved to forms)" just below)
+       -- gating 'forms' makes it unreachable too. Flagged in the PR,
+       not silently worked around. -->
+  <div id="tab-forms-comingsoon" class="section" style="display:none"></div>
 
   <!-- RATE WEEK TAB -->
   <div id="tab-rate" class="section" style="display:none">
@@ -58139,6 +58615,60 @@ function _p3dPage(dir) {
   </div>
   <div id="ch-pane-activity" style="flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch"></div>
   <div id="ch-pane-jobs" style="flex:1;overflow-y:auto;padding:16px;display:none;-webkit-overflow-scrolling:touch"></div>
+</div>
+
+
+<!-- EMPLOYEE PORTAL MENU (employee portal polish) — hamburger menu,
+     replaces the old always-visible "Log out" button. Account / About
+     me / Language / Log out. 44px+ tap targets throughout. -->
+<div id="portal-menu-overlay" style="display:none;position:fixed;inset:0;z-index:9700;background:rgba(0,0,0,0.6)" onclick="if(event.target===this)closePortalMenu()">
+  <div style="position:absolute;top:0;right:0;bottom:0;width:min(78vw,320px);background:var(--surface);border-left:1px solid var(--border2);display:flex;flex-direction:column;padding:calc(var(--safe-top) + 16px) 0 16px;box-shadow:-4px 0 24px rgba(0,0,0,0.3)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:0 16px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div style="font-size:16px;font-weight:700;color:var(--text)" id="portal-menu-title">Menu</div>
+      <button type="button" onclick="closePortalMenu()" aria-label="Close" style="width:44px;height:44px;min-width:44px;min-height:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:8px 0">
+      <button type="button" onclick="closePortalMenu();openPortalAccount()" id="portal-menu-account" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Account</button>
+      <button type="button" onclick="closePortalMenu();openPortalAboutMe()" id="portal-menu-aboutme" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">About me</button>
+      <button type="button" onclick="closePortalMenu();openPortalLanguage()" id="portal-menu-language" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Language</button>
+    </div>
+    <div style="padding:8px 16px 0;border-top:1px solid var(--border);flex-shrink:0">
+      <button type="button" onclick="portalMenuLogout()" id="portal-menu-logout" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Log out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ACCOUNT -->
+<div id="portal-account-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalAccount()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-account-title">Account</div>
+      <button type="button" onclick="closePortalAccount()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-account-body">Loading…</div>
+  </div>
+</div>
+
+<!-- ABOUT ME -->
+<div id="portal-aboutme-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalAboutMe()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-aboutme-title">About me</div>
+      <button type="button" onclick="closePortalAboutMe()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-aboutme-body">Loading…</div>
+  </div>
+</div>
+
+<!-- LANGUAGE -->
+<div id="portal-language-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalLanguage()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:360px;width:100%;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-language-title">Language</div>
+      <button type="button" onclick="closePortalLanguage()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-language-body"></div>
+  </div>
 </div>
 
 </body>
