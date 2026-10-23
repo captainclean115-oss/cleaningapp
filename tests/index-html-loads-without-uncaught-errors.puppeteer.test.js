@@ -154,6 +154,37 @@ async function runAction(page, pageErrors, label, fn) {
             window.openEmployeeHours();
           });
         });
+        // Round 3 (2026-10-23): live set is exactly Hours, Rewards,
+        // Learn, Chat -- Content joins Schedule/Forms as Coming soon.
+        await runAction(page, pageErrors, 'employee: Content tile shows Coming soon (no camera/share flow launched)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeContent !== 'function') throw new Error('openEmployeeContent is not defined');
+            window.openEmployeeContent();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Rewards tile opens live (demo content)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeRewards !== 'function') throw new Error('openEmployeeRewards is not defined');
+            window.openEmployeeRewards();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Learn opens live, fully self-contained', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openPentaLearn !== 'function') throw new Error('openPentaLearn is not defined');
+            window.openPentaLearn();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: closing Learn', async () => {
+          await page.evaluate(() => {
+            if (typeof window.closePentaLearn === 'function') window.closePentaLearn();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Chat tile opens live', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeChat !== 'function') throw new Error('openEmployeeChat is not defined');
+            window.openEmployeeChat();
+          });
+        });
         await runAction(page, pageErrors, 'employee: hamburger menu opens', async () => {
           await page.evaluate(() => {
             if (typeof window.openPortalMenu !== 'function') throw new Error('openPortalMenu is not defined');

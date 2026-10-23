@@ -45528,6 +45528,7 @@ const T = {
     logout: 'Log out',
     scheduleComingSoon: 'Your schedule will be available here soon.',
     formsComingSoon: 'Forms will be available here soon.',
+    contentComingSoon: 'Content sharing will be available here soon.',
     menuTitle: 'Menu',
     menuAccount: 'Account',
     menuAboutMe: 'About me',
@@ -45620,6 +45621,7 @@ const T = {
     logout: 'Cerrar sesión',
     scheduleComingSoon: 'Tu horario estará disponible aquí próximamente.',
     formsComingSoon: 'Los formularios estarán disponibles aquí próximamente.',
+    contentComingSoon: 'Compartir contenido estará disponible aquí próximamente.',
     menuTitle: 'Menú',
     menuAccount: 'Cuenta',
     menuAboutMe: 'Sobre mí',
@@ -45712,6 +45714,7 @@ const T = {
     logout: 'Sair',
     scheduleComingSoon: 'Sua agenda estará disponível aqui em breve.',
     formsComingSoon: 'Os formulários estarão disponíveis aqui em breve.',
+    contentComingSoon: 'O compartilhamento de conteúdo estará disponível aqui em breve.',
     menuTitle: 'Menu',
     menuAccount: 'Conta',
     menuAboutMe: 'Sobre mim',
@@ -45805,6 +45808,7 @@ const T = {
     logout: 'Sai',
     scheduleComingSoon: 'Bu orariu ta disponivel li en brevi.',
     formsComingSoon: 'Formulariu ta disponivel li en brevi.',
+    contentComingSoon: 'Partilha di konteúdu ta disponivel li en brevi.',
     menuTitle: 'Menu',
     menuAccount: 'Conta',
     menuAboutMe: 'Sobre mi',
@@ -45915,7 +45919,7 @@ function setLang(lang) {
 // while hidden (showPortalTab returns before any of that tab's own
 // render/fetch branches run). Empty this array to turn a tab back
 // on -- no other code change needed anywhere.
-var PORTAL_TABS_COMING_SOON = ['schedule', 'forms'];
+var PORTAL_TABS_COMING_SOON = ['schedule', 'forms', 'content'];
 
 function t(key) {
   return (T[currentLang] || T.en)[key] || T.en[key] || key;
@@ -45998,6 +46002,7 @@ function setPortalLang(lang) {
   // Re-render forms tab labels
   updateFormLabels();
   if (PORTAL_TABS_COMING_SOON.indexOf('forms') !== -1) { try { _renderPortalComingSoon('forms'); } catch (e) {} }
+  if (PORTAL_TABS_COMING_SOON.indexOf('content') !== -1) { try { _renderPortalComingSoon('content'); } catch (e) {} }
   try { if (typeof _renderPortalMenuTexts === 'function') _renderPortalMenuTexts(); } catch (e) {}
 }
 
@@ -49654,7 +49659,29 @@ function showPortalTab(tab) {
   }
   // Content tile — skip the tab machinery and jump straight to the
   // shared content-capture flow that the Share button already uses.
+  // Employee portal polish: gated the same way as any other tab in
+  // PORTAL_TABS_COMING_SOON -- Content has no persistent tab-content
+  // div of its own (it's a direct camera/share action, not a screen),
+  // so this intercept is explicit rather than falling through the
+  // generic ['schedule',...,'rewards'] loop below, which never knew
+  // about 'content' to begin with.
   if (tab === 'content') {
+    if (PORTAL_TABS_COMING_SOON.indexOf('content') !== -1) {
+      if (screen) screen.classList.add('in-subpage');
+      ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
+        var el = document.getElementById('tab-' + t);
+        if (el) el.style.display = 'none';
+        var pt = document.getElementById('ptab-' + t);
+        if (pt) pt.classList.toggle('active', false);
+      });
+      PORTAL_TABS_COMING_SOON.forEach(function(t) {
+        var cs = document.getElementById('tab-' + t + '-comingsoon');
+        if (cs) cs.style.display = (t === 'content') ? 'block' : 'none';
+      });
+      try { _renderPortalComingSoon('content'); } catch (e) { console.error('[portal] coming-soon render failed', e); }
+      currentTab = 'content';
+      return;
+    }
     if (typeof portalShareContent === 'function') portalShareContent();
     return;
   }
@@ -49964,7 +49991,7 @@ function _renderPortalComingSoon(tab) {
   try {
     var host = document.getElementById('tab-' + tab + '-comingsoon');
     if (!host) return;
-    var key = tab === 'schedule' ? 'scheduleComingSoon' : 'formsComingSoon';
+    var key = tab === 'schedule' ? 'scheduleComingSoon' : tab === 'forms' ? 'formsComingSoon' : 'contentComingSoon';
     host.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--muted)">'
       + '<div style="font-size:32px;margin-bottom:12px">🚧</div>'
       + '<div style="font-size:15px;font-weight:600;color:var(--text)">' + _adminEsc(t(key)) + '</div>'
@@ -57290,6 +57317,12 @@ function _p3dPage(dir) {
        -- gating 'forms' makes it unreachable too. Flagged in the PR,
        not silently worked around. -->
   <div id="tab-forms-comingsoon" class="section" style="display:none"></div>
+
+  <!-- CONTENT "COMING SOON" (employee portal polish, round 3) -- the
+       Content tile has no persistent tab of its own (it jumps straight
+       to a camera/share action); this is its coming-soon surface,
+       shown the same way schedule/forms are. -->
+  <div id="tab-content-comingsoon" class="section" style="display:none"></div>
 
   <!-- RATE WEEK TAB -->
   <div id="tab-rate" class="section" style="display:none">

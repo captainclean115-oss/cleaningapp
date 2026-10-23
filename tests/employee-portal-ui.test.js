@@ -51,11 +51,12 @@ function makeFakeDom() {
 
 console.log('--- showPortalTab: gated tabs show Coming soon, fetch nothing ---\n');
 {
-  const flagSrc = extract("var PORTAL_TABS_COMING_SOON = ['schedule', 'forms'];", '\n\nfunction t(key)', 'PORTAL_TABS_COMING_SOON');
+  const flagSrc = extract("var PORTAL_TABS_COMING_SOON = ['schedule', 'forms', 'content'];", '\n\nfunction t(key)', 'PORTAL_TABS_COMING_SOON');
   const showPortalTabSrc = extract('function showPortalTab(tab) {', '\n\n// Back-to-home helper', 'showPortalTab');
   const comingSoonSrc = extract('function _renderPortalComingSoon(tab) {', '\n\n\n// Inline SVG glyphs', '_renderPortalComingSoon');
 
   const fetchCalls = [];
+  let portalShareContentCalled = false;
   const sandbox = {
     console,
     document: makeFakeDom(),
@@ -63,7 +64,7 @@ console.log('--- showPortalTab: gated tabs show Coming soon, fetch nothing ---\n
     t: (k) => 'T:' + k,
     _adminEsc: (s) => String(s),
     renderEmployeeHome: () => {},
-    portalShareContent: () => {},
+    portalShareContent: () => { portalShareContentCalled = true; },
     renderSchedule: () => { fetchCalls.push('renderSchedule'); },
     seedStaffChatsIfEmpty: () => {},
     renderEmpChat: () => {},
@@ -86,7 +87,7 @@ console.log('--- showPortalTab: gated tabs show Coming soon, fetch nothing ---\n
 
   sandbox.document.getElementById('portal-screen'); // pre-create
   sandbox.showPortalTab('schedule');
-  check('PORTAL_TABS_COMING_SOON includes schedule and forms', sandbox.PORTAL_TABS_COMING_SOON, ['schedule', 'forms']);
+  check('PORTAL_TABS_COMING_SOON includes schedule, forms and content', sandbox.PORTAL_TABS_COMING_SOON, ['schedule', 'forms', 'content']);
   check('opening the gated "schedule" tab calls NO data-fetch function at all', fetchCalls, []);
   check('the coming-soon host for schedule is shown', sandbox.document.getElementById('tab-schedule-comingsoon').style.display, 'block');
   check('the real tab-schedule div stays hidden', sandbox.document.getElementById('tab-schedule').style.display, 'none');
@@ -102,12 +103,20 @@ console.log('--- showPortalTab: gated tabs show Coming soon, fetch nothing ---\n
   fetchCalls.length = 0;
   sandbox.showPortalTab('chat');
   check('a NON-gated tab (chat) is unaffected by the gate', sandbox.document.getElementById('tab-chat').style.display, 'block');
+
+  // Round 3: Content joins the gate too -- it never reaches
+  // portalShareContent() (the camera/share flow) while gated.
+  portalShareContentCalled = false;
+  sandbox.showPortalTab('content');
+  check('opening the gated "content" tab never launches the camera/share flow', portalShareContentCalled, false);
+  check('the coming-soon host for content is shown', sandbox.document.getElementById('tab-content-comingsoon').style.display, 'block');
+  check('the coming-soon host actually has rendered text (not left blank)', sandbox.document.getElementById('tab-content-comingsoon').innerHTML.indexOf('T:contentComingSoon') !== -1, true);
 }
 
 console.log('\n--- renderEmployeeHome: badges hidden for gated tabs, never fetched ---\n');
 {
   const homeSrc = extract('function renderEmployeeHome() {', '\n\n// ═', 'renderEmployeeHome');
-  const flagSrc = extract("var PORTAL_TABS_COMING_SOON = ['schedule', 'forms'];", '\n\nfunction t(key)', 'PORTAL_TABS_COMING_SOON');
+  const flagSrc = extract("var PORTAL_TABS_COMING_SOON = ['schedule', 'forms', 'content'];", '\n\nfunction t(key)', 'PORTAL_TABS_COMING_SOON');
   let scheduleCountFetched = false, formsCountFetched = false;
   const sandbox = {
     console,
@@ -165,7 +174,7 @@ console.log('\n--- Menu: exactly Account, About me, Language, Log out ---\n');
 console.log('\n--- Language switch applies everywhere, including Coming-soon + the menu itself ---\n');
 {
   check('setPortalLang re-renders the coming-soon text when schedule is gated (never force-fetches it)', /PORTAL_TABS_COMING_SOON\.indexOf\('schedule'\) === -1\) \{ renderSchedule\(\); \}/.test(src), true);
-  check('setPortalLang re-renders the menu\'s own text too', /_renderPortalMenuTexts/.test(src) && /setPortalLang[\s\S]{0,900}_renderPortalMenuTexts/.test(src), true);
+  check('setPortalLang re-renders the menu\'s own text too', /_renderPortalMenuTexts/.test(src) && /setPortalLang[\s\S]{0,1500}_renderPortalMenuTexts/.test(src), true);
   check('choosePortalLanguage saves per-device (localStorage) immediately, regardless of the RPC', /localStorage\.setItem\('penta_portal_lang', lang\)/.test(src), true);
   check('choosePortalLanguage ALSO tries to save to her real row (best-effort, via the whitelist RPC)', /update_my_employee_profile[^)]*p_preferred_language: lang/.test(src), true);
 }
