@@ -19,10 +19,14 @@
 // test makes zero real network calls and touches no real database.
 //
 // Scope note: this deliberately does NOT drive through the deeper
-// manager-only screens (Staff screen, Send Invite, Bulk invite, Teams
-// modal, Messages composer) or the employee portal's Hours tab. Those
-// were checked manually during this PR's review (tools/_verify_pr201.js
-// is kept in the repo for that) but turned out to be unreliable to
+// MANAGER-only screens (Staff screen, Send Invite, Bulk invite, Teams
+// modal, Messages composer). The employee portal's own Hours tab IS
+// covered live below (employee portal polish, 2026-10-22) -- it turned
+// out NOT to hit the same latency wall the manager screens do, since it
+// doesn't depend on the manager-side multi-cache chain described below.
+// The manager-only screens above were checked manually during PR #201's
+// review (tools/_verify_pr201.js is kept in the repo for that) but
+// turned out to be unreliable to
 // automate under a forged/stubbed session: this app resolves
 // business_id through five independent singleton caches (PentaJobs,
 // PentaAssignments, PentaRewards, PentaTeams, PentaEmployees), each with
@@ -34,6 +38,13 @@
 // flaky without actually proving more about this specific regression.
 // Real device testing remains the authoritative check for those screens
 // (see the PR's own test-steps section).
+//
+// Employee portal polish (2026-10-22): the EMPLOYEE session's own
+// screens (Coming-soon tabs, the hamburger menu, Account, About me,
+// Language) don't depend on the manager-side multi-cache chain above,
+// so they ARE driven here -- this is the explicit "don't skip the
+// check" requirement from that PR (the pentaShowInviteSendModal outage
+// came from a check that was skipped).
 //
 // Requires: Chrome installed locally (puppeteer-core, no bundled
 // Chromium download). Run with:
@@ -120,6 +131,102 @@ async function runAction(page, pageErrors, label, fn) {
             const el = els.find((e) => (e.textContent || '').trim() === 'Forgot password?');
             if (!el) throw new Error('could not find "Forgot password?" element');
             el.click();
+          });
+        });
+      }
+
+      if (mode === 'employee') {
+        await runAction(page, pageErrors, 'employee: Schedule tab shows Coming soon (no crash, no data fetch)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeSchedule !== 'function') throw new Error('openEmployeeSchedule is not defined');
+            window.openEmployeeSchedule();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Forms tab shows Coming soon (no crash, no data fetch)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeForms !== 'function') throw new Error('openEmployeeForms is not defined');
+            window.openEmployeeForms();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Hours tab still opens normally (unaffected by the gate)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeHours !== 'function') throw new Error('openEmployeeHours is not defined');
+            window.openEmployeeHours();
+          });
+        });
+        // Round 3 (2026-10-23): live set is exactly Hours, Rewards,
+        // Learn, Chat -- Content joins Schedule/Forms as Coming soon.
+        await runAction(page, pageErrors, 'employee: Content tile shows Coming soon (no camera/share flow launched)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeContent !== 'function') throw new Error('openEmployeeContent is not defined');
+            window.openEmployeeContent();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Rewards tile opens live (demo content)', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeRewards !== 'function') throw new Error('openEmployeeRewards is not defined');
+            window.openEmployeeRewards();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Learn opens live, fully self-contained', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openPentaLearn !== 'function') throw new Error('openPentaLearn is not defined');
+            window.openPentaLearn();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: closing Learn', async () => {
+          await page.evaluate(() => {
+            if (typeof window.closePentaLearn === 'function') window.closePentaLearn();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Chat tile opens live', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openEmployeeChat !== 'function') throw new Error('openEmployeeChat is not defined');
+            window.openEmployeeChat();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: hamburger menu opens', async () => {
+          await page.evaluate(() => {
+            if (typeof window.openPortalMenu !== 'function') throw new Error('openPortalMenu is not defined');
+            window.openPortalMenu();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Account screen opens from the menu', async () => {
+          await page.evaluate(async () => {
+            if (typeof window.openPortalAccount !== 'function') throw new Error('openPortalAccount is not defined');
+            await window.openPortalAccount();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: closing Account and opening About me', async () => {
+          await page.evaluate(async () => {
+            if (typeof window.closePortalAccount === 'function') window.closePortalAccount();
+            if (typeof window.openPortalAboutMe !== 'function') throw new Error('openPortalAboutMe is not defined');
+            await window.openPortalAboutMe();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: closing About me and opening Language', async () => {
+          await page.evaluate(() => {
+            if (typeof window.closePortalAboutMe === 'function') window.closePortalAboutMe();
+            if (typeof window.openPortalLanguage !== 'function') throw new Error('openPortalLanguage is not defined');
+            window.openPortalLanguage();
+          });
+        });
+        await runAction(page, pageErrors, 'employee: choosing Spanish applies everywhere and does not crash', async () => {
+          await page.evaluate(() => {
+            if (typeof window.choosePortalLanguage !== 'function') throw new Error('choosePortalLanguage is not defined');
+            window.choosePortalLanguage('es');
+          });
+        });
+        await runAction(page, pageErrors, 'employee: Log out confirmation can be dismissed without logging out', async () => {
+          await page.evaluate(() => {
+            const originalConfirm = window.confirm;
+            window.confirm = () => false; // decline -- must NOT actually log out
+            try {
+              if (typeof window.portalMenuLogout !== 'function') throw new Error('portalMenuLogout is not defined');
+              window.portalMenuLogout();
+            } finally {
+              window.confirm = originalConfirm;
+            }
           });
         });
       }
