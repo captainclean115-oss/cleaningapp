@@ -20,9 +20,13 @@
 //
 // Scope note: this deliberately does NOT drive through the deeper
 // MANAGER-only screens (Staff screen, Send Invite, Bulk invite, Teams
-// modal, Messages composer) or the employee portal's Hours tab. Those
-// were checked manually during this PR's review (tools/_verify_pr201.js
-// is kept in the repo for that) but turned out to be unreliable to
+// modal, Messages composer). The employee portal's own Hours tab IS
+// covered live below (employee portal polish, 2026-10-22) -- it turned
+// out NOT to hit the same latency wall the manager screens do, since it
+// doesn't depend on the manager-side multi-cache chain described below.
+// The manager-only screens above were checked manually during PR #201's
+// review (tools/_verify_pr201.js is kept in the repo for that) but
+// turned out to be unreliable to
 // automate under a forged/stubbed session: this app resolves
 // business_id through five independent singleton caches (PentaJobs,
 // PentaAssignments, PentaRewards, PentaTeams, PentaEmployees), each with

@@ -3,7 +3,7 @@
 Account, About me, and Language screens, plus the boot-time language
 fallback chain (localStorage first -- safe, always available -- then a
 best-effort, try/caught upgrade to her real preferred_language column
-once migration 117 is applied; never touches the critical boot-time
+once migration 119 is applied; never touches the critical boot-time
 employee-resolution query itself, so a not-yet-applied migration can
 never break login)."""
 import sys
@@ -23,7 +23,7 @@ BOOT_LANG_NEW = """  currentEmployee = emp;
     return appSelectedLang || emp.lang || 'en';
   })();
   // Best-effort upgrade to her REAL saved preferred_language column,
-  // once migration 117 is applied -- fire-and-forget, never blocks
+  // once migration 119 is applied -- fire-and-forget, never blocks
   // boot, and the .catch swallows "column does not exist" cleanly if
   // the migration hasn't shipped yet (never breaks login either way).
   try {
@@ -83,7 +83,7 @@ async function openPortalAccount() {
     if (!currentEmployee || !currentEmployee.uuid) throw new Error('No employee record');
     // READ: her own row, every column -- already permitted by RLS
     // (employees_select's auth_user_id = auth.uid() branch), unchanged
-    // by migration 117 (which only tightens UPDATE). Only the SAVE
+    // by migration 119 (which only tightens UPDATE). Only the SAVE
     // below goes through the whitelist RPC.
     var res = await sb.from('employees')
       .select('phone, first_name, last_name, address, city, state, zip, emergency_contact_name, emergency_contact_phone')
@@ -232,7 +232,7 @@ async function choosePortalLanguage(lang) {
     try { localStorage.setItem('penta_portal_lang', lang); } catch (e) {}
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
     if (sb) {
-      // Best-effort: saves to her real employees row once migration 117
+      // Best-effort: saves to her real employees row once migration 119
       // is applied. If the RPC doesn't exist yet, this fails quietly --
       // the choice already took effect above and is already saved
       // per-device via localStorage either way.

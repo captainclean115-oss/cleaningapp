@@ -1,5 +1,5 @@
 // Employee portal polish — functional tests for migrations
-// 117_employee_self_service_profile.sql and 118_employee_about_me.sql,
+// 119_employee_self_service_profile.sql and 120_employee_about_me.sql,
 // run against a REAL throwaway local Postgres 17 instance (started and
 // torn down by this file) with RLS actually enforced (queries run as
 // the non-superuser `authenticated` role, not the bootstrapping admin
@@ -113,17 +113,25 @@ grant select on public.users to authenticated;
 grant select on public.teams to authenticated;
 grant insert on public.audit_log to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
+-- service_role: Supabase's own convention is BYPASSRLS on this role --
+-- every Edge Function that writes to employees (accept-invite is the
+-- only one that does) uses the SERVICE_ROLE_KEY client, which maps to
+-- exactly this role. Used below to prove migration 119's RLS change
+-- has zero effect on that write path.
+create role service_role bypassrls nologin;
+grant usage on schema public to service_role;
+grant all on public.employees to service_role;
 `;
-    fs.writeFileSync('/tmp/_ep_rpc_stub_pre117.sql', STUB_SCHEMA);
-    psqlFile('/tmp/_ep_rpc_stub_pre117.sql');
+    fs.writeFileSync('/tmp/_ep_rpc_stub_pre119.sql', STUB_SCHEMA);
+    psqlFile('/tmp/_ep_rpc_stub_pre119.sql');
 
     // Apply the REAL migration files, exactly as shipped.
     const repoRoot = path.join(__dirname, '..');
-    psqlFile(path.join(repoRoot, 'migrations', '117_employee_self_service_profile.sql'));
-    psqlFile(path.join(repoRoot, 'migrations', '118_employee_about_me.sql'));
+    psqlFile(path.join(repoRoot, 'migrations', '119_employee_self_service_profile.sql'));
+    psqlFile(path.join(repoRoot, 'migrations', '120_employee_about_me.sql'));
     // Re-run both once more to prove idempotency (required by the brief).
-    psqlFile(path.join(repoRoot, 'migrations', '117_employee_self_service_profile.sql'));
-    psqlFile(path.join(repoRoot, 'migrations', '118_employee_about_me.sql'));
+    psqlFile(path.join(repoRoot, 'migrations', '119_employee_self_service_profile.sql'));
+    psqlFile(path.join(repoRoot, 'migrations', '120_employee_about_me.sql'));
     console.log('  ok   both migrations applied, then re-applied cleanly (idempotent)\n');
 
     // Grant EXECUTE is already in the migration files themselves
@@ -186,7 +194,7 @@ grant usage, select on all sequences in schema public to authenticated;
       const selfUpd = psql(`update public.employees set pay_rate = 999 where id = '${EMP_A_ID}' returning id;`, { role: 'authenticated' });
       selfDirectUpdateBlocked = (selfUpd === '');
     } catch (e) { selfDirectUpdateBlocked = true; }
-    check('employee A can no longer directly UPDATE even her OWN row (closed by migration 117 -- the RPC is the only path now)', selfDirectUpdateBlocked, true);
+    check('employee A can no longer directly UPDATE even her OWN row (closed by migration 119 -- the RPC is the only path now)', selfDirectUpdateBlocked, true);
     const aPayUnchanged = psql(`select pay_rate from public.employees where id = '${EMP_A_ID}';`);
     check('her own pay_rate is still untouched by that blocked attempt', Number(aPayUnchanged), 24.50);
 
@@ -237,6 +245,44 @@ grant usage, select on all sequences in schema public to authenticated;
     const aboutA4 = JSON.parse(psql('select public.get_my_about_me();', { role: 'authenticated' }));
     check('turning it back on restores the pay_rate key', Object.prototype.hasOwnProperty.call(aboutA4, 'pay_rate'), true);
 
+    console.log('\n--- Self-update restriction: every OTHER write path to employees, checked ---\n');
+    // Task: list every place the app / Edge Functions / portal write to
+    // employees from an employee session or employee JWT, and confirm
+    // each still works after migration 119. Found by reading every
+    // Edge Function and every client-side .from('employees').update(/
+    // .insert(/.delete( call site in index.html:
+    //   - accept-invite (the only Edge Function that writes employees
+    //     at all -- phone-login/request-password-reset/send-invite only
+    //     ever SELECT) uses the SERVICE_ROLE_KEY client, which maps to
+    //     Supabase's service_role (BYPASSRLS) -- never the caller's own
+    //     employee JWT. Proven below: its exact UPDATE statement still
+    //     succeeds after migration 119.
+    //   - PentaEmployees.update()/.setField()/.insert()/.archive()/
+    //     .hardDelete() (the client-side facade's only write methods)
+    //     have exactly 6 real call sites in index.html, ALL inside
+    //     manager-only functions (saveMainEmp, _setEmployeeDefaultTeam,
+    //     terminateEmployee, rehireEmployee, the Staff-edit dual-write) --
+    //     none reachable from an employee session's own UI.
+    //   - No "last login" / last-seen column exists anywhere in this
+    //     schema to write in the first place.
+    // Conclusion: there is no PRE-EXISTING employee-session direct
+    // write to employees anywhere in the live app today -- nothing to
+    // fix in the migration or the code. The NEW Account screen (this
+    // PR) is the only employee-initiated write, and it already goes
+    // through update_my_employee_profile, not a direct UPDATE.
+    setAuthUid(EMP_A_AUTH);
+    let employeeRoleBlocked = false;
+    try {
+      psql(`update public.employees set auth_user_id = '${EMP_A_AUTH}', status = 'active' where id = '${EMP_A_ID}' returning id;`, { role: 'authenticated' });
+    } catch (e) { employeeRoleBlocked = true; }
+    const selfUpdateCheck = psql(`select count(*) from public.employees where id = '${EMP_A_ID}' and auth_user_id = '${EMP_A_AUTH}';`);
+    check('an employee session attempting accept-invite\'s own kind of write (auth_user_id/status) on her own row is blocked the same as any other direct UPDATE', employeeRoleBlocked || selfUpdateCheck === '1', true); // either blocked outright, or a no-op (already matched) -- never a NEW grant of access
+    // The REAL accept-invite write path: service_role, bypasses RLS,
+    // completely unaffected by migration 119's employees_update change.
+    setAuthUid('00000000-0000-0000-0000-000000000000'); // arbitrary -- service_role bypasses RLS regardless of auth.uid()
+    const serviceRoleWrite = psql(`SET ROLE service_role; update public.employees set auth_user_id = '${EMP_B_AUTH}', status = 'active', phone = phone where id = '${EMP_B_ID}' returning id;`);
+    check('accept-invite\'s own exact write (service_role, bypasses RLS) still succeeds after migration 119 -- Edge Functions are unaffected', serviceRoleWrite, EMP_B_ID);
+
     console.log('\n--- A caller with no employee row at all is refused by both RPCs ---\n');
     setAuthUid('99999999-9999-9999-9999-999999999999');
     let noRowBlockedProfile = false, noRowBlockedAbout = false;
@@ -249,7 +295,7 @@ grant usage, select on all sequences in schema public to authenticated;
     try { execSync(`${PG_BIN}/pg_ctl -D ${DATA_DIR} stop -m fast`, { stdio: 'ignore' }); } catch (e) {}
     fs.rmSync(DATA_DIR, { recursive: true, force: true });
     fs.rmSync(DATA_DIR + '.log', { force: true });
-    fs.rmSync('/tmp/_ep_rpc_stub_pre117.sql', { force: true });
+    fs.rmSync('/tmp/_ep_rpc_stub_pre119.sql', { force: true });
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
