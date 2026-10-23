@@ -5455,7 +5455,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <span class="week-nav-label" id="hours-week-label">This Week's Hours</span>
       <button class="week-nav-btn" onclick="hoursWeekMove(1)">&#8250;</button>
     </div>
-    <div id="payroll-cost-card" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px"></div>
     <div class="hours-title">Hours Worked</div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0 10px;flex-wrap:wrap">
       <div id="hours-published-indicator" style="font-size:11px;color:var(--muted)"></div>
@@ -5465,6 +5464,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
     </div>
     <div id="hours-table"><div class="hours-loading">Loading hours...</div></div>
+    <!-- Payroll cost card bug fix: moved below the Hours table (was
+         above it, between the week-nav arrows and "Hours Worked") so
+         the manager sees the real hours first, then the cost estimate
+         derived from them. -->
+    <div id="payroll-cost-card" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-top:12px"></div>
   </div>
   <div class="bottom-pad"></div>
 </div>
@@ -34102,7 +34106,6 @@ async function _getPayrollSettings() {
 // calculation of HOURS, only of pay.
 function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettings) {
   var overtimeEnabled = !!(payrollSettings && payrollSettings.overtime_enabled);
-  var todayKey = dateKey(new Date());
   var now = new Date();
 
   // Union of every employee who appears in the roster on ANY day this
@@ -34117,13 +34120,38 @@ function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettin
     });
   });
 
-  var perEmployee = [];
+  // Payroll cost card bug fix: Admin/Office is split out BEFORE any
+  // hours are resolved, not filtered out of the total afterward. The
+  // Hours table's own "All Teams" total never includes Admin/Office
+  // hours (that's a separate card -- renderHoursTable's adminTotal is
+  // never added to grandTotal), so matching it EXACTLY means matching
+  // its scope, not just its number on a week where admin happens to
+  // have no hours on file. Salaried admins are still named below (no
+  // hours to report, same as the Hours table's own "Salaried — no
+  // hours tracked" row). An hourly Admin/Office employee's pay isn't
+  // computed by this card yet -- flagged via hasHourlyAdmin so that
+  // gap is visible, never silently folded in or silently dropped.
+  var salaried = [];
+  var hasHourlyAdmin = false;
+  var fieldEmps = {};
   Object.keys(empsByUuid).forEach(function (key) {
     var emp = empsByUuid[key];
-    if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
-      perEmployee.push({ empId: key, name: emp.name, status: 'salaried', hours: 0, grossCents: null });
+    if (emp.work_type === 'admin') {
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) salaried.push({ empId: key, name: emp.name });
+      else hasHourlyAdmin = true;
       return;
     }
+    fieldEmps[key] = emp;
+  });
+
+  var perEmployee = [];
+  Object.keys(fieldEmps).forEach(function (key) {
+    var emp = fieldEmps[key];
+    // "Missing rate" covers both NULL (never entered) and exactly 0
+    // (this business's bulk-import default for "not entered yet") --
+    // neither is a real $0/hr wage, so both are excluded from PAY the
+    // same way. Neither is EVER excluded from HOURS -- that exclusion
+    // was the whole bug.
     var rate = (emp.pay_rate != null && emp.pay_rate > 0) ? emp.pay_rate : null;
     var totalHours = 0, totalGrossCents = 0, cumBefore = 0, anyDayIncluded = false;
     days.forEach(function (d, dayIdx) {
@@ -34131,21 +34159,11 @@ function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettin
       var dk = dateKey(d);
       var inRosterToday = getUnifiedRoster(dk).some(function (e) { return (e.uuid || e.id) === key; });
       if (!inRosterToday) return; // terminated before this date, or hired after it
+      var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
       var hrs;
-      if (emp.work_type === 'admin') {
-        var offInfo = _adminEmpDayOff(emp.id, dk);
-        if (offInfo) { hrs = 0; }
-        else {
-          var override = getEmpHours(emp.id, dk);
-          if (!override) return; // nothing on file -- not counted, not a fake zero
-          hrs = override.hours || 0;
-        }
-      } else {
-        var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
-        if (rd.isOff) { hrs = 0; }
-        else if (rd.hours === 0 && !rd.isOverride) { return; } // unresolved -- same skip rule as publishWeekHours
-        else { hrs = rd.hours; }
-      }
+      if (rd.isOff) { hrs = 0; }
+      else if (rd.hours === 0 && !rd.isOverride) { return; } // unresolved -- same skip rule as publishWeekHours
+      else { hrs = rd.hours; }
       anyDayIncluded = true;
       totalHours += hrs;
       if (rate != null && hrs > 0) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
@@ -34162,10 +34180,18 @@ function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettin
 
   var included = perEmployee.filter(function (e) { return e.status === 'included'; });
   var missingRate = perEmployee.filter(function (e) { return e.status === 'missing_rate'; });
-  var salaried = perEmployee.filter(function (e) { return e.status === 'salaried'; });
   return {
     perEmployee: perEmployee, included: included, missingRate: missingRate, salaried: salaried,
-    totalHours: included.reduce(function (s, e) { return s + e.hours; }, 0),
+    hasHourlyAdmin: hasHourlyAdmin,
+    // Every field/team employee this week, included or not -- the
+    // SAME population the Hours table's "All Teams" total covers, so
+    // the two must always agree. renderPayrollCostCard cross-checks
+    // this against the actual number the Hours table just rendered
+    // (not a re-derivation of this same formula) and shows a visible
+    // warning if they ever disagree.
+    totalHours: perEmployee.reduce(function (s, e) { return s + e.hours; }, 0),
+    hoursWithRate: included.reduce(function (s, e) { return s + e.hours; }, 0),
+    hoursWithoutRate: missingRate.reduce(function (s, e) { return s + e.hours; }, 0),
     totalGrossCents: included.reduce(function (s, e) { return s + (e.grossCents || 0); }, 0)
   };
 }
@@ -34326,12 +34352,23 @@ async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
   var el = document.getElementById('payroll-cost-card');
   if (!el) return;
   _payrollCardLastArgs = { days: days, weekHoursData: weekHoursData, empHoursMapData: empHoursMapData };
+  // Captured now, synchronously, BEFORE the settings await below -- so
+  // a fast week-navigation click in the meantime can't make this
+  // compare against a later week's Hours-table total than the one
+  // this exact render pass is actually using.
+  var expectedGrandTotal = window._hrsLastGrandTotal;
   try {
     var settings = await _getPayrollSettings();
     var result = _computeWeekPayroll(days, weekHoursData, empHoursMapData, settings);
     var taxPct = _employerTaxPct(settings);
     var taxCents = taxPct != null ? Math.round(result.totalGrossCents * taxPct / 100) : null;
     var totalCostCents = result.totalGrossCents + (taxCents || 0);
+
+    // Visible check (not a silent assumption): compare against the
+    // ACTUAL number the Hours table just rendered, not a second
+    // computation of this same formula, which could never disagree
+    // with itself. A tiny epsilon absorbs floating-point noise only.
+    var mismatch = (typeof expectedGrandTotal === 'number') && Math.abs(expectedGrandTotal - result.totalHours) > 0.005;
 
     var rows = result.included.slice();
     rows.sort(function (a, b) {
@@ -34349,17 +34386,15 @@ async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
         + '<a href="#" onclick="setPayrollCardSort(\'hours\');return false" style="color:' + (_payrollCardSort === 'hours' ? 'var(--accent)' : 'var(--muted)') + '">Hours</a>'
         + '<a href="#" onclick="setPayrollCardSort(\'gross\');return false" style="color:' + (_payrollCardSort === 'gross' ? 'var(--accent)' : 'var(--muted)') + '">Gross</a>'
         + '</div>'
-        + rows.map(function (r) {
+        + (rows.length ? rows.map(function (r) {
           return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">'
             + '<span>' + r.name + '</span>'
             + '<span style="color:var(--muted)">' + r.hours.toFixed(2) + 'h</span>'
             + '<span style="font-weight:600">' + _centsToDollarsStr(r.grossCents) + '</span>'
             + '</div>';
-        }).join('')
-        + (result.missingRate.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-size:11px;font-weight:700">Missing pay rate (excluded)</div>'
+        }).join('') : '<div style="font-size:12px;color:var(--muted)">No employees with a pay rate have hours this week.</div>')
+        + (result.missingRate.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-size:11px;font-weight:700">No pay rate on file (hours counted above, not paid)</div>'
           + result.missingRate.map(function (r) { return '<div style="font-size:12px;color:var(--red)">' + r.name + ' -- ' + r.hours.toFixed(2) + 'h</div>'; }).join('') : '')
-        + (result.salaried.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:700">Salaried (not included)</div>'
-          + result.salaried.map(function (r) { return '<div style="font-size:12px;color:var(--muted)">' + r.name + '</div>'; }).join('') : '')
         + '</div>';
     }
 
@@ -34368,10 +34403,17 @@ async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
       + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Estimate, based on hours so far</div>'
       + '</div>'
       + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Total hours</span><span style="font-weight:600">' + result.totalHours.toFixed(2) + 'h</span></div>'
+      + (mismatch ? '<div style="margin:2px 0 4px;font-size:11px;font-weight:700;color:var(--red)">Hours total does not match the Hours table</div>' : '')
       + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Gross wages</span><span style="font-weight:600">' + _centsToDollarsStr(result.totalGrossCents) + '</span></div>'
       + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Employer taxes &amp; costs' + (taxPct != null ? ' (' + taxPct.toFixed(2) + '%)' : '') + '</span><span style="font-weight:600">' + (taxPct != null ? _centsToDollarsStr(taxCents) : 'not configured') + '</span></div>'
       + '<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><span>Total cost</span><span>' + _centsToDollarsStr(totalCostCents) + '</span></div>'
-      + (result.missingRate.length ? '<div style="margin-top:6px;font-size:11px;color:var(--red)">' + result.missingRate.length + ' employee' + (result.missingRate.length === 1 ? '' : 's') + ' with no pay rate on file, excluded from this total.</div>' : '')
+      + '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;line-height:1.6">'
+      + '<div><span style="color:var(--muted)">Hours with a pay rate:</span> <span style="font-weight:600">' + result.hoursWithRate.toFixed(2) + 'h</span></div>'
+      + '<div><span style="color:var(--muted)">Hours with no pay rate:</span> <span style="font-weight:600">' + result.hoursWithoutRate.toFixed(2) + 'h</span> <span style="color:var(--muted)">(' + result.missingRate.length + ' employee' + (result.missingRate.length === 1 ? '' : 's') + ')</span></div>'
+      + (result.salaried.length ? '<div><span style="color:var(--muted)">Salaried (not included in pay):</span> ' + result.salaried.map(function (r) { return r.name; }).join(', ') + '</div>' : '')
+      + (result.hasHourlyAdmin ? '<div style="color:var(--amber)">Admin/Office hourly pay isn\'t included here yet \u2014 see the Admin/Office card above.</div>' : '')
+      + '<div style="color:var(--muted);margin-top:4px">Wages and taxes cover employees with a pay rate only.</div>'
+      + '</div>'
       + '<button type="button" onclick="togglePayrollCardExpanded()" style="margin-top:8px;width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:6px;border-radius:8px;cursor:pointer">' + (_payrollCardExpanded ? 'Hide details' : 'Show per-employee breakdown') + '</button>'
       + detailHtml;
   } catch (e) {
@@ -34807,6 +34849,12 @@ function renderHoursTable(days, dayNames) {
     + '<div class="hrs-totals-label">All Teams</div>'
     + '<div class="hrs-totals-val">' + _hrsFmtHrs(grandTotal) + '<span style="font-size:13px;font-weight:700;margin-left:2px">h</span></div>'
     + '</div>';
+
+  // Payroll cost card bug fix -- expose the exact number this bar just
+  // showed, so the payroll card (rendered right after this function
+  // returns) can compare against the real figure the manager is
+  // looking at, not a second computation of the same formula.
+  window._hrsLastGrandTotal = grandTotal;
 
   // Depot note (per-team office breakdown line).
   var _depotNote = (function(){
