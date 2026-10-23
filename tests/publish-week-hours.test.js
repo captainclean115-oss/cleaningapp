@@ -53,8 +53,12 @@ const PAT_UUID = 'aaaaaaaa-0000-4000-8000-000000000003';
 const ROSA_UUID = 'aaaaaaaa-0000-4000-8000-000000000004';
 
 const ROSTER = [
-  { id: 'elvia-legacy', uuid: ELVIA_UUID, name: 'Elvia', work_type: 'field', status: 'active' },
-  { id: 'linda-legacy', uuid: LINDA_UUID, name: 'Linda', work_type: 'admin', pay_type: 'hourly', status: 'active' },
+  // Payroll cost tally feature: pay_rate added to exercise est_rate/
+  // est_gross snapshotting. Pat (salaried) and Rosa (no rate on file)
+  // deliberately left without one -- salaried never gets an estimate;
+  // no-rate must publish with est_rate/est_gross both null, never 0.
+  { id: 'elvia-legacy', uuid: ELVIA_UUID, name: 'Elvia', work_type: 'field', status: 'active', pay_rate: 20 },
+  { id: 'linda-legacy', uuid: LINDA_UUID, name: 'Linda', work_type: 'admin', pay_type: 'hourly', status: 'active', pay_rate: 15 },
   { id: 'pat-legacy', uuid: PAT_UUID, name: 'Pat', work_type: 'admin', pay_type: 'salary', status: 'active' },
   // Rosa: terminated effective 2026-08-19 -- present for Mon/Tue (before),
   // excluded Wed/Thu/Fri (on/after), same isTerminatedAsOf rule getUnifiedRoster uses.
@@ -93,6 +97,16 @@ function buildSandbox(opts) {
     window: {
       supabaseClient: {
         from: function (table) {
+          if (table === 'business_payroll_settings') {
+            // Payroll cost tally feature: overtime toggle controlled per
+            // test via opts.overtimeEnabled -- defaults off.
+            const pbuilder = {
+              select: function () { return pbuilder; },
+              eq: function () { return pbuilder; },
+              maybeSingle: function () { return Promise.resolve({ data: { overtime_enabled: !!opts.overtimeEnabled }, error: null }); },
+            };
+            return pbuilder;
+          }
           if (table !== 'published_employee_hours') throw new Error('UNEXPECTED QUERY to table "' + table + '"');
           const builder = {
             select: function () { return builder; },
@@ -220,6 +234,24 @@ function buildSandbox(opts) {
     check('terminated employee: no row attempted for her termination date or after (never in the roster for those days)', Object.keys(writtenByKey).some(function (k) { return k.indexOf(ROSA_UUID + '|2026-08-19') === 0 || k.indexOf(ROSA_UUID + '|2026-08-20') === 0 || k.indexOf(ROSA_UUID + '|2026-08-21') === 0; }), false);
   }
 
+  // Payroll cost tally feature: est_rate/est_gross snapshotting.
+  {
+    const elviaMon = writtenByKey[ELVIA_UUID + '|2026-08-17']; // 5.5h, $20/hr, overtime off
+    check('est_rate snapshots the roster\'s pay_rate at publish time', elviaMon && elviaMon.est_rate, 20);
+    check('est_gross is cents, computed from hours*rate (overtime off by default)', elviaMon && elviaMon.est_gross, Math.round(5.5 * 20 * 100));
+
+    const lindaMon = writtenByKey[LINDA_UUID + '|2026-08-17']; // 7h override, $15/hr
+    check('hourly admin also gets est_rate/est_gross from the same snapshot', lindaMon && lindaMon.est_rate, 15);
+    check('hourly admin est_gross', lindaMon && lindaMon.est_gross, Math.round(7 * 15 * 100));
+
+    const rosaMon = writtenByKey[ROSA_UUID + '|2026-08-17']; // no pay_rate on the roster fixture
+    check('no pay_rate on file: est_rate is null, never a fake value', rosaMon && rosaMon.est_rate, null);
+    check('no pay_rate on file: est_gross is null, never a fake $0', rosaMon && rosaMon.est_gross, null);
+
+    const elviaOffDay = writtenByKey[ELVIA_UUID + '|2026-08-19']; // OFF/vacation day
+    check('an OFF day never gets an est_gross even though Elvia has a rate', elviaOffDay && elviaOffDay.est_rate, null);
+  }
+
   check('total published count matches the number of actual upserted rows', result.published, upsertCalls.reduce(function (s, c) { return s + c.rows.length; }, 0));
 
   // Diff-check: re-publishing the SAME week with nothing changed writes
@@ -231,6 +263,20 @@ function buildSandbox(opts) {
     const result2 = await sandbox2.publishWeekHours(days, {}, {});
     check('re-publishing an unchanged week writes zero rows', result2.published, 0);
     check('re-publishing an unchanged week makes no upsert call at all', upsertCalls2.length, 0);
+  }
+
+  // Payroll cost tally feature: a PURE pay-rate change (identical hours,
+  // different est_rate/est_gross) must still trigger a rewrite through
+  // the existing diff-check -- no separate "Republish week" button
+  // needed, a rate change alone is enough.
+  {
+    const priorRows = (upsertCalls[0] ? upsertCalls[0].rows : []).concat(upsertCalls[1] ? upsertCalls[1].rows : []);
+    const staleRate = priorRows.map(function (r) {
+      return Object.assign({}, r, { est_rate: r.est_rate != null ? r.est_rate + 5 : null, est_gross: r.est_gross != null ? r.est_gross + 12345 : null });
+    });
+    const { sandbox: sandbox4, upsertCalls: upsertCalls4 } = buildSandbox({ existingRows: staleRate });
+    const result4 = await sandbox4.publishWeekHours(days, {}, {});
+    check('a pure rate change (hours identical, est_rate/est_gross stale) triggers a republish', result4.published > 0, true);
   }
 
   // A changed value DOES get rewritten even when a row already exists.

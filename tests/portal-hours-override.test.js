@@ -114,6 +114,7 @@ async function runRenderHours(opts) {
     getPortalWeekDates: function () { return days; },
     renderHoursData: function (composite) { capturedComposite = composite; },
     _renderPortalHoursUpdatedLabel: function () {},
+    _renderPortalEstimatedPay: function () {},
     _setupPublishedHoursRealtime: function () {},
     isSalariedAdmin: function () { return false; },
   };
