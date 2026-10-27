@@ -26,6 +26,11 @@ const inviteSrc = extract(
   '\n\n  function _randomPassword() {',
   'pentaSendInvite + guards'
 );
+const extractInviteErrorSrc = extract(
+  '// Invite-collision guard: shared by both the single-invite',
+  '\n\n// =====================================================================',
+  '_extractInviteError helper'
+);
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -68,6 +73,7 @@ function buildSandbox(opts) {
   };
   sandbox.supabaseClient = sandbox.window.supabaseClient;
   vm.createContext(sandbox);
+  vm.runInContext(extractInviteErrorSrc, sandbox);
   vm.runInContext(inviteSrc, sandbox);
   return { sandbox: sandbox, invokeCalls: invokeCalls, nodes: nodes };
 }

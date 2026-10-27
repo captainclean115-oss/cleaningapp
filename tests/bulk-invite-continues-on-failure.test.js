@@ -27,6 +27,12 @@ const bulkSrc = extract(
   'bulk invite functions'
 );
 
+const extractInviteErrorSrc = extract(
+  '// Invite-collision guard: shared by both the single-invite',
+  '\n\n// =====================================================================',
+  '_extractInviteError helper'
+);
+
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -70,6 +76,7 @@ function buildSandbox(opts) {
   };
   sandbox.renderStaffList = undefined; // absent on purpose -- the real code guards with typeof check
   vm.createContext(sandbox);
+  vm.runInContext(extractInviteErrorSrc, sandbox);
   vm.runInContext(bulkSrc, sandbox);
   return { sandbox: sandbox, invokeCalls: invokeCalls, nodes: nodes };
 }

@@ -1,7 +1,11 @@
 // Edge Function: set-employee-password
 // Manager-only endpoint. Caller must have a valid JWT for an owner/admin/manager
 // in the same business as the target employee.
-// Deploy with: supabase functions deploy set-employee-password --project-ref wymoezilyjmyibmuqqmr
+// Deploy with: supabase functions deploy set-employee-password --project-ref wymoezilyjmyibmuqqmr --no-verify-jwt
+// (confirmed live setting via mcp__supabase__list_edge_functions: verify_jwt=false --
+// this comment previously omitted the flag, which would have flipped it back to
+// true on a future redeploy. The function verifies the caller's JWT itself via
+// callerClient.auth.getUser() below, so --no-verify-jwt is intentional, not a gap.)
 //
 // Sets a temporary password and flips app_metadata.must_change_password=true so
 // the next time the employee signs in, the boot router forces a password change
@@ -102,6 +106,14 @@ serve(async (req) => {
       app_metadata: { must_change_password: true },
     });
     if (createErr || !created.user) {
+      const errCode = (createErr as { code?: string; status?: number } | undefined)?.code;
+      const errStatus = (createErr as { code?: string; status?: number } | undefined)?.status;
+      const isEmailExists = errCode === "email_exists" || errStatus === 422 || /already been registered/i.test(createErr?.message || "");
+      if (isEmailExists) {
+        console.error("[set-employee-password] createUser failed (email_exists) for employee", emp.id, "-- code:", errCode || errStatus);
+        return json(409, { error: "This phone number is already registered to another account. Ask the office to check the phone number on your profile." });
+      }
+      console.error("[set-employee-password] createUser failed for employee", emp.id, "-- error:", createErr?.message);
       return json(500, { error: "Failed to create auth user", detail: createErr?.message });
     }
     authUserId = created.user.id;
