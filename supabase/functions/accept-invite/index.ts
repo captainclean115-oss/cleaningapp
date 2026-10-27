@@ -108,6 +108,14 @@ serve(async (req) => {
       },
     });
     if (createErr || !created.user) {
+      const errCode = (createErr as { code?: string; status?: number } | undefined)?.code;
+      const errStatus = (createErr as { code?: string; status?: number } | undefined)?.status;
+      const isEmailExists = errCode === "email_exists" || errStatus === 422 || /already been registered/i.test(createErr?.message || "");
+      if (isEmailExists) {
+        console.error("[accept-invite] createUser failed (email_exists) for employee", employee.id, "-- code:", errCode || errStatus);
+        return json(409, { error: "This phone number is already registered to another account. Ask the office to check the phone number on your profile." });
+      }
+      console.error("[accept-invite] createUser failed for employee", employee.id, "-- error:", createErr?.message);
       return json(500, { error: "Failed to create auth user", detail: createErr?.message });
     }
     authUserId = created.user.id;

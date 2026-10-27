@@ -221,7 +221,14 @@
       try { result = await resp.json(); } catch (e) {}
 
       if (!resp.ok) {
-        showErr((result && result.error) || ('Error ' + resp.status));
+        // Invite-collision guard: the server's own message (e.g. the
+        // 409 "already registered to another account" case) is always
+        // the specific, actionable one -- show it, plus `detail` when
+        // present (never a phone number or token, by the server's own
+        // discipline), instead of only a generic headline.
+        var msg = (result && result.error) || ('Error ' + resp.status);
+        if (result && result.detail) msg += ' (' + result.detail + ')';
+        showErr(msg);
         btn.disabled = false;
         btn.textContent = 'Continue';
         return;
