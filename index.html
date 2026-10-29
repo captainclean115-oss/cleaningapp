@@ -28057,6 +28057,23 @@ async function renderTeamManager(opts) {
       ? '$' + (stats.revenue / 1000).toFixed(1) + 'k'
       : '$' + Math.round(stats.revenue);
 
+    // Worked-hours line (team-hours-visible-save): sum of SAVED
+    // manual_hour_overrides for this team/day, read via the exact same
+    // synchronous getEmpHours() lookup teamHoursApply() itself already
+    // uses for rollback -- no new query path. Deliberately a separate
+    // label from hLabel above (scheduled job minutes) so the two numbers
+    // are never confused: this is what was actually saved via the Hours
+    // button, not what's planned for the day. null when no override
+    // exists for anyone on this team/day -- nothing new is shown.
+    var _workedTotal = 0, _workedCount = 0;
+    employees.forEach(function (emp) {
+      var ov = getEmpHours(emp.id, dateStr);
+      if (ov && typeof ov.hours === 'number') { _workedTotal += ov.hours; _workedCount++; }
+    });
+    const workedLabel = _workedCount
+      ? (Math.round(_workedTotal * 10) / 10).toString().replace(/\.0$/, '') + 'h'
+      : null;
+
     // GPS Vehicle chip state. resolved.source: 'assignment' (explicit
     // device chosen), 'assignment-none' (explicit no-GPS),
     // 'assignment-missing' (assigned device id not in today's live
@@ -28108,7 +28125,8 @@ async function renderTeamManager(opts) {
         <span style="font-size:12px;color:var(--muted)">👤 ${employees.length}</span>
         <span style="font-size:12px;color:var(--green)">${revLabel}</span>
         <span style="font-size:12px;color:var(--muted)">🏠 ${stats.houses}</span>
-        <span style="font-size:12px;color:var(--muted)">⏱️ ${hLabel}</span>
+        <span style="font-size:12px;color:var(--muted)" title="Scheduled job time -- not worked hours">⏱️ Scheduled ${hLabel}</span>
+        ${workedLabel ? `<span style="font-size:12px;color:var(--accent);font-weight:600" title="Saved via the Hours button">✅ Worked ${workedLabel}</span>` : ''}
         ${_carChipHtml}
         <button onclick="openTeamHoursModal('${team}','${dateStr}')" title="Edit ${_adminEsc(team)}'s hours for ${dateStr}"
           style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer;min-height:28px">
@@ -28652,6 +28670,7 @@ function _teamHoursShowError(msg) {
 // back every entry THIS call already wrote, restoring each to its exact
 // prior value (a real prior override, or no override at all), matching
 // Claire's batch_edit_employee_hours's own rollback contract exactly.
+var _teamHoursApplyInFlight = false;
 async function teamHoursApply() {
   var overlay = document.getElementById('team-hours-overlay');
   if (!overlay) { console.warn('[TeamHours] apply: #team-hours-overlay missing'); return; }
@@ -28679,60 +28698,87 @@ async function teamHoursApply() {
   var elig = _teamHoursEligibility(team, dateStr);
   if (!elig.included.length) { _teamHoursShowError('No employees to apply this to.'); return; }
 
+  // Re-entry guard: set synchronously, before any await. Everything
+  // above this point is synchronous (no await), so a second tap that
+  // lands here while a write from a first tap is still in flight always
+  // sees this flag already true and is ignored outright -- it never
+  // reaches saveEmpHours a second time. This mirrors pentaSendInvite's
+  // own double-click guard. This is the direct fix for the live bug
+  // found diagnosing this: two identical writes to the same employees,
+  // ~19 seconds apart, because Apply gave no visible sign the first tap
+  // had already worked.
+  if (_teamHoursApplyInFlight) return;
+  _teamHoursApplyInFlight = true;
+
   var hours = calcHoursFromTimes(start, end, lunch);
   var data = { start: start, end: end, lunch: lunch, hours: hours, team: team };
 
   var applyBtn = document.getElementById('team-hours-apply-btn');
-  if (applyBtn) applyBtn.disabled = true;
+  var applyBtnOrigText = applyBtn ? applyBtn.textContent : null;
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Saving…'; }
   document.getElementById('team-hours-error').style.display = 'none';
 
-  var applied = []; // { emp, uuid, prior } for everything actually written, for rollback
-  var writeError = null;
-  for (var i = 0; i < elig.included.length; i++) {
-    var emp = elig.included[i];
-    try {
-      var prior = getEmpHours(emp.id, dateStr); // null if no override existed
-      await saveEmpHours(emp.id, dateStr, data);
-      var uuid = _teamHoursEmpUuid(emp);
+  try {
+    var applied = []; // { emp, uuid, prior } for everything actually written, for rollback
+    var writeError = null;
+    for (var i = 0; i < elig.included.length; i++) {
+      var emp = elig.included[i];
       try {
-        await _auditSupplement('manual_override', 'employee', uuid, {
-          source: 'team_hours_button', date: dateStr, team: team,
-          start: start, end: end, lunch: lunch, hours: hours
-        });
-      } catch (auditErr) { console.warn('[TeamHours] audit supplement failed (non-fatal)', auditErr); }
-      applied.push({ emp: emp, uuid: uuid, prior: prior });
-    } catch (err) {
-      writeError = { emp: emp, message: (err && err.message) || String(err) };
-      break;
-    }
-  }
-
-  if (writeError) {
-    var rollbackFailed = [];
-    for (var r = applied.length - 1; r >= 0; r--) {
-      var a = applied[r];
-      try {
-        if (a.prior) { await saveEmpHours(a.emp.id, dateStr, a.prior); }
-        else { await clearEmpHours(a.emp.id, dateStr); }
-      } catch (rbErr) {
-        console.error('[TeamHours] rollback failed for', a.emp.name, rbErr);
-        rollbackFailed.push(a.emp.name);
+        var prior = getEmpHours(emp.id, dateStr); // null if no override existed
+        await saveEmpHours(emp.id, dateStr, data);
+        var uuid = _teamHoursEmpUuid(emp);
+        try {
+          await _auditSupplement('manual_override', 'employee', uuid, {
+            source: 'team_hours_button', date: dateStr, team: team,
+            start: start, end: end, lunch: lunch, hours: hours
+          });
+        } catch (auditErr) { console.warn('[TeamHours] audit supplement failed (non-fatal)', auditErr); }
+        applied.push({ emp: emp, uuid: uuid, prior: prior });
+      } catch (err) {
+        writeError = { emp: emp, message: (err && err.message) || String(err) };
+        break;
       }
     }
-    if (applyBtn) applyBtn.disabled = false;
-    _teamHoursShowError('Could not save hours for ' + writeError.emp.name + ' (' + writeError.message + '). ' +
-      (rollbackFailed.length
-        ? 'Some rollbacks failed too -- please double-check hours for: ' + rollbackFailed.join(', ') + '.'
-        : 'Nothing was left half-applied -- everything already written was rolled back.'));
-    return;
+
+    if (writeError) {
+      var rollbackFailed = [];
+      for (var r = applied.length - 1; r >= 0; r--) {
+        var a = applied[r];
+        try {
+          if (a.prior) { await saveEmpHours(a.emp.id, dateStr, a.prior); }
+          else { await clearEmpHours(a.emp.id, dateStr); }
+        } catch (rbErr) {
+          console.error('[TeamHours] rollback failed for', a.emp.name, rbErr);
+          rollbackFailed.push(a.emp.name);
+        }
+      }
+      _teamHoursShowError('Could not save hours for ' + writeError.emp.name + ' (' + writeError.message + '). ' +
+        (rollbackFailed.length
+          ? 'Some rollbacks failed too -- please double-check hours for: ' + rollbackFailed.join(', ') + '.'
+          : 'Nothing was left half-applied -- everything already written was rolled back.'));
+      return;
+    }
+
+    logPendingUpdate('Team hours edited: ' + team, new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) +
+      ' — ' + start + '-' + end + ', lunch ' + lunch + 'min (' + applied.length + ' employee' + (applied.length === 1 ? '' : 's') + ')');
+
+    // Visible save confirmation -- the direct fix for "looks like it did
+    // nothing": a successful write used to just close the modal, and the
+    // team card's only "hours" number (_teamDayStats' hLabel, below) is
+    // scheduled job minutes, completely unrelated to this override -- so
+    // a real save and a no-op looked identical. This toast is the save's
+    // own positive confirmation, independent of that unrelated number.
+    if (typeof showToast === 'function') {
+      var dateLabel = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      showToast('Hours saved for ' + team + ' on ' + dateLabel, 'success');
+    }
+
+    closeTeamHoursModal();
+    await _teamHoursRefreshAfterWrite(dateStr);
+  } finally {
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = applyBtnOrigText || 'Apply to team'; }
+    _teamHoursApplyInFlight = false;
   }
-
-  logPendingUpdate('Team hours edited: ' + team, new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) +
-    ' — ' + start + '-' + end + ', lunch ' + lunch + 'min (' + applied.length + ' employee' + (applied.length === 1 ? '' : 's') + ')');
-
-  closeTeamHoursModal();
-  if (applyBtn) applyBtn.disabled = false;
-  await _teamHoursRefreshAfterWrite(dateStr);
 }
 
 // Reset team to GPS — clears the manual override for each included
