@@ -14558,6 +14558,99 @@ async function _extractInviteError(res) {
     return last4.length === 4 ? ('***-***-' + last4) : 'her phone';
   }
 
+  // Shared by pentaSendInvite and pentaSendPasswordReset (Claire portal-
+  // links feature) -- extracted so both callers check the exact same
+  // way instead of two copies that could drift. Returns a plain-English
+  // reason string if emp's phone is shared with another ACTIVE
+  // employee, or null if it's fine to proceed. Never throws -- a lookup
+  // failure is non-fatal and treated as "no duplicate found."
+  function _findDuplicateActivePhoneOwnerReason(emp) {
+    try {
+      var _normInv = String(emp.phone || '').replace(/\D/g, '');
+      if (_normInv.length === 11 && _normInv[0] === '1') _normInv = _normInv.slice(1);
+      if (_normInv.length !== 10 || !window.PentaEmployees || !window.PentaEmployees.listSync) return null;
+      var _dupOwner = window.PentaEmployees.listSync().find(function (e) {
+        if (!e || e.id === emp.id || e.status !== 'active') return false;
+        var n2 = String(e.phone || '').replace(/\D/g, '');
+        if (n2.length === 11 && n2[0] === '1') n2 = n2.slice(1);
+        return n2.length === 10 && n2 === _normInv;
+      });
+      if (!_dupOwner) return null;
+      return (emp.first_name || 'This employee') + '\'s phone number is shared with ' + (_dupOwner.first_name || 'another active employee') + '. Fix one of their phone numbers first.';
+    } catch (e) {
+      console.warn('[_findDuplicateActivePhoneOwnerReason] check failed (non-fatal, treated as no duplicate)', e);
+      return null;
+    }
+  }
+
+  // Claire portal-links feature -- a password-reset text for an
+  // employee who ALREADY has a login. Mirrors pentaSendInvite's own
+  // guard shape exactly (sync double-click flag, one try/finally, 60s
+  // resend cooldown, same resolver, same structured return) but with
+  // its own separate in-flight/last-sent maps -- sending an invite and
+  // sending a reset are independent actions and shouldn't cool each
+  // other down. No Staff-screen button calls this yet (this PR only
+  // adds Claire's tool); it exists here, once, for both to share later
+  // instead of Claire growing a private copy.
+  var _resetInFlight = {};
+  var _resetLastSentAt = {};
+  async function pentaSendPasswordReset(rosterId) {
+    if (_resetInFlight[rosterId]) return { ok: false, reason: 'already_sending' };
+    _resetInFlight[rosterId] = true;
+    try {
+      var lastSent = _resetLastSentAt[rosterId];
+      if (lastSent && (Date.now() - lastSent) < 60000) {
+        var waitSec = Math.ceil((60000 - (Date.now() - lastSent)) / 1000);
+        return { ok: false, reason: 'Please wait ' + waitSec + 's before resending.' };
+      }
+
+      var resolved;
+      try {
+        resolved = await _resolveEmployeeByRoster(rosterId);
+      } catch (e) {
+        console.error('[pentaSendPasswordReset] resolver crash', e);
+        return { ok: false, reason: 'Resolver crashed: ' + ((e && e.message) || String(e)) };
+      }
+      if (resolved.error) {
+        console.error('[pentaSendPasswordReset]', resolved.error);
+        return { ok: false, reason: (resolved.error.msg || 'Could not look up this employee.') };
+      }
+
+      var emp = resolved.employee;
+      if (!emp.phone) {
+        return { ok: false, employeeId: emp.id, reason: 'No phone number on file.' };
+      }
+      if (!emp.auth_user_id) {
+        return { ok: false, employeeId: emp.id, reason: 'This employee doesn\'t have a login yet. Send an invite instead.' };
+      }
+      var _dupReason2 = _findDuplicateActivePhoneOwnerReason(emp);
+      if (_dupReason2) {
+        return { ok: false, employeeId: emp.id, reason: _dupReason2 };
+      }
+
+      var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+      if (!sb) {
+        return { ok: false, employeeId: emp.id, reason: 'Supabase client not ready. Reload the page.' };
+      }
+
+      try {
+        var res = await sb.functions.invoke('send-invite', { body: { employee_id: emp.id, action: 'reset' } });
+        _resetLastSentAt[rosterId] = Date.now();
+        if (res.error || !res.data || !res.data.success) {
+          var extracted = await _extractInviteError(res);
+          return { ok: false, employeeId: emp.id, reason: extracted.message, reasonCode: extracted.code };
+        }
+        var sentTime = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        return { ok: true, employeeId: emp.id, maskedPhone: _maskPhone(emp.phone), sentTime: sentTime };
+      } catch (e) {
+        console.error('[pentaSendPasswordReset] send-invite call threw', e);
+        return { ok: false, employeeId: emp.id, reason: 'Network error -- could not reach the server.' };
+      }
+    } finally {
+      _resetInFlight[rosterId] = false;
+    }
+  }
+
   // Manager-only fallback when the server send fails: reads the token
   // through the SAME RLS the rest of the Staff screen already relies on
   // (employee_invites_select: owner/admin/manager) -- send-invite itself
@@ -14594,14 +14687,23 @@ async function _extractInviteError(res) {
     // EVERY exit path (an early return, a thrown error, or the normal
     // end) clears the flag exactly once -- no return statement has to
     // remember to reset it itself.
-    if (_inviteInFlight[rosterId]) return;
+    //
+    // Claire portal-links feature: every exit path now returns a small
+    // structured result ({ ok, reason, maskedPhone }) in ADDITION to its
+    // existing side effects (unchanged) -- the Staff screen's button
+    // onclick handler still just calls this and ignores the return
+    // value, but Claire's send_portal_invite tool reuses this exact
+    // function (same 60s/double-click/duplicate-phone guards, same
+    // Edge Function call) instead of a second copy, and reads the
+    // return value to report back and to write its audit row.
+    if (_inviteInFlight[rosterId]) return { ok: false, reason: 'already_sending' };
     _inviteInFlight[rosterId] = true;
     try {
       var lastSent = _inviteLastSentAt[rosterId];
       if (lastSent && (Date.now() - lastSent) < 60000) {
         var waitSec = Math.ceil((60000 - (Date.now() - lastSent)) / 1000);
         _renderInviteResult(rosterId, '<span style="color:var(--amber)">Please wait ' + waitSec + 's before resending.</span>');
-        return;
+        return { ok: false, reason: 'Please wait ' + waitSec + 's before resending.' };
       }
 
       var resolved;
@@ -14610,7 +14712,7 @@ async function _extractInviteError(res) {
       } catch (e) {
         alert('Send Invite failed (resolver crashed):\n' + (e && e.message));
         console.error('[pentaSendInvite] resolver crash', e);
-        return;
+        return { ok: false, reason: 'Resolver crashed: ' + ((e && e.message) || String(e)) };
       }
 
       if (resolved.error) {
@@ -14637,39 +14739,28 @@ async function _extractInviteError(res) {
         }
         alert('Send Invite failed.\n\n' + detail);
         console.error('[pentaSendInvite]', err);
-        return;
+        return { ok: false, reason: detail };
       }
 
       var emp = resolved.employee;
       if (!emp.phone) {
         _renderInviteResult(rosterId, '<span style="color:var(--red)">No phone number on file for ' + (emp.first_name || 'this employee') + '. Add one in the Staff edit form first.</span>');
-        return;
+        return { ok: false, employeeId: emp.id, reason: 'No phone number on file.' };
       }
       // Phone + password login feature: block the invite if this phone
       // is shared with another ACTIVE employee -- phone login/reset
       // need it to uniquely resolve an account for invites going
       // forward.
-      try {
-        var _normInv = String(emp.phone || '').replace(/\D/g, '');
-        if (_normInv.length === 11 && _normInv[0] === '1') _normInv = _normInv.slice(1);
-        if (_normInv.length === 10 && window.PentaEmployees && window.PentaEmployees.listSync) {
-          var _dupOwner = window.PentaEmployees.listSync().find(function (e) {
-            if (!e || e.id === emp.id || e.status !== 'active') return false;
-            var n2 = String(e.phone || '').replace(/\D/g, '');
-            if (n2.length === 11 && n2[0] === '1') n2 = n2.slice(1);
-            return n2.length === 10 && n2 === _normInv;
-          });
-          if (_dupOwner) {
-            _renderInviteResult(rosterId, '<span style="color:var(--red)">' + (emp.first_name || 'This employee') + '\'s phone number is shared with ' + (_dupOwner.first_name || 'another active employee') + '. Fix one of their phone numbers first.</span>');
-            return;
-          }
-        }
-      } catch (e) { console.warn('[pentaSendInvite] duplicate-phone check failed (non-fatal, proceeding)', e); }
+      var _dupReason = _findDuplicateActivePhoneOwnerReason(emp);
+      if (_dupReason) {
+        _renderInviteResult(rosterId, '<span style="color:var(--red)">' + _dupReason + '</span>');
+        return { ok: false, employeeId: emp.id, reason: _dupReason };
+      }
 
       var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
       if (!sb) {
         alert('Supabase client not ready. Reload the page.');
-        return;
+        return { ok: false, employeeId: emp.id, reason: 'Supabase client not ready. Reload the page.' };
       }
 
       _renderInviteResult(rosterId, '<span style="color:var(--muted)">Sending…</span>');
@@ -14681,15 +14772,17 @@ async function _extractInviteError(res) {
           _renderInviteResult(rosterId,
             '<span style="color:var(--red)">' + _adminEsc(extracted.message) + '</span>'
             + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
-          return;
+          return { ok: false, employeeId: emp.id, reason: extracted.message, reasonCode: extracted.code };
         }
         var sentTime = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
         _renderInviteResult(rosterId, '<span style="color:var(--green)">Sent to ' + _maskPhone(emp.phone) + ' at ' + sentTime + '.</span>');
+        return { ok: true, employeeId: emp.id, maskedPhone: _maskPhone(emp.phone), sentTime: sentTime };
       } catch (e) {
         _renderInviteResult(rosterId,
           '<span style="color:var(--red)">Network error -- could not reach the server.</span>'
           + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
         console.error('[pentaSendInvite] send-invite call threw', e);
+        return { ok: false, employeeId: emp.id, reason: 'Network error -- could not reach the server.' };
       }
     } finally {
       _inviteInFlight[rosterId] = false;
@@ -18677,6 +18770,17 @@ function _renderAuditRowSummary(row, ctx) {
           return _audEsc(dd.label) + ' ' + _audEsc(dd.from) + ' → ' + _audEsc(dd.to);
         }).join(', ');
       }
+    } else if (at === 'manual_note' && nv.source === 'claire_portal_link') {
+      // Claire portal-links feature -- never shows the link/token
+      // itself (new_values never has one), only the outcome Claire
+      // already reported in chat.
+      var plVerb = (nv.type === 'reset') ? 'password reset link' : 'portal invite';
+      if (nv.result === 'sent') {
+        summary = _audEsc(actor) + ' sent a ' + plVerb + ' to <strong>' + _audEsc(en2) + '</strong> via Claire';
+      } else {
+        summary = _audEsc(actor) + ' tried to send a ' + plVerb + ' to <strong>' + _audEsc(en2) + '</strong> via Claire — failed'
+          + (nv.reason ? (': ' + _audEsc(_audTrunc(nv.reason, 80))) : '');
+      }
     } else {
       summary = _audEsc(actor) + ' ' + _audEsc(at) + ' staff member <strong>' + _audEsc(en2) + '</strong>';
     }
@@ -21256,6 +21360,17 @@ function _claireTrimHistory(maxMessages) {
 // round-cap) reply can state plainly what was actually saved, instead of
 // asking the operator to trust an unconfirmed status.
 function _claireWriteSummary(toolName, resStr) {
+  if (toolName === 'send_portal_invite' || toolName === 'send_password_reset_link') {
+    try {
+      var plParsed = JSON.parse(resStr);
+      if (plParsed && plParsed.success === true && Array.isArray(plParsed.sent)) {
+        var plNoun = (toolName === 'send_portal_invite') ? 'invite(s)' : 'reset link(s)';
+        if (!plParsed.sent.length) return 'Sent no ' + plNoun + ' -- everyone was skipped.';
+        return 'Sent ' + plNoun + ' to ' + plParsed.sent.map(function (s) { return s.name; }).join(', ') + '.';
+      }
+    } catch (e) {}
+    return null;
+  }
   if (toolName === 'batch_edit_employee_hours') {
     try {
       var parsed = JSON.parse(resStr);
@@ -21285,6 +21400,22 @@ function _claireWriteSummary(toolName, resStr) {
 // still exhausts the round cap, Claire can show what she actually has
 // (a real preview, a real error) instead of a vague, uninformative status.
 function _clairePreviewSummary(toolName, resStr) {
+  if (toolName === 'send_portal_invite' || toolName === 'send_password_reset_link') {
+    try {
+      var plParsed = JSON.parse(resStr);
+      if (plParsed && plParsed.preview === true && Array.isArray(plParsed.recipients)) {
+        var plLines = 'About to text ' + plParsed.recipients.length + ': ' + plParsed.recipients.join(', ') + '.';
+        if (plParsed.skipped && plParsed.skipped.length) {
+          plLines += '\nSkipped: ' + plParsed.skipped.map(function (s) { return s.name + ' (' + s.reason + ')'; }).join(', ') + '.';
+        }
+        if (plParsed.remaining_after_this_batch) {
+          plLines += '\n' + plParsed.remaining_after_this_batch + ' more eligible after this batch.';
+        }
+        return plLines + '\nConfirm all?';
+      }
+    } catch (e) {}
+    return null;
+  }
   if (toolName !== 'batch_edit_employee_hours') return null;
   try {
     var parsed = JSON.parse(resStr);
@@ -21299,6 +21430,14 @@ function _clairePreviewSummary(toolName, resStr) {
 
 function _claireErrorSummary(toolName, resStr) {
   if (typeof resStr !== 'string') return null;
+  if (toolName === 'send_portal_invite' || toolName === 'send_password_reset_link') {
+    try {
+      var plParsed = JSON.parse(resStr);
+      if (plParsed && plParsed.kind === 'ambiguous_employee') return 'Couldn\'t tell which employee you meant by "' + plParsed.query + '".';
+      if (plParsed && plParsed.kind === 'employee_not_found') return 'Couldn\'t find an employee named "' + plParsed.query + '".';
+      if (plParsed && plParsed.kind === 'no_employees_specified') return 'Need at least one employee name, or all=true.';
+    } catch (e) {}
+  }
   if (resStr.indexOf('Tool ' + toolName + ' threw:') === 0) return toolName + ' failed: ' + resStr.slice(('Tool ' + toolName + ' threw: ').length) + '.';
   try {
     var parsed = JSON.parse(resStr);
@@ -24980,7 +25119,9 @@ var CLAIRE_TOOLS = [
   { name: 'team_performance', description: 'Team metrics rollup — jobs completed, revenue, avg per job, client count, cancellations per team. Use for "which team is doing best" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: this_month, last_month, last_90_days (default last_30_days)'} } } },
   { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention. Defaults to active clients only; pass client_status="all" to include paused/inactive.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
   { name: 'send_text', description: 'Send an SMS via RingCentral. ONLY call this AFTER the user has explicitly confirmed (e.g. "yes", "send it", "go ahead"). NEVER call without prior confirmation. NEVER call in the same response that produced a quote — quote first, wait, then send. Returns success or error.', input_schema: { type:'object', properties: { phone:{type:'string',description:'Phone number — any format, will be normalized to E.164'}, message:{type:'string',description:'SMS body (plain text, no markdown)'} }, required:['phone','message'] } },
-  { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
+  { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } },
+  { name: 'send_portal_invite', description: 'Send a first-time Penta portal login invite text to an employee, several employees, or all=true for every eligible one. Eligible only if: active (not terminated), has a phone on file, that phone is not shared with another ACTIVE employee, and does NOT already have a login (no auth_user_id yet). Salaried and hourly Admin/Office employees ARE eligible -- they can use the portal too, same as field employees. ONE employee given by name: sends immediately, no preview needed -- report back "Sent the invite to <name> at <masked phone>." TWO OR MORE names, or all=true: you MUST call this FIRST with confirmed omitted (or false) to get a preview -- this performs NO sends. Show Tom the COMPLETE list this returns (who will get a text, and who will be SKIPPED with the exact reason: no phone, shared phone, already has a login, terminated) and WAIT for his explicit yes before calling again with confirmed=true. Capped at 10 sends per call -- if more than 10 are eligible, the result says how many are left over; offer to run the next batch. Sends never stop on one failure -- the result always lists every outcome with a reason, and you report a sent/failed/skipped summary, never a vague "done". NEVER reveal, repeat, retype, or log the actual invite link or token anywhere, in chat or otherwise -- only report success/failure and the masked phone number this tool itself returns. If a send fails, tell Tom plainly and mention the Staff screen has a manager-only "Copy invite link" button as a fallback. Name resolution uses the same disambiguation as the hours tools -- only ask "which one?" when genuinely ambiguous.', input_schema: { type:'object', properties: { employees:{type:'array',items:{type:'string'},description:'Employee name(s) to invite. Omit or leave empty when all=true.'}, all:{type:'boolean',description:'true to target every eligible employee instead of listing names by hand.'}, confirmed:{type:'boolean',description:'Required true to actually send when targeting 2+ employees or all=true. Omit (or false) for a preview-only call that sends nothing. Not needed for a single named employee, which sends immediately.'} } } },
+  { name: 'send_password_reset_link', description: 'Send a password-reset text to an employee, several employees, or all=true, for an employee who ALREADY has a Penta portal login. Eligible only if: active (not terminated), has a phone on file, that phone is not shared with another ACTIVE employee, and DOES already have a login (auth_user_id set). If an employee has no login yet, this tool will say so instead of sending anything for them -- when that happens, tell Tom and offer to call send_portal_invite for that person instead; never try to work around it another way. Salaried and hourly Admin/Office employees ARE eligible. ONE employee given by name: sends immediately, no preview needed -- report back "Sent the reset link to <name> at <masked phone>." TWO OR MORE names, or all=true: you MUST call this FIRST with confirmed omitted (or false) to get a preview, exactly like send_portal_invite -- show the full list, who is skipped and why, and wait for an explicit yes before calling again with confirmed=true. Capped at 10 sends per call, same overflow handling as send_portal_invite. Sends never stop on one failure. NEVER reveal, repeat, retype, or log the actual reset link anywhere -- only report success/failure and the masked phone number. The employee sets their OWN new password themselves on the reset page -- you never do that for them and never ask for or discuss what their new password should be.', input_schema: { type:'object', properties: { employees:{type:'array',items:{type:'string'},description:'Employee name(s) to send a reset link to. Omit or leave empty when all=true.'}, all:{type:'boolean',description:'true to target every eligible employee instead of listing names by hand.'}, confirmed:{type:'boolean',description:'Required true to actually send when targeting 2+ employees or all=true. Omit (or false) for a preview-only call that sends nothing. Not needed for a single named employee, which sends immediately.'} } } }
 ];
 
 async function processVoiceCommand(text) {
@@ -25082,7 +25223,7 @@ async function processVoiceCommand(text) {
     +'\nYou also have single-record lookups (lookup_client, lookup_employee, get_employee_hours, lookup_schedule, lookup_balance, count_jobs, get_revenue, locate_team) for drilling into specifics, plus operational tools (move/cancel/edit/message) for taking action, plus web_search for market/external data ' + _opName + ' doesn\'t have in the app.\n'
     +'\nCite specific numbers from data. Never guess. If ' + _opName + ' asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
-    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients, read or edit employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
+    +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients, read or edit employee hours, send invoices, add reminders, compute_quote, send_text, send_portal_invite, send_password_reset_link). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
     +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
     +'QUOTE FLOW (follow this exactly when the user asks for a quote):\n'
     +'1. ALWAYS call compute_quote first. Pass the address and the frequency the user asked for (weekly | biweekly | triweekly | monthly | once). compute_quote does the math backend-only — it does NOT render anything.\n'
@@ -25107,6 +25248,10 @@ async function processVoiceCommand(text) {
     +'   A short reply from ' + _opName + ' after you show the preview — "yes", "confirmed", "override", "do it", "go ahead", or similar — confirms the ENTIRE list exactly as shown, including any entries whose current value was an approved day off/vacation. It is NOT a request for more detail and does NOT need a follow-up question. In that same turn, immediately call batch_edit_employee_hours again with the SAME entries and confirmed=true — never just acknowledge ("got it") or re-preview the same list back without calling the tool; a confirmation word with no confirmed=true call behind it means nothing was saved, no matter what you say.\n'
     +'   If it returns error: "entry_resolution_failed", resolve each listed employee (same ambiguous/not-found handling as step 4) before retrying — nothing is written or previewed until every entry resolves. If it returns error: "batch_write_failed", tell ' + _opName + ' exactly what was rolled back and what (if anything) still needs manual review — never imply the whole batch succeeded. On success, your final reply for this message MUST state plainly what was saved — name every employee/date pair or say the count and range (e.g. "Saved Fatima, Franchesca, Nadia and Natalia for 8/9, 8/10 and 8/11. Done.") — never end a completed write with an open-ended line like "anything else?" that doesn\'t confirm the save happened.\n'
     +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '. This exception does NOT apply to batch_edit_employee_hours, which always previews and confirms first regardless.\n'
+    +'\nPORTAL INVITES AND PASSWORD RESETS\n'
+    +'send_portal_invite texts a first-time portal login link to an employee who doesn\'t have a login yet. send_password_reset_link texts a reset link to one who already does. Both skip anyone inactive/terminated, missing a phone, sharing a phone with another active employee, or on the wrong side of the login check (send_portal_invite skips anyone who already has a login; send_password_reset_link skips anyone who does not, and tells you to use send_portal_invite for them instead). Admin/Office employees (salaried or hourly) are eligible for both, same as field employees — this is different from the hours tools, which skip salaried Admin/Office entirely; do not apply that hours-tools exclusion here.\n'
+    +'ONE employee named directly: call the tool and it sends right away — report back exactly what it returns, e.g. "Sent the invite to Maria Vieira at ***-***-1234." TWO OR MORE names, or all=true: these ALWAYS require a preview first, with no exception — call the tool with confirmed omitted, show ' + _opName + ' the complete list it returns (who gets a text, who is skipped and the exact reason), and wait for an explicit yes before calling again with confirmed=true. A short confirmation word ("yes", "send them", "go ahead") confirms the exact list just shown — call again with confirmed=true in that same turn, don\'t just acknowledge it. If more than 10 are eligible, only the first 10 go out; say how many are left over and offer to run the next batch when ' + _opName + ' is ready. A send failing for one person never stops the rest — always end with a sent/failed/skipped summary, never a bare "done."\n'
+    +'NEVER show, repeat, retype, or log the actual invite link, reset link, or token anywhere — not in chat, not in a tool result you quote back, not anywhere. These tools only ever give you back a masked phone number (e.g. ***-***-1234) and a success/failure flag — that is ALL you can ever report about the link itself. If a send fails, say so plainly and mention the manager-only "Copy invite link" button on the Staff screen as the fallback (that only exists for invites, not resets — a failed reset just needs a retry). The employee ALWAYS sets their own new password themselves, on the reset page, after clicking the link — you never set, suggest, or discuss what it should be.\n'
     +'6. If ' + _opName + ' asks "is it done?" / "did that save?" after any hours edit, do not answer from memory of what you intended to do — call get_employee_hours for the employee(s)/date(s) in question and report the actual current value read back from the database. If your own last message already stated a save succeeded, you may state that directly, but never claim or deny a save you cannot see in this conversation\'s tool results — if you genuinely don\'t know, say that and re-check rather than guessing either way.\n\n'
     +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
     +(_claireMode === 'research'
@@ -25527,6 +25672,187 @@ function _claireTerminatedExplanation(query, asOfDate) {
     if (asOfDate < fe.terminated_at) return null; // not yet terminated as of asOfDate -- not the explanation
     return { name: fe.name, terminated_at: fe.terminated_at };
   } catch (e) { return null; }
+}
+
+// Claire portal-links feature -- shared by send_portal_invite and
+// send_password_reset_link (kind: 'invite' | 'reset') so the preview/
+// confirm/cap/skip/sequential-send/audit logic exists exactly once,
+// not once per tool. Name resolution reuses findEmployeeWithSuggestions
+// + _claireTerminatedExplanation -- the EXACT same disambiguation and
+// date-aware-roster logic the hours tools already use, not a second
+// copy. The actual per-employee send reuses pentaSendInvite (invite)
+// or pentaSendPasswordReset (reset) -- the SAME functions the Staff
+// screen's own buttons call, so the 60s resend guard, the double-click
+// guard, and the duplicate-active-phone check are all inherited for
+// free, never reimplemented here.
+// Shared normalize, used by every one of _claireSendPortalLinks's own
+// eligibility checks below -- same algorithm as normalizePhone
+// everywhere else in this app (send-invite, phone-login, etc.),
+// copied rather than re-derived differently.
+function _claireNormalizePhone(raw) {
+  var digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits[0] === '1') return digits.slice(1);
+  if (digits.length === 10) return digits;
+  return null;
+}
+
+// Invite-collision guard, client-side preview mirror of send-invite's
+// own server-side findPhoneCollision (PR #205) -- copied, not
+// re-derived differently, using data already loaded via
+// PentaEmployees.listSync() so Claire can surface this in the PREVIEW
+// step, before any text is sent, not just after a failed attempt.
+// Any OTHER employee row (ANY status, including terminated -- a stale
+// fixture row can still be squatting on a real login) that ALREADY
+// has a login whose stored email or phone matches this one's derived
+// target.
+function _claireFindPhoneCollision(emp) {
+  try {
+    var normalized = _claireNormalizePhone(emp.phone);
+    if (!normalized) return null;
+    var derivedEmail = normalized + '@phone.penta.internal';
+    var all = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+    for (var i = 0; i < all.length; i++) {
+      var row = all[i];
+      if (!row || row.id === emp.id || !row.auth_user_id) continue;
+      var rowEmail = String(row.email || '').toLowerCase();
+      var rowNormalized = _claireNormalizePhone(row.phone);
+      if (rowEmail === derivedEmail || (rowNormalized && rowNormalized === normalized)) return row;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[_claireFindPhoneCollision] check failed (non-fatal, treated as no collision)', e);
+    return null;
+  }
+}
+
+// Reset-only: a linked employee whose stored email IS phone-derived-
+// shaped, just for a DIFFERENT number than her current one -- see this
+// script's own header comment for why pre-convention name-based
+// emails are deliberately excluded, and what this still can't catch.
+function _claireLoginOutOfSync(emp) {
+  if (!emp || !emp.auth_user_id) return false;
+  try {
+    var normalized = _claireNormalizePhone(emp.phone);
+    if (!normalized) return false;
+    var derivedEmail = normalized + '@phone.penta.internal';
+    var stored = String(emp.email || '').toLowerCase();
+    return /^\d{10}@phone\.penta\.internal$/.test(stored) && stored !== derivedEmail;
+  } catch (e) { return false; }
+}
+
+async function _claireSendPortalLinks(input, kind) {
+  var sendFn = (kind === 'invite') ? pentaSendInvite : pentaSendPasswordReset;
+  var names = Array.isArray(input.employees) ? input.employees.filter(Boolean) : [];
+  var wantAll = input.all === true;
+  if (!wantAll && !names.length) {
+    return { error: { kind: 'no_employees_specified' } };
+  }
+
+  var resolved = [];
+  var skipped = [];
+
+  function considerFull(full, queriedName) {
+    if (!full) { skipped.push({ name: queriedName, reason: 'could not load this employee\'s record.' }); return; }
+    if (full.status === 'terminated') { skipped.push({ name: full.name || queriedName, reason: 'terminated.' }); return; }
+    if (!full.phone) { skipped.push({ name: full.name || queriedName, reason: 'no phone on file.' }); return; }
+    if (!_claireNormalizePhone(full.phone)) { skipped.push({ name: full.name || queriedName, reason: 'invalid phone on file.' }); return; }
+    var dupReason = _findDuplicateActivePhoneOwnerReason(full);
+    if (dupReason) { skipped.push({ name: full.name || queriedName, reason: dupReason }); return; }
+    if (_claireFindPhoneCollision(full)) {
+      skipped.push({ name: full.name || queriedName, reason: 'this phone number is already registered to another login, correct the phone in Staff first.' });
+      return;
+    }
+    if (kind === 'invite' && full.auth_user_id) { skipped.push({ name: full.name || queriedName, reason: 'already has a login.' }); return; }
+    if (kind === 'reset' && !full.auth_user_id) { skipped.push({ name: full.name || queriedName, reason: 'no login yet -- send an invite instead.' }); return; }
+    if (kind === 'reset' && _claireLoginOutOfSync(full)) { skipped.push({ name: full.name || queriedName, reason: 'login out of sync with phone, use Fix login in Staff first.' }); return; }
+    resolved.push({ rosterId: full.legacy_roster_id || full.id, uuid: full.id, name: full.name || queriedName });
+  }
+
+  if (wantAll) {
+    var roster = getUnifiedRoster();
+    for (var i = 0; i < roster.length; i++) {
+      var full = (window.PentaEmployees && window.PentaEmployees.getById) ? window.PentaEmployees.getById(roster[i].uuid) : null;
+      considerFull(full, roster[i].name);
+    }
+  } else {
+    for (var j = 0; j < names.length; j++) {
+      var lookup = findEmployeeWithSuggestions(names[j]);
+      if (lookup.matches.length > 1) {
+        return { error: { kind: 'ambiguous_employee', query: names[j],
+          candidates: lookup.matches.slice(0, 5).map(function (e) { return { name: e.name, id: e.id }; }) } };
+      }
+      if (lookup.matches.length === 0) {
+        var termExp = _claireTerminatedExplanation(names[j], dateKey(new Date()));
+        if (termExp) { skipped.push({ name: termExp.name, reason: 'terminated on ' + _pentaFormatDateOnly(termExp.terminated_at) + '.' }); continue; }
+        return { error: { kind: 'employee_not_found', query: names[j],
+          suggestions: lookup.suggestions.map(function (e) { return e.name; }) } };
+      }
+      var r = lookup.matches[0];
+      var full2 = (window.PentaEmployees && window.PentaEmployees.getById) ? window.PentaEmployees.getById(r.uuid) : null;
+      considerFull(full2, r.name);
+    }
+  }
+
+  var isSingle = !wantAll && names.length === 1;
+
+  if (!resolved.length) {
+    // Nothing eligible at all -- nothing to confirm, just report why.
+    return { success: true, kind: kind, sent: [], failed: [], skipped: skipped, remaining: 0 };
+  }
+
+  if (!isSingle && !input.confirmed) {
+    // Preview only -- NO sends. Capped to the 10 a confirmed call would
+    // actually process first, so the preview never promises more than
+    // one call will do.
+    var previewSends = resolved.slice(0, 10);
+    var overflow = resolved.length - previewSends.length;
+    return {
+      preview: true, kind: kind,
+      recipients: previewSends.map(function (r) { return r.name; }),
+      skipped: skipped,
+      remaining_after_this_batch: overflow > 0 ? overflow : 0
+    };
+  }
+
+  // Sending now -- a single employee (confirmation not required), or a
+  // batch Tom already confirmed. Cap at 10 per call regardless.
+  var toSend = resolved.slice(0, 10);
+  var overflowCount = resolved.length - toSend.length;
+  var sent = [];
+  var failed = [];
+  for (var k = 0; k < toSend.length; k++) {
+    var t = toSend[k];
+    var r2;
+    try {
+      r2 = await sendFn(t.rosterId);
+    } catch (e) {
+      r2 = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    var auditResult = (r2 && r2.ok) ? 'sent' : 'failed';
+    // Best-effort, non-fatal -- never logs the link/token, only the
+    // outcome. action_type 'manual_note' is the established catch-all
+    // for "something happened" rows that don't fit a lifecycle verb
+    // (see _auditSupplement's own calling-convention comment).
+    try {
+      var _auditPayload = { source: 'claire_portal_link', type: kind, result: auditResult };
+      if (r2 && !r2.ok && r2.reason) _auditPayload.reason = r2.reason;
+      await _auditSupplement('manual_note', 'employee', t.uuid, _auditPayload);
+    } catch (auditErr) { console.warn('[Claire] send_portal_link audit failed (non-fatal)', auditErr); }
+    if (r2 && r2.ok) {
+      sent.push({ name: t.name, maskedPhone: r2.maskedPhone || null });
+    } else {
+      failed.push({ name: t.name, reason: (r2 && r2.reason) || 'unknown error' });
+    }
+    // Short delay between sends -- paces real SMS sends instead of
+    // firing all N simultaneously, same idea as sendBulkInvites.
+    if (k < toSend.length - 1) { await new Promise(function (res) { setTimeout(res, 700); }); }
+  }
+
+  return {
+    success: true, kind: kind,
+    sent: sent, failed: failed, skipped: skipped,
+    remaining: overflowCount > 0 ? overflowCount : 0
+  };
 }
 
 // Tools that return information to Claire rather than perform an action.
@@ -26677,6 +27003,56 @@ async function _executeClaireToolCallInner(toolCall, message) {
     }
     _claireLastToolResult = JSON.stringify({ success: true, count: beApplied.length, updated: beApplied.map(function(r){ return { employee: r.employee.name, date: r.date }; }) });
     claireReply(message || ('Updated hours for ' + beApplied.length + ': ' + beDayList + '. Done.'));
+
+  // ── PORTAL INVITES / PASSWORD RESETS ──  (Claire portal-links feature)
+  } else if (name === 'send_portal_invite' || name === 'send_password_reset_link') {
+    var _plKind = (name === 'send_portal_invite') ? 'invite' : 'reset';
+    // Claire's tools run only in a manager/owner session; the
+    // send-invite Edge Function itself ALSO verifies the role
+    // server-side (not trusted from here) -- this is the client-side
+    // refusal for the "an employee session somehow reaches Claire"
+    // case, defense in depth, not the only gate.
+    var _plRole = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+    if (!_plRole || ['owner', 'admin', 'manager', 'dispatcher'].indexOf(_plRole) === -1) {
+      _claireLastToolResult = JSON.stringify({ error: 'not_authorized' });
+      claireReply('Only a manager or owner can send portal links.');
+      return;
+    }
+
+    var _plResult;
+    try {
+      _plResult = await _claireSendPortalLinks(input, _plKind);
+    } catch (e) {
+      console.error('[Claire] ' + name + ' threw', e);
+      _claireLastToolResult = 'Tool ' + name + ' threw: ' + ((e && e.message) || String(e));
+      return;
+    }
+
+    if (_plResult.error) {
+      _claireLastToolResult = JSON.stringify(_plResult.error);
+      return;
+    }
+
+    if (_plResult.preview) {
+      // No sends happened. Claude's own next turn presents this list
+      // and waits for confirmation -- same pattern as
+      // batch_edit_employee_hours's own preview branch.
+      _claireLastToolResult = JSON.stringify(_plResult);
+      return;
+    }
+
+    _claireLastToolResult = JSON.stringify(_plResult);
+    var _plNoun = (_plKind === 'invite') ? 'invite' : 'reset link';
+    if (_plResult.sent.length === 1 && _plResult.failed.length === 0 && !_plResult.skipped.length) {
+      var _plOne = _plResult.sent[0];
+      claireReply(message || ('Sent the ' + _plNoun + ' to ' + _plOne.name + ' at ' + (_plOne.maskedPhone || 'her phone') + '.'));
+    } else if (!_plResult.sent.length && !_plResult.failed.length && _plResult.skipped.length) {
+      claireReply(message || ('Didn\'t send any ' + _plNoun + 's -- ' + _plResult.skipped.map(function (s) { return s.name + ' (' + s.reason + ')'; }).join(', ') + '.'));
+    } else {
+      var _plSummary = 'Sent ' + _plResult.sent.length + ', failed ' + _plResult.failed.length
+        + (_plResult.skipped.length ? (', skipped ' + _plResult.skipped.length) : '') + '.';
+      claireReply(message || _plSummary);
+    }
 
   // ── LOCATE TEAM ──  (query tool — no claireReply)
   } else if (name === 'locate_team') {
