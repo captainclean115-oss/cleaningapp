@@ -101,6 +101,13 @@ function buildSandbox(overrides) {
     },
     getEmployeeTeam: function(id) { return id === 'e1' ? 'B1' : id === 'e2' ? 'S1' : null; },
     getEmployeeDayOffInfo: function() { return null; },
+    // team-hours-visible-save: the per-team block now also reads saved
+    // overrides for its new "Worked" line via the same getEmpHours() the
+    // Team Hours modal itself uses. No override exists in this test's
+    // fixtures, so this stub returning null leaves every existing
+    // assertion in this file unaffected -- it only prevents a
+    // ReferenceError from aborting into this file's own error-card path.
+    getEmpHours: function() { return null; },
     setTeamDeviceAssignment: function() {},
     openTeamColorEditor: function() {},
     openDayOffPicker: function() {},
