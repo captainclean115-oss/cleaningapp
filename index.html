@@ -28572,6 +28572,45 @@ async function _teamHoursAfterLunchToggle(team, dateStr) {
   try { await _teamHoursRefreshAfterWrite(dateStr); } catch (e) { console.error('[TeamHours] Live hours refresh after lunch toggle failed', e); }
 }
 
+// Decides what the Start/End/Lunch fields should show when the modal
+// opens, BEFORE any GPS fetch -- reads already-hydrated saved overrides
+// via the same synchronous getEmpHours() teamHoursApply()/the Worked-
+// hours card line already use (no new query path). Pure/sync so
+// openTeamHoursModal can call it before showing the overlay at all.
+//   'none'    -- nobody on the team has a saved override for this day.
+//                 Caller falls back to its existing GPS prefill.
+//   'all'     -- every included employee has a saved override, and they
+//                 all agree on start/end/lunch -- safe to show as one
+//                 value. GPS must NOT be allowed to overwrite this.
+//   'mixed'   -- every included employee has a saved override, but they
+//                 do NOT all agree -- there is no single correct value
+//                 to show. Caller must leave the fields blank rather
+//                 than guess, and must not let GPS fill them either.
+//   'partial' -- some, but not all, included employees have a saved
+//                 override. Caller falls back to GPS (same as 'none'),
+//                 but the UI must warn that applying will also
+//                 overwrite the ones that already have saved hours.
+function _teamHoursOverridePrefill(included, dateStr) {
+  var total = included.length;
+  var withOverride = [];
+  var values = [];
+  included.forEach(function (emp) {
+    var ov = getEmpHours(emp.id, dateStr);
+    if (ov) { withOverride.push(emp); values.push({ start: ov.start, end: ov.end, lunch: ov.lunch }); }
+  });
+  if (total === 0 || withOverride.length === 0) {
+    return { kind: 'none', value: null, withCount: withOverride.length, totalCount: total };
+  }
+  if (withOverride.length < total) {
+    return { kind: 'partial', value: null, withCount: withOverride.length, totalCount: total };
+  }
+  var first = values[0];
+  var allSame = values.every(function (v) { return v.start === first.start && v.end === first.end && v.lunch === first.lunch; });
+  return allSame
+    ? { kind: 'all', value: first, withCount: withOverride.length, totalCount: total }
+    : { kind: 'mixed', value: null, withCount: withOverride.length, totalCount: total };
+}
+
 async function openTeamHoursModal(team, dateStr) {
   var overlay = document.getElementById('team-hours-overlay');
   if (!overlay) { console.warn('[TeamHours] #team-hours-overlay missing from the page -- cannot open'); return; }
@@ -28612,16 +28651,47 @@ async function openTeamHoursModal(team, dateStr) {
   if (applyBtn) applyBtn.disabled = elig.included.length === 0;
   if (resetBtn) resetBtn.disabled = elig.included.length === 0;
 
-  // Prefill with GPS-computed values -- show the modal first (with
-  // today's hours in loading state is still a functional modal; a slow
-  // prefill fetch shouldn't delay Tom seeing the team/employee list).
-  // Rule #5: Apply must never be blocked by this -- Apply reads whatever
-  // is in the fields at click time regardless of whether this fetch
-  // ever succeeds, so a GPS failure here can only ever leave the fields
-  // blank/stale, never disable the button.
-  document.getElementById('team-hours-start').value = '';
-  document.getElementById('team-hours-end').value = '';
-  document.getElementById('team-hours-lunch').value = '0';
+  // Prefill: saved overrides win over GPS when they exist and agree --
+  // see _teamHoursOverridePrefill's own comment for the 4 cases. Stashed
+  // on the overlay so the async GPS-fill block below (which can resolve
+  // well after this point) knows whether it's still allowed to fill the
+  // fields, without recomputing eligibility/overrides a second time.
+  var prefill = _teamHoursOverridePrefill(elig.included, dateStr);
+  overlay._hoursPrefillKind = prefill.kind;
+  var sourceNoteEl = document.getElementById('team-hours-source-note');
+  if (sourceNoteEl) {
+    if (prefill.kind === 'all') {
+      sourceNoteEl.style.color = 'var(--accent)';
+      sourceNoteEl.textContent = '📌 Saved hours — already set the same for everyone on this team.';
+    } else if (prefill.kind === 'mixed') {
+      sourceNoteEl.style.color = 'var(--amber)';
+      sourceNoteEl.textContent = '⚠️ Employees have different saved hours — enter a value below to set one for everyone, or close this and edit them individually.';
+    } else if (prefill.kind === 'partial') {
+      sourceNoteEl.style.color = 'var(--amber)';
+      sourceNoteEl.textContent = '⚠️ ' + prefill.withCount + ' of ' + prefill.totalCount + ' employees already have saved hours — showing GPS below; Apply will overwrite them too.';
+    } else {
+      sourceNoteEl.style.color = 'var(--muted)';
+      sourceNoteEl.textContent = '📍 GPS — no saved hours yet for this team/day.';
+    }
+  }
+
+  // Rule #5: Apply must never be blocked by any of this -- Apply reads
+  // whatever is in the fields at click time regardless of whether the
+  // GPS fetch below ever succeeds, so a GPS failure (or a deliberate
+  // 'mixed' blank) can only ever leave the fields blank/stale, never
+  // disable the button.
+  if (prefill.kind === 'all') {
+    document.getElementById('team-hours-start').value = prefill.value.start || '';
+    document.getElementById('team-hours-end').value = prefill.value.end || '';
+    document.getElementById('team-hours-lunch').value = String(prefill.value.lunch != null ? prefill.value.lunch : 0);
+  } else {
+    // 'none', 'partial', and 'mixed' all start blank -- 'mixed'
+    // deliberately stays blank (see below, the GPS fetch is skipped for
+    // it too), 'none'/'partial' get filled from GPS once it loads.
+    document.getElementById('team-hours-start').value = '';
+    document.getElementById('team-hours-end').value = '';
+    document.getElementById('team-hours-lunch').value = '0';
+  }
   var summaryEl = document.getElementById('team-hours-gps-summary');
   var timelineEl = document.getElementById('team-hours-gps-timeline');
   if (summaryEl) summaryEl.innerHTML = '';
@@ -28634,11 +28704,14 @@ async function openTeamHoursModal(team, dateStr) {
     // while this fetch was in flight.
     if (overlay.dataset.team !== team || overlay.dataset.date !== dateStr || overlay.style.display === 'none') return;
     overlay._gpsDetail = detail;
-    _teamHoursRenderGpsTimeline(detail, team, dateStr);
+    _teamHoursRenderGpsTimeline(detail, team, dateStr); // GPS Activity section always renders, regardless of what filled the fields above
     // Same userEdited guard _teamHoursAfterLunchToggle uses -- this
     // fetch can take a moment, and Tom may already have started typing
-    // his own values into the fields while it was in flight.
-    if (overlay.dataset.userEdited !== 'true' && detail.gps.available) {
+    // his own values into the fields while it was in flight. Also never
+    // overwrite a saved-override prefill ('all') or a deliberately-blank
+    // mixed state ('mixed') -- GPS only fills 'none'/'partial'.
+    var gpsMayFill = overlay._hoursPrefillKind !== 'all' && overlay._hoursPrefillKind !== 'mixed';
+    if (gpsMayFill && overlay.dataset.userEdited !== 'true' && detail.gps.available) {
       var tz = _pentaBusinessTimezone();
       document.getElementById('team-hours-start').value = _bizHM(detail.gps.start, tz);
       document.getElementById('team-hours-end').value = _bizHM(detail.gps.end, tz);
@@ -57059,6 +57132,11 @@ function _p3dPage(dir) {
          Mobile: Apply/Cancel/Reset below stay visible regardless of how
          long the timeline gets (a busy team's full day of stops). -->
     <div style="flex:1;overflow-y:auto;padding:0 20px;min-height:0">
+      <!-- team-hours-prefill-override: labels where the fields below came
+           from -- saved hours, GPS, or a mixed/partial warning. Set by
+           openTeamHoursModal's _teamHoursOverridePrefill() call, before
+           the GPS fetch even starts. -->
+      <div id="team-hours-source-note" style="font-size:12px;margin-bottom:10px"></div>
       <div style="display:flex;gap:10px;margin-bottom:12px">
         <label style="flex:1;font-size:12px;color:var(--muted)">Start time
           <input type="time" id="team-hours-start" oninput="document.getElementById('team-hours-overlay').dataset.userEdited='true'" style="width:100%;margin-top:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:10px;border-radius:10px;min-height:44px">
