@@ -29,6 +29,16 @@ function extract(startMarker, endMarker, label) {
   return src.slice(s, e);
 }
 
+// Pay rate input hardening (PR #200 follow-up) -- saveStaffEmployee now
+// calls this real, shared validator before building its patch object.
+// Extracted for real (not stubbed) so this test still proves the ACTUAL
+// save path end-to-end, not a path that happens to skip real validation.
+const parsePayRateSrc = extract(
+  'function _parsePayRateInput(raw) {',
+  '\n\nasync function saveMainEmp() {',
+  '_parsePayRateInput'
+);
+
 const saveSrc = extract(
   'async function saveStaffEmployee() {',
   '\n\nasync function deleteStaffEmployee() {',
@@ -93,6 +103,7 @@ function buildSandbox(opts) {
   };
 
   vm.createContext(sandbox);
+  vm.runInContext(parsePayRateSrc, sandbox);
   vm.runInContext(saveSrc, sandbox);
   return { sandbox, calls, confirms, alerts, staffList };
 }

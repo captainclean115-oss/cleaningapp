@@ -5130,7 +5130,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         </select>
       </div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Portal PIN (4 digits)</div><input type="text" id="main-emp-pin" maxlength="4" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
-      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="number" id="main-emp-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Hourly Pay Rate ($)</div><input type="text" inputmode="decimal" id="main-emp-pay" placeholder="e.g. 22.50" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
       <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
         <select id="main-emp-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
           <option value="en">English</option><option value="es">Spanish</option>
@@ -5464,6 +5464,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
     </div>
     <div id="hours-table"><div class="hours-loading">Loading hours...</div></div>
+    <!-- Payroll cost card bug fix: moved below the Hours table (was
+         above it, between the week-nav arrows and "Hours Worked") so
+         the manager sees the real hours first, then the cost estimate
+         derived from them. -->
+    <div id="payroll-cost-card" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-top:12px"></div>
   </div>
   <div class="bottom-pad"></div>
 </div>
@@ -14268,6 +14273,29 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
   });
 })();
 
+// Invite-collision guard: shared by both the single-invite
+// (pentaSendInvite) and bulk-invite (sendBulkInvites) call sites, so
+// send-invite's own specific error message (rate limit, missing
+// phone, phone_already_registered, etc.) is never swallowed into a
+// generic one. supabase-js's functions.invoke() throws a
+// FunctionsHttpError on any non-2xx response with `data: null` -- the
+// real JSON body this function returned only lives, UNPARSED, on
+// error.context (the raw Response); see the SDK's own doc comment for
+// FunctionsHttpError, which shows this exact `error.context.json()`
+// pattern.
+async function _extractInviteError(res) {
+  if (res.data && res.data.error) {
+    return { message: res.data.error, code: res.data.error_code || null };
+  }
+  if (res.error && res.error.context && typeof res.error.context.json === 'function') {
+    try {
+      var body = await res.error.context.json();
+      if (body && body.error) return { message: body.error, code: body.error_code || null };
+    } catch (e) { /* non-JSON body -- fall through to the generic message below */ }
+  }
+  return { message: (res.error && res.error.message) || 'Could not send the invite.', code: null };
+}
+
 // =====================================================================
 // Penta invite helpers — Sprint 4 Phase 4B (manager UI side)
 // All take rosterId (legacy emp_roster id) and resolve to employees.id
@@ -14740,9 +14768,9 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
         var res = await sb.functions.invoke('send-invite', { body: { employee_id: emp.id } });
         _inviteLastSentAt[rosterId] = Date.now();
         if (res.error || !res.data || !res.data.success) {
-          var reason = (res.data && res.data.error) || (res.error && res.error.message) || 'Could not send the invite.';
+          var extracted = await _extractInviteError(res);
           _renderInviteResult(rosterId,
-            '<span style="color:var(--red)">' + _adminEsc(reason) + '</span>'
+            '<span style="color:var(--red)">' + _adminEsc(extracted.message) + '</span>'
             + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
           return { ok: false, employeeId: emp.id, reason: reason };
         }
@@ -14845,6 +14873,122 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
     }
   }
 
+  // Fix login (owner/admin only -- repair-login-email's own server-
+  // side role check is the real boundary; renderStaffView's
+  // _showFixLogin gate is what keeps the button itself hidden from
+  // everyone else). One employee at a time, never bulk. Dry run first,
+  // always -- the server defaults dry_run to true on its own, but this
+  // button is explicit about it so a future change to that default can
+  // never silently skip the preview step here.
+  var _fixLoginInFlight = {};
+
+  function _renderFixLoginPanel(rosterId, html) {
+    var el = document.querySelector('[id="fix-login-panel"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+    if (!el) return;
+    el.innerHTML = html;
+    el.style.display = html ? 'block' : 'none';
+  }
+
+  function _pentaCancelFixLogin(rosterId) {
+    _renderFixLoginPanel(rosterId, '');
+  }
+
+  async function pentaFixLogin(rosterId) {
+    if (_fixLoginInFlight[rosterId]) return;
+    _fixLoginInFlight[rosterId] = true;
+    _renderFixLoginPanel(rosterId, '<span style="color:var(--muted)">Checking…</span>');
+    try {
+      var resolved = await _resolveEmployeeByRoster(rosterId);
+      if (resolved.error || !resolved.employee) {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">Could not load this employee. Reload and try again.</span>');
+        return;
+      }
+      var emp = resolved.employee;
+      var sb = SB();
+      if (!sb) {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">Not connected — reload and try again.</span>');
+        return;
+      }
+      var res = await sb.functions.invoke('repair-login-email', { body: { employee_id: emp.id, dry_run: true } });
+      if (res.error || !res.data) {
+        var extracted = await _extractInviteError(res);
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">' + _adminEsc(extracted.message) + '</span>');
+        return;
+      }
+      var data = res.data;
+      if (data.status === 'already_correct') {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--green)">Login already matches this phone number. Nothing to fix.</span>');
+        return;
+      }
+      if (data.status === 'would_change') {
+        var _last4 = String(data.phone_masked || '').slice(-4);
+        _renderFixLoginPanel(rosterId,
+          '<div style="margin-bottom:8px">This will move the login from the old number to the number ending ' + _adminEsc(_last4) + '. Password and history stay. Staff email will be updated to match.</div>'
+          + '<div style="display:flex;gap:8px">'
+          + '<button type="button" id="fix-login-confirm-btn" data-roster-id="' + _adminEsc(rosterId) + '" style="flex:1;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Confirm fix</button>'
+          + '<button type="button" id="fix-login-cancel-btn" data-roster-id="' + _adminEsc(rosterId) + '" style="flex:1;padding:8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Cancel</button>'
+          + '</div>');
+        var _confirmBt = document.querySelector('[id="fix-login-confirm-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+        var _cancelBt  = document.querySelector('[id="fix-login-cancel-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+        if (_confirmBt) _confirmBt.addEventListener('click', function() { _pentaConfirmFixLogin(rosterId, emp.id); });
+        if (_cancelBt)  _cancelBt.addEventListener('click',  function() { _pentaCancelFixLogin(rosterId); });
+        return;
+      }
+      // Collision refusal or any other server status/error -- shown
+      // verbatim, never replaced with a generic message.
+      _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">' + _adminEsc((data && data.error) || 'Unexpected response from the server.') + '</span>');
+    } catch (e) {
+      _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">Network error — could not reach the server.</span>');
+      console.error('[pentaFixLogin] threw', e);
+    } finally {
+      _fixLoginInFlight[rosterId] = false;
+    }
+  }
+
+  async function _pentaConfirmFixLogin(rosterId, employeeId) {
+    var btn = document.querySelector('[id="fix-login-confirm-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+    // Double-tap guard: a disabled button never fires a second call.
+    if (btn) {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = 'Fixing…';
+    }
+    try {
+      var sb = SB();
+      if (!sb) {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">Not connected — reload and try again.</span>');
+        return;
+      }
+      var res = await sb.functions.invoke('repair-login-email', { body: { employee_id: employeeId, dry_run: false } });
+      if (res.error || !res.data) {
+        var extracted = await _extractInviteError(res);
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">' + _adminEsc(extracted.message) + '</span>');
+        var retryBt = document.querySelector('[id="fix-login-confirm-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+        if (retryBt) { retryBt.disabled = false; retryBt.textContent = 'Confirm fix'; }
+        return;
+      }
+      var data = res.data;
+      if (data.status === 'repaired') {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--green)">Login fixed. Staff email now ends ' + _adminEsc(data.new_email_suffix || '') + '.</span>');
+        // Refresh the underlying data in the background so the next time
+        // this profile is opened it shows the corrected email -- the
+        // success message above (suffix only, by design) is the visible
+        // confirmation for right now; a full re-render here would wipe
+        // this exact message off the screen.
+        try { if (window.PentaEmployees && window.PentaEmployees._hydrate) await window.PentaEmployees._hydrate(); } catch (e2) {}
+      } else {
+        _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">' + _adminEsc((data && data.error) || 'Could not finish the repair.') + '</span>');
+        var retryBt2 = document.querySelector('[id="fix-login-confirm-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+        if (retryBt2) { retryBt2.disabled = false; retryBt2.textContent = 'Confirm fix'; }
+      }
+    } catch (e) {
+      _renderFixLoginPanel(rosterId, '<span style="color:var(--red)">Network error — could not reach the server.</span>');
+      console.error('[_pentaConfirmFixLogin] threw', e);
+      var retryBt3 = document.querySelector('[id="fix-login-confirm-btn"][data-roster-id="' + CSS.escape(rosterId) + '"]');
+      if (retryBt3) { retryBt3.disabled = false; retryBt3.textContent = 'Confirm fix'; }
+    }
+  }
+
   window.pentaGenerateInviteToken      = pentaGenerateInviteToken;
   window.pentaInviteStatus             = pentaInviteStatus;
   window.pentaRenderInvitePill         = pentaRenderInvitePill;
@@ -14853,6 +14997,7 @@ if (window.PentaEmployees && window.PentaEmployees.onChange) {
   window.pentaSendInvite               = pentaSendInvite;
   window.pentaShowSetTempPasswordModal = pentaShowSetTempPasswordModal;
   window.pentaSetTempPassword          = pentaSetTempPassword;
+  window.pentaFixLogin                 = pentaFixLogin;
 })();
 
 
@@ -25140,6 +25285,7 @@ async function processVoiceCommand(text) {
     +'Employees: '+empNames+'\n'
     +'An employee shown as "(Admin/Office)" is office staff with no field team -- never include them when a team name is used to mean "everyone on that team" (e.g. "S1 worked 8 to 4 today" means only S1\'s field members). You can still name an Admin/Office employee directly (e.g. "Linda worked 9 to 5") and use get_employee_hours/edit_employee_hours/batch_edit_employee_hours for them exactly as for anyone else -- their hours just come from manual entries, never GPS.\n'
     +'An employee shown as "(Admin/Office, Salaried)" has NO hours tracked at all -- fixed pay, not hourly. get_employee_hours reports "salaried, no hours tracked" for them; edit_employee_hours refuses with a plain message ("X is salaried, so there are no hours to edit"); batch_edit_employee_hours skips them and says so in the preview rather than failing the whole batch. Don\'t try to work around this by editing their hours a different way -- there is nothing to edit. This never applies to a field (non-Admin/Office) employee, even if they happen to also be salaried.\n'
+    +'If '+_opName+' asks about payroll cost, gross wages, employer taxes, or "what will payroll cost this week" -- you have no tool for this and should never try to estimate it yourself from get_employee_hours calls (that would be a second, possibly different answer from what the Hours tab already shows). Tell them plainly: that\'s on the Hours tab, under "Payroll cost this week."\n'
     +'Total clients: '+PentaClients.count()+'\n'
     +'Today\'s jobs: '+todayJobs.length;
 
@@ -27853,6 +27999,23 @@ function openMainEmpEdit(idx) {
   document.getElementById('main-emp-modal').style.display = 'flex';
 }
 
+// Pay rate input hardening. Pure function, no DOM access -- callers
+// decide what to do with the result. Blank input means "no rate set"
+// (null), never 0 -- a real $0/hr wage is never silently implied by an
+// empty field. Strips $ and commas before parsing (e.g. "$1,200.50").
+function _parsePayRateInput(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (s === '') return { ok: true, value: null };
+  var cleaned = s.replace(/[$,]/g, '').trim();
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) {
+    return { ok: false, message: 'Enter a valid pay rate (numbers only), e.g. 22.50. Nothing was saved.' };
+  }
+  var n = parseFloat(cleaned);
+  if (isNaN(n)) return { ok: false, message: 'Enter a valid pay rate (numbers only). Nothing was saved.' };
+  if (n < 0) return { ok: false, message: 'Pay rate cannot be negative. Nothing was saved.' };
+  return { ok: true, value: Math.round(n * 100) / 100 };
+}
+
 async function saveMainEmp() {
   const idx = parseInt(document.getElementById('main-emp-idx').value);
   const name = document.getElementById('main-emp-name').value.trim();
@@ -27867,13 +28030,22 @@ async function saveMainEmp() {
     if (conflict) { alert('PIN ' + pin + ' already used by ' + conflict.name); return; }
   }
 
+  // Pay rate input hardening: validate BEFORE building the patch object
+  // -- a rejected value must change nothing, not clamp to 0 or whatever
+  // parseFloat() could salvage from garbage input.
+  const payRateResult = _parsePayRateInput(document.getElementById('main-emp-pay').value);
+  if (!payRateResult.ok) { alert(payRateResult.message); return; }
+  if (payRateResult.value != null && payRateResult.value > 100) {
+    if (!confirm('$' + payRateResult.value.toFixed(2) + '/hr -- is that right?')) return;
+  }
+
   const status = document.getElementById('main-emp-status').value;
   const emp = {
     name,
     team_id: document.getElementById('main-emp-team').value || null,
     team: (function(){ var _id = document.getElementById('main-emp-team').value; var _t = (window.PentaTeams && _id) ? window.PentaTeams.getById(_id) : null; return _t ? _t.name : ''; })(),
     pin: pin || String(Math.floor(1000 + Math.random() * 9000)),
-    payRate: parseFloat(document.getElementById('main-emp-pay').value) || 0,
+    payRate: payRateResult.value || 0,
     lang: document.getElementById('main-emp-lang').value,
     phone: document.getElementById('main-emp-phone').value.trim(),
     status,
@@ -30167,6 +30339,12 @@ function getUnifiedRoster(asOfDate) {
           // it straight off this roster row without a second facade
           // lookup.
           pay_type: fe.pay_type || null,
+          // Payroll cost tally feature: same passthrough pattern as
+          // work_type/pay_type above. publishWeekHours() and the
+          // payroll cost card both need an hourly rate per roster row
+          // without a second facade lookup. null (not 0) when unset or
+          // non-positive -- a $0/hr rate is never treated as real.
+          pay_rate: (fe.pay_rate != null && fe.pay_rate > 0) ? fe.pay_rate : null,
           // Terminated-employee date-awareness fix -- same passthrough
           // pattern as work_type/pay_type just above. Lets a consumer
           // that already has a roster row (e.g. Claire's name
@@ -32808,6 +32986,14 @@ async function _loadWeekHoursInner() {
 
     renderHoursTable(days, DAYS_SHORT);
 
+    // Payroll cost tally feature: same globals the Hours table itself
+    // just rendered from -- never a second calculation of hours. Async
+    // (fetches payroll settings) but not awaited here -- the Hours table
+    // itself must not wait on it, same reasoning as the publish schedule
+    // right below.
+    try { renderPayrollCostCard(days, weekHours, window._empHoursMap); }
+    catch (e) { console.warn('[payroll card] render call failed', e); }
+
     // Published Hours -- schedule a debounced publish of exactly what
     // was just rendered. Captured now (not re-read when the debounce
     // timer fires) so a newer loadWeekHours() call for a different week,
@@ -34304,6 +34490,167 @@ function _weekOffsetForDate(dateStr) {
   return Math.round((mon - thisMon) / (7 * 86400000));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Payroll cost tally feature (migrations 117/118).
+//
+// _computeDayPayCents is the ONE place gross pay is ever computed, in
+// CENTS (integer), rounded once at the end -- used by BOTH
+// publishWeekHours (to snapshot est_rate/est_gross) and the payroll
+// cost card (for live display of the currently-viewed week, published
+// or not). Overtime, when enabled, is split within the 5 displayed
+// Mon-Fri days ONLY -- not a true Monday-Sunday pay week. See migration
+// 117's own "OVERTIME SCOPE" comment for why: getWeekDates() never
+// returns Saturday/Sunday, and nothing in this app surfaces a weekend
+// hour anywhere today, so true 7-day overtime cannot be computed
+// correctly yet. This is a disclosed limitation, not an oversight.
+function _computeDayPayCents(hoursToday, rate, cumHoursBeforeToday, overtimeEnabled) {
+  if (!overtimeEnabled) return Math.round(hoursToday * rate * 100);
+  var regularCap = 40;
+  var before = cumHoursBeforeToday || 0;
+  var after = before + hoursToday;
+  if (before >= regularCap) {
+    return Math.round(hoursToday * rate * 1.5 * 100);
+  } else if (after <= regularCap) {
+    return Math.round(hoursToday * rate * 100);
+  } else {
+    var regularPortion = regularCap - before;
+    var otPortion = hoursToday - regularPortion;
+    return Math.round((regularPortion * rate + otPortion * rate * 1.5) * 100);
+  }
+}
+
+// One combined employer-tax percentage, or null if ANY of the 5 rate
+// fields hasn't been entered yet -- "no default values, nothing is
+// estimated until Tom enters it" means a partially-filled settings row
+// must never silently compute a partial total that looks complete.
+function _employerTaxPct(settings) {
+  if (!settings) return null;
+  var fields = [settings.social_security_pct, settings.medicare_pct, settings.federal_unemployment_pct, settings.state_unemployment_pct, settings.other_employer_costs_pct];
+  if (fields.some(function (f) { return f == null; })) return null;
+  return fields.reduce(function (s, f) { return s + f; }, 0);
+}
+
+var _payrollSettingsCache = null;
+var _payrollSettingsCacheAt = 0;
+// Cached 60s -- cheap enough to re-fetch on every publish/card-render,
+// but avoids a network round trip on every single keystroke-driven
+// re-render of the payroll card while a manager has the Hours tab open.
+async function _getPayrollSettings() {
+  var now = Date.now();
+  if (_payrollSettingsCache && (now - _payrollSettingsCacheAt) < 60000) return _payrollSettingsCache;
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) return null;
+  try {
+    var res = await sb.from('business_payroll_settings')
+      .select('social_security_pct, medicare_pct, federal_unemployment_pct, state_unemployment_pct, other_employer_costs_pct, overtime_enabled')
+      .eq('business_id', bid).maybeSingle();
+    if (res.error) { console.warn('[payroll] could not load business_payroll_settings', res.error); return null; }
+    _payrollSettingsCache = res.data || { overtime_enabled: false };
+    _payrollSettingsCacheAt = now;
+    return _payrollSettingsCache;
+  } catch (e) { console.warn('[payroll] business_payroll_settings fetch threw', e); return null; }
+}
+
+// Shared payroll computation -- the Hours tab's "Payroll cost this
+// week" card and publishWeekHours's own est_rate/est_gross snapshot
+// both call this, so there is exactly one place gross pay is ever
+// computed from hours+rate, never two copies that could diverge.
+// Reads resolveEmployeeDayHours/getEmpHours the SAME way
+// renderHoursTable/publishWeekHours already do -- never a second
+// calculation of HOURS, only of pay.
+function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettings) {
+  var overtimeEnabled = !!(payrollSettings && payrollSettings.overtime_enabled);
+  var now = new Date();
+
+  // Union of every employee who appears in the roster on ANY day this
+  // week -- handles a mid-week termination correctly (she's included
+  // for the days before her exclusion date, same as publishWeekHours).
+  var empsByUuid = {};
+  days.forEach(function (d) {
+    if (d > now) return;
+    getUnifiedRoster(dateKey(d)).forEach(function (emp) {
+      var key = emp.uuid || emp.id;
+      if (!empsByUuid[key]) empsByUuid[key] = emp;
+    });
+  });
+
+  // Payroll cost card bug fix: Admin/Office is split out BEFORE any
+  // hours are resolved, not filtered out of the total afterward. The
+  // Hours table's own "All Teams" total never includes Admin/Office
+  // hours (that's a separate card -- renderHoursTable's adminTotal is
+  // never added to grandTotal), so matching it EXACTLY means matching
+  // its scope, not just its number on a week where admin happens to
+  // have no hours on file. Salaried admins are still named below (no
+  // hours to report, same as the Hours table's own "Salaried — no
+  // hours tracked" row). An hourly Admin/Office employee's pay isn't
+  // computed by this card yet -- flagged via hasHourlyAdmin so that
+  // gap is visible, never silently folded in or silently dropped.
+  var salaried = [];
+  var hasHourlyAdmin = false;
+  var fieldEmps = {};
+  Object.keys(empsByUuid).forEach(function (key) {
+    var emp = empsByUuid[key];
+    if (emp.work_type === 'admin') {
+      if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) salaried.push({ empId: key, name: emp.name });
+      else hasHourlyAdmin = true;
+      return;
+    }
+    fieldEmps[key] = emp;
+  });
+
+  var perEmployee = [];
+  Object.keys(fieldEmps).forEach(function (key) {
+    var emp = fieldEmps[key];
+    // "Missing rate" covers both NULL (never entered) and exactly 0
+    // (this business's bulk-import default for "not entered yet") --
+    // neither is a real $0/hr wage, so both are excluded from PAY the
+    // same way. Neither is EVER excluded from HOURS -- that exclusion
+    // was the whole bug.
+    var rate = (emp.pay_rate != null && emp.pay_rate > 0) ? emp.pay_rate : null;
+    var totalHours = 0, totalGrossCents = 0, cumBefore = 0, anyDayIncluded = false;
+    days.forEach(function (d, dayIdx) {
+      if (d > now) return;
+      var dk = dateKey(d);
+      var inRosterToday = getUnifiedRoster(dk).some(function (e) { return (e.uuid || e.id) === key; });
+      if (!inRosterToday) return; // terminated before this date, or hired after it
+      var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
+      var hrs;
+      if (rd.isOff) { hrs = 0; }
+      else if (rd.hours === 0 && !rd.isOverride) { return; } // unresolved -- same skip rule as publishWeekHours
+      else { hrs = rd.hours; }
+      anyDayIncluded = true;
+      totalHours += hrs;
+      if (rate != null && hrs > 0) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
+      cumBefore += hrs;
+    });
+    if (!anyDayIncluded) return; // nothing at all this week for her -- omit entirely
+    perEmployee.push({
+      empId: key, name: emp.name,
+      status: rate == null ? 'missing_rate' : 'included',
+      hours: totalHours,
+      grossCents: rate == null ? null : totalGrossCents
+    });
+  });
+
+  var included = perEmployee.filter(function (e) { return e.status === 'included'; });
+  var missingRate = perEmployee.filter(function (e) { return e.status === 'missing_rate'; });
+  return {
+    perEmployee: perEmployee, included: included, missingRate: missingRate, salaried: salaried,
+    hasHourlyAdmin: hasHourlyAdmin,
+    // Every field/team employee this week, included or not -- the
+    // SAME population the Hours table's "All Teams" total covers, so
+    // the two must always agree. renderPayrollCostCard cross-checks
+    // this against the actual number the Hours table just rendered
+    // (not a re-derivation of this same formula) and shows a visible
+    // warning if they ever disagree.
+    totalHours: perEmployee.reduce(function (s, e) { return s + e.hours; }, 0),
+    hoursWithRate: included.reduce(function (s, e) { return s + e.hours; }, 0),
+    hoursWithoutRate: missingRate.reduce(function (s, e) { return s + e.hours; }, 0),
+    totalGrossCents: included.reduce(function (s, e) { return s + (e.grossCents || 0); }, 0)
+  };
+}
+
 async function publishWeekHours(days, weekHoursData, empHoursMapData) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
@@ -34314,10 +34661,23 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
     try { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; } catch (e) {}
   }
 
+  // Payroll cost tally feature: fetched once per run, used to snapshot
+  // est_rate/est_gross onto every worked day below via the SAME
+  // _computeDayPayCents function the payroll cost card uses for
+  // display. A failure here is non-fatal -- est_rate/est_gross just
+  // stay null for this run (same as "no pay rate on file").
+  var payrollSettings = null;
+  try { payrollSettings = await _getPayrollSettings(); } catch (e) { console.warn('[publish] could not load payroll settings (non-fatal)', e); }
+  var overtimeEnabled = !!(payrollSettings && payrollSettings.overtime_enabled);
+
   var todayKey = dateKey(new Date());
   var now = new Date();
   var candidates = [];
   var skipped = [];
+  // Cumulative hours per employee, carried forward day-to-day IN ORDER
+  // (days[] is already Mon..Fri) so a shift crossing the 40-hour line
+  // splits correctly. Declared outside the days loop so it persists.
+  var cumHoursByEmp = {};
 
   days.forEach(function (d, dayIdx) {
     if (d > now) return; // never publish a day that hasn't happened yet
@@ -34329,21 +34689,26 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       var base = { business_id: bid, employee_id: empUuid, work_date: dk, published_by: currentUserId };
 
       if (typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) {
-        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: null, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: 'salaried', source: null }) });
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: null, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: 'salaried', source: null, est_rate: null, est_gross: null }) });
         return;
       }
 
       if (emp.work_type === 'admin') {
         var offInfo = _adminEmpDayOff(emp.id, dk);
         if (offInfo) {
-          candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (offInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+          candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (offInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null, est_rate: null, est_gross: null }) });
           return;
         }
         var override = getEmpHours(emp.id, dk);
         if (!override) { if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'no manual hours on file' }); return; }
+        var adminHrs = override.hours || 0;
+        var adminCumBefore = cumHoursByEmp[empUuid] || 0;
+        var adminPay = (emp.pay_rate != null && adminHrs > 0) ? _computeDayPayCents(adminHrs, emp.pay_rate, adminCumBefore, overtimeEnabled) : null;
+        cumHoursByEmp[empUuid] = adminCumBefore + adminHrs;
         candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
-          hours: override.hours || 0, start_time: _toInstant(d, override.start), end_time: _toInstant(d, override.end),
-          lunch_minutes: override.lunch || 0, team_label: null, status: 'worked', source: 'manual'
+          hours: adminHrs, start_time: _toInstant(d, override.start), end_time: _toInstant(d, override.end),
+          lunch_minutes: override.lunch || 0, team_label: null, status: 'worked', source: 'manual',
+          est_rate: emp.pay_rate != null ? emp.pay_rate : null, est_gross: adminPay
         }) });
         return;
       }
@@ -34352,7 +34717,7 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
       if (rd.isOff) {
         var fOffInfo = (typeof getEmployeeDayOffInfo === 'function') ? getEmployeeDayOffInfo(emp.id, dk) : null;
-        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (fOffInfo && fOffInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null }) });
+        candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, { hours: 0, start_time: null, end_time: null, lunch_minutes: null, team_label: null, status: (fOffInfo && fOffInfo.status_type === 'vacation' ? 'vacation' : 'off'), source: null, est_rate: null, est_gross: null }) });
         return;
       }
       // An unresolved ambiguous zero (no override, no personal GPS/clock
@@ -34364,9 +34729,13 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
         if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'unresolved -- no GPS/clock data yet' });
         return;
       }
+      var fieldCumBefore = cumHoursByEmp[empUuid] || 0;
+      var fieldPay = (emp.pay_rate != null && rd.hours > 0) ? _computeDayPayCents(rd.hours, emp.pay_rate, fieldCumBefore, overtimeEnabled) : null;
+      cumHoursByEmp[empUuid] = fieldCumBefore + rd.hours;
       candidates.push({ key: empUuid + '|' + dk, row: Object.assign({}, base, {
         hours: rd.hours, start_time: rd.startDate ? rd.startDate.toISOString() : null, end_time: rd.endDate ? rd.endDate.toISOString() : null,
-        lunch_minutes: rd.lunchMin || 0, team_label: rd.dayTeam || null, status: 'worked', source: rd.isOverride ? 'override' : 'gps'
+        lunch_minutes: rd.lunchMin || 0, team_label: rd.dayTeam || null, status: 'worked', source: rd.isOverride ? 'override' : 'gps',
+        est_rate: emp.pay_rate != null ? emp.pay_rate : null, est_gross: fieldPay
       }) });
     });
   });
@@ -34377,9 +34746,13 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
   // written, so published_at (the employee-visible "Updated" time) only
   // moves when a value actually changed -- not on every routine 60s Live
   // recompute, which would otherwise bump it constantly for no reason.
+  // Payroll cost tally feature: est_rate/est_gross are now part of this
+  // diff too, so a pure pay-rate change (no hours change at all) still
+  // triggers a rewrite through the EXISTING "Publish now" button -- no
+  // separate "Republish week" button needed.
   var mon = dateKey(days[0]), fri = dateKey(days[days.length - 1]);
   var existingRes = await sb.from('published_employee_hours')
-    .select('employee_id, work_date, hours, start_time, end_time, lunch_minutes, team_label, status, source')
+    .select('employee_id, work_date, hours, start_time, end_time, lunch_minutes, team_label, status, source, est_rate, est_gross')
     .eq('business_id', bid).gte('work_date', mon).lte('work_date', fri);
   if (existingRes.error) throw new Error('Could not read current published hours before publishing: ' + existingRes.error.message);
   var existingByKey = {};
@@ -34387,7 +34760,8 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
 
   function _sameRow(a, b) {
     return a.hours == b.hours && a.start_time == b.start_time && a.end_time == b.end_time
-      && a.lunch_minutes == b.lunch_minutes && a.team_label == b.team_label && a.status == b.status && a.source == b.source;
+      && a.lunch_minutes == b.lunch_minutes && a.team_label == b.team_label && a.status == b.status && a.source == b.source
+      && a.est_rate == b.est_rate && a.est_gross == b.est_gross;
   }
 
   var toWrite = candidates.filter(function (c) {
@@ -34406,6 +34780,101 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
     publishedCount += chunk.length;
   }
   return { published: publishedCount, skipped: skipped.length, skippedDetail: skipped };
+}
+
+var _payrollCardSort = 'name'; // 'name' | 'hours' | 'gross'
+var _payrollCardExpanded = false;
+var _payrollCardLastArgs = null; // { days, weekHoursData, empHoursMapData } -- so sort/expand toggles can re-render without recomputing
+
+function _centsToDollarsStr(cents) {
+  if (cents == null) return '$0.00';
+  var neg = cents < 0;
+  var abs = Math.abs(Math.round(cents));
+  var s = (abs / 100).toFixed(2);
+  return (neg ? '-$' : '$') + s;
+}
+
+function togglePayrollCardExpanded() {
+  _payrollCardExpanded = !_payrollCardExpanded;
+  if (_payrollCardLastArgs) renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+}
+function setPayrollCardSort(mode) {
+  _payrollCardSort = mode;
+  if (_payrollCardLastArgs) renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+}
+
+async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
+  var el = document.getElementById('payroll-cost-card');
+  if (!el) return;
+  _payrollCardLastArgs = { days: days, weekHoursData: weekHoursData, empHoursMapData: empHoursMapData };
+  // Captured now, synchronously, BEFORE the settings await below -- so
+  // a fast week-navigation click in the meantime can't make this
+  // compare against a later week's Hours-table total than the one
+  // this exact render pass is actually using.
+  var expectedGrandTotal = window._hrsLastGrandTotal;
+  try {
+    var settings = await _getPayrollSettings();
+    var result = _computeWeekPayroll(days, weekHoursData, empHoursMapData, settings);
+    var taxPct = _employerTaxPct(settings);
+    var taxCents = taxPct != null ? Math.round(result.totalGrossCents * taxPct / 100) : null;
+    var totalCostCents = result.totalGrossCents + (taxCents || 0);
+
+    // Visible check (not a silent assumption): compare against the
+    // ACTUAL number the Hours table just rendered, not a second
+    // computation of this same formula, which could never disagree
+    // with itself. A tiny epsilon absorbs floating-point noise only.
+    var mismatch = (typeof expectedGrandTotal === 'number') && Math.abs(expectedGrandTotal - result.totalHours) > 0.005;
+
+    var rows = result.included.slice();
+    rows.sort(function (a, b) {
+      if (_payrollCardSort === 'hours') return b.hours - a.hours;
+      if (_payrollCardSort === 'gross') return (b.grossCents || 0) - (a.grossCents || 0);
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    var detailHtml = '';
+    if (_payrollCardExpanded) {
+      detailHtml = '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">'
+        + '<div style="display:flex;gap:10px;font-size:11px;color:var(--muted);margin-bottom:6px">'
+        + '<span>Sort:</span>'
+        + '<a href="#" onclick="setPayrollCardSort(\'name\');return false" style="color:' + (_payrollCardSort === 'name' ? 'var(--accent)' : 'var(--muted)') + '">Name</a>'
+        + '<a href="#" onclick="setPayrollCardSort(\'hours\');return false" style="color:' + (_payrollCardSort === 'hours' ? 'var(--accent)' : 'var(--muted)') + '">Hours</a>'
+        + '<a href="#" onclick="setPayrollCardSort(\'gross\');return false" style="color:' + (_payrollCardSort === 'gross' ? 'var(--accent)' : 'var(--muted)') + '">Gross</a>'
+        + '</div>'
+        + (rows.length ? rows.map(function (r) {
+          return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px">'
+            + '<span>' + r.name + '</span>'
+            + '<span style="color:var(--muted)">' + r.hours.toFixed(2) + 'h</span>'
+            + '<span style="font-weight:600">' + _centsToDollarsStr(r.grossCents) + '</span>'
+            + '</div>';
+        }).join('') : '<div style="font-size:12px;color:var(--muted)">No employees with a pay rate have hours this week.</div>')
+        + (result.missingRate.length ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);color:var(--red);font-size:11px;font-weight:700">No pay rate on file (hours counted above, not paid)</div>'
+          + result.missingRate.map(function (r) { return '<div style="font-size:12px;color:var(--red)">' + r.name + ' -- ' + r.hours.toFixed(2) + 'h</div>'; }).join('') : '')
+        + '</div>';
+    }
+
+    el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">'
+      + '<div style="font-size:13px;font-weight:700">Payroll cost this week</div>'
+      + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Estimate, based on hours so far</div>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Total hours</span><span style="font-weight:600">' + result.totalHours.toFixed(2) + 'h</span></div>'
+      + (mismatch ? '<div style="margin:2px 0 4px;font-size:11px;font-weight:700;color:var(--red)">Hours total does not match the Hours table</div>' : '')
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Gross wages</span><span style="font-weight:600">' + _centsToDollarsStr(result.totalGrossCents) + '</span></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span style="color:var(--muted)">Employer taxes &amp; costs' + (taxPct != null ? ' (' + taxPct.toFixed(2) + '%)' : '') + '</span><span style="font-weight:600">' + (taxPct != null ? _centsToDollarsStr(taxCents) : 'not configured') + '</span></div>'
+      + '<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;border-top:1px solid var(--border);margin-top:4px;padding-top:4px"><span>Total cost</span><span>' + _centsToDollarsStr(totalCostCents) + '</span></div>'
+      + '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;line-height:1.6">'
+      + '<div><span style="color:var(--muted)">Hours with a pay rate:</span> <span style="font-weight:600">' + result.hoursWithRate.toFixed(2) + 'h</span></div>'
+      + '<div><span style="color:var(--muted)">Hours with no pay rate:</span> <span style="font-weight:600">' + result.hoursWithoutRate.toFixed(2) + 'h</span> <span style="color:var(--muted)">(' + result.missingRate.length + ' employee' + (result.missingRate.length === 1 ? '' : 's') + ')</span></div>'
+      + (result.salaried.length ? '<div><span style="color:var(--muted)">Salaried (not included in pay):</span> ' + result.salaried.map(function (r) { return r.name; }).join(', ') + '</div>' : '')
+      + (result.hasHourlyAdmin ? '<div style="color:var(--amber)">Admin/Office hourly pay isn\'t included here yet \u2014 see the Admin/Office card above.</div>' : '')
+      + '<div style="color:var(--muted);margin-top:4px">Wages and taxes cover employees with a pay rate only.</div>'
+      + '</div>'
+      + '<button type="button" onclick="togglePayrollCardExpanded()" style="margin-top:8px;width:100%;background:none;border:1px solid var(--border);color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:6px;border-radius:8px;cursor:pointer">' + (_payrollCardExpanded ? 'Hide details' : 'Show per-employee breakdown') + '</button>'
+      + detailHtml;
+  } catch (e) {
+    console.error('[payroll card] render failed', e);
+    el.innerHTML = '<div style="color:var(--red);font-size:12px">Could not load payroll cost. Pull to refresh or try again.</div>';
+  }
 }
 
 function _updatePublishIndicator(weekKey, info) {
@@ -34835,6 +35304,12 @@ function renderHoursTable(days, dayNames) {
     + '<div class="hrs-totals-label">All Teams</div>'
     + '<div class="hrs-totals-val">' + _hrsFmtHrs(grandTotal) + '<span style="font-size:13px;font-weight:700;margin-left:2px">h</span></div>'
     + '</div>';
+
+  // Payroll cost card bug fix -- expose the exact number this bar just
+  // showed, so the payroll card (rendered right after this function
+  // returns) can compare against the real figure the manager is
+  // looking at, not a second computation of the same formula.
+  window._hrsLastGrandTotal = grandTotal;
 
   // Depot note (per-team office breakdown line).
   var _depotNote = (function(){
@@ -42087,8 +42562,8 @@ async function sendBulkInvites() {
     try {
       var res = await sb.functions.invoke('send-invite', { body: { employee_id: empId } });
       if (res.error || !res.data || !res.data.success) {
-        var reason = (res.data && res.data.error) || (res.error && res.error.message) || 'unknown error';
-        results.push({ name: name, ok: false, reason: reason });
+        var extracted = await _extractInviteError(res);
+        results.push({ name: name, ok: false, reason: extracted.message });
       } else {
         results.push({ name: name, ok: true });
       }
@@ -42895,7 +43370,30 @@ function appUnlockEmployee(emp) {
   if (topbar) topbar.style.display = 'none';
 
   currentEmployee = emp;
-  currentLang = appSelectedLang || emp.lang || 'en';
+  // Employee portal polish: her own per-device choice (if any) wins
+  // first -- synchronous, always available, never blocks boot. The
+  // dead PIN-screen picker (appSelectedLang) and culture_tag-derived
+  // default are the same fallback chain as before this change.
+  currentLang = (function () {
+    try { var saved = localStorage.getItem('penta_portal_lang'); if (saved) return saved; } catch (e) {}
+    return appSelectedLang || emp.lang || 'en';
+  })();
+  // Best-effort upgrade to her REAL saved preferred_language column,
+  // once migration 119 is applied -- fire-and-forget, never blocks
+  // boot, and the .catch swallows "column does not exist" cleanly if
+  // the migration hasn't shipped yet (never breaks login either way).
+  try {
+    var _sbLang = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (_sbLang && emp && emp.uuid) {
+      _sbLang.from('employees').select('preferred_language').eq('id', emp.uuid).maybeSingle()
+        .then(function (r) {
+          if (r && r.data && r.data.preferred_language && r.data.preferred_language !== currentLang) {
+            try { setPortalLang(r.data.preferred_language); } catch (e2) {}
+          }
+        })
+        .catch(function () {});
+    }
+  } catch (e) {}
 
   var loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'none';
@@ -42934,7 +43432,8 @@ function appUnlockEmployee(emp) {
     }
   }
   const dateEl = document.getElementById('portal-date');
-  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+  // Employee portal polish: display-only -- no chevron, not tappable.
+  if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const h = new Date().getHours();
   const greet = h < 12 ? { en:'Good morning', es:'Buenos días', pt:'Bom dia', cv:'Bon matin' }
     : h < 17 ? { en:'Good afternoon', es:'Buenas tardes', pt:'Boa tarde', cv:'Bon tardis' }
@@ -44875,6 +45374,16 @@ function renderStaffView() {
   const _profileTeam = (emp.team_id && window.PentaTeams) ? window.PentaTeams.getById(emp.team_id) : null;
   const teamColor = (_profileTeam && _profileTeam.color) || 'var(--accent)';
   const statusColor = emp.status === 'active' ? 'var(--green)' : emp.status === 'terminated' ? 'var(--red)' : 'var(--muted)';
+  // Fix login button: owner/admin only, never manager/dispatcher/
+  // employee/logged-out, and only for an employee who already has a
+  // login and isn't terminated (repair-login-email itself enforces
+  // the same server-side -- this is just UX, not the real security
+  // boundary). Any failure here defaults to HIDDEN, never shown.
+  let _showFixLogin = false;
+  try {
+    const _curRole = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+    _showFixLogin = (_curRole === 'owner' || _curRole === 'admin') && !!emp.auth_user_id && emp.status !== 'terminated';
+  } catch (e) { _showFixLogin = false; }
 
   const row = (label, val) => val ? `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:13px;color:var(--muted)">${label}</span><span style="font-size:13px;font-weight:500;text-align:right;max-width:60%">${val}</span></div>` : '';
   // Phase 6.3a Fix 18: rowAlways for sections that should always render every
@@ -44976,7 +45485,13 @@ function renderStaffView() {
         <button type="button" data-permission="send_employee_invites" data-permission-role="manager" data-action="send-invite" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
         <button type="button" data-permission="set_employee_password" data-permission-role="manager" data-action="set-temp-pw" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="flex:1;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Set Temp Password</button>
       </div>`,
-      `<div id="invite-send-result" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="font-size:12px;margin-top:8px;min-height:18px"></div>`
+      `<div id="invite-send-result" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="font-size:12px;margin-top:8px;min-height:18px"></div>`,
+      _showFixLogin
+        ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+            <button type="button" id="fix-login-btn" data-action="fix-login" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="width:100%;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Fix login</button>
+            <div id="fix-login-panel" data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="font-size:12px;margin-top:8px;display:none"></div>
+          </div>`
+        : ''
     ])}
 
     <!-- v11.0.25: Recent Forms preview — last 5 forms with status pills.
@@ -45017,8 +45532,10 @@ function renderStaffView() {
     var _chip   = document.querySelector('[data-invite-chip][data-roster-id="' + CSS.escape(_rid) + '"]');
     var _sendBt = document.querySelector('[data-action="send-invite"][data-roster-id="' + CSS.escape(_rid) + '"]');
     var _pwBt   = document.querySelector('[data-action="set-temp-pw"][data-roster-id="' + CSS.escape(_rid) + '"]');
+    var _fixBt  = document.querySelector('[data-action="fix-login"][data-roster-id="' + CSS.escape(_rid) + '"]');
     if (_sendBt) _sendBt.addEventListener('click', function() { pentaSendInvite(_rid); });
     if (_pwBt)   _pwBt.addEventListener('click',   function() { pentaShowSetTempPasswordModal(_rid); });
+    if (_fixBt)  _fixBt.addEventListener('click',  function() { pentaFixLogin(_rid); });
     if (_chip && typeof pentaRenderInviteChip === 'function') pentaRenderInviteChip(_rid, _chip, _sendBt);
     if (typeof applyPermissions === 'function') applyPermissions();
   } catch (e) { console.warn('[Penta Login section] wiring failed', e); }
@@ -45513,6 +46030,15 @@ async function saveStaffEmployee() {
     if (!confirm(_wtMsg)) { return; }
   }
 
+  // Pay rate input hardening: validate BEFORE building the patch object
+  // -- a rejected value must change nothing, not clamp to 0 or whatever
+  // parseFloat() could salvage from garbage input.
+  const payRateResult = _parsePayRateInput(document.getElementById('staff-pay').value);
+  if (!payRateResult.ok) { alert(payRateResult.message); return; }
+  if (payRateResult.value != null && payRateResult.value > 100) {
+    if (!confirm('$' + payRateResult.value.toFixed(2) + '/hr -- is that right?')) return;
+  }
+
   // Collect new doc photos if taken
   const docPhotos = (idx >= 0 && list[idx] && list[idx].docPhotos) ? {...list[idx].docPhotos} : {};
   const docFields = [['lic-front','License Front'],['lic-back','License Back'],['ssn','Social Security']];
@@ -45556,7 +46082,7 @@ async function saveStaffEmployee() {
     // TL who also drives, or a team member who drives). _toRow picks this up
     // and writes employees.is_driver on dual-write.
     is_driver: !!((document.getElementById('staff-driver')||{}).checked),
-    payRate: parseFloat(document.getElementById('staff-pay').value) || 0,
+    payRate: payRateResult.value || 0,
     phone: document.getElementById('staff-phone').value.trim(),
     email: (document.getElementById('staff-email')||{}).value||'',
     address: (document.getElementById('staff-address')||{}).value||'',
@@ -45817,6 +46343,39 @@ const T = {
     goodAfternoon: 'Good afternoon',
     goodEvening: 'Good evening',
     logout: 'Log out',
+    scheduleComingSoon: 'Your schedule will be available here soon.',
+    formsComingSoon: 'Forms will be available here soon.',
+    contentComingSoon: 'Content sharing will be available here soon.',
+    menuTitle: 'Menu',
+    menuAccount: 'Account',
+    menuAboutMe: 'About me',
+    menuLanguage: 'Language',
+    menuLogout: 'Log out',
+    logoutConfirm: 'Are you sure you want to log out?',
+    accountTitle: 'Account',
+    accountAddress: 'Home address',
+    accountCity: 'City',
+    accountState: 'State',
+    accountZip: 'Zip code',
+    accountEmergencyName: 'Emergency contact name',
+    accountEmergencyPhone: 'Emergency contact phone',
+    accountPhoneLabel: 'Phone number',
+    accountNameLabel: 'Name',
+    accountReadonlyNote: 'To change your number or name, contact the office.',
+    accountSave: 'Save',
+    accountSaved: 'Saved.',
+    accountSaveFailed: 'Could not save',
+    aboutMeTitle: 'About me',
+    aboutMeRole: 'Role / Team',
+    aboutMeTenure: 'Time employed',
+    aboutMePay: 'Pay',
+    aboutMePayHourly: 'per hour',
+    aboutMeSalaried: 'Salaried',
+    aboutMeNotSet: 'Not set',
+    aboutMeVacation: 'Vacation / PTO',
+    aboutMeNotAvailable: "This isn't available yet.",
+    languageTitle: 'Language',
+    menuClose: 'Close',
     todayJobs: "TODAY'S JOBS",
     noJobs: 'No jobs scheduled for today',
     directions: '🗺 Directions',
@@ -45877,6 +46436,39 @@ const T = {
     goodAfternoon: 'Buenas tardes',
     goodEvening: 'Buenas noches',
     logout: 'Cerrar sesión',
+    scheduleComingSoon: 'Tu horario estará disponible aquí próximamente.',
+    formsComingSoon: 'Los formularios estarán disponibles aquí próximamente.',
+    contentComingSoon: 'Compartir contenido estará disponible aquí próximamente.',
+    menuTitle: 'Menú',
+    menuAccount: 'Cuenta',
+    menuAboutMe: 'Sobre mí',
+    menuLanguage: 'Idioma',
+    menuLogout: 'Cerrar sesión',
+    logoutConfirm: '¿Seguro que quieres cerrar sesión?',
+    accountTitle: 'Cuenta',
+    accountAddress: 'Dirección',
+    accountCity: 'Ciudad',
+    accountState: 'Estado',
+    accountZip: 'Código postal',
+    accountEmergencyName: 'Nombre de contacto de emergencia',
+    accountEmergencyPhone: 'Teléfono de contacto de emergencia',
+    accountPhoneLabel: 'Número de teléfono',
+    accountNameLabel: 'Nombre',
+    accountReadonlyNote: 'Para cambiar tu número o nombre, contacta a la oficina.',
+    accountSave: 'Guardar',
+    accountSaved: 'Guardado.',
+    accountSaveFailed: 'No se pudo guardar',
+    aboutMeTitle: 'Sobre mí',
+    aboutMeRole: 'Rol / Equipo',
+    aboutMeTenure: 'Tiempo empleado',
+    aboutMePay: 'Pago',
+    aboutMePayHourly: 'por hora',
+    aboutMeSalaried: 'Asalariado/a',
+    aboutMeNotSet: 'No establecido',
+    aboutMeVacation: 'Vacaciones / PTO',
+    aboutMeNotAvailable: 'Esto no está disponible todavía.',
+    languageTitle: 'Idioma',
+    menuClose: 'Cerrar',
     todayJobs: 'TRABAJOS DE HOY',
     noJobs: 'No hay trabajos programados para hoy',
     directions: '🗺 Cómo llegar',
@@ -45937,6 +46529,39 @@ const T = {
     goodAfternoon: 'Boa tarde',
     goodEvening: 'Boa noite',
     logout: 'Sair',
+    scheduleComingSoon: 'Sua agenda estará disponível aqui em breve.',
+    formsComingSoon: 'Os formulários estarão disponíveis aqui em breve.',
+    contentComingSoon: 'O compartilhamento de conteúdo estará disponível aqui em breve.',
+    menuTitle: 'Menu',
+    menuAccount: 'Conta',
+    menuAboutMe: 'Sobre mim',
+    menuLanguage: 'Idioma',
+    menuLogout: 'Sair',
+    logoutConfirm: 'Tem certeza que deseja sair?',
+    accountTitle: 'Conta',
+    accountAddress: 'Endereço',
+    accountCity: 'Cidade',
+    accountState: 'Estado',
+    accountZip: 'CEP',
+    accountEmergencyName: 'Nome do contato de emergência',
+    accountEmergencyPhone: 'Telefone do contato de emergência',
+    accountPhoneLabel: 'Número de telefone',
+    accountNameLabel: 'Nome',
+    accountReadonlyNote: 'Para alterar seu número ou nome, contate o escritório.',
+    accountSave: 'Salvar',
+    accountSaved: 'Salvo.',
+    accountSaveFailed: 'Não foi possível salvar',
+    aboutMeTitle: 'Sobre mim',
+    aboutMeRole: 'Função / Equipe',
+    aboutMeTenure: 'Tempo empregado',
+    aboutMePay: 'Pagamento',
+    aboutMePayHourly: 'por hora',
+    aboutMeSalaried: 'Assalariado(a)',
+    aboutMeNotSet: 'Não definido',
+    aboutMeVacation: 'Férias / PTO',
+    aboutMeNotAvailable: 'Isso ainda não está disponível.',
+    languageTitle: 'Idioma',
+    menuClose: 'Fechar',
     todayJobs: 'TRABALHOS DE HOJE',
     noJobs: 'Nenhum trabalho agendado para hoje',
     directions: '🗺 Direções',
@@ -45998,6 +46623,39 @@ const T = {
     goodAfternoon: 'Bon tardi',
     goodEvening: 'Bon noti',
     logout: 'Sai',
+    scheduleComingSoon: 'Bu orariu ta disponivel li en brevi.',
+    formsComingSoon: 'Formulariu ta disponivel li en brevi.',
+    contentComingSoon: 'Partilha di konteúdu ta disponivel li en brevi.',
+    menuTitle: 'Menu',
+    menuAccount: 'Conta',
+    menuAboutMe: 'Sobre mi',
+    menuLanguage: 'Lingua',
+    menuLogout: 'Sai',
+    logoutConfirm: 'Bu tene certeza ki bu krê sai?',
+    accountTitle: 'Conta',
+    accountAddress: 'Endereçu',
+    accountCity: 'Sidadi',
+    accountState: 'Estadu',
+    accountZip: 'Kódigu postal',
+    accountEmergencyName: 'Nómi di kontaktu di emerjénsia',
+    accountEmergencyPhone: 'Telefoni di kontaktu di emerjénsia',
+    accountPhoneLabel: 'Numeru di telefoni',
+    accountNameLabel: 'Nómi',
+    accountReadonlyNote: 'Pa mudа bu numeru o nómi, kontata skritóriu.',
+    accountSave: 'Guarda',
+    accountSaved: 'Guardadu.',
+    accountSaveFailed: 'Ka pudi guarda',
+    aboutMeTitle: 'Sobre mi',
+    aboutMeRole: 'Funson / Ekipa',
+    aboutMeTenure: 'Tempu empregadu',
+    aboutMePay: 'Pagamentu',
+    aboutMePayHourly: 'pa ora',
+    aboutMeSalaried: 'Salariadu(a)',
+    aboutMeNotSet: 'Ka stabelesidu',
+    aboutMeVacation: 'Féria / PTO',
+    aboutMeNotAvailable: 'Kel li ka ta disponivel ainda.',
+    languageTitle: 'Lingua',
+    menuClose: 'Fecha',
     todayJobs: 'TRABALHU DI OJI',
     noJobs: 'Ka ten trabalhu marcadu pa oji',
     directions: '🗺 Diresaun',
@@ -46073,6 +46731,13 @@ function setLang(lang) {
   } catch(e) {}
 }
 
+// Employee portal polish -- any tab listed here shows a "Coming
+// soon" screen instead of its real content, and fetches no data
+// while hidden (showPortalTab returns before any of that tab's own
+// render/fetch branches run). Empty this array to turn a tab back
+// on -- no other code change needed anywhere.
+var PORTAL_TABS_COMING_SOON = ['schedule', 'forms', 'content'];
+
 function t(key) {
   return (T[currentLang] || T.en)[key] || T.en[key] || key;
 }
@@ -46144,11 +46809,18 @@ function setPortalLang(lang) {
   });
   // Re-render all portal content
   updatePortalText();
-  renderSchedule();
+  // Employee portal polish: don't fetch schedule data while that tab
+  // is gated -- just re-render its (already-visible-or-not)
+  // coming-soon text in the new language instead.
+  if (PORTAL_TABS_COMING_SOON.indexOf('schedule') === -1) { renderSchedule(); }
+  else { try { _renderPortalComingSoon('schedule'); } catch (e) {} }
   renderHandbook();
   checkExistingSignature();
   // Re-render forms tab labels
   updateFormLabels();
+  if (PORTAL_TABS_COMING_SOON.indexOf('forms') !== -1) { try { _renderPortalComingSoon('forms'); } catch (e) {} }
+  if (PORTAL_TABS_COMING_SOON.indexOf('content') !== -1) { try { _renderPortalComingSoon('content'); } catch (e) {} }
+  try { if (typeof _renderPortalMenuTexts === 'function') _renderPortalMenuTexts(); } catch (e) {}
 }
 
 function updateFormLabels() {
@@ -46584,7 +47256,8 @@ function loginSuccess() {
 
   // Set date
   const now = new Date();
-  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+  // Employee portal polish: display-only -- no chevron, not tappable.
+  document.getElementById('portal-date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   updatePortalText();
   renderSchedule();
@@ -47399,7 +48072,9 @@ function renderSchedule() {
   var portalDate = document.getElementById('portal-date');
   if (portalDate) {
     var pdPrefix = (dayOffsetMs === 0 ? 'Today · ' : dayOffsetMs === oneDayMs ? 'Tomorrow · ' : dayOffsetMs === -oneDayMs ? 'Yesterday · ' : '');
-    portalDate.textContent = pdPrefix + viewDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) + ' ▾';
+    // Employee portal polish: display-only -- no chevron, not tappable,
+    // even once Schedule is re-enabled (PORTAL_TABS_COMING_SOON emptied).
+    portalDate.textContent = pdPrefix + viewDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
     // Belt-and-suspenders: force pill styling via setProperty('important')
     // every render. CSS + inline-style attribute already cover this, but
     // iOS Safari has a history of caching <style> blocks past hard-refresh;
@@ -48320,6 +48995,35 @@ function _renderPortalHoursUpdatedLabel(publishedAtIso) {
   } catch (e) { el.textContent = ''; }
 }
 
+// Payroll cost tally feature: employee-facing estimated gross pay line.
+// Never shows the rate, employer taxes, or anyone else's pay -- only
+// the one summed number, and only when the business has explicitly
+// turned this on (default OFF). This function does its own small
+// Supabase read (businesses.show_estimated_pay_to_employees) -- that
+// table's SELECT policy already has no role restriction, so this is
+// not a new attack surface, just reading a flag that was already
+// readable.
+async function _renderPortalEstimatedPay(estGrossCentsSoFar, anyDayIncomplete) {
+  var el = document.getElementById('portal-estimated-pay');
+  if (!el) return;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!sb || !bid) { el.innerHTML = ''; return; }
+    var res = await sb.from('businesses').select('show_estimated_pay_to_employees').eq('id', bid).maybeSingle();
+    var show = !!(res.data && res.data.show_estimated_pay_to_employees);
+    if (!show) { el.innerHTML = ''; return; }
+    var dollars = (Math.round(estGrossCentsSoFar) / 100).toFixed(2);
+    el.innerHTML = '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">'
+      + '<div style="font-size:13px;font-weight:600">Estimated gross pay this ' + (anyDayIncomplete ? 'week so far' : 'week') + ': $' + dollars + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">Estimate before taxes and deductions. Your actual paycheck may differ.</div>'
+      + '</div>';
+  } catch (e) {
+    console.warn('[portal estimated pay] failed (non-fatal)', e);
+    el.innerHTML = '';
+  }
+}
+
 async function renderHours() {
   // PR #134 -- same PentaAssignments/PentaEmployees hydration race
   // PR #128/#133 fixed for the manager's Live tab, present here too:
@@ -48528,7 +49232,7 @@ async function renderHours() {
 
     var _phMon = dateKey(days[0]), _phFri = dateKey(days[4]);
     var _phRes = await _sb.from('published_employee_hours')
-      .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at')
+      .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at, est_gross')
       .eq('employee_id', _myUuid)
       .gte('work_date', _phMon)
       .lte('work_date', _phFri);
@@ -48539,12 +49243,15 @@ async function renderHours() {
 
     var _todayKey = dateKey(new Date());
     var _maxPublishedAt = null;
+    var _estGrossCentsSoFar = 0;
+    var _anyDayIncomplete = false;
     days.forEach(function (d, i) {
       var dk = dateKey(d);
       var row = _phByDate[dk];
       if (row && row.published_at && (!_maxPublishedAt || row.published_at > _maxPublishedAt)) _maxPublishedAt = row.published_at;
 
       if (!row) {
+        _anyDayIncomplete = true;
         composite.status[i] = (dk === _todayKey)
           ? { type: 'in_progress', label: 'In progress, updates after your manager reviews' }
           : { type: 'not_published', label: 'Not updated yet' };
@@ -48558,10 +49265,12 @@ async function renderHours() {
       composite.starts[i] = row.start_time || null;
       composite.ends[i] = row.end_time || null;
       composite.lunch[i] = row.lunch_minutes ? { duration: row.lunch_minutes } : null;
+      if (row.status === 'worked' && row.est_gross != null) _estGrossCentsSoFar += row.est_gross;
     });
     composite.total = composite.days.reduce(function (s, h) { return s + (h || 0); }, 0);
 
     _renderPortalHoursUpdatedLabel(_maxPublishedAt);
+    _renderPortalEstimatedPay(_estGrossCentsSoFar, _anyDayIncomplete);
     _setupPublishedHoursRealtime(_myUuid);
   } catch (e) {
     // No silent early return, and never a blank/fake-zero on failure --
@@ -49801,11 +50510,61 @@ function showPortalTab(tab) {
   }
   // Content tile — skip the tab machinery and jump straight to the
   // shared content-capture flow that the Share button already uses.
+  // Employee portal polish: gated the same way as any other tab in
+  // PORTAL_TABS_COMING_SOON -- Content has no persistent tab-content
+  // div of its own (it's a direct camera/share action, not a screen),
+  // so this intercept is explicit rather than falling through the
+  // generic ['schedule',...,'rewards'] loop below, which never knew
+  // about 'content' to begin with.
   if (tab === 'content') {
+    if (PORTAL_TABS_COMING_SOON.indexOf('content') !== -1) {
+      if (screen) screen.classList.add('in-subpage');
+      ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
+        var el = document.getElementById('tab-' + t);
+        if (el) el.style.display = 'none';
+        var pt = document.getElementById('ptab-' + t);
+        if (pt) pt.classList.toggle('active', false);
+      });
+      PORTAL_TABS_COMING_SOON.forEach(function(t) {
+        var cs = document.getElementById('tab-' + t + '-comingsoon');
+        if (cs) cs.style.display = (t === 'content') ? 'block' : 'none';
+      });
+      try { _renderPortalComingSoon('content'); } catch (e) { console.error('[portal] coming-soon render failed', e); }
+      currentTab = 'content';
+      return;
+    }
     if (typeof portalShareContent === 'function') portalShareContent();
     return;
   }
   if (screen) screen.classList.add('in-subpage');
+
+  // Employee portal polish: a gated tab shows a "Coming soon" screen
+  // instead of its real content div, and returns BEFORE any of this
+  // tab's own render/fetch branches below ever run -- no data fetched
+  // for it while hidden. PORTAL_TABS_COMING_SOON is the single flag;
+  // emptying it is the only change needed to turn a tab back on.
+  if (PORTAL_TABS_COMING_SOON.indexOf(tab) !== -1) {
+    ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
+      var el = document.getElementById('tab-' + t);
+      if (el) el.style.display = 'none';
+      var pt = document.getElementById('ptab-' + t);
+      if (pt) pt.classList.toggle('active', t === tab);
+    });
+    PORTAL_TABS_COMING_SOON.forEach(function(t) {
+      var cs = document.getElementById('tab-' + t + '-comingsoon');
+      if (cs) cs.style.display = (t === tab) ? 'block' : 'none';
+    });
+    try { _renderPortalComingSoon(tab); } catch (e) { console.error('[portal] coming-soon render failed', e); }
+    currentTab = tab;
+    return;
+  }
+  // Not gated -- make sure any coming-soon host from a PRIOR tab switch
+  // is hidden (only relevant while some tabs are gated and others not).
+  PORTAL_TABS_COMING_SOON.forEach(function(t) {
+    var cs = document.getElementById('tab-' + t + '-comingsoon');
+    if (cs) cs.style.display = 'none';
+  });
+
   ['schedule','hours','forms','handbook','rate','chat','rewards'].forEach(function(t) {
     var el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
@@ -49843,6 +50602,254 @@ function showPortalTab(tab) {
 
 // Back-to-home helper called from the portal back button.
 function portalGoHome() { showPortalTab('home'); }
+
+// Employee portal polish — owner-only toggle: whether About me shows
+// pay at all. Real enforcement is server-side (set_show_pay_in_about_me
+// itself refuses a non-owner caller) -- this button stays visible to
+// any manager-tier user; a non-owner just gets a plain refusal here,
+// same message the RPC itself would give.
+async function openPayVisibilitySetting() {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) { alert('Not connected — reload and try again.'); return; }
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    var cur = true;
+    try {
+      var biz = bid ? await sb.from('businesses').select('business_settings').eq('id', bid).maybeSingle() : null;
+      if (biz && biz.data && biz.data.business_settings && biz.data.business_settings.show_pay_in_about_me === false) cur = false;
+    } catch (e) {}
+    var next = !cur;
+    if (!confirm((cur ? 'Pay is currently SHOWN' : 'Pay is currently HIDDEN') + ' in employees\' About me screen.\n\n' + (next ? 'Turn it ON (show pay)?' : 'Turn it OFF (hide pay)?'))) return;
+    var res = await sb.rpc('set_show_pay_in_about_me', { p_enabled: next });
+    if (res.error) { alert('Could not change this setting: ' + res.error.message); return; }
+    alert('Done — pay is now ' + (next ? 'shown' : 'hidden') + ' in About me.');
+  } catch (e) {
+    console.error('[pay visibility setting] failed', e);
+    alert('Could not change this setting: ' + ((e && e.message) || String(e)));
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Employee portal polish — hamburger menu + Account / About me / Language
+// ═══════════════════════════════════════════════════════════════════════
+function openPortalMenu() {
+  try {
+    _renderPortalMenuTexts();
+    var ov = document.getElementById('portal-menu-overlay');
+    if (ov) ov.style.display = 'block';
+  } catch (e) { console.error('[portal menu] open failed', e); alert('Could not open the menu.'); }
+}
+function closePortalMenu() {
+  var ov = document.getElementById('portal-menu-overlay');
+  if (ov) ov.style.display = 'none';
+}
+function _renderPortalMenuTexts() {
+  try {
+    var map = { 'portal-menu-title': 'menuTitle', 'portal-menu-account': 'menuAccount', 'portal-menu-aboutme': 'menuAboutMe', 'portal-menu-language': 'menuLanguage', 'portal-menu-logout': 'menuLogout' };
+    Object.keys(map).forEach(function (id) { var el = document.getElementById(id); if (el) el.textContent = t(map[id]); });
+  } catch (e) { console.error('[portal menu] text render failed', e); }
+}
+function portalMenuLogout() {
+  try {
+    if (!confirm(t('logoutConfirm'))) return;
+    closePortalMenu();
+    logout();
+  } catch (e) { console.error('[portal menu] logout failed', e); alert('Could not log out. Try again.'); }
+}
+
+// ── ACCOUNT ──
+var _portalAccountRow = null;
+async function openPortalAccount() {
+  var ov = document.getElementById('portal-account-overlay');
+  var body = document.getElementById('portal-account-body');
+  var titleEl = document.getElementById('portal-account-title');
+  try { if (titleEl) titleEl.textContent = t('accountTitle'); } catch (e) {}
+  if (ov) ov.style.display = 'flex';
+  if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Loading…</div>';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected');
+    if (!currentEmployee || !currentEmployee.uuid) throw new Error('No employee record');
+    // READ: her own row, every column -- already permitted by RLS
+    // (employees_select's auth_user_id = auth.uid() branch), unchanged
+    // by migration 119 (which only tightens UPDATE). Only the SAVE
+    // below goes through the whitelist RPC.
+    var res = await sb.from('employees')
+      .select('phone, first_name, last_name, address, city, state, zip, emergency_contact_name, emergency_contact_phone')
+      .eq('id', currentEmployee.uuid)
+      .maybeSingle();
+    if (res.error || !res.data) throw new Error((res.error && res.error.message) || 'No data');
+    _portalAccountRow = res.data;
+    renderPortalAccount();
+  } catch (e) {
+    console.error('[portal account] load failed', e);
+    if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">' + _adminEsc(t('aboutMeNotAvailable')) + '</div>';
+  }
+}
+function closePortalAccount() { var ov = document.getElementById('portal-account-overlay'); if (ov) ov.style.display = 'none'; }
+function _portalAccountField(id, label, value) {
+  return '<div style="margin-bottom:14px">'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(label) + '</div>'
+    + '<input type="text" id="' + id + '" value="' + _adminEsc(value || '') + '" style="width:100%;box-sizing:border-box;min-height:44px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:15px">'
+    + '</div>';
+}
+function renderPortalAccount() {
+  try {
+    var body = document.getElementById('portal-account-body');
+    if (!body || !_portalAccountRow) return;
+    var r = _portalAccountRow;
+    var fullName = ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || '—';
+    body.innerHTML = ''
+      + '<div style="margin-bottom:14px">'
+      +   '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(t('accountNameLabel')) + '</div>'
+      +   '<div style="font-size:15px;color:var(--text);padding:10px 0">' + _adminEsc(fullName) + '</div>'
+      + '</div>'
+      + '<div style="margin-bottom:10px">'
+      +   '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">' + _adminEsc(t('accountPhoneLabel')) + '</div>'
+      +   '<div style="font-size:15px;color:var(--text);padding:10px 0">' + _adminEsc(r.phone || '—') + '</div>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:16px;padding:8px 10px;background:var(--surface2);border-radius:8px">' + _adminEsc(t('accountReadonlyNote')) + '</div>'
+      + _portalAccountField('pa-address', t('accountAddress'), r.address)
+      + _portalAccountField('pa-city', t('accountCity'), r.city)
+      + _portalAccountField('pa-state', t('accountState'), r.state)
+      + _portalAccountField('pa-zip', t('accountZip'), r.zip)
+      + _portalAccountField('pa-ecname', t('accountEmergencyName'), r.emergency_contact_name)
+      + _portalAccountField('pa-ecphone', t('accountEmergencyPhone'), r.emergency_contact_phone)
+      + '<div id="portal-account-result" style="min-height:18px;font-size:13px;margin:10px 0"></div>'
+      + '<button type="button" onclick="savePortalAccount()" style="width:100%;min-height:44px;background:var(--accent);border:none;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer">' + _adminEsc(t('accountSave')) + '</button>';
+  } catch (e) { console.error('[portal account] render failed', e); }
+}
+async function savePortalAccount() {
+  var resultEl = document.getElementById('portal-account-result');
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected — reload and try again.');
+    var val = function (id) { var el = document.getElementById(id); return (el && el.value) ? el.value : null; };
+    var res = await sb.rpc('update_my_employee_profile', {
+      p_address: val('pa-address'),
+      p_city: val('pa-city'),
+      p_state: val('pa-state'),
+      p_zip: val('pa-zip'),
+      p_emergency_contact_name: val('pa-ecname'),
+      p_emergency_contact_phone: val('pa-ecphone')
+    });
+    if (res.error) throw new Error(res.error.message || 'Save failed');
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--green)">' + _adminEsc(t('accountSaved')) + '</span>';
+  } catch (e) {
+    console.error('[portal account] save failed', e);
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">' + _adminEsc(t('accountSaveFailed')) + ': ' + _adminEsc((e && e.message) || String(e)) + '</span>';
+  }
+}
+
+// ── ABOUT ME ──
+async function openPortalAboutMe() {
+  var ov = document.getElementById('portal-aboutme-overlay');
+  var body = document.getElementById('portal-aboutme-body');
+  var titleEl = document.getElementById('portal-aboutme-title');
+  try { if (titleEl) titleEl.textContent = t('aboutMeTitle'); } catch (e) {}
+  if (ov) ov.style.display = 'flex';
+  if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">Loading…</div>';
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Not connected');
+    var res = await sb.rpc('get_my_about_me');
+    if (res.error) throw new Error(res.error.message || 'Not available');
+    renderPortalAboutMe(res.data);
+  } catch (e) {
+    console.error('[portal about-me] load failed', e);
+    // Deploy safety: if the RPC/migration isn't live yet, this is the
+    // ONLY thing that happens -- a plain message, never a blank page.
+    if (body) body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">' + _adminEsc(t('aboutMeNotAvailable')) + '</div>';
+  }
+}
+function closePortalAboutMe() { var ov = document.getElementById('portal-aboutme-overlay'); if (ov) ov.style.display = 'none'; }
+function _portalAboutMeRow(label, value) {
+  return '<div style="display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">'
+    + '<div style="font-size:13px;color:var(--muted)">' + _adminEsc(label) + '</div>'
+    + '<div style="font-size:14px;font-weight:600;color:var(--text);text-align:right">' + _adminEsc(value) + '</div>'
+    + '</div>';
+}
+function renderPortalAboutMe(d) {
+  try {
+    var body = document.getElementById('portal-aboutme-body');
+    if (!body || !d) return;
+    var payRow = '';
+    if (d.show_pay !== false) {
+      if (d.pay_type === 'salary') {
+        payRow = _portalAboutMeRow(t('aboutMePay'), t('aboutMeSalaried'));
+      } else if (d.pay_rate == null || Number(d.pay_rate) === 0) {
+        payRow = _portalAboutMeRow(t('aboutMePay'), t('aboutMeNotSet'));
+      } else {
+        payRow = _portalAboutMeRow(t('aboutMePay'), '$' + Number(d.pay_rate).toFixed(2) + ' ' + t('aboutMePayHourly'));
+      }
+    }
+    body.innerHTML = ''
+      + _portalAboutMeRow(t('accountNameLabel'), d.name)
+      + _portalAboutMeRow(t('aboutMeRole'), d.team_label)
+      + _portalAboutMeRow(t('aboutMeTenure'), d.tenure_text)
+      + payRow
+      + _portalAboutMeRow(t('aboutMeVacation'), d.vacation_text);
+  } catch (e) { console.error('[portal about-me] render failed', e); }
+}
+
+// ── LANGUAGE ──
+function openPortalLanguage() {
+  try {
+    var ov = document.getElementById('portal-language-overlay');
+    var titleEl = document.getElementById('portal-language-title');
+    if (titleEl) titleEl.textContent = t('languageTitle');
+    if (ov) ov.style.display = 'flex';
+    renderPortalLanguage();
+  } catch (e) { console.error('[portal language] open failed', e); }
+}
+function closePortalLanguage() { var ov = document.getElementById('portal-language-overlay'); if (ov) ov.style.display = 'none'; }
+function renderPortalLanguage() {
+  try {
+    var body = document.getElementById('portal-language-body');
+    if (!body) return;
+    var langs = [['en', 'English'], ['es', 'Español'], ['pt', 'Português'], ['cv', 'Kriolu']];
+    body.innerHTML = langs.map(function (l) {
+      var active = currentLang === l[0];
+      return '<button type="button" onclick="choosePortalLanguage(\'' + l[0] + '\')" style="display:block;width:100%;text-align:left;min-height:44px;padding:12px 14px;margin-bottom:8px;border-radius:10px;cursor:pointer;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:600;border:1px solid ' + (active ? 'var(--accent)' : 'var(--border)') + ';background:' + (active ? 'rgba(108,143,255,0.12)' : 'var(--surface2)') + ';color:var(--text)">' + (active ? '✓ ' : '') + l[1] + '</button>';
+    }).join('');
+  } catch (e) { console.error('[portal language] render failed', e); }
+}
+async function choosePortalLanguage(lang) {
+  try {
+    setPortalLang(lang);
+    renderPortalLanguage();
+    try { localStorage.setItem('penta_portal_lang', lang); } catch (e) {}
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (sb) {
+      // Best-effort: saves to her real employees row once migration 119
+      // is applied. If the RPC doesn't exist yet, this fails quietly --
+      // the choice already took effect above and is already saved
+      // per-device via localStorage either way.
+      sb.rpc('update_my_employee_profile', { p_preferred_language: lang })
+        .then(function (res) {
+          if (res && res.error) console.warn('[portal language] could not save to her record yet (per-device only for now):', res.error.message);
+        })
+        .catch(function () {});
+    }
+  } catch (e) { console.error('[portal language] choose failed', e); }
+}
+
+
+// Employee portal polish -- renders the bilingual "Coming soon" message
+// for a gated tab. Never fetches anything; pure DOM text.
+function _renderPortalComingSoon(tab) {
+  try {
+    var host = document.getElementById('tab-' + tab + '-comingsoon');
+    if (!host) return;
+    var key = tab === 'schedule' ? 'scheduleComingSoon' : tab === 'forms' ? 'formsComingSoon' : 'contentComingSoon';
+    host.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--muted)">'
+      + '<div style="font-size:32px;margin-bottom:12px">🚧</div>'
+      + '<div style="font-size:15px;font-weight:600;color:var(--text)">' + _adminEsc(t(key)) + '</div>'
+      + '</div>';
+  } catch (e) { console.error('[portal] _renderPortalComingSoon failed', e); }
+}
+
 
 // Inline SVG glyphs for the employee launcher (exact spec strings — no
 // Lucide CDN, no <img> tags). Every glyph is 24×24 viewBox, stroke="white",
@@ -49930,9 +50937,21 @@ function renderEmployeeHome() {
     if (count > 0) { el.textContent = String(count); el.style.display = 'inline-block'; }
     else { el.style.display = 'none'; }
   }
-  setBadge('emp-badge-schedule', _empTodayJobsCount());
-  setBadge('emp-badge-chat',     _empUnreadChatCount());
-  setBadge('emp-badge-forms',    _empPendingForms());
+  // Employee portal polish: no count is fetched for a gated tab's
+  // badge -- it just stays hidden, matching "no data fetched while
+  // hidden" for schedule/forms specifically. Chat's badge is unaffected
+  // (chat is never gated).
+  if (PORTAL_TABS_COMING_SOON.indexOf('schedule') === -1) {
+    setBadge('emp-badge-schedule', _empTodayJobsCount());
+  } else {
+    var _sbEl = document.getElementById('emp-badge-schedule'); if (_sbEl) _sbEl.style.display = 'none';
+  }
+  setBadge('emp-badge-chat', _empUnreadChatCount());
+  if (PORTAL_TABS_COMING_SOON.indexOf('forms') === -1) {
+    setBadge('emp-badge-forms', _empPendingForms());
+  } else {
+    var _fbEl = document.getElementById('emp-badge-forms'); if (_fbEl) _fbEl.style.display = 'none';
+  }
 
   // Today's Jobs preview card removed 2026-04-24 — Schedule icon above is the
   // single entry point now. Report Low Supplies home shortcut removed same
@@ -55011,6 +56030,137 @@ async function renderGeotabIntegrationStatus() {
   }
 }
 
+async function openPayrollSettingsModal() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  if (!sb || !bid) { alert('Tenant not resolved -- refresh and try again.'); return; }
+  var existing = null, showEstPay = false;
+  try {
+    var pr = await sb.from('business_payroll_settings')
+      .select('social_security_pct, medicare_pct, federal_unemployment_pct, state_unemployment_pct, other_employer_costs_pct, overtime_enabled')
+      .eq('business_id', bid).maybeSingle();
+    if (pr.error && (pr.error.code === '42501' || /permission/i.test(pr.error.message || ''))) {
+      alert('Only owners and managers can view or edit payroll settings.');
+      return;
+    }
+    existing = pr.data || null;
+    var br = await sb.from('businesses').select('show_estimated_pay_to_employees').eq('id', bid).maybeSingle();
+    showEstPay = !!(br.data && br.data.show_estimated_pay_to_employees);
+  } catch (e) {
+    alert('Could not load payroll settings: ' + (e.message || e));
+    return;
+  }
+  var pctField = function (id, label, value) {
+    return '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + label + ' %</div>'
+      + '<input type="text" inputmode="decimal" id="' + id + '" value="' + (value != null ? value : '') + '" placeholder="not set" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:ui-monospace,monospace;font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:14px;outline:none">';
+  };
+  var overlay = document.createElement('div');
+  overlay.id = 'payroll-settings-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.innerHTML = ''
+    + '<div style="background:var(--surface);width:100%;max-width:540px;max-height:90vh;overflow-y:auto;border-radius:14px;border:1px solid var(--border2);padding:22px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<div style="font-size:17px;font-weight:700">💰 Payroll Settings</div>'
+    +     '<button type="button" onclick="document.getElementById(\'payroll-settings-overlay\').remove()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:17px;cursor:pointer">×</button>'
+    +   '</div>'
+    +   '<div style="background:rgba(251,191,36,0.10);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#fde68a;line-height:1.5">'
+    +     'Leave a field blank until you know the real number -- nothing is estimated for employer taxes until every field below is filled in. The Payroll cost card on the Hours tab will show gross wages either way, just without an employer-tax line until then.'
+    +   '</div>'
+    + pctField('pr-ss', 'Social Security', existing && existing.social_security_pct)
+    + pctField('pr-medicare', 'Medicare', existing && existing.medicare_pct)
+    + pctField('pr-futa', 'Federal unemployment (FUTA)', existing && existing.federal_unemployment_pct)
+    + pctField('pr-suta', 'State unemployment (SUTA)', existing && existing.state_unemployment_pct)
+    + pctField('pr-other', 'Other employer costs', existing && existing.other_employer_costs_pct)
+    + '<div id="pr-total-line" style="font-size:12px;color:var(--muted);margin-bottom:16px"></div>'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;cursor:pointer">'
+    +   '<input type="checkbox" id="pr-overtime" ' + (existing && existing.overtime_enabled ? 'checked' : '') + '>'
+    +   'Overtime: pay 1.5x for hours over 40 in the viewed Mon-Fri week'
+    + '</label>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-8px 0 14px 26px;line-height:1.4">This is within the 5 days the Hours tab shows, not a true Monday-Sunday pay week -- this app does not track Saturday/Sunday hours anywhere yet. If anyone also works a weekend, her real weekly total (and real overtime) would be higher than what this shows.</div>'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-bottom:18px;font-size:13px;cursor:pointer">'
+    +   '<input type="checkbox" id="pr-show-estimate" ' + (showEstPay ? 'checked' : '') + '>'
+    +   'Show estimated pay to employees (off by default)'
+    + '</label>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-10px 0 14px 26px;line-height:1.4">When on, each employee sees her own estimated gross pay (before taxes) for the week on her own Hours screen. She never sees the rate, employer taxes, or anyone else\'s pay.</div>'
+    + '<div style="display:flex;gap:8px">'
+    +   '<button type="button" onclick="document.getElementById(\'payroll-settings-overlay\').remove()" style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:600;padding:11px;border-radius:10px;cursor:pointer">Cancel</button>'
+    +   '<button type="button" onclick="savePayrollSettings()" style="flex:2;background:#fbbf24;border:none;color:#0a0a0a;font-family:\'DM Sans\',sans-serif;font-size:14px;font-weight:700;padding:11px;border-radius:10px;cursor:pointer">Save</button>'
+    + '</div>'
+    + '<div id="pr-save-status" style="font-size:12px;color:var(--muted);min-height:18px;margin-top:10px"></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+
+  function recomputeTotalLine() {
+    var ids = ['pr-ss', 'pr-medicare', 'pr-futa', 'pr-suta', 'pr-other'];
+    var vals = ids.map(function (id) { var v = document.getElementById(id).value.trim(); return v === '' ? null : parseFloat(v); });
+    var lineEl = document.getElementById('pr-total-line');
+    if (vals.some(function (v) { return v == null || isNaN(v); })) { lineEl.textContent = 'Total employer tax %: not fully configured yet'; return; }
+    var total = vals.reduce(function (s, v) { return s + v; }, 0);
+    lineEl.innerHTML = '<strong>Total employer tax %: ' + total.toFixed(3) + '%</strong>';
+  }
+  ['pr-ss', 'pr-medicare', 'pr-futa', 'pr-suta', 'pr-other'].forEach(function (id) {
+    document.getElementById(id).addEventListener('input', recomputeTotalLine);
+  });
+  recomputeTotalLine();
+}
+
+async function savePayrollSettings() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
+  var statusEl = document.getElementById('pr-save-status');
+  if (!sb || !bid) { if (statusEl) statusEl.textContent = 'Not connected -- refresh and try again.'; return; }
+
+  function pctVal(id) {
+    var v = (document.getElementById(id).value || '').trim();
+    if (v === '') return null;
+    var n = parseFloat(v);
+    if (isNaN(n) || n < 0 || n > 100) throw new Error('Enter a percent between 0 and 100 (or leave blank), e.g. 6.2, not ' + v);
+    return n;
+  }
+
+  var currentUserId = null;
+  try { var ures = await sb.auth.getUser(); currentUserId = ures && ures.data && ures.data.user && ures.data.user.id; } catch (e) {}
+
+  var payload;
+  try {
+    payload = {
+      business_id: bid,
+      social_security_pct: pctVal('pr-ss'),
+      medicare_pct: pctVal('pr-medicare'),
+      federal_unemployment_pct: pctVal('pr-futa'),
+      state_unemployment_pct: pctVal('pr-suta'),
+      other_employer_costs_pct: pctVal('pr-other'),
+      overtime_enabled: !!document.getElementById('pr-overtime').checked,
+      updated_by: currentUserId
+    };
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = e.message; statusEl.style.color = 'var(--red)'; }
+    return;
+  }
+
+  if (statusEl) { statusEl.textContent = 'Saving...'; statusEl.style.color = 'var(--muted)'; }
+  try {
+    var res = await sb.from('business_payroll_settings').upsert(payload, { onConflict: 'business_id' });
+    if (res.error) throw new Error(res.error.message);
+    var showEst = !!document.getElementById('pr-show-estimate').checked;
+    var bres = await sb.from('businesses').update({ show_estimated_pay_to_employees: showEst }).eq('id', bid);
+    if (bres.error) throw new Error(bres.error.message);
+    // Clear the cache so the Hours tab/payroll card pick up the new
+    // settings on their next render instead of waiting out the 60s TTL.
+    _payrollSettingsCache = null;
+    if (statusEl) { statusEl.textContent = 'Saved.'; statusEl.style.color = 'var(--green)'; }
+    setTimeout(function () {
+      var ov = document.getElementById('payroll-settings-overlay');
+      if (ov) ov.remove();
+      if (typeof renderPayrollCostCard === 'function' && _payrollCardLastArgs) {
+        renderPayrollCostCard(_payrollCardLastArgs.days, _payrollCardLastArgs.weekHoursData, _payrollCardLastArgs.empHoursMapData);
+      }
+    }, 600);
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Could not save: ' + (e.message || e); statusEl.style.color = 'var(--red)'; }
+  }
+}
+
 async function openGeotabIntegrationSettings() {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   var bid = window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current();
@@ -56296,7 +57446,7 @@ function _p3dPage(dir) {
         <div id="staff-pay-type-hint" style="display:none;font-size:11px;color:var(--amber);margin-top:5px">Salaried Admin/Office employees have a fixed pay rate and no hours tracked anywhere -- the hourly rate below doesn't apply.</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
-        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="number" id="staff-pay" step="0.25" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
+        <div id="staff-pay-rate-field"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Pay Rate ($/hr)</div><input type="text" inputmode="decimal" id="staff-pay" placeholder="e.g. 22.50" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none"></div>
         <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Language</div>
           <select id="staff-lang" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
             <option value="en">English</option><option value="es">Spanish</option>
@@ -56648,6 +57798,7 @@ function _p3dPage(dir) {
         <button onclick="openTeamsManager()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Teams</button>
         <button onclick="viewAsTeam()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">👁️ View as team</button>
         <button onclick="openBulkInviteModal()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">✉️ Bulk invite</button>
+        <button onclick="openPayVisibilitySetting()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 12px;border-radius:20px;cursor:pointer">⚙️ Pay in About me</button>
         <button onclick="openAddStaff()" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">+ Add</button>
         <button onclick="closeStaffSheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer">×</button>
       </div>
@@ -56928,14 +58079,19 @@ function _p3dPage(dir) {
         <div class="portal-greeting" id="portal-greeting">Good morning!</div>
         <div class="portal-team">
           <span class="team-badge" id="team-badge"></span>
-          <button type="button" id="portal-date" onclick="empSchedOpenPicker()" style="-webkit-appearance:none !important;appearance:none !important;background:rgba(108,143,255,0.10) !important;border:1px solid rgba(108,143,255,0.30) !important;border-radius:999px !important;padding:5px 14px !important;color:var(--text) !important;font-family:inherit !important;font-size:13px !important;font-weight:600 !important;cursor:pointer !important;line-height:1.2 !important">Tap for date ▾</button>
+          <!-- Employee portal polish: display-only -- not tappable, no
+               chevron, no onclick. A plain <span>, same visual pill as
+               before, just no longer an interactive button. -->
+          <span id="portal-date" style="display:inline-block;background:rgba(108,143,255,0.10);border:1px solid rgba(108,143,255,0.30);border-radius:999px;padding:5px 14px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;line-height:1.2"></span>
         </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
         <!-- Share button removed 2026-04-19 — the Content tile in the icon
-             grid is the single entry point now. -->
-        <button onclick="logout()" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer">
-          <span id="logout-text">Log out</span>
+             grid is the single entry point now. Visible "Log out" button
+             replaced by a hamburger menu (employee portal polish) -- Log
+             out lives inside that menu now, reachable from every screen. -->
+        <button type="button" onclick="openPortalMenu()" aria-label="Menu" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:44px;height:44px;min-width:44px;min-height:44px;border-radius:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
       </div>
     </div>
@@ -57087,6 +58243,11 @@ function _p3dPage(dir) {
     </div>
   </div>
 
+  <!-- SCHEDULE "COMING SOON" (employee portal polish) -- sibling of
+       tab-schedule, never overwrites it. Shown instead of tab-schedule
+       while 'schedule' is in PORTAL_TABS_COMING_SOON. -->
+  <div id="tab-schedule-comingsoon" class="section" style="display:none"></div>
+
   <!-- HOURS TAB -->
   <div id="tab-hours" class="section" style="display:none">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -57102,6 +58263,7 @@ function _p3dPage(dir) {
       <div class="hours-total-val" id="total-hrs">0h</div>
       <div class="hours-total-label" id="total-label">Total hours this week</div>
     </div>
+    <div id="portal-estimated-pay"></div>
     <div class="hours-card" id="hours-breakdown" style="touch-action:pan-y">
       <div style="color:var(--muted);text-align:center;padding:20px;font-size:13px" id="hours-loading-text">Connect GPS to see hours</div>
     </div>
@@ -57129,6 +58291,21 @@ function _p3dPage(dir) {
       </div>
     </div>
   </div>
+
+  <!-- FORMS "COMING SOON" (employee portal polish) -- sibling of
+       tab-forms, never overwrites it. Shown instead of tab-forms while
+       'forms' is in PORTAL_TABS_COMING_SOON. NOTE: the handbook
+       acknowledgment/signature flow is rendered INSIDE tab-forms today
+       (see "Hidden handbook tab (content moved to forms)" just below)
+       -- gating 'forms' makes it unreachable too. Flagged in the PR,
+       not silently worked around. -->
+  <div id="tab-forms-comingsoon" class="section" style="display:none"></div>
+
+  <!-- CONTENT "COMING SOON" (employee portal polish, round 3) -- the
+       Content tile has no persistent tab of its own (it jumps straight
+       to a camera/share action); this is its coming-soon surface,
+       shown the same way schedule/forms are. -->
+  <div id="tab-content-comingsoon" class="section" style="display:none"></div>
 
   <!-- RATE WEEK TAB -->
   <div id="tab-rate" class="section" style="display:none">
@@ -58060,6 +59237,19 @@ function _p3dPage(dir) {
       <div id="admin-geotab-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
     </div>
 
+    <!-- Payroll cost tally feature (migrations 117/118). Employer tax
+         rates + overtime toggle. RLS (business_payroll_settings) is
+         owner/admin/manager/dispatcher -- same manager-tier convention
+         as every other table this app gates this way; employees can
+         never read a row of it, not even their own business's. -->
+    <div class="admin-sec" id="admin-payroll-sec">
+      <div style="padding:12px 14px 8px;font-size:11px;font-weight:700;color:rgba(255,255,255,0.60);text-transform:uppercase;letter-spacing:0.08em">Payroll</div>
+      <div class="admin-row" style="gap:8px">
+        <button onclick="openPayrollSettingsModal()" style="flex:1;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.45);color:#fde68a;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;padding:10px 12px;border-radius:10px;cursor:pointer">💰 Configure payroll settings</button>
+      </div>
+      <div id="admin-payroll-status" style="padding:0 14px 12px;font-size:12px;color:rgba(255,255,255,0.6)"></div>
+    </div>
+
     <!-- Client Health Scoring. Config lives in
          businesses.business_settings->'client_health' (seeded by migration
          071), so this reads/writes that jsonb rather than a table. -->
@@ -58454,6 +59644,60 @@ function _p3dPage(dir) {
   </div>
   <div id="ch-pane-activity" style="flex:1;overflow-y:auto;padding:16px;-webkit-overflow-scrolling:touch"></div>
   <div id="ch-pane-jobs" style="flex:1;overflow-y:auto;padding:16px;display:none;-webkit-overflow-scrolling:touch"></div>
+</div>
+
+
+<!-- EMPLOYEE PORTAL MENU (employee portal polish) — hamburger menu,
+     replaces the old always-visible "Log out" button. Account / About
+     me / Language / Log out. 44px+ tap targets throughout. -->
+<div id="portal-menu-overlay" style="display:none;position:fixed;inset:0;z-index:9700;background:rgba(0,0,0,0.6)" onclick="if(event.target===this)closePortalMenu()">
+  <div style="position:absolute;top:0;right:0;bottom:0;width:min(78vw,320px);background:var(--surface);border-left:1px solid var(--border2);display:flex;flex-direction:column;padding:calc(var(--safe-top) + 16px) 0 16px;box-shadow:-4px 0 24px rgba(0,0,0,0.3)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:0 16px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div style="font-size:16px;font-weight:700;color:var(--text)" id="portal-menu-title">Menu</div>
+      <button type="button" onclick="closePortalMenu()" aria-label="Close" style="width:44px;height:44px;min-width:44px;min-height:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:8px 0">
+      <button type="button" onclick="closePortalMenu();openPortalAccount()" id="portal-menu-account" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Account</button>
+      <button type="button" onclick="closePortalMenu();openPortalAboutMe()" id="portal-menu-aboutme" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">About me</button>
+      <button type="button" onclick="closePortalMenu();openPortalLanguage()" id="portal-menu-language" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Language</button>
+    </div>
+    <div style="padding:8px 16px 0;border-top:1px solid var(--border);flex-shrink:0">
+      <button type="button" onclick="portalMenuLogout()" id="portal-menu-logout" style="display:block;width:100%;text-align:left;background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px 16px;min-height:44px;cursor:pointer">Log out</button>
+    </div>
+  </div>
+</div>
+
+<!-- ACCOUNT -->
+<div id="portal-account-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalAccount()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-account-title">Account</div>
+      <button type="button" onclick="closePortalAccount()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-account-body">Loading…</div>
+  </div>
+</div>
+
+<!-- ABOUT ME -->
+<div id="portal-aboutme-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalAboutMe()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:420px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-aboutme-title">About me</div>
+      <button type="button" onclick="closePortalAboutMe()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-aboutme-body">Loading…</div>
+  </div>
+</div>
+
+<!-- LANGUAGE -->
+<div id="portal-language-overlay" style="display:none;position:fixed;inset:0;z-index:9750;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closePortalLanguage()">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;max-width:360px;width:100%;padding:20px;font-family:'DM Sans',sans-serif">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-size:17px;font-weight:700;color:var(--text)" id="portal-language-title">Language</div>
+      <button type="button" onclick="closePortalLanguage()" aria-label="Close" style="width:44px;height:44px;min-width:44px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;color:var(--text);font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="portal-language-body"></div>
+  </div>
 </div>
 
 </body>
