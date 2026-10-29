@@ -14637,8 +14637,8 @@ async function _extractInviteError(res) {
         var res = await sb.functions.invoke('send-invite', { body: { employee_id: emp.id, action: 'reset' } });
         _resetLastSentAt[rosterId] = Date.now();
         if (res.error || !res.data || !res.data.success) {
-          var reason = (res.data && res.data.error) || (res.error && res.error.message) || 'Could not send the reset text.';
-          return { ok: false, employeeId: emp.id, reason: reason };
+          var extracted = await _extractInviteError(res);
+          return { ok: false, employeeId: emp.id, reason: extracted.message, reasonCode: extracted.code };
         }
         var sentTime = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
         return { ok: true, employeeId: emp.id, maskedPhone: _maskPhone(emp.phone), sentTime: sentTime };
@@ -14772,7 +14772,7 @@ async function _extractInviteError(res) {
           _renderInviteResult(rosterId,
             '<span style="color:var(--red)">' + _adminEsc(extracted.message) + '</span>'
             + '<button type="button" onclick="copyInviteLink(\'' + emp.id + '\',\'' + rosterId.replace(/'/g, "\\'") + '\')" style="display:block;margin-top:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 10px;border-radius:8px;cursor:pointer">Copy invite link</button>');
-          return { ok: false, employeeId: emp.id, reason: reason };
+          return { ok: false, employeeId: emp.id, reason: extracted.message, reasonCode: extracted.code };
         }
         var sentTime = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
         _renderInviteResult(rosterId, '<span style="color:var(--green)">Sent to ' + _maskPhone(emp.phone) + ' at ' + sentTime + '.</span>');
@@ -25685,6 +25685,61 @@ function _claireTerminatedExplanation(query, asOfDate) {
 // screen's own buttons call, so the 60s resend guard, the double-click
 // guard, and the duplicate-active-phone check are all inherited for
 // free, never reimplemented here.
+// Shared normalize, used by every one of _claireSendPortalLinks's own
+// eligibility checks below -- same algorithm as normalizePhone
+// everywhere else in this app (send-invite, phone-login, etc.),
+// copied rather than re-derived differently.
+function _claireNormalizePhone(raw) {
+  var digits = String(raw || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits[0] === '1') return digits.slice(1);
+  if (digits.length === 10) return digits;
+  return null;
+}
+
+// Invite-collision guard, client-side preview mirror of send-invite's
+// own server-side findPhoneCollision (PR #205) -- copied, not
+// re-derived differently, using data already loaded via
+// PentaEmployees.listSync() so Claire can surface this in the PREVIEW
+// step, before any text is sent, not just after a failed attempt.
+// Any OTHER employee row (ANY status, including terminated -- a stale
+// fixture row can still be squatting on a real login) that ALREADY
+// has a login whose stored email or phone matches this one's derived
+// target.
+function _claireFindPhoneCollision(emp) {
+  try {
+    var normalized = _claireNormalizePhone(emp.phone);
+    if (!normalized) return null;
+    var derivedEmail = normalized + '@phone.penta.internal';
+    var all = (window.PentaEmployees && window.PentaEmployees.listSync) ? window.PentaEmployees.listSync() : [];
+    for (var i = 0; i < all.length; i++) {
+      var row = all[i];
+      if (!row || row.id === emp.id || !row.auth_user_id) continue;
+      var rowEmail = String(row.email || '').toLowerCase();
+      var rowNormalized = _claireNormalizePhone(row.phone);
+      if (rowEmail === derivedEmail || (rowNormalized && rowNormalized === normalized)) return row;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[_claireFindPhoneCollision] check failed (non-fatal, treated as no collision)', e);
+    return null;
+  }
+}
+
+// Reset-only: a linked employee whose stored email IS phone-derived-
+// shaped, just for a DIFFERENT number than her current one -- see this
+// script's own header comment for why pre-convention name-based
+// emails are deliberately excluded, and what this still can't catch.
+function _claireLoginOutOfSync(emp) {
+  if (!emp || !emp.auth_user_id) return false;
+  try {
+    var normalized = _claireNormalizePhone(emp.phone);
+    if (!normalized) return false;
+    var derivedEmail = normalized + '@phone.penta.internal';
+    var stored = String(emp.email || '').toLowerCase();
+    return /^\d{10}@phone\.penta\.internal$/.test(stored) && stored !== derivedEmail;
+  } catch (e) { return false; }
+}
+
 async function _claireSendPortalLinks(input, kind) {
   var sendFn = (kind === 'invite') ? pentaSendInvite : pentaSendPasswordReset;
   var names = Array.isArray(input.employees) ? input.employees.filter(Boolean) : [];
@@ -25700,10 +25755,16 @@ async function _claireSendPortalLinks(input, kind) {
     if (!full) { skipped.push({ name: queriedName, reason: 'could not load this employee\'s record.' }); return; }
     if (full.status === 'terminated') { skipped.push({ name: full.name || queriedName, reason: 'terminated.' }); return; }
     if (!full.phone) { skipped.push({ name: full.name || queriedName, reason: 'no phone on file.' }); return; }
+    if (!_claireNormalizePhone(full.phone)) { skipped.push({ name: full.name || queriedName, reason: 'invalid phone on file.' }); return; }
     var dupReason = _findDuplicateActivePhoneOwnerReason(full);
     if (dupReason) { skipped.push({ name: full.name || queriedName, reason: dupReason }); return; }
+    if (_claireFindPhoneCollision(full)) {
+      skipped.push({ name: full.name || queriedName, reason: 'this phone number is already registered to another login, correct the phone in Staff first.' });
+      return;
+    }
     if (kind === 'invite' && full.auth_user_id) { skipped.push({ name: full.name || queriedName, reason: 'already has a login.' }); return; }
     if (kind === 'reset' && !full.auth_user_id) { skipped.push({ name: full.name || queriedName, reason: 'no login yet -- send an invite instead.' }); return; }
+    if (kind === 'reset' && _claireLoginOutOfSync(full)) { skipped.push({ name: full.name || queriedName, reason: 'login out of sync with phone, use Fix login in Staff first.' }); return; }
     resolved.push({ rosterId: full.legacy_roster_id || full.id, uuid: full.id, name: full.name || queriedName });
   }
 

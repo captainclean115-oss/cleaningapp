@@ -41,6 +41,16 @@ const sendFnsSrc = extract(
 );
 const dateKeySrc = extract('function dateKey(d) {', '\n}\n', 'dateKey') + '\n}\n';
 const formatDateSrc = extract('function _pentaFormatDateOnly(dateStr) {', '\n}\n', '_pentaFormatDateOnly') + '\n}\n';
+// PR #205's shared error-extraction helper -- pentaSendInvite/
+// pentaSendPasswordReset (extracted below) now both call this; without
+// injecting it too, calling it throws a ReferenceError inside their
+// own try/catch, masking the real server reason behind a generic
+// "Network error" message.
+const extractInviteErrorSrc = extract(
+  '// Invite-collision guard: shared by both the single-invite',
+  '\n\n// =====================================================================',
+  '_extractInviteError helper'
+);
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -137,6 +147,7 @@ function buildSandbox(opts) {
   vm.createContext(sandbox);
   vm.runInContext(dateKeySrc, sandbox);
   vm.runInContext(formatDateSrc, sandbox);
+  vm.runInContext(extractInviteErrorSrc, sandbox);
   vm.runInContext(rosterSrc, sandbox);
   vm.runInContext(sendFnsSrc, sandbox);
   vm.runInContext(nameResolutionAndOrchestrationSrc, sandbox);
@@ -252,6 +263,72 @@ function buildSandbox(opts) {
     check('the refusal message exists', refusalIdx !== -1, true);
     check('the guard (and its refusal) appear BEFORE the actual send call, not after', guardIdx !== -1 && refusalIdx !== -1 && callIdx !== -1 && guardIdx < callIdx && refusalIdx < callIdx, true);
     check('the guard checks a role read from getCurrentAppRole(), never a client-supplied field', /getCurrentAppRole/.test(dispatchBlock), true);
+  }
+
+  console.log('\n--- Invalid phone is its own skip reason, distinct from "no phone" ---\n');
+  {
+    const INVALID_PHONE = emp({ id: 'uuid-invalid-phone', name: 'Invalid Ingrid', phone: '555' });
+    const { sandbox } = buildSandbox({ roster: [INVALID_PHONE] });
+    const preview = await sandbox._claireSendPortalLinks({ employees: ['Invalid Ingrid'] }, 'invite');
+    check('an unparseable phone is skipped as invalid, not sent and not a crash', preview.skipped.length === 1 && /invalid phone/i.test(preview.skipped[0].reason), true);
+  }
+
+  console.log('\n--- Collision guard (PR #205 mirror): a stale registered identity blocks the SAME invite up front, in the preview ---\n');
+  {
+    // STALE_HOLDER: a terminated fixture row whose stored email is
+    // phone-derived for 6175551050 -- a stale login squatting on that
+    // number, same real-world shape confirmed in production (a prior
+    // employee's phone was corrected after she first signed up).
+    const STALE_HOLDER = emp({ id: 'uuid-stale-holder', name: 'Stale Holder', status: 'terminated', terminated_at: '2026-01-01', phone: '9999999999', auth_user_id: 'auth-stale', email: '6175551050@phone.penta.internal' });
+    const COLLIDING_TARGET = emp({ id: 'uuid-colliding', name: 'Colliding Carl', phone: '6175551050', auth_user_id: null });
+    const BYSTANDER = emp({ id: 'uuid-bystander', name: 'Bystander Bob', phone: '6175551070' });
+    const { sandbox, invokeCalls } = buildSandbox({ roster: [STALE_HOLDER, COLLIDING_TARGET, BYSTANDER] });
+
+    // Single name: caught in the skip step, never even attempts a send.
+    const single = await sandbox._claireSendPortalLinks({ employees: ['Colliding Carl'] }, 'invite');
+    check('single: the colliding employee is skipped, not sent', single.sent.length, 0);
+    check('single: the skip reason matches the required wording exactly', single.skipped[0] && single.skipped[0].reason, 'this phone number is already registered to another login, correct the phone in Staff first.');
+    check('single: never shows the phone number itself in the skip reason', /\d{3}[-.]?\d{3}[-.]?\d{4}/.test(single.skipped[0] ? single.skipped[0].reason : ''), false);
+    check('single: no network call was ever made -- caught before sending', invokeCalls.length, 0);
+
+    // Bulk/preview: same detection, surfaced in the preview step -- a
+    // real eligible bystander keeps this a genuine preview (not the
+    // separate "nothing eligible at all" shape).
+    const preview = await sandbox._claireSendPortalLinks({ employees: ['Colliding Carl', 'Stale Holder', 'Bystander Bob'] }, 'invite');
+    check('bulk preview: Bystander Bob IS a real recipient', preview.recipients.indexOf('Bystander Bob') !== -1, true);
+    check('bulk preview: Colliding Carl is skipped for the collision, not listed as a recipient', preview.recipients.indexOf('Colliding Carl') === -1, true);
+    check('bulk preview: the collision skip reason is present verbatim', preview.skipped.some((s) => s.name === 'Colliding Carl' && s.reason === 'this phone number is already registered to another login, correct the phone in Staff first.'), true);
+  }
+
+  console.log('\n--- A real SERVER-reported collision (not caught client-side) is still shown verbatim, never generic ---\n');
+  {
+    // No up-front collision visible in this roster -- the server is the
+    // one that catches it (e.g. a race, or client cache slightly stale).
+    const LONE = emp({ id: 'uuid-lone', name: 'Lone Larry', phone: '6175559999' });
+    const { sandbox } = buildSandbox({
+      roster: [LONE],
+      invokeImpl: () => Promise.resolve({
+        data: { error: 'This phone number is already registered to another account. Correct the phone number in Staff first.', error_code: 'phone_already_registered' },
+        error: null,
+      }),
+    });
+    const result = await sandbox._claireSendPortalLinks({ employees: ['Lone Larry'] }, 'invite');
+    check('a server-reported collision is reported verbatim, not a generic "failed" message', result.failed[0] && result.failed[0].reason, 'This phone number is already registered to another account. Correct the phone number in Staff first.');
+  }
+
+  console.log('\n--- login out of sync with phone (reset only) ---\n');
+  {
+    // Her stored email IS phone-derived-shaped, just for a DIFFERENT
+    // number (1111111111) than her current phone (6175551060) -- the
+    // exact drift repair-login-email exists to fix. A pre-convention
+    // name-based email (most real accounts) must NOT trigger this --
+    // covered by the untouched "reset: Linked Lola... IS eligible"
+    // test above, which keeps passing.
+    const OUT_OF_SYNC = emp({ id: 'uuid-oos', name: 'OutOfSync Ollie', phone: '6175551060', auth_user_id: 'auth-oos', email: '1111111111@phone.penta.internal' });
+    const { sandbox } = buildSandbox({ roster: [OUT_OF_SYNC] });
+    const preview = await sandbox._claireSendPortalLinks({ employees: ['OutOfSync Ollie'] }, 'reset');
+    check('an out-of-sync login is skipped, not sent', preview.sent.length, 0);
+    check('the skip reason points to Fix login in Staff', preview.skipped[0] && preview.skipped[0].reason, 'login out of sync with phone, use Fix login in Staff first.');
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
