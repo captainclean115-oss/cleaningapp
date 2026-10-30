@@ -5469,6 +5469,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
          the manager sees the real hours first, then the cost estimate
          derived from them. -->
     <div id="payroll-cost-card" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-top:12px"></div>
+    <!-- Team Day Report: owner/admin/manager only -- visibility toggled
+         in gpsInit() (runs every time this tab activates) rather than
+         baked in here, so a session's role is always re-checked. Client
+         addresses appear in this report, so it's narrower than the
+         Hours tab's own default access (dispatcher currently reaches
+         this tab, but will not see this button). -->
+    <button id="team-day-report-btn" onclick="openTeamDayReport()" style="display:none;width:100%;margin-top:10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">📋 Team Day Report</button>
   </div>
   <div class="bottom-pad"></div>
 </div>
@@ -35887,6 +35894,417 @@ function _renderHoursReportResults(rep) {
   overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
 }
 
+// ─────────────────────────────────────────
+// TEAM DAY REPORT — read-only report (manager Hours tab): for a chosen
+// date range, who was on which team, when each team left/returned to
+// the office, each client home visited (in/out), and lunch taken.
+// Writes nothing anywhere -- every number comes from data this file
+// already fetches for other screens (getUnifiedRoster/_teamHoursEligibility
+// for roster, the manual_hour_overrides cache via getEmpHours for saved
+// hours, and the same live-Geotab _fetchTeamDayGpsDetail the Team Hours
+// modal's own GPS prefill uses for office times + client stops). Never
+// touches Hours/payroll calculations or publishing.
+// ─────────────────────────────────────────
+
+var TDR_MAX_RANGE_DAYS = 31;
+var _tdrCache = {};        // session-scoped, key: team+'|'+date -> {ok,detail} | {ok:false,error}
+var _tdrGeneration = 0;    // bumped on every new Run and on close -- lets an in-flight loop notice it's stale and stop
+var _tdrRunInFlight = false;
+var _tdrLastRows = [];     // last successful run's flat row list, for the CSV button
+
+// Pure: expands a From/To pair (YYYY-MM-DD strings) into an inclusive
+// list of date strings, or an error for the caller to show verbatim.
+// Never throws -- a bad range is always a visible message, never a
+// silent no-op. Walks by calendar date (setDate), not by adding
+// 86400000ms, so it can't drift a day across a DST transition.
+function _tdrExpandDateRange(fromStr, toStr) {
+  if (!fromStr || !toStr) return { ok: false, error: 'Pick both a From and a To date.' };
+  var from = new Date(fromStr + 'T00:00:00');
+  var to = new Date(toStr + 'T00:00:00');
+  if (isNaN(from.getTime()) || isNaN(to.getTime())) return { ok: false, error: 'Pick valid dates.' };
+  if (to < from) return { ok: false, error: 'The To date must be on or after the From date.' };
+  var dates = [];
+  var cur = new Date(from.getTime());
+  while (cur <= to) {
+    dates.push(dateKey(cur));
+    if (dates.length > TDR_MAX_RANGE_DAYS) {
+      return { ok: false, error: 'That range is more than ' + TDR_MAX_RANGE_DAYS + ' days — pick ' + TDR_MAX_RANGE_DAYS + ' days or fewer.' };
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return { ok: true, dates: dates };
+}
+
+// "This week" / "Last week" (business pay-week convention, same helpers
+// Export Hours Report's own quick-selects use) / "Last 14 days".
+function _tdrQuickSelect(which) {
+  var fromEl = document.getElementById('tdr-from');
+  var toEl = document.getElementById('tdr-to');
+  if (!fromEl || !toEl) return;
+  var tz = _pentaBusinessTimezone();
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  if (which === 'last14') {
+    var today0 = _bizTodayParts(tz);
+    var todayUtc0 = Date.UTC(today0.y, today0.m - 1, today0.d);
+    var fromD = new Date(todayUtc0 - 13 * 86400000);
+    fromEl.value = fromD.getUTCFullYear() + '-' + pad2(fromD.getUTCMonth() + 1) + '-' + pad2(fromD.getUTCDate());
+    toEl.value = today0.y + '-' + pad2(today0.m) + '-' + pad2(today0.d);
+    return;
+  }
+  var startDay = _pentaPayWeekStartDay();
+  if (which === 'lastweek') {
+    var r = _computeLastPayWeekRange(tz, startDay);
+    fromEl.value = r.startYmd; toEl.value = r.endYmd;
+    return;
+  }
+  // 'thisweek'
+  var startDayNum = startDay === 'sunday' ? 0 : 1;
+  var today = _bizTodayParts(tz);
+  var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
+  var weekday = new Date(todayUtcMidnight).getUTCDay();
+  var daysSinceStart = (weekday - startDayNum + 7) % 7;
+  var weekStart = new Date(todayUtcMidnight - daysSinceStart * 86400000);
+  var weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+  fromEl.value = weekStart.getUTCFullYear() + '-' + pad2(weekStart.getUTCMonth() + 1) + '-' + pad2(weekStart.getUTCDate());
+  toEl.value = weekEnd.getUTCFullYear() + '-' + pad2(weekEnd.getUTCMonth() + 1) + '-' + pad2(weekEnd.getUTCDate());
+}
+
+function _tdrFriendlyDate(dateStr) {
+  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// Fetches one team+date's GPS detail exactly once per report session
+// (cached in memory, keyed by team+date) -- re-running the same range
+// without closing the sheet never re-fetches a day already loaded.
+// Never throws -- a Geotab failure for one team-day becomes {ok:false}
+// so the caller can show "Could not load" for just that row instead of
+// losing the rest of the range.
+async function _tdrFetchTeamDay(team, dateStr) {
+  var key = team + '|' + dateStr;
+  if (_tdrCache[key]) return _tdrCache[key];
+  var outcome;
+  try {
+    var detail = await _fetchTeamDayGpsDetail(team, dateStr);
+    outcome = { ok: true, detail: detail };
+  } catch (e) {
+    outcome = { ok: false, error: (e && e.message) || String(e) };
+  }
+  _tdrCache[key] = outcome;
+  return outcome;
+}
+
+// Pure (no network/DOM): one employee's report row for a team-day, given
+// the already-fetched (or failed) GPS outcome for that team-day.
+// Priority is saved override (manual_hour_overrides, via the same
+// getEmpHours() cache lookup teamHoursApply/the Worked-hours card line
+// already use) over GPS, matching this report's own Step 1 decision.
+// Client-home stops are a team/vehicle-level GPS trace -- every included
+// employee on that team-day shares the same stop list, independent of
+// whether THIS employee's own hours came from a saved override.
+function _tdrBuildEmployeeRow(emp, team, dateStr, gpsOutcome, tz) {
+  var ov = (typeof getEmpHours === 'function') ? getEmpHours(emp.id, dateStr) : null;
+  var row = {
+    date: dateStr, team: team, employeeId: emp.id, employeeName: emp.name,
+    leftOffice: null, backOffice: null, lunchMin: null, source: 'No data',
+    stops: [], stopsNote: null
+  };
+  if (ov) {
+    row.leftOffice = ov.start || null;
+    row.backOffice = ov.end || null;
+    row.lunchMin = (ov.lunch != null) ? ov.lunch : null;
+    row.source = 'Saved';
+  } else if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) {
+    var g = gpsOutcome.detail.gps;
+    row.leftOffice = _bizHM(g.start, tz);
+    row.backOffice = _bizHM(g.end, tz);
+    row.lunchMin = (g.lunchMin != null) ? g.lunchMin : 0;
+    row.source = 'GPS';
+  }
+  if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && Array.isArray(gpsOutcome.detail.stopList)) {
+    var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+      ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
+      : [];
+    row.stops = gpsOutcome.detail.stopList
+      .filter(function (s) { return !s.isDepot; })
+      .map(function (s) {
+        var match = (typeof matchStopToClientGeo === 'function') ? matchStopToClientGeo(s.lat, s.lng, s.addr, teamJobs, team) : null;
+        return {
+          label: match ? match.name : 'Unrecognized stop',
+          addr: s.addr || '',
+          inTime: s.inTime ? _bizHM(s.inTime, tz) : null,
+          outTime: s.outTime ? _bizHM(s.outTime, tz) : null
+        };
+      });
+    if (!row.stops.length) {
+      row.stopsNote = (gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) ? 'No visits recorded' : 'No data';
+    }
+  } else {
+    row.stopsNote = 'No data';
+  }
+  if (gpsOutcome && !gpsOutcome.ok) row.loadError = gpsOutcome.error;
+  return row;
+}
+
+// One date, every team -- sequential, one team-day at a time (see this
+// feature's own Step 1 cost-estimate notes: parallelizing here risks
+// tripping Geotab's rate limit across teams at once). A team with
+// nobody included today is simply skipped (not an error); if literally
+// no team has anyone included, the date gets one 'noAssignment' marker
+// row instead of just vanishing from the report. A team whose own
+// eligibility/row-building throws gets its own 'loadFailed' marker row
+// so one bad team never blanks the rest of the date (same per-team
+// isolation pattern renderTeamManager already uses).
+async function _tdrBuildDateRows(dateStr, tz, myGen, onProgress) {
+  var teams = _pentaTeamNames();
+  var dateRows = [];
+  var anyIncluded = false;
+  for (var i = 0; i < teams.length; i++) {
+    if (myGen !== _tdrGeneration) return dateRows; // cancelled (sheet closed / a new Run started)
+    var team = teams[i];
+    try {
+      var elig = _teamHoursEligibility(team, dateStr);
+      if (!elig.included.length) continue;
+      anyIncluded = true;
+      if (onProgress) onProgress(dateStr, team);
+      var gpsOutcome = await _tdrFetchTeamDay(team, dateStr);
+      if (myGen !== _tdrGeneration) return dateRows; // cancelled mid-fetch
+      elig.included.forEach(function (emp) {
+        dateRows.push(_tdrBuildEmployeeRow(emp, team, dateStr, gpsOutcome, tz));
+      });
+    } catch (e) {
+      dateRows.push({ date: dateStr, team: team, employeeId: null, employeeName: null, loadFailed: true, reason: (e && e.message) || String(e) });
+    }
+  }
+  if (!anyIncluded && !dateRows.length) {
+    dateRows.push({ date: dateStr, team: null, employeeId: null, employeeName: null, noAssignment: true });
+  }
+  return dateRows;
+}
+
+// Pure: team-days (distinct date+team pairs with at least one real
+// employee row) and employee-days (count of real employee rows) --
+// marker rows (noAssignment/loadFailed) never counted. No money/pay
+// anywhere in this report by design.
+function _tdrComputeTotals(rows) {
+  var teamDayKeys = {};
+  var employeeDays = 0;
+  rows.forEach(function (r) {
+    if (r.noAssignment || r.loadFailed) return;
+    employeeDays++;
+    teamDayKeys[r.date + '|' + r.team] = true;
+  });
+  return { teamDays: Object.keys(teamDayKeys).length, employeeDays: employeeDays };
+}
+
+// Pure: one row per employee per day, client visits joined with " | ".
+// _hrCsvField (Export Hours Report's existing escaper) handles commas,
+// quotes and embedded newlines -- reused, not re-implemented.
+function _tdrBuildCsv(rows) {
+  var header = ['Date', 'Team', 'Employee', 'Left office', 'Back at office', 'Lunch (min)', 'Client homes visited', 'Source'];
+  var lines = [header.map(_hrCsvField).join(',')];
+  rows.forEach(function (r) {
+    if (r.noAssignment) {
+      lines.push([r.date, '', '', '', '', '', 'No assignment recorded', ''].map(_hrCsvField).join(','));
+      return;
+    }
+    if (r.loadFailed) {
+      lines.push([r.date, r.team || '', '', '', '', '', 'Could not load: ' + (r.reason || ''), ''].map(_hrCsvField).join(','));
+      return;
+    }
+    var visits = (r.stops && r.stops.length)
+      ? r.stops.map(function (s) { return s.label + ', ' + s.addr + ' (' + (s.inTime || '—') + '-' + (s.outTime || '—') + ')'; }).join(' | ')
+      : (r.stopsNote || '');
+    lines.push([
+      r.date, r.team, r.employeeName,
+      r.leftOffice || 'No data', r.backOffice || 'No data',
+      (r.lunchMin != null ? r.lunchMin : 'No data'),
+      visits, r.source
+    ].map(_hrCsvField).join(','));
+  });
+  return lines.join('\r\n');
+}
+
+function closeTeamDayReport() {
+  _tdrGeneration++; // invalidate any in-flight loop -- it notices on its next check and stops
+  _tdrRunInFlight = false;
+  var overlay = document.getElementById('team-day-report-overlay');
+  if (overlay) overlay.remove();
+}
+
+// One team-day card -- a single flex row per employee that WRAPS its
+// labeled fields on a narrow screen (stacked) and sits on one line on a
+// wide screen (table-like), the same flex-wrap technique every other
+// card/row in this file already uses instead of a width breakpoint
+// (this app has none).
+function _tdrRenderEmployeeRow(r) {
+  if (r.noAssignment) {
+    return '<div style="padding:10px 12px;color:var(--muted);font-size:13px">' + _adminEsc(_tdrFriendlyDate(r.date)) + ' — No assignment recorded</div>';
+  }
+  if (r.loadFailed) {
+    return '<div style="padding:10px 12px;color:var(--red);font-size:13px">' + _adminEsc(_tdrFriendlyDate(r.date)) + ' — ' + _adminEsc(r.team || '') + ': Could not load (' + _adminEsc(r.reason || 'unknown error') + ')</div>';
+  }
+  var sourceColor = r.source === 'Saved' ? 'var(--accent)' : (r.source === 'GPS' ? 'var(--muted)' : 'var(--amber)');
+  var visitsHtml = (r.stops && r.stops.length)
+    ? r.stops.map(function (s) {
+        return '<div style="font-size:12px;color:var(--text);padding:2px 0">' + _adminEsc(s.label) + ' — ' + _adminEsc(s.addr)
+          + ' <span style="color:var(--muted)">(' + _adminEsc(s.inTime || '—') + '–' + _adminEsc(s.outTime || '—') + ')</span></div>';
+      }).join('')
+    : '<div style="font-size:12px;color:var(--muted)">' + _adminEsc(r.stopsNote || 'No data') + '</div>';
+  return '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;padding:10px 12px;border-top:1px solid var(--border)">'
+    + '<div style="flex:1 1 140px;min-width:0;font-weight:600;font-size:13px">' + _adminEsc(r.employeeName) + '</div>'
+    + '<div style="flex:1 1 90px;font-size:12px;color:var(--muted)">Left ' + _adminEsc(r.leftOffice || 'No data') + '</div>'
+    + '<div style="flex:1 1 90px;font-size:12px;color:var(--muted)">Back ' + _adminEsc(r.backOffice || 'No data') + '</div>'
+    + '<div style="flex:1 1 80px;font-size:12px;color:var(--muted)">Lunch ' + (r.lunchMin != null ? _adminEsc(String(r.lunchMin)) + 'm' : 'No data') + '</div>'
+    + '<div style="flex:1 1 70px;font-size:11px;font-weight:700;color:' + sourceColor + '">' + _adminEsc(r.source) + '</div>'
+    + '<div style="flex:1 1 100%;min-width:0">' + visitsHtml + '</div>'
+    + '</div>';
+}
+
+function _tdrRenderResults(resultsEl, rows) {
+  // Group into (date, team) cards, preserving date then team order
+  // already produced by the fetch loop -- no re-sort needed.
+  var groups = [];
+  var groupByKey = {};
+  rows.forEach(function (r) {
+    var key = r.date + '|' + (r.team || '');
+    if (!groupByKey[key]) {
+      groupByKey[key] = { date: r.date, team: r.team, rows: [] };
+      groups.push(groupByKey[key]);
+    }
+    groupByKey[key].rows.push(r);
+  });
+  if (!groups.length) {
+    resultsEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:13px">No data for this range.</div>';
+    return;
+  }
+  resultsEl.innerHTML = groups.map(function (g) {
+    var isMarker = g.rows.length === 1 && (g.rows[0].noAssignment || g.rows[0].loadFailed);
+    var headerHtml = isMarker
+      ? ''
+      : '<div style="padding:10px 12px;background:var(--surface2);display:flex;gap:10px;align-items:center">'
+        + '<span style="font-weight:700;font-size:13px">' + _adminEsc(_tdrFriendlyDate(g.date)) + '</span>'
+        + '<span style="font-size:12px;color:var(--muted)">' + _adminEsc(g.team) + '</span>'
+        + '</div>';
+    return '<div style="margin-bottom:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">'
+      + headerHtml
+      + g.rows.map(_tdrRenderEmployeeRow).join('')
+      + '</div>';
+  }).join('');
+}
+
+function _tdrRenderTotals(totalsEl, rows) {
+  var t = _tdrComputeTotals(rows);
+  totalsEl.textContent = t.teamDays + ' team-day' + (t.teamDays === 1 ? '' : 's') + ' · ' + t.employeeDays + ' employee-day' + (t.employeeDays === 1 ? '' : 's');
+}
+
+async function _tdrRunReport() {
+  if (_tdrRunInFlight) return; // ignore a second tap while loading
+  var fromEl = document.getElementById('tdr-from');
+  var toEl = document.getElementById('tdr-to');
+  var statusEl = document.getElementById('tdr-status');
+  var resultsEl = document.getElementById('tdr-results');
+  var totalsEl = document.getElementById('tdr-totals');
+  var runBtn = document.getElementById('tdr-run-btn');
+  var csvBtn = document.getElementById('tdr-csv-btn');
+  if (!fromEl || !toEl || !statusEl || !resultsEl || !totalsEl) { console.warn('[TeamDayReport] sheet elements missing'); return; }
+
+  var range = _tdrExpandDateRange(fromEl.value, toEl.value);
+  if (!range.ok) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = range.error;
+    return;
+  }
+
+  _tdrRunInFlight = true;
+  var myGen = ++_tdrGeneration;
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Loading…'; }
+  if (csvBtn) csvBtn.disabled = true;
+  resultsEl.innerHTML = '';
+  totalsEl.textContent = '';
+  statusEl.style.color = 'var(--muted)';
+
+  var tz = _pentaBusinessTimezone();
+  var allRows = [];
+  try {
+    for (var d = 0; d < range.dates.length; d++) {
+      if (myGen !== _tdrGeneration) return; // cancelled
+      var dateStr = range.dates[d];
+      var dayRows = await _tdrBuildDateRows(dateStr, tz, myGen, function (ds, team) {
+        if (myGen !== _tdrGeneration) return;
+        statusEl.textContent = 'Loading ' + _tdrFriendlyDate(ds) + ' (' + team + '), ' + (d + 1) + ' of ' + range.dates.length + '…';
+      });
+      if (myGen !== _tdrGeneration) return; // cancelled mid-day
+      allRows = allRows.concat(dayRows);
+    }
+  } catch (e) {
+    console.error('[TeamDayReport] run failed', e);
+    if (myGen === _tdrGeneration) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Could not finish loading: ' + ((e && e.message) || String(e)); }
+    return;
+  } finally {
+    if (myGen === _tdrGeneration) {
+      _tdrRunInFlight = false;
+      if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Run'; }
+    }
+  }
+
+  if (myGen !== _tdrGeneration) return;
+  var failedCount = allRows.filter(function (r) { return r.loadFailed; }).length;
+  statusEl.textContent = failedCount ? (failedCount + ' day/team row' + (failedCount === 1 ? '' : 's') + ' could not load (shown below).') : '';
+  _tdrLastRows = allRows;
+  _tdrRenderResults(resultsEl, allRows);
+  _tdrRenderTotals(totalsEl, allRows);
+  if (csvBtn) csvBtn.disabled = !allRows.length;
+}
+
+function _tdrDownloadCsv() {
+  if (!_tdrLastRows.length) return;
+  var fromEl = document.getElementById('tdr-from');
+  var toEl = document.getElementById('tdr-to');
+  var csv = _tdrBuildCsv(_tdrLastRows);
+  var filename = 'team-day-report_' + (fromEl ? fromEl.value : '') + '_to_' + (toEl ? toEl.value : '') + '.csv';
+  _hrDownloadCsv(csv, filename);
+}
+
+function openTeamDayReport() {
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  if (['owner', 'admin', 'manager'].indexOf(role) === -1) {
+    alert('Only owners, admins, and managers can view the Team Day Report.');
+    return;
+  }
+  var old = document.getElementById('team-day-report-overlay');
+  if (old) old.remove();
+  _tdrLastRows = [];
+
+  var defaultRange = _computeLastPayWeekRange(_pentaBusinessTimezone(), _pentaPayWeekStartDay());
+
+  var overlay = document.createElement('div');
+  overlay.id = 'team-day-report-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:var(--surface);display:flex;flex-direction:column;font-family:\'DM Sans\',sans-serif';
+  overlay.innerHTML = '<div style="padding:16px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0">'
+    +   '<div style="font-size:17px;font-weight:700;color:var(--text)">Team Day Report</div>'
+    +   '<button onclick="closeTeamDayReport()" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;font-family:inherit;padding:0">&times;</button>'
+    + '</div>'
+    + '<div style="padding:14px 20px;border-bottom:1px solid var(--border);flex-shrink:0">'
+    +   '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +     '<div style="flex:1 1 120px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">From</div><input type="date" id="tdr-from" value="' + defaultRange.startYmd + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +     '<div style="flex:1 1 120px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">To</div><input type="date" id="tdr-to" value="' + defaultRange.endYmd + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +     '<button onclick="_tdrQuickSelect(\'thisweek\')" style="flex:1 1 90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">This week</button>'
+    +     '<button onclick="_tdrQuickSelect(\'lastweek\')" style="flex:1 1 90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">Last week</button>'
+    +     '<button onclick="_tdrQuickSelect(\'last14\')" style="flex:1 1 90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">Last 14 days</button>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px;align-items:center">'
+    +     '<button id="tdr-run-btn" onclick="_tdrRunReport()" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Run</button>'
+    +     '<button id="tdr-csv-btn" onclick="_tdrDownloadCsv()" disabled style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;padding:12px;border-radius:10px;cursor:pointer">Download CSV</button>'
+    +   '</div>'
+    +   '<div id="tdr-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>'
+    + '</div>'
+    + '<div id="tdr-results" style="flex:1;overflow-y:auto;padding:14px 20px"></div>'
+    + '<div id="tdr-totals" style="padding:10px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);flex-shrink:0;text-align:center"></div>';
+  document.body.appendChild(overlay);
+}
+
 
 // ─────────────────────────────────────────
 // GPS MAP (Leaflet)
@@ -37545,6 +37963,14 @@ function gpsInit() {
   if (mainSec) mainSec.style.display = 'block';
   var statusEl = document.getElementById('gps-status');
   if (statusEl) statusEl.textContent = 'Loading fleet data…';
+  // Team Day Report button: owner/admin/manager only, re-checked every
+  // time this tab activates (not just on first boot) since role can
+  // change within a session (e.g. Preview As Employee).
+  var tdrBtn = document.getElementById('team-day-report-btn');
+  if (tdrBtn) {
+    var _tdrRole = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+    tdrBtn.style.display = (['owner', 'admin', 'manager'].indexOf(_tdrRole) !== -1) ? '' : 'none';
+  }
   // v11.0.25: snap the date picker to today on every tab activation. Was
   // previously called from inside loadGPSData with a "only when empty"
   // guard, which left stale dates from prior sessions stuck (Tom's May 15
