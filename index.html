@@ -4872,14 +4872,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div id="forms-inbox-list"></div>
   </div>
-  <!-- Team Day Report entry point (Step 4): owner/admin/manager only,
-       visibility synced in renderFormsInbox() (runs on every tab
-       activation and every PentaForms cache change). Opens the exact
-       same sheet as the Hours tab's own button -- same function, same
-       gating, nothing duplicated. -->
-  <div style="margin:14px 12px 4px">
-    <button id="team-day-report-forms-btn" onclick="openTeamDayReport()" style="display:none;width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">📋 Team Day Report</button>
-  </div>
   <div style="margin:14px 12px 4px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:8px;border-top:1px solid var(--border)">Manual Tasks</div>
   <button class="add-task-btn" onclick="openAddTask()">+ Add reminder</button>
   <div id="manual-tasks-list"></div>
@@ -20065,7 +20057,16 @@ var FILES_LIST = [
   { id: 'labor',       name: 'Labor Summary',        icon: '🧾', desc: 'Labor cost vs. revenue summary.' },
   { id: 'login',       name: 'Login Tracker',        icon: '🔐', desc: 'Who signed in and when.' },
   { id: 'ar',          name: 'Accounts Receivable',  icon: '📒', desc: 'Outstanding balances by client.' },
-  { id: 'pricing',     name: 'Pricing Review',       icon: '🏷️', desc: 'Per-client pricing review and recommendations.' }
+  { id: 'pricing',     name: 'Pricing Review',       icon: '🏷️', desc: 'Per-client pricing review and recommendations.' },
+  // Team Day Report (team-day-report-files-entry): moved here from the
+  // Forms area (#211). The only FILES_LIST item that's a real, working
+  // report instead of a "Coming soon" placeholder -- `fn` names the
+  // real global function renderFilesGrid() calls instead of the
+  // generic openFileDetail(id). Owner/admin/manager only (gated in
+  // renderFilesGrid itself, filtered out of the grid entirely for any
+  // other role -- not just hidden); every other item above is
+  // unrestricted and unchanged.
+  { id: 'team-day-report', name: 'Team Day Report', icon: '📋', desc: 'Team roster, office times, client visits, and lunch by day.', fn: 'openTeamDayReport' }
 ];
 
 function openFiles() {
@@ -20082,8 +20083,15 @@ function closeFiles() {
 function renderFilesGrid() {
   var grid = document.getElementById('files-grid');
   if (!grid) return;
-  grid.innerHTML = FILES_LIST.map(function(f){
-    return '<button onclick="openFileDetail(\''+f.id+'\')" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 4px;border-radius:10px;font-family:inherit" '
+  // Team Day Report is the one FILES_LIST item gated by role (it shows
+  // client names/addresses) -- filtered out of the grid entirely for
+  // anyone outside owner/admin/manager, same as the Hours-tab button's
+  // own check. Every other item is unrestricted, unchanged.
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  var canSeeTeamDayReport = ['owner', 'admin', 'manager'].indexOf(role) !== -1;
+  var items = FILES_LIST.filter(function (f) { return f.id !== 'team-day-report' || canSeeTeamDayReport; });
+  grid.innerHTML = items.map(function(f){
+    return '<button onclick="'+(f.fn ? f.fn+'()' : "openFileDetail('"+f.id+"')")+'" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 4px;border-radius:10px;font-family:inherit" '
       + 'ontouchstart="this.style.background=\'var(--surface2)\'" ontouchend="this.style.background=\'none\'">'
       + '<div style="font-size:42px;line-height:1;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3))">'+f.icon+'</div>'
       + '<div style="font-size:12px;font-weight:500;color:var(--text);text-align:center;line-height:1.2;max-width:96px">'+f.name+'</div>'
@@ -21045,11 +21053,6 @@ function _formsInboxReviewClick(formId, employeeId) {
 }
 
 function renderFormsInbox() {
-  // Team Day Report Forms-area entry: re-synced here (not just on tab
-  // activation) since this function re-runs on every PentaForms cache
-  // change too -- placed before the early-return below so it still runs
-  // even in the rare case neither forms-area DOM node exists yet.
-  if (typeof _tdrSyncButtonVisibility === 'function') _tdrSyncButtonVisibility('team-day-report-forms-btn');
   var listEl = document.getElementById('forms-inbox-list');
   var pillEl = document.getElementById('forms-inbox-pill');
   // Staff view's "📋 Forms" shortcut badge -- kept in sync here too since

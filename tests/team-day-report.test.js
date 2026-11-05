@@ -1,18 +1,24 @@
-// Team Day Report v2 (team-day-report-v2 branch): redesigned from a
-// row-per-employee table (PR #210) into one block per team per day that
-// reads like the Team Hours modal's own GPS activity timeline -- same
-// stop list, same labels (_renderGPSStopRow itself, called with
-// readOnly:true so this report can never trigger its "Not lunch"/"Mark
-// as lunch" write). Adds a downloadable PDF (jsPDF, text/vector
-// drawing) and a second entry point in the manager Forms area.
+// Team Day Report v2 (team-day-report-v2 branch, PR #211): redesigned
+// from a row-per-employee table (PR #210) into one block per team per
+// day that reads like the Team Hours modal's own GPS activity timeline
+// -- same stop list, same labels (_renderGPSStopRow itself, called
+// with readOnly:true so this report can never trigger its "Not lunch"/
+// "Mark as lunch" write). Adds a downloadable PDF (jsPDF, text/vector
+// drawing).
+//
+// team-day-report-files-entry branch: the second entry point moved
+// from the manager Forms area to the manager Files screen
+// (FILES_LIST/renderFilesGrid, "Reports & documents") -- the Forms
+// entry no longer exists at all.
 //
 // This test extracts the real _teamHoursEligibility, dateKey,
-// _hrCsvField, _renderGPSStopRow, and the whole v2 Team Day Report
-// module verbatim from index.html. A minimal FakeJsPDF stub stands in
-// for the real jsPDF (loaded via CDN in the browser, not available in
-// Node) so _tdrBuildPdf/_tdrBlockLines/_tdrMeasureLines/_tdrDrawLines --
-// the real functions -- can be exercised directly; only the rendering
-// backend is faked, never the report logic itself.
+// _hrCsvField, _renderGPSStopRow, FILES_LIST/renderFilesGrid, and the
+// whole v2 Team Day Report module verbatim from index.html. A minimal
+// FakeJsPDF stub stands in for the real jsPDF (loaded via CDN in the
+// browser, not available in Node) so _tdrBuildPdf/_tdrBlockLines/
+// _tdrMeasureLines/_tdrDrawLines -- the real functions -- can be
+// exercised directly; only the rendering backend is faked, never the
+// report logic itself.
 //
 // Run with: node tests/team-day-report.test.js
 
@@ -35,9 +41,10 @@ const eligSource = extract('function _teamHoursEligibility(team, dateStr) {', '\
 const dateKeySource = extract('function dateKey(d) {', '\n\nfunction jobsForDate', 'dateKey');
 const hrCsvFieldSource = extract('function _hrCsvField(s) {', '\n\n// Tom: Export Hours Report always used', '_hrCsvField');
 const stopRowSource = extract('function _renderGPSStopRow(s, includeDriveInfo, ctx) {', '\n\nfunction renderGPS() {', '_renderGPSStopRow');
+const filesSource = extract('var FILES_LIST = [', '\n\nfunction openFileDetail', 'FILES_LIST/renderFilesGrid');
 const tdrSource = extract('var TDR_MAX_RANGE_DAYS = 31;', '\nfunction openTeamDayReport() {', 'Team Day Report v2 module');
 
-const fnSource = eligSource + '\n' + dateKeySource + '\n' + hrCsvFieldSource + '\n' + stopRowSource + '\n' + tdrSource;
+const fnSource = eligSource + '\n' + dateKeySource + '\n' + hrCsvFieldSource + '\n' + stopRowSource + '\n' + filesSource + '\n' + tdrSource;
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -98,7 +105,7 @@ function buildSandbox(opts) {
   const lunchOverrides = opts.lunchOverrides || {}; // 'team|date|stopKey' -> { override_type }
   const elements = Object.assign({
     'team-day-report-btn': { style: {} },
-    'team-day-report-forms-btn': { style: {} },
+    'files-grid': { innerHTML: '' },
   }, opts.elements || {});
   const calls = [];
 
@@ -350,7 +357,9 @@ async function main() {
     checkTrue('a single team-day block\'s lines all land on the same PDF page', allSamePage);
   }
 
-  // ── Forms entry (and Hours-tab entry) visibility: hidden for employee/dispatcher/logged-out, shown for owner/admin/manager ──
+  // ── Hours-tab entry (_tdrSyncButtonVisibility) and Files-grid entry (renderFilesGrid) visibility ──
+  // Forms no longer has any Team Day Report entry at all (moved to
+  // Files in this branch) -- there is nothing left to test there.
   {
     const cases = [
       { role: 'owner', expectVisible: true },
@@ -363,11 +372,14 @@ async function main() {
     cases.forEach(function (c) {
       const { sandbox, elements } = buildSandbox({ role: c.role });
       sandbox._tdrSyncButtonVisibility('team-day-report-btn');
-      sandbox._tdrSyncButtonVisibility('team-day-report-forms-btn');
+      sandbox.renderFilesGrid();
       const hoursVisible = elements['team-day-report-btn'].style.display !== 'none';
-      const formsVisible = elements['team-day-report-forms-btn'].style.display !== 'none';
+      const filesHtml = elements['files-grid'].innerHTML;
+      const filesVisible = filesHtml.indexOf('openTeamDayReport()') !== -1;
       check('Hours-tab entry visibility for role=' + c.role, hoursVisible, c.expectVisible);
-      check('Forms-area entry visibility for role=' + c.role, formsVisible, c.expectVisible);
+      check('Files-grid entry visibility for role=' + c.role, filesVisible, c.expectVisible);
+      checkTrue('Files grid still renders every other (unrestricted) report item regardless of role=' + c.role,
+        filesHtml.indexOf('Payroll') !== -1 && filesHtml.indexOf('Pricing Review') !== -1);
     });
   }
 
