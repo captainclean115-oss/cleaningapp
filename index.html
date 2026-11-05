@@ -4604,6 +4604,15 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- jsPDF: Team Day Report's "Download PDF" button. Client-side only,
+     no server round trip -- same reasoning as every other report's CSV
+     download. Chosen over window.print() because this app is used as
+     an installed/standalone PWA, where window.print() is a documented
+     unreliable path on iOS; a real generated file via jsPDF's own
+     save() (the same Blob+<a> download mechanism this file's CSV
+     exports already use by hand) works the same way in Safari and in
+     the installed app. -->
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <!-- Supabase JS SDK. The PentaAuth IIFE near the bottom of the body creates the client and exposes signIn/signOut/resetPassword for the #penta-login-screen form. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -4862,6 +4871,14 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <div style="font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">Incoming Forms <span id="forms-inbox-pill" style="display:none;background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;letter-spacing:0"></span></div>
     </div>
     <div id="forms-inbox-list"></div>
+  </div>
+  <!-- Team Day Report entry point (Step 4): owner/admin/manager only,
+       visibility synced in renderFormsInbox() (runs on every tab
+       activation and every PentaForms cache change). Opens the exact
+       same sheet as the Hours tab's own button -- same function, same
+       gating, nothing duplicated. -->
+  <div style="margin:14px 12px 4px">
+    <button id="team-day-report-forms-btn" onclick="openTeamDayReport()" style="display:none;width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:11px;border-radius:12px;cursor:pointer">📋 Team Day Report</button>
   </div>
   <div style="margin:14px 12px 4px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:8px;border-top:1px solid var(--border)">Manual Tasks</div>
   <button class="add-task-btn" onclick="openAddTask()">+ Add reminder</button>
@@ -21028,6 +21045,11 @@ function _formsInboxReviewClick(formId, employeeId) {
 }
 
 function renderFormsInbox() {
+  // Team Day Report Forms-area entry: re-synced here (not just on tab
+  // activation) since this function re-runs on every PentaForms cache
+  // change too -- placed before the early-return below so it still runs
+  // even in the rare case neither forms-area DOM node exists yet.
+  if (typeof _tdrSyncButtonVisibility === 'function') _tdrSyncButtonVisibility('team-day-report-forms-btn');
   var listEl = document.getElementById('forms-inbox-list');
   var pillEl = document.getElementById('forms-inbox-pill');
   // Staff view's "📋 Forms" shortcut badge -- kept in sync here too since
@@ -35895,22 +35917,21 @@ function _renderHoursReportResults(rep) {
 }
 
 // ─────────────────────────────────────────
-// TEAM DAY REPORT — read-only report (manager Hours tab): for a chosen
-// date range, who was on which team, when each team left/returned to
-// the office, each client home visited (in/out), and lunch taken.
-// Writes nothing anywhere -- every number comes from data this file
-// already fetches for other screens (getUnifiedRoster/_teamHoursEligibility
-// for roster, the manual_hour_overrides cache via getEmpHours for saved
-// hours, and the same live-Geotab _fetchTeamDayGpsDetail the Team Hours
-// modal's own GPS prefill uses for office times + client stops). Never
-// touches Hours/payroll calculations or publishing.
+// TEAM DAY REPORT v2 — read-only report: one block per team per day for
+// a chosen date range, each reading like the Team Hours modal's own GPS
+// activity timeline (same stop list, same labels -- _renderGPSStopRow
+// itself, called with readOnly:true so this report can never trigger
+// the "Not lunch"/"Mark as lunch" write). Entry points: a button on the
+// manager Hours tab, and a second one in the manager Forms area (same
+// function, same gating, nothing duplicated). Writes nothing anywhere.
 // ─────────────────────────────────────────
 
 var TDR_MAX_RANGE_DAYS = 31;
 var _tdrCache = {};        // session-scoped, key: team+'|'+date -> {ok,detail} | {ok:false,error}
 var _tdrGeneration = 0;    // bumped on every new Run and on close -- lets an in-flight loop notice it's stale and stop
 var _tdrRunInFlight = false;
-var _tdrLastRows = [];     // last successful run's flat row list, for the CSV button
+var _tdrPdfInFlight = false;
+var _tdrLastBlocks = [];   // last successful run's team-day blocks, for CSV/PDF
 
 // Pure: expands a From/To pair (YYYY-MM-DD strings) into an inclusive
 // list of date strings, or an error for the caller to show verbatim.
@@ -35973,12 +35994,23 @@ function _tdrFriendlyDate(dateStr) {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Shared visibility gate for both entry points (Hours tab + Forms
+// area) -- owner/admin/manager only. Called on every tab activation /
+// Forms-inbox refresh rather than once at boot, since role can change
+// within a session (e.g. Preview As Employee).
+function _tdrSyncButtonVisibility(btnId) {
+  var btn = document.getElementById(btnId);
+  if (!btn) return;
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  btn.style.display = (['owner', 'admin', 'manager'].indexOf(role) !== -1) ? '' : 'none';
+}
+
 // Fetches one team+date's GPS detail exactly once per report session
 // (cached in memory, keyed by team+date) -- re-running the same range
 // without closing the sheet never re-fetches a day already loaded.
 // Never throws -- a Geotab failure for one team-day becomes {ok:false}
-// so the caller can show "Could not load" for just that row instead of
-// losing the rest of the range.
+// so the caller can show "Could not load" for just that block instead
+// of losing the rest of the range.
 async function _tdrFetchTeamDay(team, dateStr) {
   var key = team + '|' + dateStr;
   if (_tdrCache[key]) return _tdrCache[key];
@@ -35993,135 +36025,292 @@ async function _tdrFetchTeamDay(team, dateStr) {
   return outcome;
 }
 
-// Pure (no network/DOM): one employee's report row for a team-day, given
-// the already-fetched (or failed) GPS outcome for that team-day.
-// Priority is saved override (manual_hour_overrides, via the same
-// getEmpHours() cache lookup teamHoursApply/the Worked-hours card line
-// already use) over GPS, matching this report's own Step 1 decision.
-// Client-home stops are a team/vehicle-level GPS trace -- every included
-// employee on that team-day shares the same stop list, independent of
-// whether THIS employee's own hours came from a saved override.
-function _tdrBuildEmployeeRow(emp, team, dateStr, gpsOutcome, tz) {
-  var ov = (typeof getEmpHours === 'function') ? getEmpHours(emp.id, dateStr) : null;
-  var row = {
-    date: dateStr, team: team, employeeId: emp.id, employeeName: emp.name,
-    leftOffice: null, backOffice: null, lunchMin: null, source: 'No data',
-    stops: [], stopsNote: null
-  };
-  if (ov) {
-    row.leftOffice = ov.start || null;
-    row.backOffice = ov.end || null;
-    row.lunchMin = (ov.lunch != null) ? ov.lunch : null;
-    row.source = 'Saved';
-  } else if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) {
+// Office left/back + lunch minutes/source for a team-day. Saved
+// overrides (manual_hour_overrides, via the same getEmpHours() cache
+// lookup teamHoursApply/the Worked-hours card line already use) win
+// over GPS, but only when EVERY included employee has one and they all
+// agree -- there's no single correct "Saved" team-level number
+// otherwise, so it falls back to GPS (if available) instead of
+// guessing. Exactly 3 states: 'Saved', 'GPS', 'No data'.
+function _tdrResolveOfficeAndLunch(includedEmployees, dateStr, gpsOutcome, tz) {
+  var overrides = includedEmployees.map(function (e) { return (typeof getEmpHours === 'function') ? getEmpHours(e.id, dateStr) : null; });
+  var allHaveOverride = includedEmployees.length > 0 && overrides.every(function (o) { return !!o; });
+  var allAgree = allHaveOverride && overrides.every(function (o) {
+    return o.start === overrides[0].start && o.end === overrides[0].end && o.lunch === overrides[0].lunch;
+  });
+  if (allAgree) {
+    var ov = overrides[0];
+    return { left: ov.start || null, back: ov.end || null, lunchMinutes: (ov.lunch != null ? ov.lunch : null), source: 'Saved' };
+  }
+  if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) {
     var g = gpsOutcome.detail.gps;
-    row.leftOffice = _bizHM(g.start, tz);
-    row.backOffice = _bizHM(g.end, tz);
-    row.lunchMin = (g.lunchMin != null) ? g.lunchMin : 0;
-    row.source = 'GPS';
+    return { left: _bizHM(g.start, tz), back: _bizHM(g.end, tz), lunchMinutes: (g.lunchMin != null ? g.lunchMin : 0), source: 'GPS' };
   }
-  if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && Array.isArray(gpsOutcome.detail.stopList)) {
-    var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
-      ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
-      : [];
-    row.stops = gpsOutcome.detail.stopList
-      .filter(function (s) { return !s.isDepot; })
-      .map(function (s) {
-        var match = (typeof matchStopToClientGeo === 'function') ? matchStopToClientGeo(s.lat, s.lng, s.addr, teamJobs, team) : null;
-        return {
-          label: match ? match.name : 'Unrecognized stop',
-          addr: s.addr || '',
-          inTime: s.inTime ? _bizHM(s.inTime, tz) : null,
-          outTime: s.outTime ? _bizHM(s.outTime, tz) : null
-        };
-      });
-    if (!row.stops.length) {
-      row.stopsNote = (gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) ? 'No visits recorded' : 'No data';
-    }
-  } else {
-    row.stopsNote = 'No data';
-  }
-  if (gpsOutcome && !gpsOutcome.ok) row.loadError = gpsOutcome.error;
-  return row;
+  return { left: null, back: null, lunchMinutes: null, source: 'No data' };
 }
 
-// One date, every team -- sequential, one team-day at a time (see this
-// feature's own Step 1 cost-estimate notes: parallelizing here risks
+// Pure, plain-text mirror of _renderGPSStopRow's own classification
+// (client match / "Possible lunch / break" / "Marked not-lunch" /
+// "Unrecognized stop" / depot-as-"Office") -- used only where HTML
+// can't be consumed (CSV, PDF). The on-screen card view instead calls
+// the real _renderGPSStopRow directly (readOnly:true), so its labels
+// are never re-derived there; this reads the exact same underlying
+// match (matchStopToClientGeo) and manual lunch-override data
+// (PentaLunchFlags) the real renderer does, not a re-implementation of
+// either algorithm -- only the HTML-vs-plain-text output differs.
+function _tdrStopInfo(s, ctx) {
+  if (s.isDepot) {
+    return {
+      label: 'Office', addr: s.addr || '',
+      inTime: s.inTime ? _bizHM(s.inTime, ctx.tz) : null,
+      outTime: s.outTime ? _bizHM(s.outTime, ctx.tz) : null,
+      durationMin: (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null,
+      isPossibleLunch: false, isOffice: true
+    };
+  }
+  var match = (typeof matchStopToClientGeo === 'function') ? matchStopToClientGeo(s.lat, s.lng, s.addr, ctx.teamJobs, ctx.team) : null;
+  var dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
+  var naturallyLunch = !match && dur !== null && dur > 0 && dur < 60;
+  var stopKey = s.inTime ? s.inTime.toISOString() : null;
+  var stopDateStr = s.inTime ? dateKey(s.inTime) : null;
+  var lunchOv = (naturallyLunch && stopKey && stopDateStr && window.PentaLunchFlags)
+    ? window.PentaLunchFlags.getOverride(ctx.team, stopDateStr, stopKey) : null;
+  var isExcluded = !!(lunchOv && lunchOv.override_type === 'exclude');
+  var maybeLunch = naturallyLunch && !isExcluded;
+  var label = maybeLunch ? 'Possible lunch / break'
+    : (naturallyLunch && isExcluded) ? 'Marked not-lunch'
+    : match ? match.name
+    : 'Unrecognized stop';
+  return {
+    label: label, addr: s.addr || '',
+    inTime: s.inTime ? _bizHM(s.inTime, ctx.tz) : null,
+    outTime: s.outTime ? _bizHM(s.outTime, ctx.tz) : null,
+    durationMin: dur,
+    isPossibleLunch: maybeLunch, isOffice: false
+  };
+}
+
+// One team-day block -- the unit this report is built from. `elig` is
+// the caller's already-computed _teamHoursEligibility(team, dateStr)
+// result (date-aware: a terminated employee appears on days before her
+// exclusion date, not on/after; day-off employees are excluded from
+// `included` the same way) -- passed in rather than recomputed, so the
+// per-date loop below only computes it once per team.
+async function _tdrBuildTeamDayBlock(elig, team, dateStr, tz) {
+  var gpsOutcome = await _tdrFetchTeamDay(team, dateStr);
+  var officeLunch = _tdrResolveOfficeAndLunch(elig.included, dateStr, gpsOutcome, tz);
+  var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+    ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
+    : [];
+  var gpsAvailable = !!(gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available);
+  return {
+    date: dateStr, team: team,
+    included: elig.included.map(function (e) { return { id: e.id, name: e.name }; }),
+    skipped: elig.skipped.map(function (sk) { return { name: sk.emp.name, reason: sk.reason }; }),
+    office: { left: officeLunch.left, back: officeLunch.back, source: officeLunch.source },
+    lunch: { minutes: officeLunch.lunchMinutes, source: officeLunch.source },
+    // Full stop list, in order, depot stops included -- matches
+    // _teamHoursRenderGpsTimeline's own timelineEl.innerHTML exactly
+    // (mid-day office stops ARE shown there, not filtered out).
+    stops: (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && Array.isArray(gpsOutcome.detail.stopList)) ? gpsOutcome.detail.stopList : [],
+    teamJobs: teamJobs, tz: tz,
+    gpsAvailable: gpsAvailable,
+    loadError: (gpsOutcome && !gpsOutcome.ok) ? gpsOutcome.error : null
+  };
+}
+
+// One date, every team -- sequential, one team-day at a time (avoids
 // tripping Geotab's rate limit across teams at once). A team with
 // nobody included today is simply skipped (not an error); if literally
 // no team has anyone included, the date gets one 'noAssignment' marker
-// row instead of just vanishing from the report. A team whose own
-// eligibility/row-building throws gets its own 'loadFailed' marker row
-// so one bad team never blanks the rest of the date (same per-team
-// isolation pattern renderTeamManager already uses).
-async function _tdrBuildDateRows(dateStr, tz, myGen, onProgress) {
+// block instead of just vanishing from the report. A team whose own
+// eligibility/row-building throws gets its own 'loadFailed' marker
+// block so one bad team never blanks the rest of the date (same
+// per-team isolation pattern renderTeamManager already uses).
+async function _tdrBuildDateBlocks(dateStr, tz, myGen, onProgress) {
   var teams = _pentaTeamNames();
-  var dateRows = [];
+  var blocks = [];
   var anyIncluded = false;
   for (var i = 0; i < teams.length; i++) {
-    if (myGen !== _tdrGeneration) return dateRows; // cancelled (sheet closed / a new Run started)
+    if (myGen !== _tdrGeneration) return blocks; // cancelled (sheet closed / a new Run started)
     var team = teams[i];
     try {
       var elig = _teamHoursEligibility(team, dateStr);
       if (!elig.included.length) continue;
       anyIncluded = true;
       if (onProgress) onProgress(dateStr, team);
-      var gpsOutcome = await _tdrFetchTeamDay(team, dateStr);
-      if (myGen !== _tdrGeneration) return dateRows; // cancelled mid-fetch
-      elig.included.forEach(function (emp) {
-        dateRows.push(_tdrBuildEmployeeRow(emp, team, dateStr, gpsOutcome, tz));
-      });
+      var block = await _tdrBuildTeamDayBlock(elig, team, dateStr, tz);
+      if (myGen !== _tdrGeneration) return blocks; // cancelled mid-fetch
+      blocks.push(block);
     } catch (e) {
-      dateRows.push({ date: dateStr, team: team, employeeId: null, employeeName: null, loadFailed: true, reason: (e && e.message) || String(e) });
+      blocks.push({ date: dateStr, team: team, loadFailed: true, reason: (e && e.message) || String(e) });
     }
   }
-  if (!anyIncluded && !dateRows.length) {
-    dateRows.push({ date: dateStr, team: null, employeeId: null, employeeName: null, noAssignment: true });
+  if (!anyIncluded && !blocks.length) {
+    blocks.push({ date: dateStr, team: null, noAssignment: true });
   }
-  return dateRows;
+  return blocks;
 }
 
-// Pure: team-days (distinct date+team pairs with at least one real
-// employee row) and employee-days (count of real employee rows) --
-// marker rows (noAssignment/loadFailed) never counted. No money/pay
-// anywhere in this report by design.
-function _tdrComputeTotals(rows) {
-  var teamDayKeys = {};
-  var employeeDays = 0;
-  rows.forEach(function (r) {
-    if (r.noAssignment || r.loadFailed) return;
-    employeeDays++;
-    teamDayKeys[r.date + '|' + r.team] = true;
-  });
-  return { teamDays: Object.keys(teamDayKeys).length, employeeDays: employeeDays };
+// Pure: team-days (real blocks only -- marker blocks never counted).
+// No money/pay anywhere in this report by design.
+function _tdrComputeTotals(blocks) {
+  var teamDays = 0;
+  blocks.forEach(function (b) { if (!b.noAssignment && !b.loadFailed) teamDays++; });
+  return { teamDays: teamDays };
 }
 
-// Pure: one row per employee per day, client visits joined with " | ".
-// _hrCsvField (Export Hours Report's existing escaper) handles commas,
-// quotes and embedded newlines -- reused, not re-implemented.
-function _tdrBuildCsv(rows) {
+// Pure: one row per employee per day (CSV shape unchanged from v1),
+// client visits joined with " | ". _hrCsvField (Export Hours Report's
+// existing escaper) handles commas, quotes and embedded newlines.
+function _tdrBuildCsv(blocks) {
   var header = ['Date', 'Team', 'Employee', 'Left office', 'Back at office', 'Lunch (min)', 'Client homes visited', 'Source'];
   var lines = [header.map(_hrCsvField).join(',')];
-  rows.forEach(function (r) {
-    if (r.noAssignment) {
-      lines.push([r.date, '', '', '', '', '', 'No assignment recorded', ''].map(_hrCsvField).join(','));
+  blocks.forEach(function (b) {
+    if (b.noAssignment) {
+      lines.push([b.date, '', '', '', '', '', 'No assignment recorded', ''].map(_hrCsvField).join(','));
       return;
     }
-    if (r.loadFailed) {
-      lines.push([r.date, r.team || '', '', '', '', '', 'Could not load: ' + (r.reason || ''), ''].map(_hrCsvField).join(','));
+    if (b.loadFailed) {
+      lines.push([b.date, b.team || '', '', '', '', '', 'Could not load: ' + (b.reason || ''), ''].map(_hrCsvField).join(','));
       return;
     }
-    var visits = (r.stops && r.stops.length)
-      ? r.stops.map(function (s) { return s.label + ', ' + s.addr + ' (' + (s.inTime || '—') + '-' + (s.outTime || '—') + ')'; }).join(' | ')
-      : (r.stopsNote || '');
-    lines.push([
-      r.date, r.team, r.employeeName,
-      r.leftOffice || 'No data', r.backOffice || 'No data',
-      (r.lunchMin != null ? r.lunchMin : 'No data'),
-      visits, r.source
-    ].map(_hrCsvField).join(','));
+    var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs };
+    var visitStops = b.stops.filter(function (s) { return !s.isDepot; }).map(function (s) { return _tdrStopInfo(s, ctx); });
+    var visits = visitStops.length
+      ? visitStops.map(function (si) { return si.label + ', ' + si.addr + ' (' + (si.inTime || '—') + '-' + (si.outTime || '—') + ')'; }).join(' | ')
+      : (b.gpsAvailable ? 'No visits recorded' : 'No data');
+    b.included.forEach(function (emp) {
+      lines.push([
+        b.date, b.team, emp.name,
+        b.office.left || 'No data', b.office.back || 'No data',
+        (b.lunch.minutes != null ? b.lunch.minutes : 'No data'),
+        visits, b.office.source
+      ].map(_hrCsvField).join(','));
+    });
   });
   return lines.join('\r\n');
+}
+
+// ── PDF (jsPDF, text/vector drawing -- no html2canvas, no screenshot) ──
+// Builds a plain list of {text,size,bold,color,gapAfter} "line"
+// descriptors for one block, computed ONCE and used for BOTH measuring
+// (to decide a page break before drawing anything) and the actual draw
+// -- so the estimate and the real output can never disagree. Plain text
+// only (no emoji): standard PDF fonts don't reliably include emoji
+// glyphs, unlike the HTML view's labels.
+function _tdrBlockLines(doc, b, contentWidth) {
+  var lines = [];
+  function push(text, opts) {
+    opts = opts || {};
+    lines.push({ text: text, size: opts.size || 9, bold: !!opts.bold, color: opts.color || [20, 20, 20], gapAfter: opts.gapAfter != null ? opts.gapAfter : 3 });
+  }
+  if (b.noAssignment) {
+    push(_tdrFriendlyDate(b.date) + ' — No assignment recorded', { bold: true, size: 11 });
+    return lines;
+  }
+  if (b.loadFailed) {
+    push(_tdrFriendlyDate(b.date) + ' — ' + (b.team || '') + ': Could not load (' + (b.reason || 'unknown error') + ')', { bold: true, size: 11, color: [180, 40, 40] });
+    return lines;
+  }
+  push(_tdrFriendlyDate(b.date) + '   ' + b.team, { bold: true, size: 13, gapAfter: 6 });
+  push('On team: ' + (b.included.map(function (e) { return e.name; }).join(', ') || '—'), { size: 9 });
+  if (b.skipped.length) {
+    push('Off: ' + b.skipped.map(function (sk) { return sk.name + ' (' + sk.reason + ')'; }).join(', '), { size: 9, color: [120, 120, 120], gapAfter: 6 });
+  } else if (lines.length) {
+    lines[lines.length - 1].gapAfter = 6;
+  }
+  var officeTag = b.office.source === 'No data' ? '' : ' [' + b.office.source + ']';
+  push('Left office: ' + (b.office.left || 'No data') + officeTag + '     Back at office: ' + (b.office.back || 'No data'), { size: 9 });
+  var lunchTag = b.lunch.source === 'No data' ? '' : ' [' + b.lunch.source + ']';
+  push('Lunch: ' + (b.lunch.minutes != null ? b.lunch.minutes + ' min' : 'No data') + lunchTag, { size: 9, gapAfter: 6 });
+
+  var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs };
+  var stopInfos = b.stops.map(function (s) { return _tdrStopInfo(s, ctx); });
+  if (!stopInfos.length) {
+    push(b.gpsAvailable ? 'No stops recorded.' : (b.loadError ? ('Could not load GPS: ' + b.loadError) : 'No data.'), { size: 9, color: [120, 120, 120] });
+  } else {
+    push('Timeline:', { bold: true, size: 9.5, gapAfter: 2 });
+    stopInfos.forEach(function (si) {
+      var timeTxt = (si.inTime || '—') + ' - ' + (si.outTime || '—') + (si.durationMin ? ' (' + si.durationMin + ' min)' : '');
+      var full = si.label + (si.addr ? '  —  ' + si.addr : '') + '    ' + timeTxt;
+      var wrapped = doc.splitTextToSize(full, contentWidth - 10);
+      wrapped.forEach(function (w, wi) {
+        push(w, { size: 8.5, color: si.isPossibleLunch ? [160, 110, 10] : [50, 50, 50], gapAfter: (wi === wrapped.length - 1) ? 2 : 0 });
+      });
+    });
+  }
+  return lines;
+}
+
+function _tdrMeasureLines(lines) {
+  var h = 0;
+  lines.forEach(function (l) { h += (l.size * 1.15) + l.gapAfter; });
+  return h;
+}
+
+function _tdrDrawLines(doc, lines, x, y) {
+  lines.forEach(function (l) {
+    doc.setFont('helvetica', l.bold ? 'bold' : 'normal');
+    doc.setFontSize(l.size);
+    doc.setTextColor(l.color[0], l.color[1], l.color[2]);
+    doc.text(l.text, x, y);
+    y += (l.size * 1.15) + l.gapAfter;
+  });
+  return y;
+}
+
+// Builds the PDF document (not yet saved/downloaded -- the caller
+// decides the filename and triggers the actual save). One block per
+// team per day, light background + dark high-contrast text regardless
+// of the app's own dark-mode setting (a PDF has no "theme"), and a
+// page break is only ever taken BETWEEN blocks (measured first, drawn
+// second, from the same line list) so a team-day block is never split
+// across two pages.
+function _tdrBuildPdf(blocks, fromStr, toStr) {
+  if (!(window.jspdf && window.jspdf.jsPDF)) throw new Error('PDF library not loaded yet — try again in a moment.');
+  var doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'letter' });
+  var pageW = doc.internal.pageSize.getWidth();
+  var pageH = doc.internal.pageSize.getHeight();
+  var margin = 40;
+  var contentWidth = pageW - margin * 2;
+  var y = margin;
+  var bizName = (window.PentaTenant && window.PentaTenant.name && window.PentaTenant.name()) || '';
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.setTextColor(20, 20, 20);
+  doc.text('Team Day Report', margin, y);
+  y += 20;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(90, 90, 90);
+  doc.text((bizName ? bizName + '   ·   ' : '') + fromStr + ' to ' + toStr, margin, y);
+  y += 14;
+  doc.setDrawColor(200, 200, 200);
+  doc.line(margin, y, pageW - margin, y);
+  y += 18;
+
+  blocks.forEach(function (b) {
+    var lines = _tdrBlockLines(doc, b, contentWidth);
+    var neededHeight = _tdrMeasureLines(lines);
+    if (y + neededHeight > pageH - margin && y > margin + 30) {
+      doc.addPage();
+      y = margin;
+    }
+    y = _tdrDrawLines(doc, lines, margin, y);
+    y += 12; // gap between blocks
+  });
+
+  var totalPages = doc.internal.getNumberOfPages();
+  for (var p = 1; p <= totalPages; p++) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(140, 140, 140);
+    doc.text('Page ' + p + ' of ' + totalPages, pageW - margin, pageH - 16, { align: 'right' });
+  }
+  return doc;
 }
 
 function closeTeamDayReport() {
@@ -36131,70 +36320,62 @@ function closeTeamDayReport() {
   if (overlay) overlay.remove();
 }
 
-// One team-day card -- a single flex row per employee that WRAPS its
-// labeled fields on a narrow screen (stacked) and sits on one line on a
-// wide screen (table-like), the same flex-wrap technique every other
-// card/row in this file already uses instead of a width breakpoint
-// (this app has none).
-function _tdrRenderEmployeeRow(r) {
-  if (r.noAssignment) {
-    return '<div style="padding:10px 12px;color:var(--muted);font-size:13px">' + _adminEsc(_tdrFriendlyDate(r.date)) + ' — No assignment recorded</div>';
+// One team-day block, on screen -- the timeline reuses the REAL
+// _renderGPSStopRow (readOnly:true), so every stop's label/match/
+// "Possible lunch" styling is identical to the Team Hours modal's own
+// GPS activity timeline, never re-derived here.
+function _tdrRenderBlock(b) {
+  if (b.noAssignment) {
+    return '<div style="padding:10px 12px;color:var(--muted);font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:12px">' + _adminEsc(_tdrFriendlyDate(b.date)) + ' — No assignment recorded</div>';
   }
-  if (r.loadFailed) {
-    return '<div style="padding:10px 12px;color:var(--red);font-size:13px">' + _adminEsc(_tdrFriendlyDate(r.date)) + ' — ' + _adminEsc(r.team || '') + ': Could not load (' + _adminEsc(r.reason || 'unknown error') + ')</div>';
+  if (b.loadFailed) {
+    return '<div style="padding:10px 12px;color:var(--red);font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:12px">' + _adminEsc(_tdrFriendlyDate(b.date)) + ' — ' + _adminEsc(b.team || '') + ': Could not load (' + _adminEsc(b.reason || 'unknown error') + ')</div>';
   }
-  var sourceColor = r.source === 'Saved' ? 'var(--accent)' : (r.source === 'GPS' ? 'var(--muted)' : 'var(--amber)');
-  var visitsHtml = (r.stops && r.stops.length)
-    ? r.stops.map(function (s) {
-        return '<div style="font-size:12px;color:var(--text);padding:2px 0">' + _adminEsc(s.label) + ' — ' + _adminEsc(s.addr)
-          + ' <span style="color:var(--muted)">(' + _adminEsc(s.inTime || '—') + '–' + _adminEsc(s.outTime || '—') + ')</span></div>';
+  var onNames = b.included.map(function (e) { return _adminEsc(e.name); }).join(', ') || '—';
+  var offHtml = b.skipped.length
+    ? '<div style="font-size:12px;color:var(--muted);margin-top:4px">Off: ' + b.skipped.map(function (sk) { return _adminEsc(sk.name) + ' (' + _adminEsc(sk.reason) + ')'; }).join(', ') + '</div>'
+    : '';
+  var officeSourceColor = b.office.source === 'Saved' ? 'var(--accent)' : (b.office.source === 'GPS' ? 'var(--muted)' : 'var(--amber)');
+  var officeHtml = '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin:8px 0;align-items:baseline">'
+    + '<span>Left office <b>' + _adminEsc(b.office.left || 'No data') + '</b></span>'
+    + '<span>Back at office <b>' + _adminEsc(b.office.back || 'No data') + '</b></span>'
+    + '<span>Lunch <b>' + (b.lunch.minutes != null ? _adminEsc(String(b.lunch.minutes)) + 'm' : 'No data') + '</b></span>'
+    + '<span style="font-size:11px;font-weight:700;color:' + officeSourceColor + '">' + _adminEsc(b.office.source) + '</span>'
+    + '</div>';
+  var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs, afterToggleFn: null, readOnly: true };
+  var stopList = b.stops;
+  var timelineHtml = stopList.length
+    ? stopList.map(function (s, si) {
+        var rowCtx = { tz: ctx.tz, team: ctx.team, teamJobs: ctx.teamJobs, afterToggleFn: ctx.afterToggleFn, readOnly: true, isLastOverall: s === stopList[stopList.length - 1] };
+        return _renderGPSStopRow(s, si > 0, rowCtx);
       }).join('')
-    : '<div style="font-size:12px;color:var(--muted)">' + _adminEsc(r.stopsNote || 'No data') + '</div>';
-  return '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;padding:10px 12px;border-top:1px solid var(--border)">'
-    + '<div style="flex:1 1 140px;min-width:0;font-weight:600;font-size:13px">' + _adminEsc(r.employeeName) + '</div>'
-    + '<div style="flex:1 1 90px;font-size:12px;color:var(--muted)">Left ' + _adminEsc(r.leftOffice || 'No data') + '</div>'
-    + '<div style="flex:1 1 90px;font-size:12px;color:var(--muted)">Back ' + _adminEsc(r.backOffice || 'No data') + '</div>'
-    + '<div style="flex:1 1 80px;font-size:12px;color:var(--muted)">Lunch ' + (r.lunchMin != null ? _adminEsc(String(r.lunchMin)) + 'm' : 'No data') + '</div>'
-    + '<div style="flex:1 1 70px;font-size:11px;font-weight:700;color:' + sourceColor + '">' + _adminEsc(r.source) + '</div>'
-    + '<div style="flex:1 1 100%;min-width:0">' + visitsHtml + '</div>'
+    : '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">' + (b.gpsAvailable ? 'No stops recorded.' : _adminEsc(b.loadError ? ('Could not load GPS: ' + b.loadError) : 'No data.')) + '</div>';
+
+  return '<div class="tdr-block" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden;page-break-inside:avoid;break-inside:avoid">'
+    + '<div style="padding:12px 14px;background:var(--surface2);border-bottom:1px solid var(--border)">'
+    +   '<div style="font-weight:700;font-size:15px">' + _adminEsc(_tdrFriendlyDate(b.date)) + ' · ' + _adminEsc(b.team) + '</div>'
+    +   '<div style="font-size:12px;color:var(--muted);margin-top:4px">On team: ' + onNames + '</div>'
+    +   offHtml
+    + '</div>'
+    + '<div style="padding:10px 14px">'
+    +   officeHtml
+    +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin:10px 0 4px">Timeline</div>'
+    +   timelineHtml
+    + '</div>'
     + '</div>';
 }
 
-function _tdrRenderResults(resultsEl, rows) {
-  // Group into (date, team) cards, preserving date then team order
-  // already produced by the fetch loop -- no re-sort needed.
-  var groups = [];
-  var groupByKey = {};
-  rows.forEach(function (r) {
-    var key = r.date + '|' + (r.team || '');
-    if (!groupByKey[key]) {
-      groupByKey[key] = { date: r.date, team: r.team, rows: [] };
-      groups.push(groupByKey[key]);
-    }
-    groupByKey[key].rows.push(r);
-  });
-  if (!groups.length) {
+function _tdrRenderResults(resultsEl, blocks) {
+  if (!blocks.length) {
     resultsEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:13px">No data for this range.</div>';
     return;
   }
-  resultsEl.innerHTML = groups.map(function (g) {
-    var isMarker = g.rows.length === 1 && (g.rows[0].noAssignment || g.rows[0].loadFailed);
-    var headerHtml = isMarker
-      ? ''
-      : '<div style="padding:10px 12px;background:var(--surface2);display:flex;gap:10px;align-items:center">'
-        + '<span style="font-weight:700;font-size:13px">' + _adminEsc(_tdrFriendlyDate(g.date)) + '</span>'
-        + '<span style="font-size:12px;color:var(--muted)">' + _adminEsc(g.team) + '</span>'
-        + '</div>';
-    return '<div style="margin-bottom:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">'
-      + headerHtml
-      + g.rows.map(_tdrRenderEmployeeRow).join('')
-      + '</div>';
-  }).join('');
+  resultsEl.innerHTML = blocks.map(_tdrRenderBlock).join('');
 }
 
-function _tdrRenderTotals(totalsEl, rows) {
-  var t = _tdrComputeTotals(rows);
-  totalsEl.textContent = t.teamDays + ' team-day' + (t.teamDays === 1 ? '' : 's') + ' · ' + t.employeeDays + ' employee-day' + (t.employeeDays === 1 ? '' : 's');
+function _tdrRenderTotals(totalsEl, blocks) {
+  var t = _tdrComputeTotals(blocks);
+  totalsEl.textContent = t.teamDays + ' team-day' + (t.teamDays === 1 ? '' : 's');
 }
 
 async function _tdrRunReport() {
@@ -36206,6 +36387,7 @@ async function _tdrRunReport() {
   var totalsEl = document.getElementById('tdr-totals');
   var runBtn = document.getElementById('tdr-run-btn');
   var csvBtn = document.getElementById('tdr-csv-btn');
+  var pdfBtn = document.getElementById('tdr-pdf-btn');
   if (!fromEl || !toEl || !statusEl || !resultsEl || !totalsEl) { console.warn('[TeamDayReport] sheet elements missing'); return; }
 
   var range = _tdrExpandDateRange(fromEl.value, toEl.value);
@@ -36219,22 +36401,23 @@ async function _tdrRunReport() {
   var myGen = ++_tdrGeneration;
   if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Loading…'; }
   if (csvBtn) csvBtn.disabled = true;
+  if (pdfBtn) pdfBtn.disabled = true;
   resultsEl.innerHTML = '';
   totalsEl.textContent = '';
   statusEl.style.color = 'var(--muted)';
 
   var tz = _pentaBusinessTimezone();
-  var allRows = [];
+  var allBlocks = [];
   try {
     for (var d = 0; d < range.dates.length; d++) {
       if (myGen !== _tdrGeneration) return; // cancelled
       var dateStr = range.dates[d];
-      var dayRows = await _tdrBuildDateRows(dateStr, tz, myGen, function (ds, team) {
+      var dayBlocks = await _tdrBuildDateBlocks(dateStr, tz, myGen, function (ds, team) {
         if (myGen !== _tdrGeneration) return;
         statusEl.textContent = 'Loading ' + _tdrFriendlyDate(ds) + ' (' + team + '), ' + (d + 1) + ' of ' + range.dates.length + '…';
       });
       if (myGen !== _tdrGeneration) return; // cancelled mid-day
-      allRows = allRows.concat(dayRows);
+      allBlocks = allBlocks.concat(dayBlocks);
     }
   } catch (e) {
     console.error('[TeamDayReport] run failed', e);
@@ -36248,21 +36431,44 @@ async function _tdrRunReport() {
   }
 
   if (myGen !== _tdrGeneration) return;
-  var failedCount = allRows.filter(function (r) { return r.loadFailed; }).length;
-  statusEl.textContent = failedCount ? (failedCount + ' day/team row' + (failedCount === 1 ? '' : 's') + ' could not load (shown below).') : '';
-  _tdrLastRows = allRows;
-  _tdrRenderResults(resultsEl, allRows);
-  _tdrRenderTotals(totalsEl, allRows);
-  if (csvBtn) csvBtn.disabled = !allRows.length;
+  var failedCount = allBlocks.filter(function (b) { return b.loadFailed; }).length;
+  statusEl.textContent = failedCount ? (failedCount + ' team-day' + (failedCount === 1 ? '' : 's') + ' could not load (shown below).') : '';
+  _tdrLastBlocks = allBlocks;
+  _tdrRenderResults(resultsEl, allBlocks);
+  _tdrRenderTotals(totalsEl, allBlocks);
+  var hasData = !!allBlocks.length;
+  if (csvBtn) csvBtn.disabled = !hasData;
+  if (pdfBtn) pdfBtn.disabled = !hasData;
 }
 
 function _tdrDownloadCsv() {
-  if (!_tdrLastRows.length) return;
+  if (!_tdrLastBlocks.length) return;
   var fromEl = document.getElementById('tdr-from');
   var toEl = document.getElementById('tdr-to');
-  var csv = _tdrBuildCsv(_tdrLastRows);
+  var csv = _tdrBuildCsv(_tdrLastBlocks);
   var filename = 'team-day-report_' + (fromEl ? fromEl.value : '') + '_to_' + (toEl ? toEl.value : '') + '.csv';
   _hrDownloadCsv(csv, filename);
+}
+
+function _tdrDownloadPdf() {
+  if (!_tdrLastBlocks.length) return;
+  if (_tdrPdfInFlight) return; // ignore a second tap while building
+  var fromEl = document.getElementById('tdr-from');
+  var toEl = document.getElementById('tdr-to');
+  var pdfBtn = document.getElementById('tdr-pdf-btn');
+  _tdrPdfInFlight = true;
+  if (pdfBtn) { pdfBtn.disabled = true; pdfBtn.textContent = 'Building…'; }
+  try {
+    var fromV = fromEl ? fromEl.value : '', toV = toEl ? toEl.value : '';
+    var doc = _tdrBuildPdf(_tdrLastBlocks, fromV, toV);
+    doc.save('team-day-report_' + fromV + '_to_' + toV + '.pdf');
+  } catch (e) {
+    console.error('[TeamDayReport] PDF build failed', e);
+    alert('Could not build the PDF: ' + ((e && e.message) || String(e)));
+  } finally {
+    _tdrPdfInFlight = false;
+    if (pdfBtn) { pdfBtn.disabled = false; pdfBtn.textContent = 'Download PDF'; }
+  }
 }
 
 function openTeamDayReport() {
@@ -36273,7 +36479,7 @@ function openTeamDayReport() {
   }
   var old = document.getElementById('team-day-report-overlay');
   if (old) old.remove();
-  _tdrLastRows = [];
+  _tdrLastBlocks = [];
 
   var defaultRange = _computeLastPayWeekRange(_pentaBusinessTimezone(), _pentaPayWeekStartDay());
 
@@ -36297,6 +36503,7 @@ function openTeamDayReport() {
     +   '<div style="display:flex;gap:8px;align-items:center">'
     +     '<button id="tdr-run-btn" onclick="_tdrRunReport()" style="flex:1;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Run</button>'
     +     '<button id="tdr-csv-btn" onclick="_tdrDownloadCsv()" disabled style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;padding:12px;border-radius:10px;cursor:pointer">Download CSV</button>'
+    +     '<button id="tdr-pdf-btn" onclick="_tdrDownloadPdf()" disabled style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:13px;font-weight:600;padding:12px;border-radius:10px;cursor:pointer">Download PDF</button>'
     +   '</div>'
     +   '<div id="tdr-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>'
     + '</div>'
@@ -37966,11 +38173,7 @@ function gpsInit() {
   // Team Day Report button: owner/admin/manager only, re-checked every
   // time this tab activates (not just on first boot) since role can
   // change within a session (e.g. Preview As Employee).
-  var tdrBtn = document.getElementById('team-day-report-btn');
-  if (tdrBtn) {
-    var _tdrRole = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
-    tdrBtn.style.display = (['owner', 'admin', 'manager'].indexOf(_tdrRole) !== -1) ? '' : 'none';
-  }
+  if (typeof _tdrSyncButtonVisibility === 'function') _tdrSyncButtonVisibility('team-day-report-btn');
   // v11.0.25: snap the date picker to today on every tab activation. Was
   // previously called from inside loadGPSData with a "only when empty"
   // guard, which left stale dates from prior sessions stuck (Tom's May 15
@@ -38690,7 +38893,12 @@ function _renderGPSStopRow(s, includeDriveInfo, ctx) {
   const isUnknownLocation = !s.isDepot && !_match && !naturallyLunch;
   const _escAddr = (s.addr || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
   const _afterToggleArg = ctx.afterToggleFn ? `,'${ctx.afterToggleFn}'` : '';
-  const _lunchToggleBtn = (maybeLunch && _stopKey && _stopDateStr)
+  // Team Day Report (read-only): ctx.readOnly suppresses this write-
+  // capable toggle entirely -- everything else about this row (match,
+  // labels, times) is unchanged and reused as-is. Existing callers
+  // (Live tab, Team Hours modal) never set ctx.readOnly, so their
+  // behavior is byte-identical to before this flag existed.
+  const _lunchToggleBtn = ctx.readOnly ? '' : (maybeLunch && _stopKey && _stopDateStr)
     ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${ctx.team}','${_stopDateStr}','${_stopKey}','exclude','${_escAddr}',${dur||0}${_afterToggleArg})" title="Mark this stop as not lunch" style="background:none;border:1px solid rgba(217,119,6,0.4);color:var(--amber);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">✕ Not lunch</button>`
     : (naturallyLunch && _isExcluded && _stopKey && _stopDateStr)
     ? `<button onclick="event.stopPropagation();_toggleLunchOverride('${ctx.team}','${_stopDateStr}','${_stopKey}','reverse','${_escAddr}',${dur||0}${_afterToggleArg})" title="Mark this stop as lunch again" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;cursor:pointer;white-space:nowrap;margin-left:6px">🍔 Mark as lunch</button>`
