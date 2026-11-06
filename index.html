@@ -35931,6 +35931,8 @@ function _renderHoursReportResults(rep) {
 
 var TDR_MAX_RANGE_DAYS = 31;
 var _tdrCache = {};        // session-scoped, key: team+'|'+date -> {ok,detail} | {ok:false,error}
+var _tdrRangeData = null; // this run's batched Device/Trip/geocode fetch (see _tdrFetchRangeData), or null if it failed/was skipped -- every team-day then transparently falls back to the original per-day _fetchTeamDayGpsDetail path, unchanged.
+var _tdrRangeFallbackConcurrency = 3; // fallback-path-only pool size; dropped to 1 for the rest of a run after a fully-exhausted 429 (see _tdrFetchTeamDay).
 var _tdrGeneration = 0;    // bumped on every new Run and on close -- lets an in-flight loop notice it's stale and stop
 var _tdrRunInFlight = false;
 var _tdrPdfInFlight = false;
@@ -36014,18 +36016,151 @@ function _tdrSyncButtonVisibility(btnId) {
 // Never throws -- a Geotab failure for one team-day becomes {ok:false}
 // so the caller can show "Could not load" for just that block instead
 // of losing the rest of the range.
+// Speed (team-day-report-speed branch): fetches the device list, ALL
+// teams' trips for the WHOLE report range, and reverse-geocodes them --
+// ONCE per report run instead of once per team-day. Does not call,
+// modify, or depend on any change to _fetchTeamDayGpsDetail,
+// _geotabCallRetryOn429, or reverseGeocodeTrips -- it reuses all three
+// exactly as every other screen does. Returns null (never throws) on
+// any failure OR on a truncation signal (trips.length hit the
+// resultsLimit, meaning the range may have more trips than were
+// returned) -- callers treat null as "use the original per-day path
+// for this whole run", the simplest, safest fallback granularity.
+async function _tdrFetchRangeData(dateStrs, teams, tz) {
+  if (!dateStrs.length || !teams.length) return null;
+  try {
+    var _fp = dateStrs[0].split('-').map(Number);
+    var _lp = dateStrs[dateStrs.length - 1].split('-').map(Number);
+    var fromD = _bizWallClockToUtc(_fp[0], _fp[1], _fp[2], 0, 0, 0, tz);
+    var toD = _bizWallClockToUtc(_lp[0], _lp[1], _lp[2], 23, 59, 59, tz);
+    // Device list and the whole-range Trip search don't depend on each
+    // other (the Trip search below has no deviceSearch filter at all),
+    // so they run in parallel -- one fewer round trip than doing them
+    // in sequence.
+    var tripLimit = Math.min(20000, Math.max(1000, teams.length * dateStrs.length * 80));
+    var devicesPromise = _geotabCallRetryOn429('Get', { typeName: 'Device', resultsLimit: 500 });
+    var tripsPromise = _geotabCallRetryOn429('Get', {
+      typeName: 'Trip',
+      search: { fromDate: fromD.toISOString(), toDate: toD.toISOString(), includeOverlappedTrips: true },
+      resultsLimit: tripLimit
+    });
+    var devices = await devicesPromise;
+    var trips = await tripsPromise;
+    trips = trips || [];
+    // Truncation guard: if the result count hit the cap, there may be
+    // trips Geotab didn't return at all -- never silently show an
+    // incomplete report. Skip the whole batch; every team-day falls
+    // back to its own per-day fetch instead (slower, but provably
+    // complete, exactly like today).
+    if (trips.length >= tripLimit) {
+      console.warn('[TeamDayReport] range Trip fetch may be truncated (' + trips.length + ' >= limit ' + tripLimit + ') -- falling back to the per-day path for this whole run');
+      return null;
+    }
+    // ONE reverseGeocodeTrips call for the entire batch (unmodified,
+    // same function every other GPS screen uses) instead of one per
+    // team-day -- the dominant cost this branch removes.
+    await reverseGeocodeTrips(trips);
+
+    var teamDeviceMapByDay = await Promise.all(dateStrs.map(function (dStr) {
+      return _resolveTeamDeviceMap(devices, teams, new Date(dStr + 'T00:00:00'));
+    }));
+    var teamDeviceMapByDate = {};
+    dateStrs.forEach(function (dStr, i) { teamDeviceMapByDate[dStr] = teamDeviceMapByDay[i]; });
+
+    var tripsByDevice = {};
+    trips.forEach(function (t) {
+      var did = t.device && t.device.id;
+      if (!did) return;
+      if (!tripsByDevice[did]) tripsByDevice[did] = [];
+      tripsByDevice[did].push(t);
+    });
+
+    return { teamDeviceMapByDate: teamDeviceMapByDate, tripsByDevice: tripsByDevice };
+  } catch (e) {
+    console.warn('[TeamDayReport] range fetch failed -- falling back to the per-day path for this whole run', e);
+    return null;
+  }
+}
+
+// Pure: slices ONE team-day's trips out of the batched range fetch and
+// builds the exact same { device, resolved, trips, stopList, gps }
+// shape _fetchTeamDayGpsDetail returns -- by calling the SAME pure
+// functions it calls (_computeGpsHoursFromTrips, _buildGpsStopList) on
+// the sliced trips, never re-deriving their logic. Day-boundary
+// filtering is the identical business-tz, trip.start-based check
+// _fetchTeamDayGpsDetail's own defensive re-filter already uses, so a
+// trip crossing midnight is attributed to its start day either way.
+function _tdrSliceTeamDayFromRange(rangeData, team, dateStr, tz) {
+  var resolved = (rangeData.teamDeviceMapByDate[dateStr] || {})[team] || { device: null, source: 'no-assignment' };
+  var device = resolved.device;
+  if (!device) {
+    return {
+      device: null, resolved: resolved, trips: [], stopList: [],
+      gps: { available: false, reason: resolved.source === 'assignment-none' ? ('No GPS device assigned to ' + team + ' on ' + dateStr) : ('No vehicle found for ' + team) }
+    };
+  }
+  var _dp = dateStr.split('-').map(Number);
+  var dayStart = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 0, 0, 0, tz);
+  var dayEnd = _bizWallClockToUtc(_dp[0], _dp[1], _dp[2], 23, 59, 59, tz);
+  var dayTrips = (rangeData.tripsByDevice[device.id] || [])
+    .filter(function (t) { var ts = new Date(t.start); return ts >= dayStart && ts <= dayEnd; })
+    .sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
+
+  var date = new Date(dateStr + 'T00:00:00');
+  var gps = _computeGpsHoursFromTrips(dayTrips, team, dateStr);
+  var stopList = _buildGpsStopList(dayTrips, team, date, true);
+  return { device: device, resolved: resolved, trips: dayTrips, stopList: stopList, gps: gps };
+}
+
 async function _tdrFetchTeamDay(team, dateStr) {
   var key = team + '|' + dateStr;
   if (_tdrCache[key]) return _tdrCache[key];
   var outcome;
-  try {
-    var detail = await _fetchTeamDayGpsDetail(team, dateStr);
-    outcome = { ok: true, detail: detail };
-  } catch (e) {
-    outcome = { ok: false, error: (e && e.message) || String(e) };
+  if (_tdrRangeData) {
+    // Fast path: pure slice, no network at all.
+    try {
+      outcome = { ok: true, detail: _tdrSliceTeamDayFromRange(_tdrRangeData, team, dateStr, _pentaBusinessTimezone()) };
+    } catch (e) {
+      outcome = { ok: false, error: (e && e.message) || String(e) };
+    }
+  } else {
+    // Fallback: the original, unmodified per-day fetch.
+    try {
+      var detail = await _fetchTeamDayGpsDetail(team, dateStr);
+      outcome = { ok: true, detail: detail };
+    } catch (e) {
+      // A fully-exhausted 429 (both of _geotabCallRetryOn429's own
+      // internal attempts failed) is the one externally-observable
+      // rate-limit signal available without modifying that function --
+      // drop the fallback pool to 1 for the rest of this run.
+      if (e && e.isRateLimit) _tdrRangeFallbackConcurrency = 1;
+      outcome = { ok: false, error: (e && e.message) || String(e) };
+    }
   }
   _tdrCache[key] = outcome;
   return outcome;
+}
+
+// Tiny concurrency-limited pool -- runs `items` through `worker` with
+// at most `getLimit()` in flight at once (re-read before each dispatch,
+// so a mid-run drop in _tdrRangeFallbackConcurrency takes effect for
+// not-yet-started items). Only used for the fallback (no-range-data)
+// path; irrelevant to -- and not needed by -- the fast slice path,
+// which has no network call to overlap in the first place.
+async function _tdrRunPooled(items, worker, getLimit) {
+  var results = new Array(items.length);
+  var next = 0;
+  async function runOne() {
+    while (next < items.length) {
+      var i = next++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  var pool = [];
+  var n = Math.max(1, Math.min(items.length, getLimit()));
+  for (var p = 0; p < n; p++) pool.push(runOne());
+  await Promise.all(pool);
+  return results;
 }
 
 // Office left/back + lunch minutes/source for a team-day. Saved
@@ -36132,27 +36267,39 @@ async function _tdrBuildTeamDayBlock(elig, team, dateStr, tz) {
 // per-team isolation pattern renderTeamManager already uses).
 async function _tdrBuildDateBlocks(dateStr, tz, myGen, onProgress) {
   var teams = _pentaTeamNames();
-  var blocks = [];
   var anyIncluded = false;
+  var eligByTeam = {};
+  var teamsToRun = [];
   for (var i = 0; i < teams.length; i++) {
-    if (myGen !== _tdrGeneration) return blocks; // cancelled (sheet closed / a new Run started)
-    var team = teams[i];
+    var elig = _teamHoursEligibility(teams[i], dateStr);
+    if (!elig.included.length) continue;
+    anyIncluded = true;
+    eligByTeam[teams[i]] = elig;
+    teamsToRun.push(teams[i]);
+  }
+  if (!teamsToRun.length) {
+    return anyIncluded ? [] : [{ date: dateStr, team: null, noAssignment: true }];
+  }
+  // Pooled instead of strictly sequential: when _tdrRangeData is set
+  // (the common case now) each worker resolves instantly with no
+  // network call at all, so the pool size doesn't matter; when it's
+  // null (fallback), the pool is capped to _tdrRangeFallbackConcurrency
+  // (3, dropped to 1 after a fully-exhausted 429), re-read before every
+  // dispatch. One bad team still only produces its own 'loadFailed'
+  // block (same per-team isolation as before), never blanking the rest
+  // of the date.
+  var blocks = await _tdrRunPooled(teamsToRun, async function (team) {
+    if (myGen !== _tdrGeneration) return null; // cancelled
     try {
-      var elig = _teamHoursEligibility(team, dateStr);
-      if (!elig.included.length) continue;
-      anyIncluded = true;
       if (onProgress) onProgress(dateStr, team);
-      var block = await _tdrBuildTeamDayBlock(elig, team, dateStr, tz);
-      if (myGen !== _tdrGeneration) return blocks; // cancelled mid-fetch
-      blocks.push(block);
+      var block = await _tdrBuildTeamDayBlock(eligByTeam[team], team, dateStr, tz);
+      if (myGen !== _tdrGeneration) return null; // cancelled mid-fetch
+      return block;
     } catch (e) {
-      blocks.push({ date: dateStr, team: team, loadFailed: true, reason: (e && e.message) || String(e) });
+      return { date: dateStr, team: team, loadFailed: true, reason: (e && e.message) || String(e) };
     }
-  }
-  if (!anyIncluded && !blocks.length) {
-    blocks.push({ date: dateStr, team: null, noAssignment: true });
-  }
-  return blocks;
+  }, function () { return _tdrRangeData ? teamsToRun.length : _tdrRangeFallbackConcurrency; });
+  return blocks.filter(Boolean);
 }
 
 // Pure: team-days (real blocks only -- marker blocks never counted).
@@ -36410,6 +36557,20 @@ async function _tdrRunReport() {
   statusEl.style.color = 'var(--muted)';
 
   var tz = _pentaBusinessTimezone();
+  // Reset per run -- a previous run's batched data only covers ITS
+  // date range, and a previous run's 429-triggered throttle-down
+  // shouldn't carry into a fresh one.
+  _tdrRangeData = null;
+  _tdrRangeFallbackConcurrency = 3;
+  statusEl.textContent = 'Preparing…';
+  try {
+    _tdrRangeData = await _tdrFetchRangeData(range.dates, _pentaTeamNames(), tz);
+  } catch (e) {
+    console.warn('[TeamDayReport] range fetch threw unexpectedly -- falling back to the per-day path', e);
+    _tdrRangeData = null;
+  }
+  if (myGen !== _tdrGeneration) { _tdrRunInFlight = false; if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Run'; } return; }
+
   var allBlocks = [];
   try {
     for (var d = 0; d < range.dates.length; d++) {
