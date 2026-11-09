@@ -36896,11 +36896,33 @@ async function _vsnapBuildTeamDay(sbCtx, team, dateStr, rebuildMatched, counts) 
   if (!teamJobs.length) return;
 
   var elig = _teamHoursEligibility(team, dateStr);
-  var presentEmployees = elig.included.map(function (e) {
+  // Bug fix (await-fix branch): the old code called the ASYNC
+  // window.PentaEmployees.get(uuid) without awaiting it inside a plain
+  // .map() -- `emp` was always the pending Promise object itself
+  // (truthy), so emp.payRate/emp.pay_type always read as undefined and
+  // every employee silently came back with no rate. getUnifiedRoster
+  // (which _teamHoursEligibility's `included` rows already come from)
+  // passes pay_rate/pay_type straight through from the SAME facade
+  // cache for exactly this reason -- the payroll cost card
+  // (_computeWeekPayroll) reads them the same way, straight off the
+  // roster row, no second async lookup. _vsnapRun() now awaits
+  // window.PentaEmployees.ready() ONCE per build run before this loop
+  // starts, so that cache is warm and this read is safe to be
+  // synchronous. An employee whose uuid can't be resolved at all
+  // (_teamHoursEmpUuid returns null) is dropped from the jsonb array
+  // (there's no id to key it by) but is never silently lost: she's
+  // counted in unresolvedCount below, which forces
+  // labor_cost_complete=false and adds a visible match_note.
+  var unresolvedCount = 0;
+  var presentEmployees = [];
+  elig.included.forEach(function (e) {
     var uuid = _teamHoursEmpUuid(e);
-    var emp = (uuid && window.PentaEmployees && window.PentaEmployees.get) ? window.PentaEmployees.get(uuid) : null;
-    return { employee_id: uuid, pay_rate: emp ? emp.payRate : null, pay_type: emp ? emp.pay_type : null };
-  }).filter(function (e) { return !!e.employee_id; });
+    if (!uuid) { unresolvedCount++; return; }
+    presentEmployees.push({ employee_id: uuid, pay_rate: (e.pay_rate != null ? e.pay_rate : null), pay_type: (e.pay_type || null) });
+  });
+  var unresolvedNote = unresolvedCount
+    ? (unresolvedCount + ' present employee(s) on this team-day could not be matched to a real employee record.')
+    : null;
 
   // Look up any existing rows for these jobs in ONE round trip, so the
   // write-once rule can be decided without a query per job.
@@ -36932,8 +36954,10 @@ async function _vsnapBuildTeamDay(sbCtx, team, dateStr, rebuildMatched, counts) 
   for (var ci = 0; ci < classified.length; ci++) {
     var c = classified[ci];
     var cost = _vsnapComputeLaborCost(presentEmployees, c.team_minutes);
-    await _vsnapWriteRow(sbCtx, c.job, team, dateStr, c.status, c.match_note,
-      c.in_at, c.out_at, c.team_minutes, cost.employees, cost.labor_cost_gross_cents, cost.labor_cost_complete,
+    var complete = cost.labor_cost_complete && !unresolvedCount;
+    var note = unresolvedNote ? (c.match_note ? (c.match_note + ' ' + unresolvedNote) : unresolvedNote) : c.match_note;
+    await _vsnapWriteRow(sbCtx, c.job, team, dateStr, c.status, note,
+      c.in_at, c.out_at, c.team_minutes, cost.employees, cost.labor_cost_gross_cents, complete,
       existingById[c.job.id], rebuildMatched, counts);
   }
 }
@@ -37025,6 +37049,14 @@ async function _vsnapRun() {
     if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Build'; }
     return;
   }
+
+  // Bug fix (await-fix branch): hydrate the employee cache ONCE here,
+  // up front, so every team-day's roster rows below already carry a
+  // real pay_rate/pay_type (see _vsnapBuildTeamDay's own comment).
+  // Best-effort -- if this ever throws, the build still proceeds (same
+  // degraded-but-safe "no rate resolved" outcome as before this fix,
+  // never a hard stop).
+  try { if (window.PentaEmployees && window.PentaEmployees.ready) await window.PentaEmployees.ready(); } catch (e) {}
 
   var counts = { matched: 0, ambiguous: 0, no_gps: 0, unmatched: 0, skipped: 0, alreadyBuilt: 0, incompleteLaborCost: 0, writeErrors: 0 };
   var notYetHappened = 0;
