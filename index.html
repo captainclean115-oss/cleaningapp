@@ -36047,50 +36047,134 @@ function _tdrResolveOfficeAndLunch(includedEmployees, dateStr, gpsOutcome, tz) {
   }
   if (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available) {
     var g = gpsOutcome.detail.gps;
-    return { left: _bizHM(g.start, tz), back: _bizHM(g.end, tz), lunchMinutes: (g.lunchMin != null ? g.lunchMin : 0), source: 'GPS' };
+    return { left: _hrsFmt12(g.start), back: _hrsFmt12(g.end), lunchMinutes: (g.lunchMin != null ? g.lunchMin : 0), source: 'GPS' };
   }
   return { left: null, back: null, lunchMinutes: null, source: 'No data' };
 }
 
-// Pure, plain-text mirror of _renderGPSStopRow's own classification
-// (client match / "Possible lunch / break" / "Marked not-lunch" /
-// "Unrecognized stop" / depot-as-"Office") -- used only where HTML
-// can't be consumed (CSV, PDF). The on-screen card view instead calls
-// the real _renderGPSStopRow directly (readOnly:true), so its labels
-// are never re-derived there; this reads the exact same underlying
-// match (matchStopToClientGeo) and manual lunch-override data
-// (PentaLunchFlags) the real renderer does, not a re-implementation of
-// either algorithm -- only the HTML-vs-plain-text output differs.
-function _tdrStopInfo(s, ctx) {
+// Pure classification of ONE stop -- raw Date objects (not formatted
+// strings), so downstream code (morning trim, lunch merge) can do real
+// time arithmetic. Reads the exact same underlying match
+// (matchStopToClientGeo) and manual lunch-override data
+// (PentaLunchFlags) _renderGPSStopRow itself reads -- not a
+// re-implementation of either algorithm, only a different output shape.
+// ctx.trueStart/trueEnd (the team-day's GPS "Left office"/"Back at
+// office" instants, when available) bound isPossibleLunch to the real
+// workday, same as _detectDayLunch's own trueStart/trueEnd bounding for
+// the GPS lunch total this mirrors -- a stop before the morning
+// departure or after the final return can never be a lunch candidate.
+function _tdrClassifyStop(s, ctx) {
+  var inTime = s.inTime || null, outTime = s.outTime || null;
+  var dur = (inTime && outTime) ? Math.round((outTime - inTime) / 60000) : null;
   if (s.isDepot) {
-    return {
-      label: 'Office', addr: s.addr || '',
-      inTime: s.inTime ? _bizHM(s.inTime, ctx.tz) : null,
-      outTime: s.outTime ? _bizHM(s.outTime, ctx.tz) : null,
-      durationMin: (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null,
-      isPossibleLunch: false, isOffice: true
-    };
+    return { addr: s.addr || '', inTime: inTime, outTime: outTime, durationMin: dur, isDepot: true, isClientMatch: false, clientName: null, isScheduled: false, isExcluded: false, isPossibleLunch: false };
   }
   var match = (typeof matchStopToClientGeo === 'function') ? matchStopToClientGeo(s.lat, s.lng, s.addr, ctx.teamJobs, ctx.team) : null;
-  var dur = (s.inTime && s.outTime) ? Math.round((s.outTime - s.inTime) / 60000) : null;
   var naturallyLunch = !match && dur !== null && dur > 0 && dur < 60;
-  var stopKey = s.inTime ? s.inTime.toISOString() : null;
-  var stopDateStr = s.inTime ? dateKey(s.inTime) : null;
+  if (naturallyLunch && ctx.trueStart && inTime && inTime < ctx.trueStart) naturallyLunch = false;
+  if (naturallyLunch && ctx.trueEnd && outTime && outTime > ctx.trueEnd) naturallyLunch = false;
+  var stopKey = inTime ? inTime.toISOString() : null;
+  var stopDateStr = inTime ? dateKey(inTime) : null;
   var lunchOv = (naturallyLunch && stopKey && stopDateStr && window.PentaLunchFlags)
     ? window.PentaLunchFlags.getOverride(ctx.team, stopDateStr, stopKey) : null;
+  // A stop marked "Not lunch" is never a lunch candidate, period -- not
+  // just excluded from the total, excluded from candidacy entirely, so
+  // it can never become the merge anchor or get summed into the total.
   var isExcluded = !!(lunchOv && lunchOv.override_type === 'exclude');
-  var maybeLunch = naturallyLunch && !isExcluded;
-  var label = maybeLunch ? 'Possible lunch / break'
-    : (naturallyLunch && isExcluded) ? 'Marked not-lunch'
-    : match ? match.name
-    : 'Unrecognized stop';
+  var isPossibleLunch = naturallyLunch && !isExcluded;
   return {
-    label: label, addr: s.addr || '',
-    inTime: s.inTime ? _bizHM(s.inTime, ctx.tz) : null,
-    outTime: s.outTime ? _bizHM(s.outTime, ctx.tz) : null,
-    durationMin: dur,
-    isPossibleLunch: maybeLunch, isOffice: false
+    addr: s.addr || '', inTime: inTime, outTime: outTime, durationMin: dur,
+    isDepot: false, isClientMatch: !!match, clientName: match ? match.name : null,
+    isScheduled: !!(match && match.scheduled), isExcluded: isExcluded, isPossibleLunch: isPossibleLunch
   };
+}
+
+// Item 1 (morning office): the real GPS algorithm (_computeGpsHoursFromTrips,
+// untouched) already finds the TRUE departure trip, ignoring an earlier
+// morning blip (a quick back-to-the-depot before really leaving) --
+// trueStart is that trip's own start instant. _buildGpsStopList's own
+// construction guarantees some stop's outTime equals trueStart exactly
+// (a stop's outTime IS the next trip's start time), so this finds that
+// exact entry and drops everything chronologically before it -- extra
+// morning office blips and any other stop before the real departure.
+// Entries AFTER the final "Back at office" are deliberately left alone
+// (shown, not trimmed) -- _tdrClassifyStop's own trueEnd bound already
+// keeps them from ever being treated as a lunch candidate.
+function _tdrTrimMorningStops(classifications, trueStart) {
+  if (!trueStart) return classifications;
+  var anchorIdx = classifications.findIndex(function (c) { return c.outTime && c.outTime.getTime() === trueStart.getTime(); });
+  if (anchorIdx <= 0) return classifications;
+  return classifications.slice(anchorIdx);
+}
+
+// Item 3 (single lunch): MaidsSite allows only one lunch per day, and
+// this never changes what's saved anywhere -- it only changes how
+// GPS-detected lunch CANDIDATES are displayed/summed for this report.
+//   a) anchor = the longest candidate; its own start is the lunch start.
+//   b) total = sum of every candidate's minutes; naive end = anchor
+//      start + total.
+//   c) Hard limit: end <= (next recognized client's in-time) - 1 min.
+//      Only a MATCHED client stop is a hard boundary -- an unrecognized
+//      stop never constrains this at all (see the report's own PR body
+//      for why). If the naive end is cut off, the shortfall is first
+//      tried as a backward extension of the START (never earlier than
+//      (previous recognized client's out-time) + 1 min); whatever still
+//      doesn't fit after that is dropped, never forced.
+// Returns null when there are no candidates at all for this team-day.
+function _tdrMergeLunchCandidates(classifications) {
+  var candidateIdxs = [];
+  classifications.forEach(function (c, i) { if (c.isPossibleLunch) candidateIdxs.push(i); });
+  if (!candidateIdxs.length) return null;
+
+  var anchorIdx = candidateIdxs[0];
+  candidateIdxs.forEach(function (i) {
+    if ((classifications[i].durationMin || 0) > (classifications[anchorIdx].durationMin || 0)) anchorIdx = i;
+  });
+  var anchor = classifications[anchorIdx];
+  var totalMin = candidateIdxs.reduce(function (sum, i) { return sum + (classifications[i].durationMin || 0); }, 0);
+
+  var anchorStart = anchor.inTime;
+  var naiveEnd = new Date(anchorStart.getTime() + totalMin * 60000);
+
+  var nextClientIn = null, prevClientOut = null;
+  for (var i = anchorIdx + 1; i < classifications.length; i++) {
+    if (classifications[i].isClientMatch) { nextClientIn = classifications[i].inTime; break; }
+  }
+  for (var j = anchorIdx - 1; j >= 0; j--) {
+    if (classifications[j].isClientMatch) { prevClientOut = classifications[j].outTime; break; }
+  }
+
+  var hardEnd = nextClientIn ? new Date(nextClientIn.getTime() - 60000) : null;
+  var end = (hardEnd && naiveEnd > hardEnd) ? hardEnd : naiveEnd;
+
+  var start = anchorStart;
+  if (hardEnd && naiveEnd > hardEnd) {
+    var shortfallMin = Math.round((naiveEnd - hardEnd) / 60000);
+    var proposedStart = new Date(anchorStart.getTime() - shortfallMin * 60000);
+    var lowerBound = prevClientOut ? new Date(prevClientOut.getTime() + 60000) : null;
+    start = (lowerBound && proposedStart < lowerBound) ? lowerBound : proposedStart;
+  }
+
+  var shownMin = Math.round((end - start) / 60000);
+  var droppedMin = Math.max(0, totalMin - shownMin);
+
+  return { start: start, end: end, minutes: shownMin, droppedMin: droppedMin, mergedIndexes: candidateIdxs };
+}
+
+// Final display label for one classified stop. `isMerged` (this stop's
+// index is one of _tdrMergeLunchCandidates' own mergedIndexes) always
+// wins -- a merged candidate is shown as part of the one lunch block,
+// never as its own separate "Possible lunch / break". A stop manually
+// marked "Not lunch" shows as a plain "Stop" (item 2) -- never
+// "Marked not-lunch", never a lunch label of any kind. Unrecognized
+// stops are unchanged either way.
+function _tdrStopDisplayLabel(c, isMerged) {
+  if (isMerged) return 'Merged into lunch';
+  if (c.isDepot) return 'Office';
+  if (c.isExcluded) return 'Stop';
+  if (c.isPossibleLunch) return 'Possible lunch / break';
+  if (c.isClientMatch) return c.clientName;
+  return 'Unrecognized stop';
 }
 
 // One team-day block -- the unit this report is built from. `elig` is
@@ -36106,16 +36190,44 @@ async function _tdrBuildTeamDayBlock(elig, team, dateStr, tz) {
     ? jobs.filter(function (jj) { return jj.date === dateStr && jj.team === team && !jj.cancelled; })
     : [];
   var gpsAvailable = !!(gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available);
+  var trueStart = gpsAvailable ? gpsOutcome.detail.gps.start : null;
+  var trueEnd = gpsAvailable ? gpsOutcome.detail.gps.end : null;
+
+  var rawStops = (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && Array.isArray(gpsOutcome.detail.stopList)) ? gpsOutcome.detail.stopList : [];
+  var stopCtx = { team: team, teamJobs: teamJobs, trueStart: trueStart, trueEnd: trueEnd };
+  var classifications = rawStops.map(function (s) { return _tdrClassifyStop(s, stopCtx); });
+  classifications = _tdrTrimMorningStops(classifications, trueStart);
+  var lunchMerge = _tdrMergeLunchCandidates(classifications);
+  var mergedSet = {};
+  if (lunchMerge) lunchMerge.mergedIndexes.forEach(function (i) { mergedSet[i] = true; });
+  var timeline = classifications.map(function (c, i) {
+    return {
+      addr: c.addr, inTime: c.inTime, outTime: c.outTime, durationMin: c.durationMin,
+      isDepot: c.isDepot, label: _tdrStopDisplayLabel(c, !!mergedSet[i]),
+      isUnscheduled: c.isClientMatch && !c.isScheduled
+    };
+  });
+
   return {
     date: dateStr, team: team,
     included: elig.included.map(function (e) { return { id: e.id, name: e.name }; }),
-    skipped: elig.skipped.map(function (sk) { return { name: sk.emp.name, reason: sk.reason }; }),
+    // Item 4: a terminated employee is dropped from the "Off" list
+    // entirely for this report (not just unlabeled) -- she's already
+    // correctly absent from `included` here when terminated as of this
+    // date; the ONLY remaining mention of her would otherwise be this
+    // 'Terminated' skip reason, which _teamHoursEligibility (unchanged)
+    // keeps showing on every date on/after her termination -- fine for
+    // the single-day Team Hours modal this helper also serves, but
+    // noisy for a report spanning weeks. Vacation/day-off entries are
+    // untouched.
+    skipped: elig.skipped.filter(function (sk) { return sk.reason !== 'Terminated'; }).map(function (sk) { return { name: sk.emp.name, reason: sk.reason }; }),
     office: { left: officeLunch.left, back: officeLunch.back, source: officeLunch.source },
     lunch: { minutes: officeLunch.lunchMinutes, source: officeLunch.source },
-    // Full stop list, in order, depot stops included -- matches
-    // _teamHoursRenderGpsTimeline's own timelineEl.innerHTML exactly
-    // (mid-day office stops ARE shown there, not filtered out).
-    stops: (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && Array.isArray(gpsOutcome.detail.stopList)) ? gpsOutcome.detail.stopList : [],
+    // The trimmed, relabeled timeline (items 1/2/3) -- always derived
+    // from GPS, independent of whether the office/lunch summary above
+    // shows "Saved" or "GPS" for the header numbers (item 3e).
+    timeline: timeline,
+    lunchMerge: lunchMerge, // {start,end,minutes,droppedMin} | null
     teamJobs: teamJobs, tz: tz,
     gpsAvailable: gpsAvailable,
     loadError: (gpsOutcome && !gpsOutcome.ok) ? gpsOutcome.error : null
@@ -36165,7 +36277,12 @@ function _tdrComputeTotals(blocks) {
 
 // Pure: one row per employee per day (CSV shape unchanged from v1),
 // client visits joined with " | ". _hrCsvField (Export Hours Report's
-// existing escaper) handles commas, quotes and embedded newlines.
+// existing escaper) handles commas, quotes and embedded newlines. Every
+// time in this report (screen, PDF, CSV) goes through _hrsFmt12 -- the
+// same existing, business-timezone-aware 12-hour formatter the Hours
+// tab/Export Hours Report already use ("8:47 AM", no leading zero) --
+// so no 24-hour time appears anywhere here, and an app-wide switch
+// later is just redirecting more call sites to this same function.
 function _tdrBuildCsv(blocks) {
   var header = ['Date', 'Team', 'Employee', 'Left office', 'Back at office', 'Lunch (min)', 'Client homes visited', 'Source'];
   var lines = [header.map(_hrCsvField).join(',')];
@@ -36178,10 +36295,9 @@ function _tdrBuildCsv(blocks) {
       lines.push([b.date, b.team || '', '', '', '', '', 'Could not load: ' + (b.reason || ''), ''].map(_hrCsvField).join(','));
       return;
     }
-    var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs };
-    var visitStops = b.stops.filter(function (s) { return !s.isDepot; }).map(function (s) { return _tdrStopInfo(s, ctx); });
-    var visits = visitStops.length
-      ? visitStops.map(function (si) { return si.label + ', ' + si.addr + ' (' + (si.inTime || '—') + '-' + (si.outTime || '—') + ')'; }).join(' | ')
+    var visitEntries = b.timeline.filter(function (e) { return !e.isDepot && e.label !== 'Merged into lunch' && e.label !== 'Stop'; });
+    var visits = visitEntries.length
+      ? visitEntries.map(function (e) { return e.label + ', ' + e.addr + ' (' + (e.inTime ? _hrsFmt12(e.inTime) : '—') + '-' + (e.outTime ? _hrsFmt12(e.outTime) : '—') + ')'; }).join(' | ')
       : (b.gpsAvailable ? 'No visits recorded' : 'No data');
     b.included.forEach(function (emp) {
       lines.push([
@@ -36226,20 +36342,24 @@ function _tdrBlockLines(doc, b, contentWidth) {
   var officeTag = b.office.source === 'No data' ? '' : ' [' + b.office.source + ']';
   push('Left office: ' + (b.office.left || 'No data') + officeTag + '     Back at office: ' + (b.office.back || 'No data'), { size: 9 });
   var lunchTag = b.lunch.source === 'No data' ? '' : ' [' + b.lunch.source + ']';
-  push('Lunch: ' + (b.lunch.minutes != null ? b.lunch.minutes + ' min' : 'No data') + lunchTag, { size: 9, gapAfter: 6 });
+  push('Lunch: ' + (b.lunch.minutes != null ? b.lunch.minutes + ' min' : 'No data') + lunchTag, { size: 9, gapAfter: b.lunchMerge ? 2 : 6 });
+  if (b.lunchMerge) {
+    var mergeTxt = 'Lunch ' + _hrsFmt12(b.lunchMerge.start) + ' - ' + _hrsFmt12(b.lunchMerge.end) + ' (' + b.lunchMerge.minutes + ' min)'
+      + (b.lunchMerge.droppedMin > 0 ? '  [' + b.lunchMerge.droppedMin + ' min did not fit around client visits]' : '');
+    push(mergeTxt, { size: 8.5, color: [160, 110, 10], gapAfter: 6 });
+  }
 
-  var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs };
-  var stopInfos = b.stops.map(function (s) { return _tdrStopInfo(s, ctx); });
-  if (!stopInfos.length) {
+  if (!b.timeline.length) {
     push(b.gpsAvailable ? 'No stops recorded.' : (b.loadError ? ('Could not load GPS: ' + b.loadError) : 'No data.'), { size: 9, color: [120, 120, 120] });
   } else {
     push('Timeline:', { bold: true, size: 9.5, gapAfter: 2 });
-    stopInfos.forEach(function (si) {
-      var timeTxt = (si.inTime || '—') + ' - ' + (si.outTime || '—') + (si.durationMin ? ' (' + si.durationMin + ' min)' : '');
-      var full = si.label + (si.addr ? '  —  ' + si.addr : '') + '    ' + timeTxt;
+    b.timeline.forEach(function (e) {
+      var timeTxt = (e.inTime ? _hrsFmt12(e.inTime) : '—') + ' - ' + (e.outTime ? _hrsFmt12(e.outTime) : '—') + (e.durationMin ? ' (' + e.durationMin + ' min)' : '');
+      var full = e.label + (e.addr ? '  —  ' + e.addr : '') + '    ' + timeTxt;
       var wrapped = doc.splitTextToSize(full, contentWidth - 10);
+      var isLunchish = e.label === 'Possible lunch / break' || e.label === 'Merged into lunch';
       wrapped.forEach(function (w, wi) {
-        push(w, { size: 8.5, color: si.isPossibleLunch ? [160, 110, 10] : [50, 50, 50], gapAfter: (wi === wrapped.length - 1) ? 2 : 0 });
+        push(w, { size: 8.5, color: isLunchish ? [160, 110, 10] : [50, 50, 50], gapAfter: (wi === wrapped.length - 1) ? 2 : 0 });
       });
     });
   }
@@ -36323,10 +36443,37 @@ function closeTeamDayReport() {
   if (overlay) overlay.remove();
 }
 
-// One team-day block, on screen -- the timeline reuses the REAL
-// _renderGPSStopRow (readOnly:true), so every stop's label/match/
-// "Possible lunch" styling is identical to the Team Hours modal's own
-// GPS activity timeline, never re-derived here.
+// One timeline entry, on screen. This report now builds its own row
+// instead of reusing _renderGPSStopRow -- the Team Hours modal's own
+// timeline is deliberately left exactly as it was (untouched per this
+// branch's hard rules); this report's timeline now has genuinely
+// different behavior (morning-stop trimming, single-lunch merging,
+// "Not lunch"/"Merged into lunch" relabeling) that would conflict if
+// forced through the same shared renderer. Still reads the exact same
+// underlying classification (_tdrClassifyStop, same match/override
+// data _renderGPSStopRow itself reads) -- only the presentation layer
+// is separate, not the data.
+function _tdrRenderTimelineRow(e) {
+  var inStr = e.inTime ? _hrsFmt12(e.inTime) : '—';
+  var outStr = e.outTime ? _hrsFmt12(e.outTime) : '—';
+  var durStr = e.durationMin ? (e.durationMin >= 60 ? Math.floor(e.durationMin / 60) + 'h ' + (e.durationMin % 60) + 'm' : e.durationMin + 'm') : '';
+  var isLunchish = e.label === 'Possible lunch / break' || e.label === 'Merged into lunch';
+  var isPlain = e.label === 'Unrecognized stop' || e.label === 'Stop';
+  var dotColor = e.isDepot ? 'var(--green)' : (isLunchish ? 'var(--amber)' : (isPlain ? 'var(--muted)' : 'var(--accent)'));
+  var labelColor = e.isDepot ? 'var(--green)' : (isLunchish ? 'var(--amber)' : (isPlain ? 'var(--muted)' : 'var(--accent)'));
+  return '<div style="display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--border)">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';margin-top:5px;flex-shrink:0"></span>'
+    + '<div style="flex:1;min-width:0">'
+    +   '<div style="font-size:12px;font-weight:600;color:' + labelColor + ';margin-bottom:1px">' + _adminEsc(e.label)
+    +     (e.isUnscheduled ? ' <span style="font-size:9px;font-weight:700;color:#0a0a0a;background:var(--amber);border-radius:4px;padding:1px 5px;vertical-align:middle">UNSCHEDULED</span>' : '')
+    +   '</div>'
+    +   (e.addr ? '<div style="font-size:12px;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _adminEsc(e.addr) + '</div>' : '')
+    +   '<div style="font-size:11px;color:var(--muted)">' + _adminEsc(inStr) + ' – ' + _adminEsc(outStr) + (durStr ? ' (' + _adminEsc(durStr) + ')' : '') + '</div>'
+    + '</div>'
+    + '</div>';
+}
+
+// One team-day block, on screen.
 function _tdrRenderBlock(b) {
   if (b.noAssignment) {
     return '<div style="padding:10px 12px;color:var(--muted);font-size:13px;background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:12px">' + _adminEsc(_tdrFriendlyDate(b.date)) + ' — No assignment recorded</div>';
@@ -36345,13 +36492,15 @@ function _tdrRenderBlock(b) {
     + '<span>Lunch <b>' + (b.lunch.minutes != null ? _adminEsc(String(b.lunch.minutes)) + 'm' : 'No data') + '</b></span>'
     + '<span style="font-size:11px;font-weight:700;color:' + officeSourceColor + '">' + _adminEsc(b.office.source) + '</span>'
     + '</div>';
-  var ctx = { tz: b.tz, team: b.team, teamJobs: b.teamJobs, afterToggleFn: null, readOnly: true };
-  var stopList = b.stops;
-  var timelineHtml = stopList.length
-    ? stopList.map(function (s, si) {
-        var rowCtx = { tz: ctx.tz, team: ctx.team, teamJobs: ctx.teamJobs, afterToggleFn: ctx.afterToggleFn, readOnly: true, isLastOverall: s === stopList[stopList.length - 1] };
-        return _renderGPSStopRow(s, si > 0, rowCtx);
-      }).join('')
+  var lunchMergeHtml = '';
+  if (b.lunchMerge) {
+    lunchMergeHtml = '<div style="font-size:13px;margin:0 0 8px;padding:8px 10px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.25);border-radius:8px;color:var(--text)">'
+      + '🍔 Lunch <b>' + _adminEsc(_hrsFmt12(b.lunchMerge.start)) + ' – ' + _adminEsc(_hrsFmt12(b.lunchMerge.end)) + '</b> (' + b.lunchMerge.minutes + ' min)'
+      + (b.lunchMerge.droppedMin > 0 ? '<div style="font-size:11px;color:var(--amber);margin-top:2px">' + b.lunchMerge.droppedMin + ' min did not fit around client visits</div>' : '')
+      + '</div>';
+  }
+  var timelineHtml = b.timeline.length
+    ? b.timeline.map(_tdrRenderTimelineRow).join('')
     : '<div style="color:var(--muted);font-size:12px;text-align:center;padding:10px 0">' + (b.gpsAvailable ? 'No stops recorded.' : _adminEsc(b.loadError ? ('Could not load GPS: ' + b.loadError) : 'No data.')) + '</div>';
 
   return '<div class="tdr-block" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:14px;overflow:hidden;page-break-inside:avoid;break-inside:avoid">'
@@ -36362,6 +36511,7 @@ function _tdrRenderBlock(b) {
     + '</div>'
     + '<div style="padding:10px 14px">'
     +   officeHtml
+    +   lunchMergeHtml
     +   '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin:10px 0 4px">Timeline</div>'
     +   timelineHtml
     + '</div>'
