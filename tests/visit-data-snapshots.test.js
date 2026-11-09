@@ -86,7 +86,15 @@ function buildSandbox(opts) {
   const sandbox = {
     console: console,
     window: {
-      PentaEmployees: { get: function (uuid) { return (opts.employeesByUuid || {})[uuid] || null; } },
+      // Matches the REAL production API: PentaEmployees.get is async
+      // (returns a Promise), and ready() resolves once the cache is
+      // warm. A stub that returned the plain object directly (not a
+      // Promise) would have hidden the missing-await bug this file
+      // exists to catch -- see "regression" test below.
+      PentaEmployees: {
+        get: function (uuid) { return Promise.resolve((opts.employeesByUuid || {})[uuid] || null); },
+        ready: function () { return Promise.resolve(); }
+      },
       PentaTenant: { current: function () { return opts.bid || 'biz-1'; } },
       supabaseClient: opts.fakeSupabase || null
     },
@@ -222,9 +230,17 @@ async function main() {
         { id: 'job2', date: '2026-11-01', team: 'B1', clientId: 'c2', cancelled: true } // cancelled -- must never appear
       ],
       teamHoursEligibility: function () {
-        return { included: [{ id: 'alice', uuid: 'alice-uuid' }], skipped: [{ emp: { id: 'bob' }, reason: 'Terminated' }] };
+        // pay_rate/pay_type sit directly on the roster row, matching
+        // getUnifiedRoster's real facade passthrough -- this is what
+        // the fixed builder actually reads.
+        return { included: [{ id: 'alice', uuid: 'alice-uuid', pay_rate: 20, pay_type: 'hourly' }], skipped: [{ emp: { id: 'bob' }, reason: 'Terminated' }] };
       },
-      employeesByUuid: { 'alice-uuid': { payRate: 20, pay_type: 'hourly' } },
+      // Deliberately WRONG/decoy values here -- the fixed builder must
+      // NEVER read pay_rate/pay_type through PentaEmployees.get() at
+      // all (that's exactly where the missing-await bug lived). If a
+      // future change reintroduces that call, this decoy would leak
+      // into the written row and the checks below would catch it.
+      employeesByUuid: { 'alice-uuid': { payRate: 999, pay_type: 'salary' } },
       fetchTeamDayGpsDetail: function () { return Promise.resolve({ device: { id: 'd1' }, trips: [{}], stopList: [{ isDepot: false, lat: 1, lng: 1, addr: 'X', inTime: new Date('2026-11-01T14:00:00Z'), outTime: new Date('2026-11-01T14:30:00Z') }] }); },
       matchStopToClientGeo: function (lat, lng, addr) { return addr === 'X' ? { id: 'c1' } : null; }
     });
@@ -250,8 +266,7 @@ async function main() {
       return {
         bid: 'biz-1', fakeSupabase: fakeSb,
         jobs: [{ id: 'jobA', date: '2026-11-01', team: 'B1', clientId: 'cA', cancelled: false }],
-        teamHoursEligibility: function () { return { included: [{ id: 'alice', uuid: 'alice-uuid' }], skipped: [] }; },
-        employeesByUuid: { 'alice-uuid': { payRate: 20, pay_type: 'hourly' } },
+        teamHoursEligibility: function () { return { included: [{ id: 'alice', uuid: 'alice-uuid', pay_rate: 20, pay_type: 'hourly' }], skipped: [] }; },
         fetchTeamDayGpsDetail: function () { return Promise.resolve({ device: { id: 'd1' }, trips: [{}], stopList: [{ isDepot: false, lat: 1, lng: 1, addr: 'X', inTime: new Date('2026-11-01T14:00:00Z'), outTime: new Date('2026-11-01T14:30:00Z') }] }); },
         matchStopToClientGeo: function (lat, lng, addr) { return addr === 'X' ? { id: 'cA' } : null; }
       };
@@ -278,8 +293,7 @@ async function main() {
     const sandbox = buildSandbox({
       bid: 'biz-1', fakeSupabase: fakeSb,
       jobs: [{ id: 'jobM', date: '2026-11-01', team: 'B1', clientId: 'cM', cancelled: false }],
-      teamHoursEligibility: function () { return { included: [{ id: 'alice', uuid: 'alice-uuid' }], skipped: [] }; },
-      employeesByUuid: { 'alice-uuid': { payRate: 20, pay_type: 'hourly' } },
+      teamHoursEligibility: function () { return { included: [{ id: 'alice', uuid: 'alice-uuid', pay_rate: 20, pay_type: 'hourly' }], skipped: [] }; },
       fetchTeamDayGpsDetail: function () { return Promise.resolve({ device: { id: 'd1' }, trips: [{}], stopList: [{ isDepot: false, lat: 1, lng: 1, addr: 'X', inTime: new Date('2026-11-01T14:00:00Z'), outTime: new Date('2026-11-01T14:30:00Z') }] }); },
       matchStopToClientGeo: function (lat, lng, addr) { return addr === 'X' ? { id: 'cM' } : null; }
     });
@@ -288,6 +302,89 @@ async function main() {
     await sandbox._vsnapBuildTeamDay(sbCtx, 'B1', '2026-11-01', true, counts); // rebuild checkbox ON -- still must not touch this row
     check('manually_edited row is completely untouched (even with rebuild ON)', store.job_visit_snapshots[0].match_note, 'Tom fixed this by hand');
     check('manually_edited row counted as already built', counts.alreadyBuilt, 1);
+  }
+
+  // ── 10b. REGRESSION: reproduces the exact missing-await bug against
+  //        the real (async, Promise-returning) PentaEmployees.get shape,
+  //        and proves the shipped builder no longer has it. The old
+  //        code was: `var emp = window.PentaEmployees.get(uuid); return
+  //        {pay_rate: emp ? emp.payRate : null, ...}` -- no await. Since
+  //        `get()` is async, `emp` was always the pending Promise object
+  //        (truthy), so emp.payRate read as undefined every time,
+  //        regardless of what the real employee record held. ──
+  {
+    const fakeGetOldWay = function (uuid) { return Promise.resolve({ payRate: 20, pay_type: 'hourly' }); };
+    const emp = fakeGetOldWay('alice-uuid'); // deliberately NOT awaited, exactly like the old bug
+    const oldBuggyResult = { pay_rate: emp ? emp.payRate : null, pay_type: emp ? emp.pay_type : null };
+    check('OLD pattern (no await) reproduces the bug: pay_rate reads as undefined off the Promise', oldBuggyResult.pay_rate, undefined);
+    check('OLD pattern (no await) reproduces the bug: pay_type reads as undefined off the Promise', oldBuggyResult.pay_type, undefined);
+
+    // Now run the REAL, SHIPPED _vsnapBuildTeamDay end-to-end with a
+    // real async get() in the sandbox (per buildSandbox's own stub) and
+    // confirm the written row has the CORRECT rate -- this is the test
+    // that fails against the old source and passes against the new.
+    const store = {};
+    const fakeSb = makeFakeSupabase(store);
+    const sandbox = buildSandbox({
+      bid: 'biz-1', fakeSupabase: fakeSb,
+      jobs: [{ id: 'jobR', date: '2026-11-01', team: 'B1', clientId: 'cR', cancelled: false }],
+      teamHoursEligibility: function () { return { included: [{ id: 'alice', uuid: 'alice-uuid', pay_rate: 20, pay_type: 'hourly' }], skipped: [] }; },
+      fetchTeamDayGpsDetail: function () { return Promise.resolve({ device: { id: 'd1' }, trips: [{}], stopList: [{ isDepot: false, lat: 1, lng: 1, addr: 'X', inTime: new Date('2026-11-01T14:00:00Z'), outTime: new Date('2026-11-01T14:30:00Z') }] }); },
+      matchStopToClientGeo: function (lat, lng, addr) { return addr === 'X' ? { id: 'cR' } : null; }
+    });
+    const sbCtx = { sb: fakeSb, bid: 'biz-1', userId: 'user-1' };
+    const counts = { matched: 0, ambiguous: 0, no_gps: 0, unmatched: 0, skipped: 0, alreadyBuilt: 0, incompleteLaborCost: 0, writeErrors: 0 };
+    await sandbox._vsnapBuildTeamDay(sbCtx, 'B1', '2026-11-01', false, counts);
+    const row = store.job_visit_snapshots[0];
+    check('REGRESSION: shipped builder resolves the real rate (2000 cents), not null', row.employees[0].rate_cents_per_hour, 2000);
+    check('REGRESSION: labor_cost_complete is true (not falsely incomplete)', row.labor_cost_complete, true);
+  }
+
+  // ── 10c. Rate-state matrix on the roster row itself (hourly+rate,
+  //        salaried, null rate, zero rate, unknown employee) ──
+  {
+    function runOneEmployee(rosterEmp, label) {
+      return (async function () {
+        const store = {};
+        const fakeSb = makeFakeSupabase(store);
+        const sandbox = buildSandbox({
+          bid: 'biz-1', fakeSupabase: fakeSb,
+          jobs: [{ id: 'job-' + label, date: '2026-11-01', team: 'B1', clientId: 'c-' + label, cancelled: false }],
+          teamHoursEligibility: function () { return { included: [rosterEmp], skipped: [] }; },
+          fetchTeamDayGpsDetail: function () { return Promise.resolve({ device: { id: 'd1' }, trips: [{}], stopList: [{ isDepot: false, lat: 1, lng: 1, addr: 'X', inTime: new Date('2026-11-01T14:00:00Z'), outTime: new Date('2026-11-01T14:30:00Z') }] }); },
+          matchStopToClientGeo: function () { return { id: 'c-' + label }; }
+        });
+        const sbCtx = { sb: fakeSb, bid: 'biz-1', userId: 'user-1' };
+        const counts = { matched: 0, ambiguous: 0, no_gps: 0, unmatched: 0, skipped: 0, alreadyBuilt: 0, incompleteLaborCost: 0, writeErrors: 0 };
+        await sandbox._vsnapBuildTeamDay(sbCtx, 'B1', '2026-11-01', false, counts);
+        return store.job_visit_snapshots[0];
+      })();
+    }
+
+    const hourly = await runOneEmployee({ id: 'e1', uuid: 'e1-uuid', pay_rate: 18, pay_type: 'hourly' }, 'hourly');
+    check('hourly with rate: included, 1800 cents/hr', hourly.employees[0].rate_cents_per_hour, 1800);
+    check('hourly with rate: labor_cost_complete true', hourly.labor_cost_complete, true);
+
+    const salaried = await runOneEmployee({ id: 'e2', uuid: 'e2-uuid', pay_rate: 18, pay_type: 'salary' }, 'salaried');
+    check('salaried: excluded from sum (null rate in jsonb)', salaried.employees[0].rate_cents_per_hour, null);
+    check('salaried: labor_cost_complete false', salaried.labor_cost_complete, false);
+    check('salaried: labor_cost_gross_cents null (nobody ratable)', salaried.labor_cost_gross_cents, null);
+
+    const nullRate = await runOneEmployee({ id: 'e3', uuid: 'e3-uuid', pay_rate: null, pay_type: 'hourly' }, 'nullrate');
+    check('null rate: excluded from sum', nullRate.employees[0].rate_cents_per_hour, null);
+    check('null rate: labor_cost_complete false', nullRate.labor_cost_complete, false);
+
+    const zeroRate = await runOneEmployee({ id: 'e4', uuid: 'e4-uuid', pay_rate: 0, pay_type: 'hourly' }, 'zerorate');
+    check('zero rate: excluded from sum (defensive check even if upstream let a zero through)', zeroRate.employees[0].rate_cents_per_hour, null);
+    check('zero rate: labor_cost_complete false', zeroRate.labor_cost_complete, false);
+
+    // Unknown employee: _teamHoursEmpUuid resolves to nothing (no uuid,
+    // no id) -- must never be silently dropped. labor_cost_complete is
+    // forced false and a visible match_note is added, never a blank one.
+    const unknown = await runOneEmployee({}, 'unknown');
+    check('unknown employee: dropped from the employees array (no id to key it by)', unknown.employees.length, 0);
+    check('unknown employee: labor_cost_complete forced false', unknown.labor_cost_complete, false);
+    checkTrue('unknown employee: match_note visibly says so, never silent', /could not be matched/.test(unknown.match_note || ''));
   }
 
   // ── 11. Completion signal: _vsnapRun skips dates >= today, never calls the builder for them ──
