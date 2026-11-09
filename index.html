@@ -20066,7 +20066,12 @@ var FILES_LIST = [
   // renderFilesGrid itself, filtered out of the grid entirely for any
   // other role -- not just hidden); every other item above is
   // unrestricted and unchanged.
-  { id: 'team-day-report', name: 'Team Day Report', icon: '📋', desc: 'Team roster, office times, client visits, and lunch by day.', fn: 'openTeamDayReport' }
+  { id: 'team-day-report', name: 'Team Day Report', icon: '📋', desc: 'Team roster, office times, client visits, and lunch by day.', fn: 'openTeamDayReport' },
+  // Visit Data (visit-snapshots branch, Stage 1 of the per-clean
+  // profitability feature). Owner/admin ONLY -- narrower than Team Day
+  // Report above, which also allows manager. Builds job_visit_snapshots
+  // rows from Geotab GPS; no profit numbers shown anywhere yet (PR2).
+  { id: 'visit-data', name: 'Visit Data', icon: '🛰️', desc: 'Build GPS-based visit records for past cleans (owner/admin only).', fn: 'openVisitDataTool' }
 ];
 
 function openFiles() {
@@ -20089,7 +20094,14 @@ function renderFilesGrid() {
   // own check. Every other item is unrestricted, unchanged.
   var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
   var canSeeTeamDayReport = ['owner', 'admin', 'manager'].indexOf(role) !== -1;
-  var items = FILES_LIST.filter(function (f) { return f.id !== 'team-day-report' || canSeeTeamDayReport; });
+  // Visit Data: owner/admin ONLY (not manager/dispatcher) -- stricter
+  // than Team Day Report's own gate just above, per its own spec.
+  var canSeeVisitData = ['owner', 'admin'].indexOf(role) !== -1;
+  var items = FILES_LIST.filter(function (f) {
+    if (f.id === 'team-day-report') return canSeeTeamDayReport;
+    if (f.id === 'visit-data') return canSeeVisitData;
+    return true;
+  });
   grid.innerHTML = items.map(function(f){
     return '<button onclick="'+(f.fn ? f.fn+'()' : "openFileDetail('"+f.id+"')")+'" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 4px;border-radius:10px;font-family:inherit" '
       + 'ontouchstart="this.style.background=\'var(--surface2)\'" ontouchend="this.style.background=\'none\'">'
@@ -36663,6 +36675,427 @@ function openTeamDayReport() {
     + '<div id="tdr-results" style="flex:1;overflow-y:auto;padding:14px 20px"></div>'
     + '<div id="tdr-totals" style="padding:10px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);flex-shrink:0;text-align:center"></div>';
   document.body.appendChild(overlay);
+}
+
+
+// ─────────────────────────────────────────
+// VISIT DATA (job_visit_snapshots builder) -- Stage 1 of the per-clean
+// profitability feature (PR: visit-snapshots). Owner/admin ONLY,
+// gated both in the Files grid (openVisitDataTool/renderFilesGrid) and
+// in RLS (migration 121). Builds snapshot rows from Geotab GPS + the
+// existing date-aware roster (_teamHoursEligibility) -- reuses
+// _fetchTeamDayGpsDetail, matchStopToClientGeo, and _teamHoursEligibility
+// read-only, unmodified. Does NOT touch the Team Hours modal, payroll/
+// Hours calculations, publishing, or the existing
+// compute_job_actual_minutes trigger/gps_verification_start_date (that
+// mechanism stays off and untouched -- this feature is fully
+// independent of it). No profit number is shown anywhere yet -- that's
+// a later PR.
+// ─────────────────────────────────────────
+var _visitSnapGeneration = 0;
+var _visitSnapRunInFlight = false;
+var _visitSnapGpsCache = {};        // team|date -> {ok,detail} | {ok:false,error} -- this tool's own session cache, separate from _tdrCache
+var _visitSnapLastSummary = null;
+
+// Pure: classifies every job for one team-day against that team-day's
+// GPS stop list. Takes no DOM/Supabase dependency -- an outcome is
+// fully determined by its inputs, so this is unit-tested directly (see
+// tests/visit-data-snapshots.test.js) without a browser.
+//
+//   teamJobs: this team's non-cancelled jobs on this date (the live
+//             `jobs` array's own shape: { id, clientId, ... }).
+//   gpsOutcome: { ok:true, detail:{device,trips,stopList,gps} } |
+//               { ok:false, error }  -- from _fetchTeamDayGpsDetail.
+//   matchFn: matchStopToClientGeo, passed in so tests can stub it
+//            without needing PentaClients loaded.
+//
+// Returns one entry per job in teamJobs:
+//   { job, status, in_at, out_at, team_minutes, match_note }
+// status is one of matched/ambiguous/no_gps/unmatched -- never
+// 'skipped' here; 'skipped' is decided one level up (_vsnapBuildTeamDay)
+// before this is even called, when nobody is eligible on the team that
+// day at all.
+function _vsnapClassifyTeamDayJobs(teamJobs, gpsOutcome, team, matchFn) {
+  var byClient = {};
+  teamJobs.forEach(function (j) {
+    (byClient[j.clientId] = byClient[j.clientId] || []).push(j);
+  });
+
+  // Two jobs for the same client on the same team-day: neither can be
+  // told apart from GPS alone -- both become 'ambiguous', no minutes
+  // saved for either, per spec.
+  var ambiguousClientIds = {};
+  Object.keys(byClient).forEach(function (cid) {
+    if (byClient[cid].length > 1) ambiguousClientIds[cid] = true;
+  });
+
+  var gpsAvailable = !!(gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.device);
+  var hasTrips = gpsAvailable && gpsOutcome.detail.trips && gpsOutcome.detail.trips.length > 0;
+
+  // Match every non-depot stop to a client ONCE, up front -- shared
+  // across all jobs in this team-day so "two stops matched the same
+  // client" (ambiguous) can be detected without re-matching per job.
+  var stopMatchesByClient = {};
+  if (gpsAvailable && hasTrips) {
+    var stopList = gpsOutcome.detail.stopList || [];
+    stopList.forEach(function (s) {
+      if (s.isDepot) return;
+      var m = matchFn(s.lat, s.lng, s.addr, teamJobs, team);
+      if (!m) return;
+      (stopMatchesByClient[m.id] = stopMatchesByClient[m.id] || []).push(s);
+    });
+  }
+
+  return teamJobs.map(function (j) {
+    if (ambiguousClientIds[j.clientId]) {
+      return {
+        job: j, status: 'ambiguous', in_at: null, out_at: null, team_minutes: null,
+        match_note: byClient[j.clientId].length + ' jobs for this client on this team-day -- cannot tell which visit is which.'
+      };
+    }
+    if (!gpsAvailable) {
+      return {
+        job: j, status: 'no_gps', in_at: null, out_at: null, team_minutes: null,
+        match_note: (gpsOutcome && gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.reason) || 'No GPS device for this team on this date.'
+      };
+    }
+    if (!hasTrips) {
+      return { job: j, status: 'no_gps', in_at: null, out_at: null, team_minutes: null, match_note: 'No GPS trips recorded for this team on this date.' };
+    }
+    var stops = stopMatchesByClient[j.clientId] || [];
+    if (stops.length === 0) {
+      return { job: j, status: 'unmatched', in_at: null, out_at: null, team_minutes: null, match_note: 'No GPS stop matched this client (no coordinates and no address match).' };
+    }
+    if (stops.length > 1) {
+      return {
+        job: j, status: 'ambiguous', in_at: null, out_at: null, team_minutes: null,
+        match_note: stops.length + ' GPS stops matched this client on this team-day -- cannot tell which one is the visit.'
+      };
+    }
+    var s = stops[0];
+    if (!s.inTime || !s.outTime) {
+      return { job: j, status: 'unmatched', in_at: null, out_at: null, team_minutes: null, match_note: 'Matched stop is missing an arrival or departure time.' };
+    }
+    var minutes = Math.round((s.outTime - s.inTime) / 60000);
+    return { job: j, status: 'matched', in_at: s.inTime, out_at: s.outTime, team_minutes: minutes, match_note: null };
+  });
+}
+
+// Pure: freezes each present employee's CURRENT rate/pay_type and
+// computes gross labor cost for a known team_minutes. An employee with
+// no rate on file or pay_type='salary' is excluded from the sum (never
+// invented) and flips labor_cost_complete to false for the whole row.
+// teamMinutes === null (no match yet) always yields
+// labor_cost_gross_cents=null, labor_cost_complete=false -- nothing to
+// compute without minutes.
+//   presentEmployees: [{ employee_id, pay_rate (dollars/hr or
+//                         null/undefined), pay_type ('hourly'|'salary'|
+//                         null/undefined) }]
+function _vsnapComputeLaborCost(presentEmployees, teamMinutes) {
+  var employeesJson = presentEmployees.map(function (e) {
+    var rateNum = parseFloat(e.pay_rate);
+    var ratable = e.pay_type === 'hourly' && e.pay_rate != null && !isNaN(rateNum) && rateNum > 0;
+    return {
+      employee_id: e.employee_id,
+      minutes: teamMinutes,
+      rate_cents_per_hour: ratable ? Math.round(rateNum * 100) : null,
+      pay_type: e.pay_type || null
+    };
+  });
+  if (teamMinutes == null) {
+    return { employees: employeesJson, labor_cost_gross_cents: null, labor_cost_complete: false };
+  }
+  var ratableEntries = employeesJson.filter(function (e) { return e.rate_cents_per_hour != null; });
+  if (!ratableEntries.length) {
+    return { employees: employeesJson, labor_cost_gross_cents: null, labor_cost_complete: false };
+  }
+  var totalCents = ratableEntries.reduce(function (sum, e) { return sum + Math.round((teamMinutes / 60) * e.rate_cents_per_hour); }, 0);
+  var complete = ratableEntries.length === employeesJson.length;
+  return { employees: employeesJson, labor_cost_gross_cents: totalCents, labor_cost_complete: complete };
+}
+
+// Pure: the write-once rule. existingRow is the current
+// job_visit_snapshots row for this job (or null/undefined if none
+// exists yet). A manually_edited row is NEVER overwritten. A 'matched'
+// row is only overwritten when rebuildMatched is explicitly true.
+// Everything else (ambiguous/no_gps/unmatched/skipped, not manually
+// edited) is always safe to recompute on a re-run.
+function _vsnapDecideWriteAction(existingRow, rebuildMatched) {
+  if (!existingRow) return 'insert';
+  if (existingRow.manually_edited) return 'skip_already_built';
+  if (existingRow.status === 'matched' && !rebuildMatched) return 'skip_already_built';
+  return 'update';
+}
+
+async function _visitSnapFetchTeamDay(team, dateStr) {
+  var key = team + '|' + dateStr;
+  if (_visitSnapGpsCache[key]) return _visitSnapGpsCache[key];
+  var outcome;
+  try {
+    var detail = await _fetchTeamDayGpsDetail(team, dateStr);
+    outcome = { ok: true, detail: detail };
+  } catch (e) {
+    outcome = { ok: false, error: (e && e.message) || String(e) };
+  }
+  _visitSnapGpsCache[key] = outcome;
+  return outcome;
+}
+
+function _vsnapQuickSelect(which) {
+  var fromEl = document.getElementById('vsnap-from');
+  var toEl = document.getElementById('vsnap-to');
+  if (!fromEl || !toEl) return;
+  var tz = _pentaBusinessTimezone();
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  if (which === 'last4weeks') {
+    var today0 = _bizTodayParts(tz);
+    var todayUtc0 = Date.UTC(today0.y, today0.m - 1, today0.d);
+    var fromD = new Date(todayUtc0 - 27 * 86400000);
+    fromEl.value = fromD.getUTCFullYear() + '-' + pad2(fromD.getUTCMonth() + 1) + '-' + pad2(fromD.getUTCDate());
+    toEl.value = today0.y + '-' + pad2(today0.m) + '-' + pad2(today0.d);
+    return;
+  }
+  var r = _computeLastPayWeekRange(tz, _pentaPayWeekStartDay());
+  fromEl.value = r.startYmd; toEl.value = r.endYmd;
+}
+
+function _vsnapFriendlyDate(dateStr) {
+  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// "Completion signal: job date before today AND not cancelled" -- the
+// business's own today, not the viewer's browser date.
+function _vsnapBizTodayStr() {
+  var p = _bizTodayParts(_pentaBusinessTimezone());
+  return p.y + '-' + String(p.m).padStart(2, '0') + '-' + String(p.d).padStart(2, '0');
+}
+
+async function _vsnapGetCurrentWriter() {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  if (!sb || !bid) return { sb: null, bid: null, userId: null };
+  var userId = null;
+  try {
+    var ures = await sb.auth.getUser();
+    if (ures && ures.data && ures.data.user) {
+      var ur = await sb.from('users').select('id').eq('auth_user_id', ures.data.user.id).maybeSingle();
+      if (ur && ur.data) userId = ur.data.id;
+    }
+  } catch (e) { /* best-effort -- built_by just stays null */ }
+  return { sb: sb, bid: bid, userId: userId };
+}
+
+// Builds and writes job_visit_snapshots rows for one team's jobs on
+// one date. Mutates `counts` in place. Never throws past a single
+// row's own write -- a write failure is surfaced via showToast and
+// counted, it never aborts the rest of this team-day's jobs.
+async function _vsnapBuildTeamDay(sbCtx, team, dateStr, rebuildMatched, counts) {
+  var teamJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs))
+    ? jobs.filter(function (j) { return j.date === dateStr && j.team === team && !j.cancelled; })
+    : [];
+  if (!teamJobs.length) return;
+
+  var elig = _teamHoursEligibility(team, dateStr);
+  var presentEmployees = elig.included.map(function (e) {
+    var uuid = _teamHoursEmpUuid(e);
+    var emp = (uuid && window.PentaEmployees && window.PentaEmployees.get) ? window.PentaEmployees.get(uuid) : null;
+    return { employee_id: uuid, pay_rate: emp ? emp.payRate : null, pay_type: emp ? emp.pay_type : null };
+  }).filter(function (e) { return !!e.employee_id; });
+
+  // Look up any existing rows for these jobs in ONE round trip, so the
+  // write-once rule can be decided without a query per job.
+  var jobIds = teamJobs.map(function (j) { return j.id; });
+  var existingById = {};
+  if (sbCtx.sb && sbCtx.bid && jobIds.length) {
+    try {
+      var exRes = await sbCtx.sb.from('job_visit_snapshots').select('job_id,status,manually_edited').eq('business_id', sbCtx.bid).in('job_id', jobIds);
+      if (exRes.error) throw exRes.error;
+      (exRes.data || []).forEach(function (r) { existingById[r.job_id] = r; });
+    } catch (e) {
+      showToast('Could not read existing visit data for ' + team + ' on ' + dateStr + ': ' + ((e && e.message) || String(e)), 'error');
+      return;
+    }
+  }
+
+  if (!elig.included.length) {
+    for (var ti = 0; ti < teamJobs.length; ti++) {
+      await _vsnapWriteRow(sbCtx, teamJobs[ti], team, dateStr, 'skipped',
+        'No active, non-admin employees assigned to this team on this date.',
+        null, null, null, [], null, false, existingById[teamJobs[ti].id], rebuildMatched, counts);
+    }
+    return;
+  }
+
+  var gpsOutcome = await _visitSnapFetchTeamDay(team, dateStr);
+  var classified = _vsnapClassifyTeamDayJobs(teamJobs, gpsOutcome, team, matchStopToClientGeo);
+
+  for (var ci = 0; ci < classified.length; ci++) {
+    var c = classified[ci];
+    var cost = _vsnapComputeLaborCost(presentEmployees, c.team_minutes);
+    await _vsnapWriteRow(sbCtx, c.job, team, dateStr, c.status, c.match_note,
+      c.in_at, c.out_at, c.team_minutes, cost.employees, cost.labor_cost_gross_cents, cost.labor_cost_complete,
+      existingById[c.job.id], rebuildMatched, counts);
+  }
+}
+
+async function _vsnapWriteRow(sbCtx, job, team, dateStr, status, matchNote, inAt, outAt, teamMinutes, employeesJson, laborCents, laborComplete, existingRow, rebuildMatched, counts) {
+  var action = _vsnapDecideWriteAction(existingRow, rebuildMatched);
+  if (action === 'skip_already_built') { counts.alreadyBuilt++; return; }
+  counts[status] = (counts[status] || 0) + 1;
+  if (status === 'matched' && laborComplete === false) counts.incompleteLaborCost++;
+  if (!sbCtx.sb || !sbCtx.bid) { counts.writeErrors = (counts.writeErrors || 0) + 1; return; }
+
+  var row = {
+    business_id: sbCtx.bid, job_id: job.id, client_id: job.clientId || null, visit_date: dateStr, team: team,
+    in_at: inAt ? inAt.toISOString() : null, out_at: outAt ? outAt.toISOString() : null,
+    team_minutes: teamMinutes, employees: employeesJson, labor_cost_gross_cents: laborCents,
+    labor_cost_complete: laborComplete, status: status, match_note: matchNote, source: 'geotab',
+    built_at: new Date().toISOString(), built_by: sbCtx.userId
+  };
+  try {
+    var res = (action === 'insert')
+      ? await sbCtx.sb.from('job_visit_snapshots').insert(row)
+      : await sbCtx.sb.from('job_visit_snapshots').update(row).eq('business_id', sbCtx.bid).eq('job_id', job.id);
+    if (res.error) throw res.error;
+  } catch (e) {
+    counts.writeErrors = (counts.writeErrors || 0) + 1;
+    showToast('Could not save visit data for a job on ' + dateStr + ' (' + team + '): ' + ((e && e.message) || String(e)), 'error');
+  }
+}
+
+function _vsnapRenderSummary(counts, notYetHappened, failedDays) {
+  var rows = [
+    ['Matched', counts.matched || 0],
+    ['Ambiguous', counts.ambiguous || 0],
+    ['No GPS', counts.no_gps || 0],
+    ['Unmatched', counts.unmatched || 0],
+    ['Skipped', counts.skipped || 0],
+    ['Already built (unchanged)', counts.alreadyBuilt || 0]
+  ];
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:13px">' + rows.map(function (r) {
+    return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 4px;color:var(--muted)">' + r[0] + '</td><td style="padding:6px 4px;text-align:right;font-weight:600">' + r[1] + '</td></tr>';
+  }).join('') + '</table>';
+  html += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">' + (counts.incompleteLaborCost || 0) + ' matched job(s) have an incomplete labor cost (at least one present employee has no rate on file or is salaried).</div>';
+  if (counts.writeErrors) html += '<div style="margin-top:6px;font-size:12px;color:var(--red)">' + counts.writeErrors + ' row(s) failed to save -- see the error messages above.</div>';
+  if (notYetHappened) html += '<div style="margin-top:6px;font-size:12px;color:var(--muted)">' + notYetHappened + ' day(s) in this range are today or in the future and were skipped -- nothing to build yet.</div>';
+  html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Per-employee presence isn’t tracked -- every employee on a team that day is credited with the full team visit time, not individual clock-in/out.</div>';
+  if (failedDays.length) {
+    html += '<div style="margin-top:10px;font-size:12px;color:var(--red)">Could not load: ' + failedDays.map(function (f) { return _vsnapFriendlyDate(f.date) + ' (' + _adminEsc(f.reason) + ')'; }).join(', ') + '</div>';
+  }
+  return html;
+}
+
+async function _vsnapRun() {
+  if (_visitSnapRunInFlight) return; // ignore a second tap while building
+  var fromEl = document.getElementById('vsnap-from');
+  var toEl = document.getElementById('vsnap-to');
+  var statusEl = document.getElementById('vsnap-status');
+  var summaryEl = document.getElementById('vsnap-summary');
+  var runBtn = document.getElementById('vsnap-run-btn');
+  var rebuildEl = document.getElementById('vsnap-rebuild-matched');
+  if (!fromEl || !toEl || !statusEl || !summaryEl) { console.warn('[VisitData] sheet elements missing'); return; }
+
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  if (['owner', 'admin'].indexOf(role) === -1) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Only owners and admins can build visit data.';
+    return;
+  }
+
+  var range = _tdrExpandDateRange(fromEl.value, toEl.value);
+  if (!range.ok) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = range.error;
+    return;
+  }
+
+  _visitSnapRunInFlight = true;
+  var myGen = ++_visitSnapGeneration;
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Building…'; }
+  summaryEl.innerHTML = '';
+  statusEl.style.color = 'var(--muted)';
+
+  var rebuildMatched = !!(rebuildEl && rebuildEl.checked);
+  var todayStr = _vsnapBizTodayStr();
+  var sbCtx = await _vsnapGetCurrentWriter();
+  if (!sbCtx.sb || !sbCtx.bid) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Not signed in to a business -- cannot build visit data.';
+    _visitSnapRunInFlight = false;
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Build'; }
+    return;
+  }
+
+  var counts = { matched: 0, ambiguous: 0, no_gps: 0, unmatched: 0, skipped: 0, alreadyBuilt: 0, incompleteLaborCost: 0, writeErrors: 0 };
+  var notYetHappened = 0;
+  var failedDays = [];
+  var teams = _pentaTeamNames();
+
+  for (var d = 0; d < range.dates.length; d++) {
+    if (myGen !== _visitSnapGeneration) return; // cancelled (sheet closed / a new Build started)
+    var dateStr = range.dates[d];
+    if (dateStr >= todayStr) { notYetHappened++; continue; } // completion signal: date strictly before today only
+    statusEl.textContent = 'Building ' + _vsnapFriendlyDate(dateStr) + ', ' + (d + 1) + ' of ' + range.dates.length + '…';
+    try {
+      for (var ti = 0; ti < teams.length; ti++) {
+        if (myGen !== _visitSnapGeneration) return; // cancelled mid-day
+        await _vsnapBuildTeamDay(sbCtx, teams[ti], dateStr, rebuildMatched, counts);
+      }
+    } catch (e) {
+      failedDays.push({ date: dateStr, reason: (e && e.message) || String(e) });
+    }
+  }
+
+  if (myGen !== _visitSnapGeneration) return;
+  _visitSnapRunInFlight = false;
+  if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Build'; }
+  statusEl.textContent = failedDays.length ? (failedDays.length + ' day(s) could not load (shown below).') : 'Done.';
+  _visitSnapLastSummary = counts;
+  summaryEl.innerHTML = _vsnapRenderSummary(counts, notYetHappened, failedDays);
+}
+
+function openVisitDataTool() {
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  if (['owner', 'admin'].indexOf(role) === -1) {
+    alert('Only owners and admins can use Visit Data.');
+    return;
+  }
+  var old = document.getElementById('visit-data-overlay');
+  if (old) old.remove();
+  _visitSnapLastSummary = null;
+
+  var defaultRange = _computeLastPayWeekRange(_pentaBusinessTimezone(), _pentaPayWeekStartDay());
+
+  var overlay = document.createElement('div');
+  overlay.id = 'visit-data-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:9700;background:var(--surface);display:flex;flex-direction:column;font-family:\'DM Sans\',sans-serif';
+  overlay.innerHTML = '<div style="padding:16px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0">'
+    +   '<div style="font-size:17px;font-weight:700;color:var(--text)">Visit Data</div>'
+    +   '<button onclick="closeVisitDataTool()" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;font-family:inherit;padding:0">&times;</button>'
+    + '</div>'
+    + '<div style="padding:14px 20px;border-bottom:1px solid var(--border);flex-shrink:0">'
+    +   '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">Builds GPS-based visit records for past cleans — no profit numbers yet. Owner/admin only.</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +     '<div style="flex:1 1 120px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">From</div><input type="date" id="vsnap-from" value="' + defaultRange.startYmd + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +     '<div style="flex:1 1 120px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">To</div><input type="date" id="vsnap-to" value="' + defaultRange.endYmd + '" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:14px;padding:9px 10px;border-radius:8px"></div>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+    +     '<button onclick="_vsnapQuickSelect(\'lastweek\')" style="flex:1 1 90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">Last week</button>'
+    +     '<button onclick="_vsnapQuickSelect(\'last4weeks\')" style="flex:1 1 90px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">Last 4 weeks</button>'
+    +   '</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-bottom:10px;cursor:pointer"><input type="checkbox" id="vsnap-rebuild-matched" style="width:16px;height:16px"> Rebuild rows already marked "matched"</label>'
+    +   '<button id="vsnap-run-btn" onclick="_vsnapRun()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Build</button>'
+    +   '<div id="vsnap-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>'
+    + '</div>'
+    + '<div id="vsnap-summary" style="flex:1;overflow-y:auto;padding:14px 20px"></div>';
+  document.body.appendChild(overlay);
+}
+
+function closeVisitDataTool() {
+  _visitSnapGeneration++; // cancels any build loop still mid-flight
+  _visitSnapRunInFlight = false;
+  var el = document.getElementById('visit-data-overlay');
+  if (el) el.remove();
 }
 
 
