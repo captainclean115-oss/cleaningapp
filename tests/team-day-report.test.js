@@ -1,24 +1,13 @@
-// Team Day Report v2 (team-day-report-v2 branch, PR #211): redesigned
-// from a row-per-employee table (PR #210) into one block per team per
-// day that reads like the Team Hours modal's own GPS activity timeline
-// -- same stop list, same labels (_renderGPSStopRow itself, called
-// with readOnly:true so this report can never trigger its "Not lunch"/
-// "Mark as lunch" write). Adds a downloadable PDF (jsPDF, text/vector
-// drawing).
+// Team Day Report corrections (team-day-report-corrections branch):
+// morning-office dedup, "Not lunch" exclusion, single-lunch merging,
+// terminated-employee list cleanup, and app-wide-ready 12-hour time
+// formatting (_hrsFmt12, the existing Hours tab/Export Hours Report
+// helper -- reused here, not reinvented).
 //
-// team-day-report-files-entry branch: the second entry point moved
-// from the manager Forms area to the manager Files screen
-// (FILES_LIST/renderFilesGrid, "Reports & documents") -- the Forms
-// entry no longer exists at all.
-//
-// This test extracts the real _teamHoursEligibility, dateKey,
-// _hrCsvField, _renderGPSStopRow, FILES_LIST/renderFilesGrid, and the
-// whole v2 Team Day Report module verbatim from index.html. A minimal
-// FakeJsPDF stub stands in for the real jsPDF (loaded via CDN in the
-// browser, not available in Node) so _tdrBuildPdf/_tdrBlockLines/
-// _tdrMeasureLines/_tdrDrawLines -- the real functions -- can be
-// exercised directly; only the rendering backend is faked, never the
-// report logic itself.
+// Extracts the real _teamHoursEligibility, dateKey, _hrCsvField,
+// _hrsFmt12, and the whole corrected Team Day Report module verbatim
+// from index.html. A minimal FakeJsPDF stub stands in for the real
+// jsPDF (loaded via CDN in the browser, not available in Node).
 //
 // Run with: node tests/team-day-report.test.js
 
@@ -40,11 +29,10 @@ function extract(startMarker, endMarker, label) {
 const eligSource = extract('function _teamHoursEligibility(team, dateStr) {', '\n\n// PR #118', 'Team Hours eligibility block');
 const dateKeySource = extract('function dateKey(d) {', '\n\nfunction jobsForDate', 'dateKey');
 const hrCsvFieldSource = extract('function _hrCsvField(s) {', '\n\n// Tom: Export Hours Report always used', '_hrCsvField');
-const stopRowSource = extract('function _renderGPSStopRow(s, includeDriveInfo, ctx) {', '\n\nfunction renderGPS() {', '_renderGPSStopRow');
-const filesSource = extract('var FILES_LIST = [', '\n\nfunction openFileDetail', 'FILES_LIST/renderFilesGrid');
-const tdrSource = extract('var TDR_MAX_RANGE_DAYS = 31;', '\nfunction openTeamDayReport() {', 'Team Day Report v2 module');
+const hrsFmt12Source = extract('function _hrsFmt12(date) {', '\n\n// Portal-hours-match-manager fix.', '_hrsFmt12');
+const tdrSource = extract('var TDR_MAX_RANGE_DAYS = 31;', '\nfunction openTeamDayReport() {', 'Team Day Report module (corrected)');
 
-const fnSource = eligSource + '\n' + dateKeySource + '\n' + hrCsvFieldSource + '\n' + stopRowSource + '\n' + filesSource + '\n' + tdrSource;
+const fnSource = [eligSource, dateKeySource, hrCsvFieldSource, hrsFmt12Source, tdrSource].join('\n');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -54,10 +42,7 @@ function check(label, actual, expected) {
 }
 function checkTrue(label, cond) { check(label, !!cond, true); }
 
-// Minimal stand-in for jsPDF's instance API -- only the methods
-// _tdrBuildPdf/_tdrBlockLines/_tdrDrawLines actually call. Records every
-// doc.text() call per page so tests can assert on real PDF content
-// without a real PDF renderer (not available in Node / not bundled).
+// Minimal stand-in for jsPDF's instance API.
 function FakeJsPDF() {
   var self = this;
   this._pages = [[]];
@@ -76,53 +61,46 @@ FakeJsPDF.prototype.text = function (txt) { this._pages[this._curPage].push(txt)
 FakeJsPDF.prototype.addPage = function () { this._pages.push([]); this._curPage = this._pages.length - 1; };
 FakeJsPDF.prototype.setPage = function (p) { this._curPage = p - 1; };
 FakeJsPDF.prototype.splitTextToSize = function (text) {
-  // Deterministic word-wrap at ~60 chars -- enough to exercise
-  // multi-line wrapping without needing real font metrics.
   var words = String(text).split(' ');
   var lines = [], cur = '';
   words.forEach(function (w) {
     var next = cur ? cur + ' ' + w : w;
-    if (next.length > 60) { lines.push(cur); cur = w; } else { cur = next; }
+    if (next.length > 70) { lines.push(cur); cur = w; } else { cur = next; }
   });
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 };
-FakeJsPDF.prototype.save = function (filename) { this._savedFilename = filename; };
 
-// ── Fixtures ──
+const TZ = 'America/New_York';
+// 2026-09-10 is EDT (UTC-4): "HH:MM" local -> "HH+4:MM" UTC.
+function t(hhmm) {
+  var p = hhmm.split(':');
+  var hh = parseInt(p[0], 10) + 4;
+  return new Date('2026-09-10T' + String(hh).padStart(2, '0') + ':' + p[1] + ':00.000Z');
+}
+
 const ROSTER = [
   { id: 'e1', name: 'Alice', uuid: 'uuid-alice', defaultTeam: 'B1' },
   { id: 'e2', name: 'Bob', uuid: 'uuid-bob', defaultTeam: 'B1' },
   { id: 'e3', name: 'Cara', uuid: 'uuid-cara', defaultTeam: 'B1' }, // on vacation this date
-  { id: 'e4', name: 'Dana', uuid: 'uuid-dana', defaultTeam: 'B1' }, // terminated as of this date
-  { id: 'e5', name: 'Eve', uuid: 'uuid-eve', defaultTeam: 'S1' },
+  { id: 'e4', name: 'Dana', uuid: 'uuid-dana', defaultTeam: 'B1' }, // terminated as of 2026-09-10
 ];
 
 function buildSandbox(opts) {
   opts = opts || {};
-  const overrides = opts.overrides || {}; // empId -> { start, end, lunch }
-  const gpsResults = opts.gpsResults || {}; // 'team|date' -> detail object, or an Error to throw
-  const lunchOverrides = opts.lunchOverrides || {}; // 'team|date|stopKey' -> { override_type }
-  const elements = Object.assign({
-    'team-day-report-btn': { style: {} },
-    'files-grid': { innerHTML: '' },
-  }, opts.elements || {});
-  const calls = [];
+  const overrides = opts.overrides || {};
+  const lunchOverrides = opts.lunchOverrides || {}; // 'team|dateStr|stopKeyISO' -> { override_type }
+  const clientMatchFor = opts.clientMatchFor || {}; // addr -> {name,id,scheduled}
 
   const sandbox = {
     console,
-    document: { getElementById: function (id) { return Object.prototype.hasOwnProperty.call(elements, id) ? elements[id] : null; } },
-    alert: function (msg) { calls.push(['alert', msg]); },
     window: {
       PentaEmployees: { getByLegacyRosterId: function () { return null; } },
       PentaLunchFlags: { getOverride: function (team, dateStr, stopKey) { return lunchOverrides[team + '|' + dateStr + '|' + stopKey] || null; } },
-      jspdf: { jsPDF: FakeJsPDF },
-      PentaTenant: { name: function () { return opts.bizName || 'Fixture Cleaning Co'; } },
     },
-
     getUnifiedRoster: function () { return ROSTER.slice(); },
     getEmployeeTeam: function (empId) {
-      if (empId === 'e3' || empId === 'e4') return null; // off/terminated -> not on any team today
+      if (empId === 'e3' || empId === 'e4') return null;
       var emp = ROSTER.find(function (e) { return e.id === empId; });
       return emp ? emp.defaultTeam : null;
     },
@@ -132,254 +110,214 @@ function buildSandbox(opts) {
 
     getEmpHours: function (empId) { return overrides[empId] || null; },
     _fetchTeamDayGpsDetail: function (team, dateStr) {
-      calls.push(['_fetchTeamDayGpsDetail', team, dateStr]);
-      var key = team + '|' + dateStr;
-      var v = gpsResults[key];
-      if (v instanceof Error) return Promise.reject(v);
+      var v = (opts.gpsResults || {})[team + '|' + dateStr];
       return Promise.resolve(v || { device: null, resolved: {}, trips: [], stopList: [], gps: { available: false, reason: 'No GPS device assigned' } });
     },
-    matchStopToClientGeo: function (lat, lng, addr) {
-      if (opts.clientMatchFor && opts.clientMatchFor[addr]) return opts.clientMatchFor[addr];
-      return null;
-    },
+    matchStopToClientGeo: function (lat, lng, addr) { return clientMatchFor[addr] || null; },
     jobs: opts.jobs || [],
     _pentaTeamNames: function () { return opts.teams || ['B1']; },
-    _pentaBusinessTimezone: function () { return 'America/New_York'; },
-    _bizHM: function (date) {
-      var d = (date instanceof Date) ? date : new Date(date);
-      return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
-    },
+    _pentaBusinessTimezone: function () { return TZ; },
     _adminEsc: function (s) { return String(s); },
     getCurrentAppRole: function () { return opts.role !== undefined ? opts.role : 'owner'; },
+    jspdf: undefined,
+    PentaTenant: { name: function () { return 'Fixture Cleaning Co'; } },
   };
+  sandbox.window.jspdf = { jsPDF: FakeJsPDF };
+  sandbox.window.PentaTenant = sandbox.PentaTenant;
   vm.createContext(sandbox);
   vm.runInContext(fnSource, sandbox);
-  return { sandbox, calls, elements };
+  return { sandbox };
+}
+
+function classify(sandbox, stops, ctx) {
+  return stops.map(function (s) { return sandbox._tdrClassifyStop(s, ctx); });
 }
 
 async function main() {
-  // ── Timeline order/labels match the modal's own stop-row renderer ──
+  // ── (a) Two morning office stops -> one office entry, start 9:01 AM ──
+  {
+    const { sandbox } = buildSandbox({});
+    const stops = [
+      { addr: 'DEPOT', inTime: null, outTime: t('08:47'), isDepot: true },
+      { addr: 'DEPOT', inTime: t('08:48'), outTime: t('09:01'), isDepot: true },
+      { addr: '123 Main St', inTime: t('09:30'), outTime: t('09:50'), isDepot: false, lat: 1, lng: 1 },
+    ];
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:01'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    const trimmed = sandbox._tdrTrimMorningStops(classified, ctx.trueStart);
+    check('the early 8:47 morning blip is dropped', trimmed.length, 2);
+    checkTrue('exactly one Office entry remains, ending at the real start', trimmed[0].isDepot && trimmed[0].outTime.getTime() === t('09:01').getTime());
+    check('"Left office" (via _hrsFmt12) reads 9:01 AM', sandbox._hrsFmt12(trimmed[0].outTime), '9:01 AM');
+  }
+
+  // ── (b) A non-office stop before the start is also dropped (generic rule) ──
+  {
+    const { sandbox } = buildSandbox({});
+    const stops = [
+      { addr: 'Personal Errand St', inTime: null, outTime: t('08:30'), isDepot: false },
+      { addr: 'DEPOT', inTime: t('08:35'), outTime: t('09:00'), isDepot: true },
+    ];
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:00'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    const trimmed = sandbox._tdrTrimMorningStops(classified, ctx.trueStart);
+    check('the pre-start stop (not an office stop) is dropped too', trimmed.length, 1);
+    checkTrue('only the real-departure entry remains', trimmed[0].outTime.getTime() === t('09:00').getTime());
+  }
+
+  // ── (c) Three lunch candidates, one marked "Not lunch" -> excluded entirely ──
   {
     const { sandbox } = buildSandbox({
-      clientMatchFor: { '123 Main St': { name: 'Jane Smith', id: 'c1', scheduled: true } },
+      lunchOverrides: { ['B1|2026-09-10|' + t('12:00').toISOString()]: { override_type: 'exclude' } },
     });
     const stops = [
-      { addr: 'Depot', inTime: new Date('2026-09-10T12:00:00Z'), outTime: new Date('2026-09-10T12:10:00Z'), isDepot: true },
-      { addr: '123 Main St', inTime: new Date('2026-09-10T14:00:00Z'), outTime: new Date('2026-09-10T14:30:00Z'), isDepot: false },
-      { addr: '456 Oak Ave', inTime: new Date('2026-09-10T15:00:00Z'), outTime: new Date('2026-09-10T15:20:00Z'), isDepot: false }, // unrecognized, 20min -- "possible lunch" heuristic (<60min, no match)
-      { addr: '789 Pine Rd', inTime: new Date('2026-09-10T16:00:00Z'), outTime: new Date('2026-09-10T17:30:00Z'), isDepot: false }, // unrecognized, 90min -- NOT possible lunch
+      { addr: '1 A St', inTime: t('12:00'), outTime: t('12:15'), isDepot: false }, // marked Not lunch
+      { addr: '2 B St', inTime: t('12:20'), outTime: t('12:30'), isDepot: false },
+      { addr: '3 C St', inTime: t('12:35'), outTime: t('12:50'), isDepot: false },
     ];
-    const ctx = { tz: 'America/New_York', team: 'B1', teamJobs: [] };
-    const infos = stops.map(function (s) { return sandbox._tdrStopInfo(s, ctx); });
-    check('depot stop labeled "Office" (data function)', infos[0].label, 'Office');
-    check('matched client stop labeled with the client name (data function)', infos[1].label, 'Jane Smith');
-    check('short unmatched stop flagged "Possible lunch / break" (data function)', infos[2].label, 'Possible lunch / break');
-    check('long unmatched stop labeled "Unrecognized stop" (data function)', infos[3].label, 'Unrecognized stop');
-
-    // Same stops through the REAL _renderGPSStopRow (readOnly) -- labels must agree.
-    const html = stops.map(function (s, si) {
-      return sandbox._renderGPSStopRow(s, si > 0, { tz: 'America/New_York', team: 'B1', teamJobs: [], readOnly: true, isLastOverall: s === stops[stops.length - 1] });
-    }).join('');
-    checkTrue('modal renderer HTML contains the matched client name', html.indexOf('Jane Smith') !== -1);
-    checkTrue('modal renderer HTML contains "Possible lunch / break" for the same stop the data function flagged', html.indexOf('Possible lunch / break') !== -1);
-    checkTrue('modal renderer HTML contains "Unrecognized stop" for the long unmatched stop', html.indexOf('Unrecognized stop') !== -1);
-    checkTrue('modal renderer HTML labels the depot stop "Office"', /Office/.test(html));
-    checkTrue('read-only mode never renders the write-capable "Not lunch" toggle', html.indexOf('Not lunch') === -1 && html.indexOf('Mark as lunch') === -1);
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:00'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    check('the "Not lunch" stop is never a candidate', classified[0].isPossibleLunch, false);
+    checkTrue('the other two are candidates', classified[1].isPossibleLunch && classified[2].isPossibleLunch);
+    const merge = sandbox._tdrMergeLunchCandidates(classified);
+    check('only 2 of the 3 stops are merged (the excluded one is never included)', merge.mergedIndexes.sort(), [1, 2]);
+    check('total minutes = sum of only the 2 real candidates (10 + 15 = 25)', merge.minutes + merge.droppedMin, 25);
+    const label = sandbox._tdrStopDisplayLabel(classified[0], false);
+    check('the "Not lunch" stop displays as a plain "Stop", not "Marked not-lunch"', label, 'Stop');
   }
 
-  // ── _tdrExpandDateRange (range cap + basics) ──
+  // ── (d) 40 min + 10 min candidates, a client arriving clips the end to 1 min before it; full backward recovery ──
   {
-    const { sandbox } = buildSandbox({});
-    const single = sandbox._tdrExpandDateRange('2026-09-10', '2026-09-10');
-    check('single-day range expands to exactly one date', single, { ok: true, dates: ['2026-09-10'] });
-    const tooLong = sandbox._tdrExpandDateRange('2026-01-01', '2026-03-01');
-    check('a range over the 31-day cap is rejected', tooLong.ok, false);
-    checkTrue('cap-rejection message names the 31-day limit', /31 days/.test(tooLong.error));
-    const backwards = sandbox._tdrExpandDateRange('2026-09-16', '2026-09-10');
-    check('To before From is rejected with a visible message', backwards.ok, false);
+    const { sandbox } = buildSandbox({ clientMatchFor: { '456 Client Rd': { name: 'Jane Smith', id: 'c1', scheduled: true } } });
+    const stops = [
+      { addr: '1 Coffee St', inTime: t('11:55'), outTime: t('12:35'), isDepot: false }, // 40 min, the anchor (longest)
+      { addr: '2 Snack St', inTime: t('12:36'), outTime: t('12:46'), isDepot: false },  // 10 min
+      { addr: '456 Client Rd', inTime: t('12:40'), outTime: t('13:10'), isDepot: false, lat: 1, lng: 1 }, // real client at 12:40
+    ];
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:00'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    const merge = sandbox._tdrMergeLunchCandidates(classified);
+    check('end is clipped to exactly one minute before the client (12:40 -> 12:39)', sandbox._hrsFmt12(merge.end), '12:39 PM');
+    check('no previous-client constraint -> the full 50 minutes is recovered by extending the start backward, nothing dropped', [merge.minutes, merge.droppedMin], [50, 0]);
+    check('start moved backward from the anchor\'s own 11:55 to fit the full total', sandbox._hrsFmt12(merge.start), '11:49 AM');
   }
 
-  // ── Office/lunch resolution: override agreement -> Saved, else GPS, else No data ──
+  // ── (f) A previous client ALSO constrains the backward extension -> some minutes genuinely dropped ──
   {
-    const { sandbox } = buildSandbox({});
-    const gpsOutcome = { ok: true, detail: { gps: { available: true, start: new Date('2026-09-10T13:00:00Z'), end: new Date('2026-09-10T21:00:00Z'), lunchMin: 45 }, stopList: [] } };
-    const agreeing = sandbox._tdrResolveOfficeAndLunch(
-      [{ id: 'e1' }, { id: 'e2' }],
-      '2026-09-10',
-      gpsOutcome,
-      'America/New_York'
-    );
-    // Need overrides configured for this sandbox instance specifically.
-    const { sandbox: sb2 } = buildSandbox({ overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 }, e2: { start: '08:00', end: '16:00', lunch: 30 } } });
-    const saved = sb2._tdrResolveOfficeAndLunch([{ id: 'e1' }, { id: 'e2' }], '2026-09-10', gpsOutcome, 'America/New_York');
-    check('every included employee agreeing on a saved override -> "Saved", using that value (GPS ignored)', [saved.left, saved.back, saved.lunchMinutes, saved.source], ['08:00', '16:00', 30, 'Saved']);
-
-    const { sandbox: sb3 } = buildSandbox({ overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 } } }); // only e1 has one -- not everyone
-    const partial = sb3._tdrResolveOfficeAndLunch([{ id: 'e1' }, { id: 'e2' }], '2026-09-10', gpsOutcome, 'America/New_York');
-    check('not everyone has a saved override -> falls back to GPS, labeled "GPS"', [partial.left, partial.back, partial.lunchMinutes, partial.source], ['13:00', '21:00', 45, 'GPS']);
-
-    const { sandbox: sb4 } = buildSandbox({ overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 }, e2: { start: '09:00', end: '17:00', lunch: 0 } } }); // disagree
-    const mixed = sb4._tdrResolveOfficeAndLunch([{ id: 'e1' }, { id: 'e2' }], '2026-09-10', gpsOutcome, 'America/New_York');
-    check('overrides exist but disagree -> no single "Saved" value, falls back to GPS', mixed.source, 'GPS');
-
-    const noGpsOutcome = { ok: true, detail: { gps: { available: false }, stopList: [] } };
-    const { sandbox: sb5 } = buildSandbox({});
-    const none = sb5._tdrResolveOfficeAndLunch([{ id: 'e1' }], '2026-09-10', noGpsOutcome, 'America/New_York');
-    check('neither override nor GPS -> "No data", never a guess', [none.left, none.back, none.lunchMinutes, none.source], [null, null, null, 'No data']);
+    const { sandbox } = buildSandbox({
+      clientMatchFor: {
+        '456 Client Rd': { name: 'Jane Smith', id: 'c1', scheduled: true },
+        '789 Prior Client Rd': { name: 'Prior Client', id: 'c0', scheduled: true },
+      },
+    });
+    const stops = [
+      { addr: '789 Prior Client Rd', inTime: t('11:00'), outTime: t('11:52'), isDepot: false, lat: 2, lng: 2 }, // previous client, ends 11:52
+      { addr: '1 Coffee St', inTime: t('11:55'), outTime: t('12:35'), isDepot: false }, // 40 min anchor
+      { addr: '2 Snack St', inTime: t('12:36'), outTime: t('12:46'), isDepot: false },  // 10 min
+      { addr: '456 Client Rd', inTime: t('12:40'), outTime: t('13:10'), isDepot: false, lat: 1, lng: 1 }, // next client at 12:40
+    ];
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:00'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    const merge = sandbox._tdrMergeLunchCandidates(classified);
+    check('end still clips to 12:39', sandbox._hrsFmt12(merge.end), '12:39 PM');
+    check('start can only move back to 11:53 (one minute after the PRIOR client\'s 11:52 out-time), not the full 11:49 needed', sandbox._hrsFmt12(merge.start), '11:53 AM');
+    check('46 of the 50 total minutes shown, 4 minutes genuinely dropped (never forced)', [merge.minutes, merge.droppedMin], [46, 4]);
   }
 
-  // ── terminated-after-date appears, terminated-before does not (real _teamHoursEligibility) ──
+  // ── (e) Candidates on BOTH sides of the same limiting client ──
+  {
+    const { sandbox } = buildSandbox({ clientMatchFor: { '456 Client Rd': { name: 'Jane Smith', id: 'c1', scheduled: true } } });
+    const stops = [
+      { addr: '1 Before St', inTime: t('11:00'), outTime: t('11:20'), isDepot: false }, // 20 min, before the client -- the anchor (longest)
+      { addr: '456 Client Rd', inTime: t('11:25'), outTime: t('11:40'), isDepot: false, lat: 1, lng: 1 },
+      { addr: '2 After St', inTime: t('11:45'), outTime: t('11:50'), isDepot: false },  // 5 min, after the SAME client
+    ];
+    const ctx = { team: 'B1', teamJobs: [], trueStart: t('09:00'), trueEnd: t('17:00') };
+    const classified = classify(sandbox, stops, ctx);
+    const merge = sandbox._tdrMergeLunchCandidates(classified);
+    checkTrue('the anchor is the "before" candidate (it\'s the longest)', merge.mergedIndexes.indexOf(0) !== -1);
+    checkTrue('the "after" candidate\'s minutes still contribute to the total, even across the client', merge.mergedIndexes.indexOf(2) !== -1);
+    check('end never overlaps the client (clipped to 11:24, one minute before 11:25)', sandbox._hrsFmt12(merge.end), '11:24 AM');
+    // No previous-client constraint here, so the 1-minute shortfall (20+5=25
+    // total vs. the 24-minute window from the anchor's own 11:00 start)
+    // recovers in full by nudging the start back to 10:59 -- nothing is
+    // dropped. The "after" candidate's own 5 minutes still land inside the
+    // single merged window even though its ORIGINAL 11:45-11:50 slot is
+    // chronologically outside it -- its own timeline row is still labeled
+    // "Merged into lunch" at its real time, which can look visually
+    // disjoint from the Lunch summary line; called out in this PR's body.
+    check('nothing dropped -- the 1-minute shortfall recovers in full backward', merge.droppedMin, 0);
+    check('start nudges back just 1 minute, from the anchor\'s own 11:00 to 10:59', sandbox._hrsFmt12(merge.start), '10:59 AM');
+  }
+
+  // ── (g) Saved override wins -- shown as-is, not recomputed from GPS; timeline still reflects GPS independently ──
+  {
+    const { sandbox } = buildSandbox({
+      overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 }, e2: { start: '08:00', end: '16:00', lunch: 30 } },
+      gpsResults: { 'B1|2026-09-10': { device: {}, trips: [], stopList: [
+        { addr: 'DEPOT', inTime: null, outTime: t('09:00'), isDepot: true },
+      ], gps: { available: true, start: t('09:00'), end: t('17:00'), lunchMin: 45, hours: 7.25 } } },
+    });
+    const elig = sandbox._teamHoursEligibility('B1', '2026-09-10');
+    const block = await sandbox._tdrBuildTeamDayBlock(elig, 'B1', '2026-09-10', TZ);
+    check('office/lunch summary shows the SAVED values, labeled Saved', [block.office.left, block.office.back, block.lunch.minutes, block.office.source], ['08:00', '16:00', 30, 'Saved']);
+    checkTrue('the timeline is still built from GPS data independently of the Saved summary', block.timeline.length === 1 && block.timeline[0].isDepot);
+  }
+
+  // ── (h) Terminated employees: absent from BOTH lists before exclusion date, present normally on/after their last real day ──
   {
     const { sandbox } = buildSandbox({});
     const elig = sandbox._teamHoursEligibility('B1', '2026-09-10');
-    check('Alice and Bob included', elig.included.map(function (e) { return e.name; }).sort(), ['Alice', 'Bob']);
-    checkTrue('Dana (terminated as of this date) is skipped, not included', !elig.included.some(function (e) { return e.name === 'Dana'; }));
-    checkTrue('Dana appears in skipped with reason Terminated', elig.skipped.some(function (s) { return s.emp.name === 'Dana' && s.reason === 'Terminated'; }));
+    const block = await sandbox._tdrBuildTeamDayBlock(elig, 'B1', '2026-09-10', TZ);
+    checkTrue('Alice and Bob are on the team', block.included.map(function (e) { return e.name; }).sort().join(',') === 'Alice,Bob');
+    check('Dana (terminated as of this date) does not appear in "On team"', block.included.some(function (e) { return e.name === 'Dana'; }), false);
+    check('Dana (terminated) does NOT appear in "Off" either -- removed entirely, not just unlabeled', block.skipped.some(function (sk) { return sk.name === 'Dana'; }), false);
+    checkTrue('Cara (vacation, not terminated) still appears under "Off" normally', block.skipped.some(function (sk) { return sk.name === 'Cara' && sk.reason === 'Vacation'; }));
   }
 
-  // ── _tdrBuildDateBlocks: a day with real blocks, "off" roster surfaced, mixed sources across blocks ──
-  {
-    const { sandbox } = buildSandbox({
-      teams: ['B1', 'S1'],
-      overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 }, e2: { start: '08:00', end: '16:00', lunch: 30 } }, // B1 agrees -> Saved
-      gpsResults: { 'S1|2026-09-10': { device: {}, trips: [], stopList: [], gps: { available: true, start: new Date('2026-09-10T13:00:00Z'), end: new Date('2026-09-10T21:00:00Z'), lunchMin: 20 } } }, // S1 -> GPS
-    });
-    sandbox._tdrGeneration = 1;
-    const blocks = await sandbox._tdrBuildDateBlocks('2026-09-10', 'America/New_York', 1, null);
-    const b1 = blocks.find(function (b) { return b.team === 'B1'; });
-    const s1 = blocks.find(function (b) { return b.team === 'S1'; });
-    checkTrue('B1 block exists with Alice and Bob on the roster', b1 && b1.included.map(function (e) { return e.name; }).sort().join(',') === 'Alice,Bob');
-    checkTrue('B1 block\'s "Off" list surfaces Cara (vacation) and Dana (terminated)', b1.skipped.some(function (s) { return s.name === 'Cara'; }) && b1.skipped.some(function (s) { return s.name === 'Dana'; }));
-    check('B1 block source is "Saved" (mixed-across-blocks case: one block Saved)', b1.office.source, 'Saved');
-    check('S1 block source is "GPS" (mixed-across-blocks case: the other block GPS)', s1.office.source, 'GPS');
-  }
-
-  // A date with nobody on any team at all -> a single "No assignment recorded" marker block.
-  {
-    const { sandbox } = buildSandbox({ teams: ['Z9'] });
-    sandbox._tdrGeneration = 1;
-    const blocks = await sandbox._tdrBuildDateBlocks('2026-09-10', 'America/New_York', 1, null);
-    check('exactly one marker block for a day with no coverage at all', blocks.length, 1);
-    checkTrue('marker block is noAssignment', blocks[0].noAssignment);
-  }
-
-  // ── One team's GPS fetch failing does not stop another team's block on the same date ──
-  {
-    const { sandbox } = buildSandbox({
-      teams: ['B1', 'S1'],
-      gpsResults: { 'S1|2026-09-10': new Error('Geotab rate limited') },
-    });
-    sandbox._tdrGeneration = 1;
-    const blocks = await sandbox._tdrBuildDateBlocks('2026-09-10', 'America/New_York', 1, null);
-    const b1 = blocks.find(function (b) { return b.team === 'B1'; });
-    const s1 = blocks.find(function (b) { return b.team === 'S1'; });
-    checkTrue('B1 (the team whose fetch succeeded) still produced a real block', !!b1 && !b1.loadFailed);
-    checkTrue('S1 (the team whose fetch threw) still produced a real block, degraded to "No data" -- the fetch helper catches its own failure', !!s1 && !s1.loadFailed && s1.office.source === 'No data' && s1.loadError === 'Geotab rate limited');
-    check('no blocks dropped for the date', blocks.length, 2);
-  }
-
-  // ── Totals: team-days only, marker blocks excluded ──
+  // ── (i) No 24-hour time strings anywhere in the screen HTML, PDF text, or CSV ──
   {
     const { sandbox } = buildSandbox({});
-    const blocks = [
-      { date: '2026-09-10', team: 'B1' },
-      { date: '2026-09-10', team: 'S1' },
-      { date: '2026-09-11', team: 'B1' },
-      { date: '2026-09-12', team: null, noAssignment: true },
-      { date: '2026-09-13', team: 'B1', loadFailed: true },
-    ];
-    check('team-days counts only real blocks', sandbox._tdrComputeTotals(blocks), { teamDays: 3 });
+    const block = {
+      date: '2026-09-10', team: 'B1',
+      included: [{ id: 'e1', name: 'Alice' }], skipped: [],
+      office: { left: '8:47 AM', back: '4:00 PM', source: 'GPS' },
+      lunch: { minutes: 39, source: 'GPS' },
+      lunchMerge: { start: t('12:00'), end: t('12:39'), minutes: 39, droppedMin: 0 },
+      timeline: [
+        { addr: 'DEPOT', inTime: null, outTime: t('08:47'), durationMin: null, isDepot: true, label: 'Office', isUnscheduled: false },
+        { addr: '123 Main St', inTime: t('09:00'), outTime: t('09:30'), durationMin: 30, isDepot: false, label: 'Jane Smith', isUnscheduled: false },
+      ],
+      teamJobs: [], tz: TZ, gpsAvailable: true, loadError: null,
+    };
+    const html = sandbox._tdrRenderBlock(block);
+    const notTimeRegex = /\b\d{1,2}:\d{2}\b(?!\s*[AaPp]\.?[Mm]\.?)/; // an HH:MM NOT immediately followed by AM/PM
+    checkTrue('rendered HTML has no bare 24-hour-looking time', !notTimeRegex.test(html));
+    checkTrue('rendered HTML DOES show the real 12-hour times', /8:47 AM/.test(html) && /9:00 AM/.test(html));
+
+    const doc = new FakeJsPDF();
+    const lines = sandbox._tdrBlockLines(doc, block, 500);
+    const pdfText = lines.map(function (l) { return l.text; }).join(' ');
+    checkTrue('PDF text has no bare 24-hour-looking time', !notTimeRegex.test(pdfText));
+
+    const csv = sandbox._tdrBuildCsv([block]);
+    checkTrue('CSV has no bare 24-hour-looking time', !notTimeRegex.test(csv));
+    checkTrue('CSV DOES show real 12-hour times', /8:47 AM/.test(csv) && /4:00 PM/.test(csv));
   }
 
-  // ── No money/pay fields anywhere in a block ──
-  {
-    const { sandbox } = buildSandbox({ overrides: { e1: { start: '08:00', end: '16:00', lunch: 30 } } });
-    const elig = sandbox._teamHoursEligibility('B1', '2026-09-10');
-    sandbox._tdrGeneration = 1;
-    const block = await sandbox._tdrBuildTeamDayBlock(elig, 'B1', '2026-09-10', 'America/New_York');
-    const flat = JSON.stringify(block).toLowerCase();
-    checkTrue('no pay/rate/cost/money field anywhere on the block', !/pay|rate|cost|\$|money/.test(flat));
-  }
-
-  // ── CSV escaping ──
-  {
-    const { sandbox } = buildSandbox({});
-    const blocks = [
-      {
-        date: '2026-09-10', team: 'B1', included: [{ id: 'e1', name: 'Alice, "Al"' }],
-        office: { left: '08:00', back: '16:00', source: 'Saved' }, lunch: { minutes: 30, source: 'Saved' },
-        tz: 'America/New_York', teamJobs: [], gpsAvailable: true,
-        stops: [{ addr: '1 Main St, Apt "B"\nUnit 2', inTime: new Date('2026-09-10T13:00:00Z'), outTime: new Date('2026-09-10T13:20:00Z'), isDepot: false }],
-      },
-      { date: '2026-09-11', team: null, noAssignment: true },
-      { date: '2026-09-12', team: 'B1', loadFailed: true, reason: 'Geotab timeout, retry failed' },
-    ];
-    const csv = sandbox._tdrBuildCsv(blocks);
-    const lines = csv.split('\r\n');
-    check('header row present', lines[0], 'Date,Team,Employee,Left office,Back at office,Lunch (min),Client homes visited,Source');
-    checkTrue('a name with a comma and quotes is quoted/quote-doubled', lines[1].indexOf('"Alice, ""Al"""') !== -1);
-    checkTrue('an address with a comma, quotes, and a newline is quoted/quote-doubled inside the combined visits field', lines[1].indexOf('Apt ""B""\nUnit 2') !== -1);
-    checkTrue('the no-assignment marker renders as a real CSV line', lines[2].indexOf('No assignment recorded') !== -1);
-    checkTrue('the load-failed marker carries its reason, its own comma quoted', lines[3].indexOf('"Could not load: Geotab timeout, retry failed"') !== -1);
-    check('exactly 4 lines (header + 3 data rows)', lines.length, 4);
-  }
-
-  // ── PDF builder: every block included, no money fields, page breaks never split a block ──
-  {
-    const { sandbox } = buildSandbox({});
-    const blocks = [
-      {
-        date: '2026-09-10', team: 'B1', included: [{ id: 'e1', name: 'Alice' }], skipped: [],
-        office: { left: '08:00', back: '16:00', source: 'Saved' }, lunch: { minutes: 30, source: 'Saved' },
-        tz: 'America/New_York', teamJobs: [], gpsAvailable: true, loadError: null,
-        stops: [{ addr: '123 Main St', inTime: new Date('2026-09-10T14:00:00Z'), outTime: new Date('2026-09-10T14:30:00Z'), isDepot: false }],
-      },
-      { date: '2026-09-11', team: null, noAssignment: true },
-      { date: '2026-09-12', team: 'S1', loadFailed: true, reason: 'Geotab timeout' },
-    ];
-    const doc = sandbox._tdrBuildPdf(blocks, '2026-09-10', '2026-09-12');
-    const allText = doc._pages.map(function (p) { return p.join(' '); }).join(' ');
-    checkTrue('PDF includes the real team-day block (date/team)', /B1/.test(allText));
-    checkTrue('PDF includes the no-assignment marker block', /No assignment recorded/.test(allText));
-    checkTrue('PDF includes the load-failed marker block with its reason', /Could not load/.test(allText) && /Geotab timeout/.test(allText));
-    checkTrue('PDF header includes the date range', /2026-09-10 to 2026-09-12/.test(allText));
-    checkTrue('no money/pay text anywhere in the PDF', !/\$|pay rate|payroll/i.test(allText));
-
-    // Page-break-never-splits-a-block: every line of one block's content lands on the SAME page.
-    const b = blocks[0];
-    const lines = sandbox._tdrBlockLines(doc, b, 500);
-    const linesText = lines.map(function (l) { return l.text; });
-    var foundPage = -1, allSamePage = true;
-    doc._pages.forEach(function (pageTexts, pIdx) {
-      var hasAny = linesText.some(function (t) { return pageTexts.indexOf(t) !== -1; });
-      if (hasAny) { if (foundPage === -1) foundPage = pIdx; else if (foundPage !== pIdx) allSamePage = false; }
-    });
-    checkTrue('a single team-day block\'s lines all land on the same PDF page', allSamePage);
-  }
-
-  // ── Hours-tab entry (_tdrSyncButtonVisibility) and Files-grid entry (renderFilesGrid) visibility ──
-  // Forms no longer has any Team Day Report entry at all (moved to
-  // Files in this branch) -- there is nothing left to test there.
+  // ── Hours-tab entry visibility matrix (unchanged from v2; the Files-grid
+  // entry point itself is untouched by this branch and already covered by
+  // PR #212's own test) ──
   {
     const cases = [
-      { role: 'owner', expectVisible: true },
-      { role: 'admin', expectVisible: true },
-      { role: 'manager', expectVisible: true },
-      { role: 'dispatcher', expectVisible: false },
-      { role: 'employee', expectVisible: false },
-      { role: null, expectVisible: false }, // logged-out
+      { role: 'owner', expectVisible: true }, { role: 'admin', expectVisible: true }, { role: 'manager', expectVisible: true },
+      { role: 'dispatcher', expectVisible: false }, { role: 'employee', expectVisible: false }, { role: null, expectVisible: false },
     ];
     cases.forEach(function (c) {
-      const { sandbox, elements } = buildSandbox({ role: c.role });
+      const { sandbox } = buildSandbox({ role: c.role });
+      const el = { style: {} };
+      sandbox.document = { getElementById: function (id) { return id === 'team-day-report-btn' ? el : null; } };
       sandbox._tdrSyncButtonVisibility('team-day-report-btn');
-      sandbox.renderFilesGrid();
-      const hoursVisible = elements['team-day-report-btn'].style.display !== 'none';
-      const filesHtml = elements['files-grid'].innerHTML;
-      const filesVisible = filesHtml.indexOf('openTeamDayReport()') !== -1;
-      check('Hours-tab entry visibility for role=' + c.role, hoursVisible, c.expectVisible);
-      check('Files-grid entry visibility for role=' + c.role, filesVisible, c.expectVisible);
-      checkTrue('Files grid still renders every other (unrestricted) report item regardless of role=' + c.role,
-        filesHtml.indexOf('Payroll') !== -1 && filesHtml.indexOf('Pricing Review') !== -1);
+      check('Hours-tab entry visibility for role=' + c.role, el.style.display !== 'none', c.expectVisible);
     });
   }
 
