@@ -4841,6 +4841,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         <button onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
       </div>
     </div>
+    <!-- Schedule Save Queue (schedule-save-queue branch): owner/admin/
+         manager/dispatcher only, populated by _scheduleSaveRenderPill(),
+         called from renderCal()'s day-mode branch. Empty and hidden
+         (display:none) until there's something unsaved. -->
+    <div id="schedule-save-pill" style="display:none;margin-top:8px"></div>
   </div>
   <div id="cal-body"></div>
   <!-- Sprint 6.11: always-visible map below schedule + expand-overlay button -->
@@ -8411,6 +8416,11 @@ window.PentaJobs = (function() {
   // derived from PentaClients at read time).
   function _transformRowForWrite(j) {
     var out = {};
+    // Schedule Save Queue (schedule-save-queue branch): pass a real
+    // client-generated uuid straight through to the row's own `id` --
+    // lets insert()/insertBatch() below upsert-on-conflict(id), so a
+    // queued retry of the SAME row is always safe, never a duplicate.
+    if (j.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(j.id)) out.id = j.id;
     if (j.business_id) out.business_id = j.business_id;
     if (j.clientId !== undefined)   out.client_id        = j.clientId || null;
     if (j.date !== undefined)       out.date             = j.date;
@@ -8543,10 +8553,20 @@ window.PentaJobs = (function() {
     if (!bid) throw new Error('PentaJobs.insert: business_id could not be derived');
     var row = _transformRowForWrite(jobData);
     row.business_id = bid;
-    var res = await sb.from('jobs').insert(row).select().maybeSingle();
+    // Schedule Save Queue: upsert-on-conflict(id) when the caller
+    // already set a real uuid -- a queued retry of the same row is
+    // then always safe.
+    var res = row.id
+      ? await sb.from('jobs').upsert(row, { onConflict: 'id' }).select().maybeSingle()
+      : await sb.from('jobs').insert(row).select().maybeSingle();
     if (res.error) throw res.error;
     var j = _transformRow(res.data);
-    if (j) { _cache.push(j); _notify(); }
+    if (j) {
+      var existingIdx = -1;
+      for (var i = 0; i < _cache.length; i++) { if (_cache[i].id === j.id) { existingIdx = i; break; } }
+      if (existingIdx >= 0) _cache[existingIdx] = j; else _cache.push(j);
+      _notify();
+    }
     return j;
   }
 
@@ -8564,10 +8584,19 @@ window.PentaJobs = (function() {
       r.business_id = bid;
       return r;
     });
-    var res = await sb.from('jobs').insert(rows).select();
+    // Schedule Save Queue: same upsert-on-conflict(id) safety as
+    // insert() above, when every row already carries a real uuid.
+    var hasIds = rows.length > 0 && rows.every(function(r){ return !!r.id; });
+    var res = hasIds
+      ? await sb.from('jobs').upsert(rows, { onConflict: 'id' }).select()
+      : await sb.from('jobs').insert(rows).select();
     if (res.error) throw res.error;
     var inserted = (res.data || []).map(_transformRow).filter(function(x){ return x !== null; });
-    inserted.forEach(function(j){ _cache.push(j); });
+    inserted.forEach(function(j){
+      var existingIdx = -1;
+      for (var i = 0; i < _cache.length; i++) { if (_cache[i].id === j.id) { existingIdx = i; break; } }
+      if (existingIdx >= 0) _cache[existingIdx] = j; else _cache.push(j);
+    });
     if (inserted.length) _notify();
     return inserted;
   }
@@ -8579,18 +8608,30 @@ window.PentaJobs = (function() {
     if (!sb) throw new Error('PentaJobs.update: no Supabase client');
     if (!id) throw new Error('PentaJobs.update: id required');
     var dbId = await _resolveDbId(id);
-    if (!dbId) { console.warn('[PentaJobs] update: no row found for', id); return null; }
+    if (!dbId) {
+      // Schedule Save Queue: a row that can't be resolved at all is a
+      // CONFLICT, not a silent no-op -- thrown instead of returned as
+      // null, so it's never silently dropped.
+      var eNotFound1 = new Error('PentaJobs.update: no row found for ' + id);
+      eNotFound1.code = 'ROW_NOT_FOUND';
+      throw eNotFound1;
+    }
     var rowPatch = _transformRowForWrite(patch);
     delete rowPatch.business_id;  // never reassign business
     var res = await sb.from('jobs').update(rowPatch).eq('id', dbId).select().maybeSingle();
     if (res.error) throw res.error;
     var j = _transformRow(res.data);
-    if (j) {
-      for (var i = 0; i < _cache.length; i++) {
-        if (_cache[i].id === dbId) { _cache[i] = j; break; }
-      }
-      _notify();
+    if (!j) {
+      // 0 rows matched -- the row existed a moment ago (dbId resolved)
+      // but is gone now (deleted elsewhere). Same conflict signal.
+      var eNotFound2 = new Error('PentaJobs.update: row ' + dbId + ' no longer exists');
+      eNotFound2.code = 'ROW_NOT_FOUND';
+      throw eNotFound2;
     }
+    for (var i = 0; i < _cache.length; i++) {
+      if (_cache[i].id === dbId) { _cache[i] = j; break; }
+    }
+    _notify();
     return j;
   }
 
@@ -8708,6 +8749,323 @@ window.PentaJobs = (function() {
     _setupRealtime: _setupRealtime,
   };
 })();
+
+// ─────────────────────────────────────────
+// SCHEDULE SAVE QUEUE (schedule-save-queue branch). Fixes the silent
+// data-loss risk confirmed across every job-write path: the optimistic
+// local write always landed before an un-awaited PentaJobs call whose
+// failure was only console.warn'd, and a later PentaJobs cache mirror
+// (hydrate/realtime echo) could silently wipe a never-synced local job
+// out of the in-memory `jobs` array entirely -- sometimes within the
+// SAME session, not just on reload.
+//
+// _pentaJobWrite(op, args) is the ONE place every job write (add,
+// edit, cancel, uncancel, delete, Claire's tools, voice commands, drag/
+// nudge/recalc, the client-edit and frequency-change bulk regens, the
+// cancel-client future-jobs loop) goes through now. It always awaits
+// the real Supabase call, never throws for an ordinary failure, and
+// instead queues a persistent, retryable entry and shows a visible
+// message -- never a console-only failure.
+// ─────────────────────────────────────────
+var SCHEDULE_SAVE_RETRY_INTERVAL_MS = 60000;
+var _scheduleSaveQueueBid = null;
+var _scheduleSaveQueue = [];
+var _scheduleSaveFlushInFlight = false;
+var _scheduleSaveRetryTimer = null;
+var _scheduleSaveSessionExpired = false;
+var _scheduleSaveJustCleared = false;
+
+// Only roles that can already edit the schedule get a queue/pill at
+// all -- an employee-portal session never queues anything and the
+// background flush never runs for one. `body.in-portal` is a second,
+// defense-in-depth guard (same double-check pattern this app already
+// uses for work_type==='admin' elsewhere), not the only one.
+function _scheduleSaveCanUse() {
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  if (['owner', 'admin', 'manager', 'dispatcher'].indexOf(role) === -1) return false;
+  if (document.body && document.body.classList.contains('in-portal')) return false;
+  return true;
+}
+
+// "Locked" here means the universal #penta-login-screen gate is
+// showing -- this app has no separate lock screen; that element IS
+// the "you need to sign in" surface for every manager-tier session.
+function _scheduleSaveIsLocked() {
+  var pl = document.getElementById('penta-login-screen');
+  return !!(pl && pl.style.display !== 'none');
+}
+
+function _scheduleSaveCurrentBid() {
+  return (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+}
+
+function _scheduleSaveQueueKey(bid) { return 'cleanco_job_write_queue_' + bid; }
+
+// Queue is scoped per business id on purpose (Step 2.H): switching
+// business/logging out never deletes another business's queued work,
+// and a different business's queue is never loaded/shown here.
+function _scheduleSaveEnsureQueueLoaded(bid) {
+  if (_scheduleSaveQueueBid === bid) return;
+  _scheduleSaveQueueBid = bid;
+  try {
+    _scheduleSaveQueue = JSON.parse(localStorage.getItem(_scheduleSaveQueueKey(bid)) || '[]');
+  } catch (e) {
+    _scheduleSaveQueue = [];
+  }
+}
+
+function _scheduleSavePersistQueue() {
+  if (!_scheduleSaveQueueBid) return;
+  try { localStorage.setItem(_scheduleSaveQueueKey(_scheduleSaveQueueBid), JSON.stringify(_scheduleSaveQueue)); }
+  catch (e) { console.warn('[ScheduleSave] queue persist failed', e); }
+}
+
+function _scheduleSaveQueueKeyFor(op, args) {
+  return op + '|' + (args.id || (args.job && args.job.id) || '');
+}
+
+function _scheduleSaveEnqueue(op, args, err) {
+  var key = _scheduleSaveQueueKeyFor(op, args);
+  var existing = _scheduleSaveQueue.filter(function (q) { return _scheduleSaveQueueKeyFor(q.op, q.payload) === key; })[0];
+  if (existing) {
+    existing.payload = args;
+    existing.lastError = (err && err.message) || String(err);
+    _scheduleSavePersistQueue();
+    return existing.queueId;
+  }
+  var qid = _generateUuidV4();
+  _scheduleSaveQueue.push({
+    queueId: qid, op: op, jobId: args.id || (args.job && args.job.id) || null,
+    payload: args, attempts: 0, lastError: (err && err.message) || String(err), queuedAt: new Date().toISOString()
+  });
+  _scheduleSavePersistQueue();
+  return qid;
+}
+
+function _scheduleSaveRemoveFromQueue(queueId) {
+  var before = _scheduleSaveQueue.length;
+  _scheduleSaveQueue = _scheduleSaveQueue.filter(function (q) { return q.queueId !== queueId; });
+  if (before > 0 && _scheduleSaveQueue.length === 0) _scheduleSaveJustCleared = true;
+  _scheduleSavePersistQueue();
+}
+
+// Executes exactly one op against the real PentaJobs facade. Never
+// catches here -- _pentaJobWrite is the single place that decides
+// queue-vs-conflict-vs-success.
+async function _scheduleSaveExecuteOp(op, args) {
+  if (op === 'insert') return await window.PentaJobs.insert(args.job);
+  if (op === 'update') return await window.PentaJobs.update(args.id, args.patch);
+  if (op === 'remove') return await window.PentaJobs.remove(args.id); // false ("already gone") is a normal return, not a throw -- counts as success below
+  throw new Error('_pentaJobWrite: unknown op "' + op + '"');
+}
+
+// THE shared write helper. Every job-write call site in this app goes
+// through this now -- nothing calls window.PentaJobs.insert/update/
+// remove/insertBatch/removeByLegacyPrefix/removeFutureForClient
+// directly outside of this function and PentaJobs' own internals.
+//
+//   op: 'insert' | 'update' | 'remove'
+//   args.job   (insert): the full job object. Caller MUST set
+//              args.job.id to a real client-generated uuid
+//              (_generateUuidV4()) BEFORE calling, so a retry of the
+//              same entry is a safe upsert, never a duplicate.
+//   args.id    (update/remove): the job's current id.
+//   args.patch (update): the partial field patch.
+//
+// Returns one of:
+//   { ok: true,  data }                     -- saved.
+//   { ok: false, conflict: true, message }  -- the row was changed or
+//        removed elsewhere; retrying would never succeed, so this is
+//        never re-queued. Always shown to the user, never silent.
+//   { ok: false, queued: true, queueId }    -- kept, queued, will
+//        retry automatically; a visible message was already shown.
+//   { ok: false, refused: true }            -- called from a role/
+//        surface that should never be writing jobs at all (a bug
+//        elsewhere, not a network failure) -- logged loudly, never
+//        silently swallowed.
+async function _pentaJobWrite(op, args) {
+  if (!_scheduleSaveCanUse()) {
+    console.error('[ScheduleSave] _pentaJobWrite("' + op + '") called outside an allowed role/surface -- refusing. This is a bug, not a network failure.');
+    return { ok: false, refused: true };
+  }
+  var bid = _scheduleSaveCurrentBid();
+  if (bid) _scheduleSaveEnsureQueueLoaded(bid);
+
+  try {
+    var data = await _scheduleSaveExecuteOp(op, args);
+    if (args.queueId) _scheduleSaveRemoveFromQueue(args.queueId);
+    _scheduleSaveRenderPill();
+    return { ok: true, data: data };
+  } catch (e) {
+    if (op === 'update' && e && e.code === 'ROW_NOT_FOUND') {
+      // Never silently dropped, and never retried forever -- the row
+      // is genuinely gone/changed, so retrying this exact edit can
+      // never succeed.
+      if (args.queueId) _scheduleSaveRemoveFromQueue(args.queueId);
+      _scheduleSaveRenderPill();
+      var msg = 'This job was changed or removed elsewhere -- your edit could not be saved.';
+      if (typeof showToast === 'function') showToast(msg, 'error'); else alert(msg);
+      return { ok: false, conflict: true, message: msg };
+    }
+    var queueId = _scheduleSaveEnqueue(op, Object.assign({}, args, { queueId: undefined }), e);
+    _scheduleSaveRenderPill();
+    if (typeof showToast === 'function') showToast('Could not save your change -- it is kept on this device and will retry automatically.', 'error');
+    return { ok: false, queued: true, queueId: queueId };
+  }
+}
+
+// Manual Retry button + automatic retry (app foreground, online event,
+// every 60s while anything is queued). One pass per call -- no tight
+// loop, no more than one attempt per item per cycle.
+async function _scheduleSaveFlushQueue() {
+  if (_scheduleSaveFlushInFlight) return;
+  if (_scheduleSaveIsLocked()) return; // never flush while the sign-in gate is showing
+  if (!_scheduleSaveCanUse()) return;
+  var bid = _scheduleSaveCurrentBid();
+  if (!bid) return;
+  _scheduleSaveEnsureQueueLoaded(bid);
+  if (!_scheduleSaveQueue.length) return;
+
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) return;
+  var sres = null;
+  try { sres = await sb.auth.getSession(); } catch (e) {}
+  if (!sres || !sres.data || !sres.data.session) {
+    // Expired/missing session: a visible "sign in again" message, never a silent failure, and never attempted.
+    _scheduleSaveSessionExpired = true;
+    _scheduleSaveRenderPill();
+    return;
+  }
+  _scheduleSaveSessionExpired = false;
+
+  _scheduleSaveFlushInFlight = true;
+  try {
+    var items = _scheduleSaveQueue.slice(); // snapshot -- items added mid-flush wait for the next cycle
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      if (!_scheduleSaveQueue.some(function (q) { return q.queueId === item.queueId; })) continue; // resolved meanwhile
+      item.attempts = (item.attempts || 0) + 1;
+      _scheduleSavePersistQueue();
+      await _pentaJobWrite(item.op, Object.assign({}, item.payload, { queueId: item.queueId }));
+    }
+  } finally {
+    _scheduleSaveFlushInFlight = false;
+    _scheduleSaveRenderPill();
+  }
+}
+
+function _scheduleSaveStartRetryTimer() {
+  if (_scheduleSaveRetryTimer) return;
+  _scheduleSaveRetryTimer = setInterval(function () {
+    if (_scheduleSaveQueue.length) _scheduleSaveFlushQueue();
+  }, SCHEDULE_SAVE_RETRY_INTERVAL_MS);
+}
+
+// ─────────────────────────────────────────
+// PILL + PER-JOB BADGE
+// ─────────────────────────────────────────
+function _scheduleSaveRenderPill() {
+  var mainSlot = document.getElementById('schedule-save-pill');
+  if (mainSlot) _scheduleSaveRenderPillInto(mainSlot);
+  // Clients job-history view: one slot per open client card
+  // (id suffixed by clientId, since more than one card can be
+  // expanded at once) -- shown only when THAT client's own service
+  // history actually contains a currently-queued job.
+  var historySlots = document.querySelectorAll('[id^="client-svc-history-save-pill-"]');
+  for (var i = 0; i < historySlots.length; i++) {
+    var slot = historySlots[i];
+    var clientId = slot.id.slice('client-svc-history-save-pill-'.length);
+    var relevant = _scheduleSaveQueue.filter(function (q) {
+      var j = (typeof jobs !== 'undefined') ? jobs.find(function (x) { return x.id === q.jobId; }) : null;
+      return j && j.clientId === clientId;
+    });
+    if (!relevant.length && !_scheduleSaveJustCleared) { slot.style.display = 'none'; slot.innerHTML = ''; continue; }
+    var saved = _scheduleSaveQueue;
+    _scheduleSaveQueue = relevant; // scope the shared renderer to this client's own items only
+    _scheduleSaveRenderPillInto(slot);
+    _scheduleSaveQueue = saved;
+  }
+  _scheduleSavePaintBadges();
+}
+
+function _scheduleSaveRenderPillInto(slot) {
+  if (!_scheduleSaveCanUse()) { slot.style.display = 'none'; slot.innerHTML = ''; return; }
+  var n = _scheduleSaveQueue.length;
+  if (_scheduleSaveSessionExpired && n) {
+    slot.style.display = '';
+    slot.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--red);background:rgba(239,68,68,0.1);padding:5px 10px;border-radius:14px">Sign in again to save ' + n + ' change' + (n === 1 ? '' : 's') + '</span>';
+    return;
+  }
+  if (!n) {
+    if (_scheduleSaveJustCleared) {
+      slot.style.display = '';
+      slot.innerHTML = '<span style="font-size:12px;color:var(--green)">All changes saved</span>';
+      setTimeout(function () { _scheduleSaveJustCleared = false; _scheduleSaveRenderPill(); }, 2500);
+    } else {
+      slot.style.display = 'none';
+      slot.innerHTML = '';
+    }
+    return;
+  }
+  slot.style.display = '';
+  slot.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--amber);background:rgba(251,191,36,0.1);padding:5px 10px;border-radius:14px">'
+    + n + ' change' + (n === 1 ? '' : 's') + ' not saved</span>'
+    + '<button onclick="_scheduleSaveFlushQueue()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:5px 10px;border-radius:14px;cursor:pointer;margin-left:6px">Retry</button>';
+}
+
+// Per-job badge, painted onto the small <span id="sqjob-unsaved-badge-<id>">
+// placeholder every job block already renders (same pattern as the
+// existing job_issues badge painter) -- called after every renderCal()
+// and after every pill render, so it never goes stale.
+function _scheduleSavePaintBadges() {
+  var ids = {};
+  _scheduleSaveQueue.forEach(function (q) { if (q.jobId) ids[String(q.jobId)] = true; });
+  var els = document.querySelectorAll('[id^="sqjob-unsaved-badge-"]');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    var jid = el.id.slice('sqjob-unsaved-badge-'.length);
+    if (ids[jid]) { el.style.display = ''; el.textContent = 'Not saved'; }
+    else { el.style.display = 'none'; el.textContent = ''; }
+  }
+}
+
+// ─────────────────────────────────────────
+// RELOAD SAFETY: re-apply queued work on top of every fresh server
+// mirror, so a reload (or any other onChange-triggered mirror) never
+// loses or hides an unsaved change, and the server load never
+// silently overwrites it. This wraps the EXISTING _mirrorPentaJobsToInMemory
+// at its one call site below (not a second mirror).
+// ─────────────────────────────────────────
+function _scheduleSaveReapplyOntoFresh(fresh) {
+  var bid = _scheduleSaveCurrentBid();
+  if (bid) _scheduleSaveEnsureQueueLoaded(bid);
+  if (!_scheduleSaveQueue.length) return fresh;
+  var updatePatches = {};
+  var insertJobs = [];
+  _scheduleSaveQueue.forEach(function (q) {
+    if (q.op === 'update' && q.payload && q.payload.id) updatePatches[q.payload.id] = q.payload.patch;
+    if (q.op === 'insert' && q.payload && q.payload.job) insertJobs.push(q.payload.job);
+  });
+  if (Object.keys(updatePatches).length) {
+    fresh = fresh.map(function (j) {
+      var patch = updatePatches[j.id];
+      return patch ? Object.assign({}, j, patch) : j;
+    });
+  }
+  var freshIds = {};
+  fresh.forEach(function (j) { freshIds[j.id] = true; });
+  insertJobs.forEach(function (qj) { if (!freshIds[qj.id]) fresh.push(qj); });
+  return fresh;
+}
+
+// Boot wiring: automatic retry on reconnect and app-foreground, plus
+// the 60s background tick while anything is queued.
+window.addEventListener('online', function () { _scheduleSaveFlushQueue(); });
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible') _scheduleSaveFlushQueue();
+});
+_scheduleSaveStartRetryTimer();
+
 
 // Auto-prime PentaJobs once supabase client + auth are ready. Same shape
 // as the other facades — kick at boot, retry once on transient failure,
@@ -13937,6 +14295,11 @@ function _mirrorPentaJobsToInMemory() {
   if (typeof jobs === 'undefined') return;
   if (!window.PentaJobs || !window.PentaJobs.isReady || !window.PentaJobs.isReady()) return;
   var fresh = window.PentaJobs.listSync().map(_enrichJobFromCache);
+  // Schedule Save Queue (schedule-save-queue branch): a locally-added
+  // or locally-edited job that hasn't reached the server yet must
+  // never be wiped by this mirror -- re-apply every queued change on
+  // top of the fresh server list before it replaces jobs[].
+  if (typeof _scheduleSaveReapplyOntoFresh === 'function') fresh = _scheduleSaveReapplyOntoFresh(fresh);
   jobs.length = 0;
   Array.prototype.push.apply(jobs, fresh);
   // v10.2.2: refresh localStorage cleanco_jobs so employee renderSchedule()
@@ -13948,6 +14311,7 @@ function _mirrorPentaJobsToInMemory() {
   _pentaJobsMirrorRenderTimer = setTimeout(function() {
     _pentaJobsMirrorRenderTimer = null;
     try { if (typeof renderCal === 'function') renderCal(); } catch (e) { console.warn('[PentaJobs] phase4 mirror renderCal failed', e); }
+    try { if (typeof _scheduleSavePaintBadges === 'function') _scheduleSavePaintBadges(); } catch (e) {}
   }, 200);
 }
 
@@ -17123,6 +17487,13 @@ function renderCal() {
     // for whichever date is now selected. Never reassigns calDate --
     // only reads it.
     if (typeof _closeDaySyncHeader === 'function') _closeDaySyncHeader();
+    // Schedule Save Queue (schedule-save-queue branch): refresh the
+    // pill/badges for whatever is currently queued, and opportunistically
+    // retry -- covers "app foreground" and "just signed in" without a
+    // dedicated hook into the login flow (renderCal() already runs
+    // right after both).
+    if (typeof _scheduleSaveRenderPill === 'function') _scheduleSaveRenderPill();
+    if (typeof _scheduleSaveFlushQueue === 'function') _scheduleSaveFlushQueue();
 
     // Build week strip
     const weekStart = getWeekStart(calDate);
@@ -17355,6 +17726,12 @@ function renderCal() {
             // top-right of the block — overflow:visible on the parent so
             // the badge can stick out cleanly.
             +'<span class="sqjob-issue-badge" id="sqjob-issue-badge-'+safeId+'" style="display:none"></span>'
+            // Schedule Save Queue (schedule-save-queue branch): "Not
+            // saved" badge, painted by _scheduleSavePaintBadges()
+            // after every render -- same placeholder pattern as the
+            // issue badge above. Hidden until this job is actually in
+            // the local write queue.
+            +'<span id="sqjob-unsaved-badge-'+safeId+'" style="display:none;position:absolute;top:-6px;left:-4px;background:var(--amber);color:#000;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;white-space:nowrap;z-index:1"></span>'
             +'<div style="font-size:13px;font-weight:600;color:'+(isCancelled?'var(--red)':omsTextColor)+';line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+(isCancelled?'text-decoration:line-through':'')+'">'+shortName+'</div>'
             +(timeLabel?'<div style="font-size:11px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;'+(isCancelled?'text-decoration:line-through':'')+'">'+timeLabel+(endLabel?' – '+endLabel:'')+'</div>':'')
             +(city&&blockW>80?'<div style="font-size:11px;color:'+(isCancelled?'var(--muted)':omsMutedColor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+city+'</div>':'')
@@ -17469,15 +17846,14 @@ function renderCal() {
   try { if (typeof _mgrPaintCollapsedIssueBadges === 'function') _mgrPaintCollapsedIssueBadges(); } catch (e) {}
 }
 
-function toggleJobDone(id) {
+async function toggleJobDone(id) {
   const job = jobs.find(j => j.id === id);
   if (job) {
     job.done = !job.done;
     saveJobs();
-    // Sprint 10 Phase 3a: dual-write to Supabase. Fire-and-forget — the
-    // UI already updated locally so a network blip can't stall the toggle.
-    if (window.PentaJobs) window.PentaJobs.update(id, { done: job.done }).catch(function(e){ console.warn('[PentaJobs] toggleJobDone sync failed', e); });
     renderCal();
+    // Schedule Save Queue: awaited -- a failure is queued and shown, never console-only.
+    await _pentaJobWrite('update', { id: id, patch: { done: job.done } });
   }
 }
 
@@ -17580,7 +17956,7 @@ function selectClient(id, name, addr) {
   document.getElementById('client-suggestions').style.display = 'none';
 }
 
-function saveJob() {
+async function saveJob() {
   try {
   const clientName = document.getElementById('job-client-input').value.trim();
   const team = document.getElementById('job-team').value;
@@ -17620,20 +17996,19 @@ function saveJob() {
     editingJob.notes = notes;
     editingJob.team = team;
     editingJob.color = color;
-    // Sprint 10 Phase 3a: dual-write Supabase update with editable fields.
-    // clientName/addr/color are denormalized in-memory only and stripped
-    // by _transformRowForWrite.
-    if (window.PentaJobs) window.PentaJobs.update(editingJob.id, {
-      clientId: editingJob.clientId, date: editingJob.date, flexible: editingJob.flexible,
-      time: editingJob.time, endTime: editingJob.endTime, notes: editingJob.notes, team: editingJob.team
-    }).catch(function(e){ console.warn('[PentaJobs] saveJob edit sync failed', e); });
+    // Schedule Save Queue: awaited -- a failure is queued and shown, never console-only.
+    await _pentaJobWrite('update', {
+      id: editingJob.id,
+      patch: { clientId: editingJob.clientId, date: editingJob.date, flexible: editingJob.flexible,
+        time: editingJob.time, endTime: editingJob.endTime, notes: editingJob.notes, team: editingJob.team }
+    });
   } else {
-    var _newJob = { id: Date.now().toString(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, done: false, team, color, quotedMin: getClientQuotedMinutes(clientId) || 120 };
+    // Schedule Save Queue: a real client-generated uuid (not a
+    // Date.now() temp id) so a queued retry upserts safely instead of
+    // creating a duplicate row.
+    var _newJob = { id: _generateUuidV4(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, done: false, team, color, quotedMin: getClientQuotedMinutes(clientId) || 120 };
     jobs.push(_newJob);
-    // Sprint 10 Phase 3a: dual-write Supabase insert. The original ts ID
-    // becomes legacy_id on the Supabase row, so subsequent toggleJobDone
-    // / cancelJob / deleteJob calls resolve via _resolveDbId.
-    if (window.PentaJobs) window.PentaJobs.insert(_newJob).catch(function(e){ console.warn('[PentaJobs] saveJob insert sync failed', e); });
+    await _pentaJobWrite('insert', { job: _newJob });
     logPendingUpdate('Add job: ' + clientName, (flex ? 'Flexible time' : (time||'No time')) + ' on ' + dateDisp, null, clientId || null);
   }
   saveJobs();
@@ -17645,7 +18020,7 @@ function saveJob() {
   } catch(e) { alert('Error saving: ' + e.message); }
 }
 
-function deleteJob(id) {
+async function deleteJob(id) {
   if (!confirm('Delete this job?')) return;
   const job = jobs.find(j => j.id === id);
   if (job) {
@@ -17655,11 +18030,10 @@ function deleteJob(id) {
   }
   jobs = jobs.filter(j => j.id !== id);
   saveJobs();
-  // Sprint 10 Phase 3a: dual-write Supabase hard-delete.
-  // (cancelJob handles soft-cancel via status='cancelled'.)
-  if (window.PentaJobs) window.PentaJobs.remove(id).catch(function(e){ console.warn('[PentaJobs] deleteJob sync failed', e); });
   closeJobModal();
   renderCal();
+  // Schedule Save Queue: "already gone" counts as success; any other failure is queued and shown.
+  await _pentaJobWrite('remove', { id: id });
 }
 
 // v10.5.41: cancel flow now captures source (Client / Business) + a
@@ -17685,7 +18059,7 @@ var CANCEL_REASONS = {
     'Other'
   ]
 };
-function cancelJob(id) {
+async function cancelJob(id) {
   const job = jobs.find(j => j.id === id);
   if (!job) return;
   if (job.cancelled) {
@@ -17694,9 +18068,9 @@ function cancelJob(id) {
     job.cancelReason = null;
     logPendingUpdate('Uncancelled job: ' + job.clientName, 'Restored on schedule', null, job.clientId || null);
     saveJobs();
-    if (window.PentaJobs) window.PentaJobs.update(id, { cancelled: false, cancelReason: null }).catch(function(e){ console.warn('[PentaJobs] uncancelJob sync failed', e); });
     closeJobModal();
     renderCal();
+    await _pentaJobWrite('update', { id: id, patch: { cancelled: false, cancelReason: null } });
     return;
   }
   // Cancelling: open the source+reason sheet. Actual write happens in
@@ -17773,7 +18147,7 @@ function _cxlPickReason(btn) {
   }
 }
 
-function _cxlCommit(jobId, source) {
+async function _cxlCommit(jobId, source) {
   var row = document.getElementById('cxl-chip-row');
   var sel = row ? row.querySelector('button[data-selected="1"]') : null;
   if (!sel) return;
@@ -17790,10 +18164,7 @@ function _cxlCommit(jobId, source) {
   var dateDisp = new Date(+parts[0], +parts[1]-1, +parts[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   logPendingUpdate('Cancelled: ' + job.clientName, dateDisp + ' · ' + full, null, job.clientId || null);
   saveJobs();
-  if (window.PentaJobs) {
-    window.PentaJobs.update(jobId, { cancelled: true, cancelReason: full })
-      .catch(function(e){ console.warn('[PentaJobs] cancelJob sync failed', e); });
-  }
+  await _pentaJobWrite('update', { id: jobId, patch: { cancelled: true, cancelReason: full } });
   // v11.0.6 (audit log supplement): the jobs trigger captures
   // action_type='cancelled' for the cancelled-flag transition, but
   // the trigger can only see column diffs — it doesn't know the
@@ -25682,12 +26053,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
     if (job) {
       job.cancelled = true; saveJobs();
-      // Sprint 10 Phase 3c: dual-write Claire cancel_clean to Supabase.
-      if (window.PentaJobs) window.PentaJobs.update(job.id, { cancelled: true }).catch(function(e){ console.warn('[PentaJobs] claire cancel_clean sync failed', e); });
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
       _claireLastToolResult = 'Cancelled '+client2.fn+' '+client2.ln+'\'s '+dayL+' clean. Done.';
       claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
+      await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
     } else {
       var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && !j.cancelled && j.date > targetDate; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
       var dateL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
@@ -25760,13 +26130,11 @@ async function _executeClaireToolCallInner(toolCall, message) {
     // dual-writes the cascade for downstream jobs on the destination team,
     // and is now the single render point for this move (it always renders
     // exactly once) -- an extra renderCal() here used to double-render.
-    if (window.PentaJobs) {
-      var _movePatch = {};
-      if (input.to_date) _movePatch.date = job2.date;
-      if (input.time)    { _movePatch.time = job2.time; _movePatch.flexible = job2.flexible; }
-      if (input.team)    _movePatch.team = job2.team;
-      if (Object.keys(_movePatch).length) window.PentaJobs.update(job2.id, _movePatch).catch(function(e){ console.warn('[PentaJobs] claire move_clean sync failed', e); });
-    }
+    var _movePatch = {};
+    if (input.to_date) _movePatch.date = job2.date;
+    if (input.time)    { _movePatch.time = job2.time; _movePatch.flexible = job2.flexible; }
+    if (input.team)    _movePatch.team = job2.team;
+    if (Object.keys(_movePatch).length) await _pentaJobWrite('update', { id: job2.id, patch: _movePatch });
     var newDayL = new Date(_normDate(job2.date)+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL, null, client3.id);
     recalcTeamTimes(job2.team, job2.date, job2.id);
@@ -25959,7 +26327,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
         var dk3 = dateKey(nextDate);
         if (dk3 >= todayKey2) {
           var _newClean = {
-            id: 'freq_'+Date.now()+'_'+genCount,
+            id: _generateUuidV4(),
             clientName: (fClient.ln||'')+', '+(fClient.fn||''),
             clientId: fClient.id,
             addr: (fClient.addr||'')+', '+(fClient.city||''),
@@ -25982,21 +26350,22 @@ async function _executeClaireToolCallInner(toolCall, message) {
     }
 
     saveJobs();
-    // Sprint 10 Phase 3c: dual-write change_frequency to Supabase. Bulk
-    // delete future cleans (single round-trip via WHERE-clause delete),
-    // then insertBatch the regenerated schedule. Sequential — insert
-    // only fires on remove success, so a delete failure doesn't risk
-    // duplicate rows on Supabase. If insert fails after remove succeeds,
-    // localStorage and DB diverge until next regen — recoverable by
-    // re-running change_frequency.
-    if (window.PentaJobs) {
-      window.PentaJobs.removeFutureForClient(fClient.id, todayKey2)
-        .then(function() {
-          if (_newCleans.length) return window.PentaJobs.insertBatch(_newCleans);
-        })
-        .catch(function(e){ console.warn('[PentaJobs] claire change_frequency sync failed', e); });
-    }
     renderCal();
+    // Schedule Save Queue: decomposed into one _pentaJobWrite per row
+    // (remove each existing future job for this client still on the
+    // server, then insert each regenerated one with a real uuid) --
+    // each item retries independently now.
+    if (window.PentaJobs && window.PentaJobs.listSync) {
+      var _freqExisting = window.PentaJobs.listSync().filter(function (r) {
+        return r.clientId === fClient.id && r.date >= todayKey2;
+      });
+      for (var _fi = 0; _fi < _freqExisting.length; _fi++) {
+        await _pentaJobWrite('remove', { id: _freqExisting[_fi].id });
+      }
+      for (var _ni = 0; _ni < _newCleans.length; _ni++) {
+        await _pentaJobWrite('insert', { job: _newCleans[_ni] });
+      }
+    }
     logPendingUpdate('Frequency change: '+fClient.fn+' '+fClient.ln, oldFreq+' → '+newFreq.freq, null, fClient.id);
 
     // Find their next upcoming clean
@@ -26050,11 +26419,9 @@ async function _executeClaireToolCallInner(toolCall, message) {
       }
     });
     saveJobs(); renderCal();
-    // Sprint 10 Phase 3c: parallel dual-write the price cascade.
-    if (window.PentaJobs && _touchedPrice.length) {
-      _touchedPrice.forEach(function(j) {
-        window.PentaJobs.update(j.id, { price: newPrice }).catch(function(e){ console.warn('[PentaJobs] claire change_price sync failed for', j.id, e); });
-      });
+    // Schedule Save Queue: sequential, each through the shared helper.
+    for (var _pi = 0; _pi < _touchedPrice.length; _pi++) {
+      await _pentaJobWrite('update', { id: _touchedPrice[_pi].id, patch: { price: newPrice } });
     }
     logPendingUpdate('Price change: '+cpClient.fn+' '+cpClient.ln, '$'+newPrice+' ('+updated+' future cleans updated)', null, cpClient.id);
     _claireLastToolResult = 'Set '+cpClient.fn+' '+cpClient.ln+'\'s price to $'+newPrice+' and updated '+updated+' future cleans. Done.';
@@ -27201,7 +27568,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
 function executeClaire(action, message) {
   executeClaireToolCall({name:action.action,input:action}, message);
 }
-function _executeClaire_legacy(action, message) {
+async function _executeClaire_legacy(action, message) {
   var status = document.getElementById('voice-cmd-status');
 
   if (action.action === 'schedule') {
@@ -27244,11 +27611,10 @@ function _executeClaire_legacy(action, message) {
     var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
     if (job) {
       job.cancelled = true; saveJobs();
-      // Sprint 10 Phase 3c: dual-write legacy Claire cancel to Supabase.
-      if (window.PentaJobs) window.PentaJobs.update(job.id, { cancelled: true }).catch(function(e){ console.warn('[PentaJobs] claire legacy cancel sync failed', e); });
       var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
       claireReply(message || 'Done! I cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
+      await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
     } else {
       // Find their next scheduled job to be helpful
       var dateLabel = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
@@ -27336,7 +27702,7 @@ function claireSendSms(clientId, msgText) {
 // normal message," and without dumping JSON/status codes into the chat.
 // The full technical detail is logged separately (console + audit_log) by
 // every caller before this fires.
-function processVoiceCommandLocal(text, apiErrorReason) {
+async function processVoiceCommandLocal(text, apiErrorReason) {
   var lower = text.toLowerCase();
 
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
@@ -27360,9 +27726,9 @@ function processVoiceCommandLocal(text, apiErrorReason) {
       var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
       if (job) {
         job.cancelled = true; saveJobs();
-        // Sprint 10 Phase 3c: dual-write voice cancel to Supabase.
-        if (window.PentaJobs) window.PentaJobs.update(job.id, { cancelled: true }).catch(function(e){ console.warn('[PentaJobs] voice cancel sync failed', e); });
-        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL, null, result2.client.id); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.'); return;
+        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL, null, result2.client.id); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.');
+        await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
+        return;
       }
     }
     claireReply('Couldn\'t find that job to cancel.');
@@ -27402,7 +27768,7 @@ function cancelVoiceCmd() {
   if (status) status.style.display = 'none';
 }
 
-function executeScheduleCmd() {
+async function executeScheduleCmd() {
   var cmd = window._pendingVoiceCmd;
   if (!cmd) return;
   var status = document.getElementById('voice-cmd-status');
@@ -27415,7 +27781,7 @@ function executeScheduleCmd() {
   }
   // Sprint 10 Phase 3c: capture for dual-write Supabase insert.
   var _voiceJob = {
-    id: Date.now().toString(),
+    id: _generateUuidV4(),
     clientName: cmd.clientName,
     clientId: cmd.client ? cmd.client.id : '',
     addr: cmd.client ? cmd.client.addr+', '+(cmd.client.city||'') : '',
@@ -27431,8 +27797,6 @@ function executeScheduleCmd() {
   };
   jobs.push(_voiceJob);
   saveJobs();
-  // Sprint 10 Phase 3c: dual-write voice/Claire add to Supabase.
-  if (window.PentaJobs) window.PentaJobs.insert(_voiceJob).catch(function(e){ console.warn('[PentaJobs] voice add sync failed', e); });
 
   var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
   logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : (cmd.viaClaire ? 'Claire' : undefined), cmd.client ? cmd.client.id : null);
@@ -27442,6 +27806,7 @@ function executeScheduleCmd() {
   if (typeof _claireAmendLastToolResult === 'function' && cmd.viaClaire) {
     _claireAmendLastToolResult('Tom confirmed. '+cmd.clientName+' booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
   }
+  await _pentaJobWrite('insert', { job: _voiceJob });
   window._pendingVoiceCmd = null;
   setTimeout(function(){ status.style.display='none'; }, 3000);
 }
@@ -30655,7 +31020,7 @@ function _computeFormSuggestion(form, impact) {
 // Strategy 'swap': bring the target employee onto the absent employee's team for the day.
 // Strategy 'move': for each job in payload.moves, set j.team = to_team and saveJobs().
 // Returns { ok: true, summary } or { ok: false, error }.
-function _executeFormSuggestion(suggestion) {
+async function _executeFormSuggestion(suggestion) {
   if (!suggestion || !suggestion.payload) return { ok: false, error: 'No suggestion payload' };
   var payload = suggestion.payload;
   try {
@@ -30687,11 +31052,9 @@ function _executeFormSuggestion(suggestion) {
         _touchedFormMove.push(j);
       });
       saveJobs();
-      // Sprint 10 Phase 3d: parallel dual-write each form-moved job's team.
-      if (window.PentaJobs && _touchedFormMove.length) {
-        _touchedFormMove.forEach(function(j) {
-          window.PentaJobs.update(j.id, { team: j.team }).catch(function(e){ console.warn('[PentaJobs] _executeFormSuggestion move sync failed for', j.id, e); });
-        });
+      // Schedule Save Queue: sequential, each through the shared helper.
+      for (var _fsi = 0; _fsi < _touchedFormMove.length; _fsi++) {
+        await _pentaJobWrite('update', { id: _touchedFormMove[_fsi].id, patch: { team: _touchedFormMove[_fsi].team } });
       }
       try { logPendingUpdate('Job move (coverage)', movedSummary.join('; '), 'Manager'); } catch (e) {}
       try { if (typeof renderCal === 'function') renderCal(); } catch (e) {}
@@ -30842,7 +31205,7 @@ function closeCustomerForm() {
   document.getElementById('customer-form-overlay').style.display = 'none';
 }
 
-function saveCustomerForm() {
+async function saveCustomerForm() {
   const fn = document.getElementById('form-fn').value.trim();
   const ln = document.getElementById('form-ln').value.trim();
   const addr = document.getElementById('form-addr').value.trim();
@@ -30892,7 +31255,7 @@ function saveCustomerForm() {
     if (firstclean) {
       // Sprint 10 Phase 3e: capture for dual-write Supabase insert.
       var _newCustomerJob = {
-        id: 'job_' + Date.now(),
+        id: _generateUuidV4(),
         clientId: newId,
         clientName: ln + ', ' + fn,
         addr,
@@ -30907,8 +31270,7 @@ function saveCustomerForm() {
       };
       jobs.push(_newCustomerJob);
       localStorage.setItem('cleanco_jobs', JSON.stringify(jobs));
-      // Sprint 10 Phase 3e: dual-write the new customer's first clean.
-      if (window.PentaJobs) window.PentaJobs.insert(_newCustomerJob).catch(function(e){ console.warn('[PentaJobs] saveCustomerForm new-client first clean sync failed', e); });
+      await _pentaJobWrite('insert', { job: _newCustomerJob });
     }
 
     // Log to updates
@@ -30947,11 +31309,8 @@ function saveCustomerForm() {
         }
       });
       saveJobs();
-      // Sprint 10 Phase 3e: parallel dual-write the price cascade.
-      if (window.PentaJobs && _touchedCustPrice.length) {
-        _touchedCustPrice.forEach(function(j) {
-          window.PentaJobs.update(j.id, { price: cleanPrice }).catch(function(e){ console.warn('[PentaJobs] saveCustomerForm price cascade sync failed for', j.id, e); });
-        });
+      for (var _cpi = 0; _cpi < _touchedCustPrice.length; _cpi++) {
+        await _pentaJobWrite('update', { id: _touchedCustPrice[_cpi].id, patch: { price: cleanPrice } });
       }
     }
     logPendingUpdate('Client updated: ' + fn + ' ' + ln, 'Profile changes saved', null, clientId);
@@ -31649,16 +32008,11 @@ async function _executeCancelClient(cancelFutureJobs) {
         j.cancellationType = 'client_initiated';
       });
       saveJobs();
-      if (window.PentaJobs) {
-        for (var i = 0; i < futureJobs.length; i++) {
-          try {
-            await window.PentaJobs.update(futureJobs[i].id, {
-              cancelled: true,
-              cancelReason: 'Client cancelled service',
-              cancellationType: 'client_initiated'
-            });
-          } catch (e) { console.warn('[CancelClient] failed to cancel job', futureJobs[i].id, e); }
-        }
+      for (var i = 0; i < futureJobs.length; i++) {
+        await _pentaJobWrite('update', {
+          id: futureJobs[i].id,
+          patch: { cancelled: true, cancelReason: 'Client cancelled service', cancellationType: 'client_initiated' }
+        });
       }
     }
 
@@ -37787,7 +38141,7 @@ async function _closeDayAddJobFromStop(stop, team, dateStr, price) {
   var client = (window.PentaClients && window.PentaClients.getClient) ? window.PentaClients.getClient(stop.clientId) : null;
   var clientName = client ? ((client.fn || '') + ' ' + (client.ln || '')).trim() : (stop.clientName || '');
   var newJob = {
-    id: Date.now().toString(), clientName: clientName, clientId: stop.clientId, addr: (client && client.addr) || '',
+    id: _generateUuidV4(), clientName: clientName, clientId: stop.clientId, addr: (client && client.addr) || '',
     date: dateStr, flexible: false,
     time: _closeDayTimeHHMM(stop.inTime), endTime: _closeDayTimeHHMM(stop.outTime),
     notes: 'Added from an unscheduled GPS stop during day close.', done: false, team: team,
@@ -37796,7 +38150,7 @@ async function _closeDayAddJobFromStop(stop, team, dateStr, price) {
     quotedMin: getClientQuotedMinutes(stop.clientId) || Math.max(1, Math.round(stop.durationMin))
   };
   if (typeof jobs !== 'undefined') jobs.push(newJob);
-  if (window.PentaJobs) await window.PentaJobs.insert(newJob);
+  await _pentaJobWrite('insert', { job: newJob });
   if (typeof logPendingUpdate === 'function') logPendingUpdate('Add job: ' + clientName, 'Added from an unscheduled GPS stop on ' + dateStr, null, stop.clientId || null);
   if (typeof saveJobs === 'function') saveJobs();
   return newJob;
@@ -41634,6 +41988,10 @@ function _svcHistorySectionHtml(clientId, allJobs) {
     return '<th onclick="_svcHistorySortBy(\'' + clientId + '\',\'' + c.key + '\')" style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:' + (active ? 'var(--accent)' : 'var(--muted)') + ';text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;user-select:none">' + c.label + arrow + '</th>';
   }).join('');
   return '<div id="' + containerId + '" style="margin-bottom:20px">'
+    // Schedule Save Queue (schedule-save-queue branch): shown only
+    // when one of this client's own jobs is currently in the local
+    // write queue -- populated by _scheduleSaveRenderPill().
+    + '<div id="client-svc-history-save-pill-' + clientId + '" style="display:none;margin-bottom:8px"></div>'
     + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">'
     +   '<span>Service History <span style="color:var(--text);font-weight:600">(' + allJobs.length + ')</span></span>'
     +   '<button onclick="(function(b){var p=document.getElementById(\'svc-history-wrap-' + clientId + '\');var open=p.style.display!==\'none\';p.style.display=open?\'none\':\'block\';b.textContent=open?\'Show\':\'Hide\';})(this)" style="background:none;border:1px solid var(--border);color:var(--accent);font-family:\'DM Sans\',sans-serif;font-size:11px;font-weight:600;padding:3px 10px;border-radius:6px;cursor:pointer">Show</button>'
@@ -42446,7 +42804,7 @@ function closePicker() {
   _cePickerType = null;
 }
 
-function saveClientEdit(clientId) {
+async function saveClientEdit(clientId) {
   const c = PentaClients.getClient(clientId);
   if (!c) return;
   // Promote drafts: if this was a new-client draft, flip it to real now
@@ -42605,11 +42963,8 @@ function saveClientEdit(clientId) {
       }
     });
     saveJobs();
-    // Sprint 10 Phase 3e: parallel dual-write the team cascade.
-    if (window.PentaJobs && _touchedCeTeam.length) {
-      _touchedCeTeam.forEach(function(j) {
-        window.PentaJobs.update(j.id, { team: newTeam }).catch(function(e){ console.warn('[PentaJobs] saveClientEdit team cascade sync failed for', j.id, e); });
-      });
+    for (var _cei = 0; _cei < _touchedCeTeam.length; _cei++) {
+      await _pentaJobWrite('update', { id: _touchedCeTeam[_cei].id, patch: { team: newTeam } });
     }
   }
 
@@ -42655,7 +43010,7 @@ function saveClientEdit(clientId) {
       const filteredJobs = storedJobs.filter(j => !(j.fromClientEdit && j.clientId === clientId && j.slotIdx === i));
       const perCleanNote = (ov3.cleanNotes && ov3.cleanNotes[i]) || '';
       const jobEntry = {
-        id: 'cedit_' + clientId + '_' + i,
+        id: _generateUuidV4(),
         clientId, clientName: c.fn + ' ' + c.ln,
         addr: c.addr + (c.city ? ', ' + c.city : ''),
         date: jobDate, team, time: timeOverride,
@@ -42671,16 +43026,21 @@ function saveClientEdit(clientId) {
       filteredJobs.forEach(j => storedJobs.push(j));
     });
     localStorage.setItem('cleanco_jobs', JSON.stringify(storedJobs));
-    // Sprint 10 Phase 3e: dual-write the cedit_* regen to Supabase.
-    // Bulk delete by legacy_id prefix, then insertBatch the new schedule.
-    // Sequential .then() so insert only fires on remove success — avoids
-    // duplicate-row risk if PostgREST hiccups mid-flight.
-    if (window.PentaJobs) {
-      window.PentaJobs.removeByLegacyPrefix('cedit_' + clientId + '_')
-        .then(function() {
-          if (_newCeditJobs.length) return window.PentaJobs.insertBatch(_newCeditJobs);
-        })
-        .catch(function(e){ console.warn('[PentaJobs] saveClientEdit cedit regen sync failed', e); });
+    // Schedule Save Queue: decomposed into one _pentaJobWrite per row --
+    // remove every existing cedit_* row for this client still on the
+    // server (matched by legacy_id prefix, same criterion
+    // removeByLegacyPrefix used), then insert each regenerated one with
+    // a real uuid. Each item retries independently now.
+    if (window.PentaJobs && window.PentaJobs.listSync) {
+      var _ceditExisting = window.PentaJobs.listSync().filter(function (r) {
+        return r.legacy_id && String(r.legacy_id).indexOf('cedit_' + clientId + '_') === 0;
+      });
+      for (var _cdi = 0; _cdi < _ceditExisting.length; _cdi++) {
+        await _pentaJobWrite('remove', { id: _ceditExisting[_cdi].id });
+      }
+      for (var _cni = 0; _cni < _newCeditJobs.length; _cni++) {
+        await _pentaJobWrite('insert', { job: _newCeditJobs[_cni] });
+      }
     }
     // Also sync into the in-memory jobs array so manager calendar updates immediately
     if (typeof jobs !== 'undefined') {
@@ -47498,7 +47858,7 @@ async function approveFormSuggestion(formId) {
     if (typeof showToast === 'function') showToast('Executor unavailable', 'error');
     return;
   }
-  var result = _executeFormSuggestion(form.suggested_action);
+  var result = await _executeFormSuggestion(form.suggested_action);
   if (!result.ok) {
     console.error('[forms] suggestion execute failed', result);
     if (typeof showToast === 'function') showToast('Could not execute: ' + result.error, 'error');
@@ -53785,7 +54145,7 @@ function jobDragMove(e) {
   if (el2 && el2.getAttribute && el2.getAttribute('data-drag-team')) el2.style.background = 'rgba(108,143,255,0.12)';
 }
 
-function jobDragEnd(e) {
+async function jobDragEnd(e) {
   // Always remove -- harmless no-op if this end came from a touchend
   // (which never attached them) or if they were already removed.
   document.removeEventListener('mousemove', jobDragMove);
@@ -53878,15 +54238,12 @@ function jobDragEnd(e) {
   var _movedFlex = _dragJob.flexible;
 
   saveJobs();
-  // Sprint 10 Phase 3b: dual-write the dragged job's team/time/flexible.
-  // PR #145: endTime included too, now that jobDragEnd shifts it to
-  // preserve duration -- otherwise the corrected value only lived
-  // in-memory and reverted to the stale pre-drag endTime on next hydrate.
-  // recalcTeamTimes (called below) dual-writes the cascade for downstream jobs.
-  if (window.PentaJobs) window.PentaJobs.update(_movedId, {
-    team: _movedTeam, time: _movedTime, endTime: _movedEndTime, flexible: _movedFlex
-  }).catch(function(e){ console.warn('[PentaJobs] jobDragEnd sync failed', e); });
   if (navigator.vibrate) navigator.vibrate(30);
+  // Schedule Save Queue: awaited -- recalcTeamTimes (called below) dual-writes the cascade for downstream jobs.
+  await _pentaJobWrite('update', {
+    id: _movedId,
+    patch: { team: _movedTeam, time: _movedTime, endTime: _movedEndTime, flexible: _movedFlex }
+  });
 
   // Cleanup
   if (_dragClone) { _dragClone.remove(); _dragClone = null; }
@@ -54026,7 +54383,7 @@ function calcTeamDriveTimes(teamJobs, callback) {
 }
 
 // After moving/dropping a job, recalculate start times for subsequent jobs on that team
-function recalcTeamTimes(team, dateStr, movedJobId) {
+async function recalcTeamTimes(team, dateStr, movedJobId) {
   // Re-sort all team jobs by current time after the move
   var teamJobs = jobs.filter(function(j) {
     return j.date === dateStr && j.team === team && !j.cancelled && !j.flexible && j.time;
@@ -54066,15 +54423,13 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
     _touchedSync.push(next);
   }
   saveJobs();
-  // Sprint 10 Phase 3b: parallel dual-write each shifted job's new time.
-  // The async pass below may overwrite some of these with refined drive
-  // times; last-write-wins is acceptable (deltas are minutes, not days).
-  if (window.PentaJobs && _touchedSync.length) {
-    _touchedSync.forEach(function(j) {
-      window.PentaJobs.update(j.id, { time: j.time }).catch(function(e){ console.warn('[PentaJobs] recalcTeamTimes sync failed for', j.id, e); });
-    });
-  }
   renderCal();
+  // Schedule Save Queue: sequential, each through the shared helper.
+  // The async pass below may overwrite some of these with refined
+  // drive times; last-write-wins is acceptable (deltas are minutes, not days).
+  for (var _rti = 0; _rti < _touchedSync.length; _rti++) {
+    await _pentaJobWrite('update', { id: _touchedSync[_rti].id, patch: { time: _touchedSync[_rti].time } });
+  }
 
   // Second pass: async fetch real drive times for any uncached routes, then re-adjust
   var needsAsync = false;
@@ -54092,11 +54447,14 @@ function recalcTeamTimes(team, dateStr, movedJobId) {
     function asyncPass() {
       if (idx >= teamJobs.length - 1) {
         saveJobs();
-        if (window.PentaJobs && _touchedAsync.length) {
-          _touchedAsync.forEach(function(j) {
-            window.PentaJobs.update(j.id, { time: j.time }).catch(function(e){ console.warn('[PentaJobs] recalcTeamTimes async sync failed for', j.id, e); });
-          });
-        }
+        // Schedule Save Queue: not awaited here (asyncPass is a
+        // recursive, callback-driven closure, not easily made async
+        // without restructuring the drive-time recursion) -- but
+        // _pentaJobWrite still queues and shows a visible message on
+        // failure regardless of whether its own promise is awaited.
+        _touchedAsync.forEach(function(j) {
+          _pentaJobWrite('update', { id: j.id, patch: { time: j.time } });
+        });
         renderCal();
         return;
       }
@@ -54781,7 +55139,7 @@ function closeCalJobCard() {
   if (o) o.remove();
 }
 
-function nudgeJobTime(jobId, deltaMins) {
+async function nudgeJobTime(jobId, deltaMins) {
   var j = jobs.find(function(x){ return x.id === jobId; });
   if (!j || !j.time) return;
   var startM = jobStartMins(j);
@@ -54792,10 +55150,7 @@ function nudgeJobTime(jobId, deltaMins) {
   j.time = String(Math.floor(newM/60)).padStart(2,'0') + ':' + String(newM%60).padStart(2,'0');
   j.flexible = false;
   saveJobs();
-  // Sprint 10 Phase 3b: dual-write the nudged job's time/flexible.
-  if (window.PentaJobs) window.PentaJobs.update(jobId, {
-    time: j.time, flexible: j.flexible
-  }).catch(function(e){ console.warn('[PentaJobs] nudgeJobTime sync failed', e); });
+  await _pentaJobWrite('update', { id: jobId, patch: { time: j.time, flexible: j.flexible } });
 
   // Update time display in the popup
   var hr = Math.floor(newM/60), mn = newM%60;

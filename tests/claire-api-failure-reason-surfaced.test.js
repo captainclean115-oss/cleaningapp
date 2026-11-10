@@ -87,7 +87,7 @@ function check(label, actual, expected) {
 }
 
 // ---- Extract processVoiceCommandLocal verbatim and exercise it ----
-const startMarker = 'function processVoiceCommandLocal(text, apiErrorReason) {';
+const startMarker = 'async function processVoiceCommandLocal(text, apiErrorReason) {';
 const startIdx = src.indexOf(startMarker);
 if (startIdx === -1) { console.error('FAIL: could not find processVoiceCommandLocal with the new apiErrorReason param -- fix may have been reverted.'); process.exit(1); }
 const endIdx = src.indexOf('\nfunction ', startIdx + startMarker.length);
