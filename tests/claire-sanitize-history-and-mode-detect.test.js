@@ -61,8 +61,14 @@ function extract(startMarker, endMarker) {
 }
 
 // ==== _claireSanitizeHistoryForApi ====
+// Claire safety foundation (Stage 2a): the repair logic was extracted
+// into a pure _claireSanitizeMessagesArray(messages), with
+// _claireSanitizeHistoryForApi now a one-line wrapper around it (so a
+// freshly-loaded saved conversation can reuse the same repair rules --
+// see tests/claire-saved-conversations.test.js). Extraction now starts
+// at the pure function so both are present in the sandbox.
 const sanitizeSrc = extract(
-  'function _claireSanitizeHistoryForApi() {',
+  'function _claireSanitizeMessagesArray(messages) {',
   '\n// Bug fix (same report): Claire\'s error paths'
 );
 

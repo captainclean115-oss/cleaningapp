@@ -5391,6 +5391,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div id="claire-voice-hint" class="claire-voice-hint" style="display:none"></div>
     <!-- Debug line so Tom can see which voice actually got picked. -->
     <div id="claire-voice-name" style="font-size:10px;color:rgba(255,255,255,0.30);text-align:center;margin-top:4px"></div>
+    <!-- Claire safety foundation (Stage 2a): saved-conversation controls. -->
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:10px">
+      <button onclick="_claireStartNewChat()" type="button"
+              style="padding:6px 14px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.22);border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent">New chat</button>
+      <button onclick="_claireClearHistory()" type="button"
+              style="padding:6px 14px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.22);border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent">Clear history</button>
+    </div>
   </div>
   <div id="claire-messages" class="claire-view-messages"></div>
   <div class="claire-view-input-row">
@@ -5514,6 +5521,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         <path d="M5 18H3"/>
       </svg>
     </span>
+    <!-- Claire safety foundation (Stage 2a): count of pending
+         claire_proposals visible to the signed-in user. Lives OUTSIDE
+         .nav-icon-claire (overflow:hidden would clip it), same pattern
+         as the other .dock-badge usages elsewhere in the nav. Hidden by
+         default; _claireRefreshProposalBadge() shows/hides + sets the
+         count, and hides it outright for the employee role. -->
+    <span id="claire-proposal-badge" class="dock-badge" style="display:none">0</span>
   </button>
   <div class="nav-half nav-half-right" id="nav-half-right"></div>
 </div>
@@ -17308,6 +17322,10 @@ function showTab(tab) {
   document.getElementById('gps-view').classList.toggle('active', tab === 'gps');
   var claireView = document.getElementById('claire-view');
   if (claireView) claireView.classList.toggle('active', tab === 'claire');
+  // Claire safety foundation (Stage 2a): load the user's most recent
+  // saved conversation (or start fresh) + any pending proposals, once
+  // per page load.
+  if (tab === 'claire' && typeof _claireOpenView === 'function') _claireOpenView();
   // Home nav button is active on the home screen itself OR on any app reached via home
   // (for now, that's 'home' and 'clients'/'tasks').
   var navHome = document.getElementById('nav-home');
@@ -21767,14 +21785,20 @@ function _claireErrorSummary(toolName, resStr) {
 //      a half-fix just trades one 400 for the other ("tool_use ids
 //      without tool_result").
 // Plain text turns (both roles) pass through untouched.
-function _claireSanitizeHistoryForApi() {
+// Pure array transform -- takes any messages array (the live
+// _claireHistory, or a freshly-loaded saved conversation's row.messages)
+// and RETURNS a new, repaired array. No dependency on any global, so a
+// saved-conversation load (STEP 4C) can run a loaded row through the
+// exact same repair rules before ever replaying it to the model.
+function _claireSanitizeMessagesArray(messages) {
+  var all = Array.isArray(messages) ? messages : [];
   var start = 0;
-  while (start < _claireHistory.length) {
-    var m0 = _claireHistory[start];
+  while (start < all.length) {
+    var m0 = all[start];
     if (m0 && m0.role === 'user' && typeof m0.content === 'string') break;
     start++;
   }
-  var src = start < _claireHistory.length ? _claireHistory.slice(start) : _claireHistory.slice();
+  var src = start < all.length ? all.slice(start) : all.slice();
 
   var out = [];
   for (var i = 0; i < src.length; i++) {
@@ -21800,7 +21824,11 @@ function _claireSanitizeHistoryForApi() {
     }
     out.push(msg);
   }
-  _claireHistory = out;
+  return out;
+}
+
+function _claireSanitizeHistoryForApi() {
+  _claireHistory = _claireSanitizeMessagesArray(_claireHistory);
 }
 
 // Bug fix (same report): Claire's error paths used to show Tom the raw
@@ -21823,6 +21851,12 @@ function _claireUserFacingError(err) {
   if (/network/i.test(msg)) return 'Connection dropped. Try again?';
   if (/unexpected tool_use_id|tool_use ids without tool_result|invalid_request_error/i.test(msg)) return 'I lost track — can you resend your last request?';
   if (/time(d)?[ -]?out/i.test(msg)) return 'That took too long. Try again?';
+  // Claire safety foundation (Stage 2a): a saved-conversation load
+  // failure (network/DB, not a corrupted-history repair -- that case
+  // already shows its own "Started a new conversation" note). Continuing
+  // without the saved history is always safe -- this is informational,
+  // never blocking.
+  if (/claire_chat_sessions/i.test(msg)) return 'Couldn\'t load your saved conversation — continuing fresh.';
   return 'Something went wrong. Try again?';
 }
 
@@ -21990,6 +22024,227 @@ function _claireShowResearchLabel() {
     + '<div style="font-size:11px;color:var(--muted);font-style:italic;padding:6px 12px;line-height:1.4">Research mode — pulling data and market context…</div>';
   box.appendChild(row);
   box.scrollTop = box.scrollHeight;
+}
+
+// -----------------------------------------------------------------------
+// CLAIRE SAFETY FOUNDATION (Stage 2a) -- saved conversations.
+// Persisted to claire_chat_sessions at WHOLE-TURN granularity only -- the
+// two _claireSaveConversationTurn() call sites in processVoiceCommand
+// are both turn boundaries where every tool_use already has its
+// tool_result (see _claireSanitizeMessagesArray). One row per user per
+// business; loaded on opening Claire, trimmed to the last 20 turns
+// before saving (turn-boundary trim, never a raw array slice).
+// -----------------------------------------------------------------------
+var _claireActiveConversationId = null; // claire_chat_sessions.id once a row exists for this user
+var _claireViewOpened = false;          // guards the one-time load-on-open per page load
+
+// Tools whose tool_result must never be written to a saved row -- pay
+// amounts and payment/financial detail stay in the live session only.
+var CLAIRE_SENSITIVE_SAVE_REDACT = {
+  change_price: 1, record_payment: 1, edit_employee_hours: 1,
+  batch_edit_employee_hours: 1, lookup_balance: 1, get_revenue: 1
+};
+
+// Walks an already-sanitized, well-paired messages array and blanks the
+// tool_result content for any tool in CLAIRE_SENSITIVE_SAVE_REDACT.
+// Matches a tool_result to its tool via the preceding assistant
+// tool_use message's id -> name map.
+function _claireRedactForSave(messages) {
+  var idToName = {};
+  var i, j;
+  for (i = 0; i < messages.length; i++) {
+    var m = messages[i];
+    if (m && m.role === 'assistant' && Array.isArray(m.content)) {
+      for (j = 0; j < m.content.length; j++) {
+        var b = m.content[j];
+        if (b && b.type === 'tool_use') idToName[b.id] = b.name;
+      }
+    }
+  }
+  return messages.map(function(m) {
+    if (!m || m.role !== 'user' || !Array.isArray(m.content)) return m;
+    var changed = false;
+    var newContent = m.content.map(function(b) {
+      if (b && b.type === 'tool_result' && CLAIRE_SENSITIVE_SAVE_REDACT[idToName[b.tool_use_id]]) {
+        changed = true;
+        return Object.assign({}, b, { content: '[omitted from saved history]' });
+      }
+      return b;
+    });
+    return changed ? Object.assign({}, m, { content: newContent }) : m;
+  });
+}
+
+// Turn-boundary trim for the SAVED copy -- deliberately separate from
+// the live, array-index-based _claireTrimHistory (that one still
+// controls what's sent to the model mid-conversation; this one only
+// decides how much history a saved row retains). A "turn" starts at a
+// plain-string user message, same definition _claireSanitizeMessagesArray
+// already uses for a genuine boundary.
+function _claireTrimToLastNTurns(messages, n) {
+  var boundaries = [];
+  for (var i = 0; i < messages.length; i++) {
+    var m = messages[i];
+    if (m && m.role === 'user' && typeof m.content === 'string') boundaries.push(i);
+  }
+  if (boundaries.length <= n) return messages.slice();
+  return messages.slice(boundaries[boundaries.length - n]);
+}
+
+// Small, visually distinct note -- NOT spoken as Claire ("Started a new
+// conversation", "Could not save this conversation"). Centered, muted,
+// no avatar, so it never reads as something Claire said.
+function _claireRenderSystemNote(text) {
+  var box = _claireMsgsEl();
+  if (!box) return;
+  var row = document.createElement('div');
+  row.className = 'claire-msg-row';
+  row.innerHTML = '<div style="width:100%;text-align:center;font-size:11px;color:var(--muted);font-style:italic;padding:6px 0">' + String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+
+// Whole-turn save. Called ONLY from the two turn-boundary exit points in
+// processVoiceCommand (the normal text-reply return, and the
+// MAX_TOOL_ROUNDS wrap-up) -- both are points where _claireHistory's
+// last entry already has every tool_use paired with its tool_result,
+// never a dangling one.
+async function _claireSaveConversationTurn() {
+  try {
+    var session = _claireSessionInfo();
+    if (!session.authUserId || !session.businessId) return;
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+
+    var sanitized = _claireSanitizeMessagesArray(_claireHistory);
+    var trimmed = _claireTrimToLastNTurns(sanitized, 20);
+    var redacted = _claireRedactForSave(trimmed);
+
+    if (_claireActiveConversationId) {
+      var upd = await sb.from('claire_chat_sessions').update({
+        messages: redacted, message_count: redacted.length, updated_at: new Date().toISOString()
+      }).eq('id', _claireActiveConversationId);
+      if (upd.error) throw new Error(upd.error.message);
+    } else {
+      var ins = await sb.from('claire_chat_sessions').insert({
+        business_id: session.businessId, user_id: session.authUserId,
+        messages: redacted, message_count: redacted.length
+      }).select().single();
+      if (ins.error) throw new Error(ins.error.message);
+      _claireActiveConversationId = ins.data.id;
+    }
+  } catch (e) {
+    // STEP 4E: a failed save never blocks Claire -- small visible note, nothing more.
+    console.warn('[claire] failed to save conversation:', e);
+    _claireRenderSystemNote('Could not save this conversation.');
+  }
+}
+
+// Renders a loaded (already sanitized) messages array as the visible
+// transcript Tom actually saw -- only the final text of each turn was
+// ever shown originally (the tool-use loop runs silently), so a bare
+// assistant message with tool_use blocks and no text contributes
+// nothing here either, same as the first time.
+function _claireRenderHistoryTranscript(messages) {
+  for (var i = 0; i < messages.length; i++) {
+    var m = messages[i];
+    if (!m) continue;
+    if (m.role === 'user' && typeof m.content === 'string') {
+      _claireRenderBubble('user', m.content);
+    } else if (m.role === 'assistant' && Array.isArray(m.content)) {
+      var text = m.content.filter(function(b){ return b && b.type === 'text'; }).map(function(b){ return b.text; }).join('');
+      if (text) _claireRenderBubble('claire', text);
+    }
+  }
+}
+
+// Renders a card for every pending proposal visible to the signed-in
+// user (RLS does the real scoping). STEP 3F: proposals survive reload.
+async function _claireLoadPendingProposalsIntoChat() {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+    var res = await sb.from('claire_proposals').select('*').eq('status', 'pending').order('created_at', { ascending: true });
+    if (res.error || !res.data || !res.data.length) return;
+    for (var i = 0; i < res.data.length; i++) {
+      _claireRenderBubble('claire', _claireProposalCardHtml(res.data[i]));
+    }
+  } catch (e) { console.warn('[claire] failed to load pending proposals:', e); }
+}
+
+// On opening Claire: load the most recent saved conversation (or start
+// fresh if none exist, or if the most recent is stale -- older than
+// 12h), then load pending proposal cards. Runs once per page load
+// (later tab visits are no-ops) -- mirrors claireEnsureIntro's own
+// once-only dataset.inited guard.
+async function _claireOpenView() {
+  if (_claireViewOpened) return;
+  _claireViewOpened = true;
+  try {
+    var session = _claireSessionInfo();
+    if (!session.authUserId || !session.businessId) return;
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+
+    var res = await sb.from('claire_chat_sessions').select('*').eq('user_id', session.authUserId).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    if (!res.error && res.data) {
+      var ageMs = Date.now() - new Date(res.data.updated_at).getTime();
+      if (ageMs <= 12 * 60 * 60 * 1000) {
+        var original = Array.isArray(res.data.messages) ? res.data.messages : [];
+        var repaired = _claireSanitizeMessagesArray(original);
+        if (repaired.length || !original.length) {
+          _claireHistory = repaired;
+          _claireActiveConversationId = res.data.id;
+          var box = _claireMsgsEl();
+          // Suppress the generic first-message greeting -- we're resuming
+          // a real conversation, not starting fresh.
+          if (box) box.dataset.inited = '1';
+          _claireRenderHistoryTranscript(repaired);
+        } else {
+          // Had messages but repair dropped every single one -- genuinely
+          // unrepairable. Start fresh and say so plainly rather than
+          // silently replaying nothing.
+          _claireActiveConversationId = null;
+          _claireHistory = [];
+          _claireRenderSystemNote('Started a new conversation.');
+        }
+      }
+      // else: stale (>12h) -- leave _claireActiveConversationId null and
+      // _claireHistory empty; claireEnsureIntro's normal first-message
+      // greeting fires as usual. The next save creates a NEW row rather
+      // than overwriting the stale one.
+    }
+  } catch (e) {
+    console.warn('[claire] failed to load saved conversation:', e);
+    _claireRenderSystemNote(_claireUserFacingError(new Error('claire_chat_sessions load failed: ' + ((e && e.message) || e))));
+  }
+  await _claireLoadPendingProposalsIntoChat();
+}
+
+// "New chat" button -- starts a fresh conversation without touching any
+// saved row (the old one stays saved; the next turn creates a new row).
+function _claireStartNewChat() {
+  _claireHistory = [];
+  _claireActiveConversationId = null;
+  var box = _claireMsgsEl();
+  if (box) { box.innerHTML = ''; box.dataset.inited = ''; }
+  claireEnsureIntro();
+}
+
+// "Clear history" button -- deletes ONLY the current user's saved rows.
+// RLS already enforces this on its own; the .eq is belt-and-suspenders,
+// never the only thing standing between this and someone else's rows.
+async function _claireClearHistory() {
+  if (!window.confirm('Delete all of your saved Claire conversations? This cannot be undone.')) return;
+  try {
+    var session = _claireSessionInfo();
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb || !session.authUserId) return;
+    await sb.from('claire_chat_sessions').delete().eq('user_id', session.authUserId);
+  } catch (e) {
+    console.warn('[claire] failed to clear history:', e);
+  }
+  _claireStartNewChat();
 }
 
 function claireEnsureIntro() {
@@ -25404,8 +25659,92 @@ var CLAIRE_TOOLS = [
   { name: 'team_performance', description: 'Team metrics rollup — jobs completed, revenue, avg per job, client count, cancellations per team. Use for "which team is doing best" or comparison questions.', input_schema: { type:'object', properties: { period:{type:'string',description:'One of: this_month, last_month, last_90_days (default last_30_days)'} } } },
   { name: 'at_risk_clients', description: 'Composite churn-risk signals — combines cancellation rate, days since last service, balance overdue, and frequency drift to surface the clients Tom is most likely to lose. The killer "who am I about to lose" tool. Use proactively if Tom asks about churn or retention. Defaults to active clients only; pass client_status="all" to include paused/inactive.', input_schema: { type:'object', properties: { limit:{type:'number',description:'Max risk results to return per bucket (default 10)'}, client_status:{type:'string',description:'"all" to include paused/inactive (default: active only)'} } } },
   { name: 'send_text', description: 'Send an SMS via RingCentral. ONLY call this AFTER the user has explicitly confirmed (e.g. "yes", "send it", "go ahead"). NEVER call without prior confirmation. NEVER call in the same response that produced a quote — quote first, wait, then send. Returns success or error.', input_schema: { type:'object', properties: { phone:{type:'string',description:'Phone number — any format, will be normalized to E.164'}, message:{type:'string',description:'SMS body (plain text, no markdown)'} }, required:['phone','message'] } },
-  { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" — only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
+  { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" -- only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
+
+// -----------------------------------------------------------------------
+// CLAIRE SAFETY FOUNDATION (Stage 2a) -- approval-gate classification.
+// Every one of the 32 tools above is classified here:
+//   gate: false -- runs immediately via executeClaireToolCall, exactly as
+//                  before this stage (every READ, plus the 3 draft-only
+//                  tools that never touch the database -- a human still
+//                  has to tap send in their own phone app for those).
+//   gate: true  -- a real WRITE. Intercepted before executeClaireToolCall
+//                  runs: a claire_proposals row is created instead, and
+//                  nothing changes until a human taps Approve.
+//   sensitive: true -- owner/admin only, even to CREATE the proposal.
+// batch_edit_employee_hours is special-cased (previewGate) because its
+// own confirmed:false call already performs zero writes -- gating that
+// call too would block Claire from ever showing the preview at all.
+// Only the confirmed:true call needs gating.
+// schedule_clean is special-cased (scheduleSpecial) because it already
+// renders its OWN confirm UI (the #voice-cmd-status Yes/No panel) and
+// defers the actual write to executeScheduleCmd() on a button tap -- see
+// _claireApproveProposal's schedule_clean branch for how Approve drives
+// that existing, unmodified flow instead of showing a second Yes/No panel.
+// -----------------------------------------------------------------------
+var CLAIRE_TOOL_META = {
+  // READS -- unaffected by this stage.
+  lookup_client:               { gate: false },
+  lookup_schedule:              { gate: false },
+  lookup_balance:                { gate: false },
+  lookup_employee:               { gate: false },
+  count_jobs:                    { gate: false },
+  get_revenue:                   { gate: false },
+  compute_quote:                 { gate: false },
+  get_employee_hours:            { gate: false },
+  locate_team:                   { gate: false },
+  query_clients:                 { gate: false },
+  revenue_summary:               { gate: false },
+  accounts_receivable_summary:   { gate: false },
+  cancellation_analysis:         { gate: false },
+  team_performance:              { gate: false },
+  at_risk_clients:               { gate: false },
+
+  // EXEMPT -- draft-only, no DB mutation; a human taps send in their own app.
+  send_message:                  { gate: false },
+  send_invoice:                  { gate: false },
+  send_response_to:              { gate: false },
+
+  // WRITES -- gated behind a claire_proposals row.
+  schedule_clean:                { gate: true,  sensitive: false, scheduleSpecial: true },
+  cancel_clean:                  { gate: true,  sensitive: false },
+  move_clean:                    { gate: true,  sensitive: false },
+  employee_day_off:              { gate: true,  sensitive: false },
+  move_employee:                 { gate: true,  sensitive: false },
+  add_reminder:                  { gate: true,  sensitive: false },
+  change_frequency:              { gate: true,  sensitive: false },
+  update_client_notes:           { gate: true,  sensitive: false },
+  edit_client:                   { gate: true,  sensitive: false },
+  send_text:                     { gate: true,  sensitive: false },
+  change_price:                  { gate: true,  sensitive: true  },
+  record_payment:                { gate: true,  sensitive: true  },
+  edit_employee_hours:           { gate: true,  sensitive: true  },
+  batch_edit_employee_hours:     { gate: true,  sensitive: true, previewGate: true }
+};
+
+// Any tool not listed above fails SAFE: gated + sensitive -- a future new
+// tool is never accidentally exempt just because this object wasn't
+// updated for it. This is the one place anything reads CLAIRE_TOOL_META.
+function _claireToolMeta(name) {
+  return CLAIRE_TOOL_META[name] || { gate: true, sensitive: true };
+}
+
+// Synchronous session snapshot the gate needs on every dispatch. Mirrors
+// the existing getCurrentAppRole()/PentaTenant.current() accessors used
+// everywhere else in the app -- no new auth plumbing.
+function _claireSessionInfo() {
+  var blob = _pentaParseAuthToken();
+  var authUserId = (blob && blob.user && blob.user.id) || null;
+  return {
+    authUserId: authUserId,
+    businessId: (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null,
+    role: (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null
+  };
+}
+function _claireIsOwnerOrAdmin(role) {
+  return role === 'owner' || role === 'admin';
+}
 
 async function processVoiceCommand(text) {
   var status = document.getElementById('voice-cmd-status');
@@ -25507,7 +25846,8 @@ async function processVoiceCommand(text) {
     +'\nCite specific numbers from data. Never guess. If ' + _opName + ' asks something the tools can\'t answer, say so honestly.\n\n'
     +'OPERATIONAL TOOLS\n'
     +'You also have tools for in-app actions (schedule/move/cancel cleans, change prices, change frequency, record payments, send messages, edit clients, read or edit employee hours, send invoices, add reminders, compute_quote, send_text). Use them whenever they help — don\'t ask permission. For strategic or analytical questions where no tool is needed, just answer with your reasoning.\n'
-    +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n\n'
+    +'NEVER claim a UI action happened that you did not actually perform via a tool call. NEVER say "opening the form", "generating in the UI now", "loading it on screen", or anything implying you triggered something visual. Either you call the tool and report what came back, OR you tell the user what they need to do themselves. There is no third option.\n'
+    +'Any action tool (schedule/cancel/move a clean, change price or frequency, record a payment, edit a client or employee hours, send a text) now creates a PROPOSAL, not an immediate change -- the tool result will say "Proposal created... waiting for your approval. Nothing has changed yet." When you see that, say something like "I have a proposal for your approval" (or similarly plain, e.g. "I\'ve set that up for your approval -- take a look"). NEVER say the action is done, saved, scheduled, cancelled, or sent when the result says a proposal was created -- it has not happened yet and only happens if the human taps Approve. If a tool result instead says "Only the owner or admin can do that" or "Only a manager or above can ask Claire to do that," relay that plainly and do not retry.\n\n'
     +'QUOTE FLOW (follow this exactly when the user asks for a quote):\n'
     +'1. ALWAYS call compute_quote first. Pass the address and the frequency the user asked for (weekly | biweekly | triweekly | monthly | once). compute_quote does the math backend-only — it does NOT render anything.\n'
     +'2. compute_quote returns structured JSON: formatted_price, hours, cleaners, breakdown, sms_text, sqft_source. Present those to the user inline in chat: "Quote for <address>: <formatted_price> for <frequency_label>, ~<hours> with <cleaners> cleaners. Want me to text this to <phone>?" If sqft_source is "state_median" or starts with "book_average:", append a line like "Note: sqft estimated from <town> averages — confirm if you have actuals." If sqft_source is "massgis_res_area" or "massgis_bld_area_estimate" or "user_provided", no caveat needed.\n'
@@ -25681,7 +26021,7 @@ async function processVoiceCommand(text) {
           toolsCalledCount++;
           var resStr;
           try {
-            resStr = await executeClaireToolCall(tu, textReply);
+            resStr = await _claireDispatchOrPropose(tu, textReply);
           } catch (te) {
             resStr = 'Tool ' + tu.name + ' threw: ' + (te && te.message ? te.message : String(te));
           }
@@ -25736,6 +26076,14 @@ async function processVoiceCommand(text) {
         _claireRenderSmsButton(_claireLastToolSmsLink);
         _claireLastToolSmsLink = null;
       }
+      // Claire safety foundation (Stage 2a): any proposal cards created
+      // this turn render AFTER the text reply too, same slot as the SMS
+      // button above -- one smooth reply, then whatever action cards go
+      // with it.
+      _claireFlushProposalCards();
+      // Whole-turn save -- _claireHistory's last entry is this turn's
+      // final text-only assistant message, a genuine turn boundary.
+      _claireSaveConversationTurn();
       return;
     }
     // Hit MAX_TOOL_ROUNDS — wrap up so Tom isn't left hanging.
@@ -25774,6 +26122,11 @@ async function processVoiceCommand(text) {
       _claireRenderSmsButton(_claireLastToolSmsLink);
       _claireLastToolSmsLink = null;
     }
+    _claireFlushProposalCards();
+    // Whole-turn save -- the round cap was only reached after the last
+    // round's tool_results were already pushed, so this is also a
+    // well-paired boundary, never a dangling tool_use.
+    _claireSaveConversationTurn();
   } catch(e) {
     // Bug fix (PR #185): this used to swallow `e` completely -- no console
     // trace at all. Anything that throws in the tool-loop body outside
@@ -25985,6 +26338,308 @@ async function executeClaireToolCall(toolCall, message) {
   try { await _executeClaireToolCallInner(toolCall, message); }
   finally { setTimeout(function(){ _claireActing = false; }, 0); }
   return _claireLastToolResult || ('Executed ' + toolCall.name + '.');
+}
+
+// -----------------------------------------------------------------------
+// CLAIRE SAFETY FOUNDATION (Stage 2a) -- approval gate.
+// The ONE live call site in processVoiceCommand's tool-execution loop
+// calls _claireDispatchOrPropose instead of executeClaireToolCall
+// directly. A READ (or the batch preview-only call) falls straight
+// through to the unmodified executeClaireToolCall, exactly as before.
+// A real WRITE never executes here -- it becomes a pending
+// claire_proposals row, and executeClaireToolCall only runs later, from
+// _claireApproveProposal, completely unmodified.
+// -----------------------------------------------------------------------
+
+// Cards built during the current turn, flushed right after the turn's
+// one wrap-up reply -- same pattern as the existing _claireLastToolSmsLink
+// (rendered as a bubble AFTER Claire's text, never mid-silent-loop).
+var _clairePendingProposals = []; // { id, html, sensitive }
+
+async function _claireDispatchOrPropose(toolCall, textReply) {
+  var meta = _claireToolMeta(toolCall.name);
+
+  if (!meta.gate) {
+    return await executeClaireToolCall(toolCall, textReply);
+  }
+  if (meta.previewGate && !(toolCall.input && toolCall.input.confirmed)) {
+    // Preview-only call -- writes nothing, matches today's behavior exactly.
+    return await executeClaireToolCall(toolCall, textReply);
+  }
+
+  var session = _claireSessionInfo();
+  if (!session.authUserId || !session.businessId) {
+    return 'Your session looks signed out -- sign in again and try that once more. Nothing was changed.';
+  }
+  if (meta.sensitive && !_claireIsOwnerOrAdmin(session.role)) {
+    return 'Only the owner or admin can do that.';
+  }
+  // Should be unreachable (Claire never loads for an employee, and the
+  // employee portal never reaches this code path at all), but fails safe
+  // if some future routing change ever let an employee session get here.
+  if (!isManagerRole() && session.role !== 'dispatcher') {
+    return 'Only a manager or above can ask Claire to do that.';
+  }
+
+  var summary = _claireProposalSummary(toolCall.name, toolCall.input || {});
+  var row;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var ins = await sb.from('claire_proposals').insert({
+      business_id: session.businessId,
+      created_by: session.authUserId,
+      conversation_id: (typeof _claireActiveConversationId === 'string') ? _claireActiveConversationId : null,
+      tool_name: toolCall.name,
+      args: toolCall.input || {},
+      summary: summary,
+      risk: meta.sensitive ? 'sensitive' : 'normal'
+    }).select().single();
+    if (ins.error) throw new Error(ins.error.message);
+    row = ins.data;
+  } catch (propErr) {
+    console.error('[claire] failed to create proposal:', propErr);
+    return 'I couldn\'t create that proposal just now (' + (propErr && propErr.message ? propErr.message : 'unknown error') + '). Nothing was changed -- try again?';
+  }
+
+  _clairePendingProposals.push({ id: row.id, html: _claireProposalCardHtml(row), sensitive: !!meta.sensitive });
+  _claireRefreshProposalBadge();
+  return 'Proposal created for "' + summary + '" -- waiting for your approval. Nothing has changed yet.';
+}
+
+// Plain-English, screen-level-of-detail summary for a proposal card.
+// Deliberately mirrors the wording each tool's OWN existing confirmed
+// reply already uses -- nothing here shows more than the app's normal
+// screens already would.
+function _claireProposalSummary(toolName, input) {
+  input = input || {};
+  switch (toolName) {
+    case 'schedule_clean':
+      return 'Schedule ' + (input.client || 'a client') + (input.date ? ' for ' + input.date : '') + (input.time ? ' at ' + input.time : '') + (input.team ? ' with Team ' + String(input.team).toUpperCase() : '') + '.';
+    case 'cancel_clean':
+      return 'Cancel ' + (input.client || 'a client') + '\'s clean' + (input.date ? ' on ' + input.date : '') + '.';
+    case 'move_clean':
+      return 'Move ' + (input.client || 'a client') + '\'s clean' + (input.from_date ? ' from ' + input.from_date : '') + (input.to_date ? ' to ' + input.to_date : '') + (input.time ? ' at ' + input.time : '') + (input.team ? ' with Team ' + String(input.team).toUpperCase() : '') + '.';
+    case 'employee_day_off':
+      return 'Mark ' + (input.employee || 'an employee') + ' off' + (input.date ? ' on ' + input.date : '') + '.';
+    case 'move_employee':
+      return 'Move ' + (input.employee || 'an employee') + ' to Team ' + (input.team ? String(input.team).toUpperCase() : '?') + (input.date ? ' on ' + input.date : '') + '.';
+    case 'add_reminder':
+      return 'Add reminder: "' + (input.text || '') + '".';
+    case 'change_frequency':
+      return 'Change ' + (input.client || 'a client') + '\'s cleaning frequency to ' + (input.new_frequency || '?') + '.';
+    case 'update_client_notes':
+      return 'Update notes on ' + (input.client || 'a client') + '\'s profile.';
+    case 'edit_client':
+      return 'Edit ' + (input.client || 'a client') + '\'s ' + (input.field || 'field') + ' to "' + (input.value || '') + '".';
+    case 'send_text':
+      return 'Send a text to ' + (input.phone || 'this number') + '.';
+    case 'change_price':
+      return 'Change ' + (input.client || 'a client') + '\'s price to $' + (input.price || '?') + '.';
+    case 'record_payment':
+      return 'Record a $' + (input.amount || '?') + ' payment from ' + (input.client || 'a client') + (input.method ? ' via ' + input.method : '') + '.';
+    case 'edit_employee_hours':
+      return 'Edit ' + (input.employee || 'an employee') + '\'s hours' + (input.date ? ' on ' + input.date : '') + '.';
+    case 'batch_edit_employee_hours':
+      var n = Array.isArray(input.entries) ? input.entries.length : 0;
+      return 'Edit hours for ' + n + ' employee/date ' + (n === 1 ? 'entry' : 'entries') + '.';
+    default:
+      return 'Run ' + toolName + '.';
+  }
+}
+
+function _claireEscapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _claireProposalCardHtml(row) {
+  var riskBadge = row.risk === 'sensitive' ? '<span style="background:rgba(248,113,113,0.15);color:#f87171;border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:6px">SENSITIVE</span>' : '';
+  return '<div class="claire-proposal-card" id="claire-proposal-' + row.id + '" style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-top:6px;background:var(--surface2)">'
+    + '<div style="font-size:13px;line-height:1.4"><strong>Proposal</strong>' + riskBadge + '<br>' + _claireEscapeHtml(row.summary) + '</div>'
+    + '<div class="claire-proposal-status" style="font-size:12px;color:var(--muted);margin-top:6px">Waiting for your approval. Nothing has changed yet.</div>'
+    + '<div style="display:flex;gap:8px;margin-top:10px">'
+    + '<button onclick="_claireRejectProposal(\'' + row.id + '\')" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;cursor:pointer">Reject</button>'
+    + '<button onclick="_claireApproveProposal(\'' + row.id + '\')" style="flex:1;padding:10px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;cursor:pointer">Approve</button>'
+    + '</div>'
+    + '</div>';
+}
+
+// Renders every card queued this turn, then (when 2+ non-sensitive
+// proposals landed in the SAME turn) one extra "Approve all" bubble.
+// Called right after the turn's one wrap-up claireReply(), same slot as
+// the existing _claireRenderSmsButton(_claireLastToolSmsLink) call.
+function _claireFlushProposalCards() {
+  var nonSensitiveIds = [];
+  for (var i = 0; i < _clairePendingProposals.length; i++) {
+    _claireRenderBubble('claire', _clairePendingProposals[i].html);
+    if (!_clairePendingProposals[i].sensitive) nonSensitiveIds.push(_clairePendingProposals[i].id);
+  }
+  if (nonSensitiveIds.length >= 2) {
+    var idsAttr = nonSensitiveIds.map(function(x){ return '"' + x + '"'; }).join(',');
+    _claireRenderBubble('claire', '<button onclick=\'_claireApproveAllProposals([' + idsAttr + '])\' style="width:100%;padding:10px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:700;cursor:pointer">Approve all ' + nonSensitiveIds.length + '</button>');
+  }
+  _clairePendingProposals = [];
+}
+
+// Approve is double-tap safe and idempotent: the UPDATE that claims the
+// row is itself conditioned on status='pending', so only one concurrent
+// tap can ever win the claim -- every other tap (or a second tap after
+// the first already finished) reads back status != 'pending' and does
+// nothing further.
+async function _claireApproveProposal(id) {
+  var card = document.getElementById('claire-proposal-' + id);
+  var statusEl = card ? card.querySelector('.claire-proposal-status') : null;
+  var btns = card ? card.querySelectorAll('button') : [];
+  var i, bi;
+  for (bi = 0; bi < btns.length; bi++) btns[bi].disabled = true;
+
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+
+    // Lock-screen / expired-session re-check -- a real network round trip,
+    // not the locally-cached session, so a session that expired since the
+    // card was rendered is actually caught here, not silently ignored.
+    var sres = await sb.auth.getSession();
+    if (!sres || !sres.data || !sres.data.session) {
+      if (statusEl) statusEl.textContent = 'Sign in again to approve.';
+      for (bi = 0; bi < btns.length; bi++) btns[bi].disabled = false;
+      return;
+    }
+    var session = _claireSessionInfo();
+
+    var fetched = await sb.from('claire_proposals').select('*').eq('id', id).single();
+    if (fetched.error || !fetched.data) {
+      if (statusEl) statusEl.textContent = 'Could not find that proposal.';
+      return;
+    }
+    var row = fetched.data;
+
+    if (row.status !== 'pending') {
+      if (statusEl) statusEl.textContent = 'Already ' + row.status + '.';
+      return;
+    }
+    if (new Date(row.expires_at) < new Date()) {
+      await sb.from('claire_proposals').update({ status: 'expired' }).eq('id', id).eq('status', 'pending');
+      if (statusEl) statusEl.textContent = 'This is out of date, ask Claire again.';
+      return;
+    }
+    var meta = _claireToolMeta(row.tool_name);
+    if (meta.sensitive && !_claireIsOwnerOrAdmin(session.role)) {
+      if (statusEl) statusEl.textContent = 'Only the owner or admin can approve that.';
+      return;
+    }
+
+    // Claim the row -- conditional on status still being 'pending'. A
+    // second, racing tap (or an "Approve all" that re-visits this id)
+    // gets back no row here and falls into the "already decided" path,
+    // never reaching the execute call below twice.
+    var claim = await sb.from('claire_proposals')
+      .update({ status: 'approved', decided_by: session.authUserId, decided_at: new Date().toISOString() })
+      .eq('id', id).eq('status', 'pending').select().single();
+    if (claim.error || !claim.data) {
+      if (statusEl) statusEl.textContent = 'Already decided.';
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = 'Approved -- running now...';
+
+    var toolCall = { name: row.tool_name, input: row.args || {} };
+    var resultStr = null;
+    var execError = null;
+    try {
+      if (meta.scheduleSpecial) {
+        // schedule_clean's own handler performs no write by itself -- it
+        // only renders the legacy Yes/No panel and sets
+        // window._pendingVoiceCmd (see CLAIRE_TOOL_META's comment).
+        // Approve IS the human confirmation now, so drive that existing,
+        // unmodified confirm function directly instead of leaving a
+        // second, redundant Yes/No panel on screen.
+        resultStr = await executeClaireToolCall(toolCall, null);
+        if (window._pendingVoiceCmd) {
+          await executeScheduleCmd();
+        }
+        var stStatus = document.getElementById('voice-cmd-status');
+        if (stStatus) stStatus.style.display = 'none';
+      } else {
+        resultStr = await executeClaireToolCall(toolCall, null);
+      }
+    } catch (runErr) {
+      execError = runErr;
+    }
+
+    if (execError) {
+      await sb.from('claire_proposals').update({ status: 'failed', error: (execError && execError.message) || String(execError), executed_at: new Date().toISOString() }).eq('id', id);
+      if (statusEl) statusEl.textContent = 'Failed: ' + ((execError && execError.message) || 'unknown error') + '.';
+    } else {
+      await sb.from('claire_proposals').update({ status: 'executed', result: { resultStr: String(resultStr || '') }, executed_at: new Date().toISOString() }).eq('id', id);
+      if (statusEl) statusEl.textContent = 'Done.';
+    }
+  } catch (e) {
+    console.error('[claire] approve failed', e);
+    if (statusEl) statusEl.textContent = 'Something went wrong approving this.';
+  } finally {
+    _claireRefreshProposalBadge();
+  }
+}
+
+async function _claireRejectProposal(id) {
+  var card = document.getElementById('claire-proposal-' + id);
+  var statusEl = card ? card.querySelector('.claire-proposal-status') : null;
+  var btns = card ? card.querySelectorAll('button') : [];
+  var bi;
+  for (bi = 0; bi < btns.length; bi++) btns[bi].disabled = true;
+  try {
+    var session = _claireSessionInfo();
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) throw new Error('Supabase client not ready');
+    var upd = await sb.from('claire_proposals')
+      .update({ status: 'rejected', decided_by: session.authUserId, decided_at: new Date().toISOString() })
+      .eq('id', id).eq('status', 'pending').select().single();
+    if (upd.error || !upd.data) {
+      if (statusEl) statusEl.textContent = 'Already decided.';
+      return;
+    }
+    if (statusEl) statusEl.textContent = 'Rejected.';
+  } catch (e) {
+    console.error('[claire] reject failed', e);
+    if (statusEl) statusEl.textContent = 'Something went wrong.';
+    for (bi = 0; bi < btns.length; bi++) btns[bi].disabled = false;
+  } finally {
+    _claireRefreshProposalBadge();
+  }
+}
+
+// Sequential, not parallel -- same reasoning as batch_edit_employee_hours:
+// a failure partway through leaves a well-defined, visible state instead
+// of several racing writes. Each call re-checks role/status/expiry on
+// its own, so this is exactly N taps of Approve, just automated.
+async function _claireApproveAllProposals(ids) {
+  if (!ids || !ids.length) return;
+  if (!window.confirm('Approve all ' + ids.length + ' proposals? This runs each one right away.')) return;
+  for (var i = 0; i < ids.length; i++) {
+    await _claireApproveProposal(ids[i]);
+  }
+}
+
+// STEP 3F: small "N waiting for approval" badge on Claire's entry point,
+// for any role that can actually see proposals (RLS already scopes the
+// count query itself -- a manager's count is only her own, an employee's
+// is always 0 and the badge is hidden outright for that role).
+async function _claireRefreshProposalBadge() {
+  try {
+    var badge = document.getElementById('claire-proposal-badge');
+    if (!badge) return;
+    var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+    if (!role || role === 'employee') { badge.style.display = 'none'; return; }
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    if (!sb) return;
+    var res = await sb.from('claire_proposals').select('id', { count: 'exact', head: true }).eq('status', 'pending');
+    if (res.error) return;
+    var n = res.count || 0;
+    if (n > 0) { badge.textContent = String(n > 99 ? '99+' : n); badge.style.display = ''; }
+    else { badge.style.display = 'none'; }
+  } catch (e) {}
 }
 
 // When a pending action (schedule/invoice/SMS) is later confirmed by Tom
@@ -45272,6 +45927,10 @@ function isManagerRole() {
         if (r) {
           _pentaCachedRole = r;
           _pentaCachedRoleUserId = session.user.id;
+          // Claire safety foundation (Stage 2a): role just resolved (or
+          // re-resolved) for this session -- refresh the pending-proposal
+          // badge now rather than waiting for Claire's own view to open.
+          if (typeof _claireRefreshProposalBadge === 'function') _claireRefreshProposalBadge();
         }
       });
     });
