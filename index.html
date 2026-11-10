@@ -4830,6 +4830,11 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
         <button onclick="openTeamManager(dateKey(calDate))" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
 
         <button id="cal-day-rev" onclick="cycleRevMode()" style="background:none;border:none;color:#22c55e;font-size:15px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;padding:0;"></button>
+        <!-- Close Day (close-day branch): owner/admin only, toggled by
+             _closeDaySyncHeader(), called from renderCal()'s day-mode
+             branch. Hidden (display:none) for every other role, by
+             default, before any role check even runs. -->
+        <span id="close-day-slot" style="display:none"></span>
       </div>
 
       <div style="display:flex;align-items:center;gap:8px">
@@ -17114,6 +17119,10 @@ function renderCal() {
       (isToday ? 'Today, ' : '') + DAYS[calDate.getDay()] + ' ' + MONTHS[calDate.getMonth()] + ' ' + calDate.getDate() + ', ' + calDate.getFullYear();
     // Show revenue (mode: day/week/month)
     updateRevDisplay();
+    // Close Day (close-day branch): refresh the Close day/Closed badge
+    // for whichever date is now selected. Never reassigns calDate --
+    // only reads it.
+    if (typeof _closeDaySyncHeader === 'function') _closeDaySyncHeader();
 
     // Build week strip
     const weekStart = getWeekStart(calDate);
@@ -36987,7 +36996,7 @@ async function _vsnapWriteRow(sbCtx, job, team, dateStr, status, matchNote, inAt
   }
 }
 
-function _vsnapRenderSummary(counts, notYetHappened, failedDays) {
+function _vsnapRenderSummary(counts, notYetHappened, failedDays, closedSkipped) {
   var rows = [
     ['Matched', counts.matched || 0],
     ['Ambiguous', counts.ambiguous || 0],
@@ -37002,6 +37011,7 @@ function _vsnapRenderSummary(counts, notYetHappened, failedDays) {
   html += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">' + (counts.incompleteLaborCost || 0) + ' matched job(s) have an incomplete labor cost (at least one present employee has no rate on file or is salaried).</div>';
   if (counts.writeErrors) html += '<div style="margin-top:6px;font-size:12px;color:var(--red)">' + counts.writeErrors + ' row(s) failed to save -- see the error messages above.</div>';
   if (notYetHappened) html += '<div style="margin-top:6px;font-size:12px;color:var(--muted)">' + notYetHappened + ' day(s) in this range are today or in the future and were skipped -- nothing to build yet.</div>';
+  if (closedSkipped) html += '<div style="margin-top:6px;font-size:12px;color:var(--muted)">' + closedSkipped + ' day(s) in this range are closed and were skipped -- closed data is final.</div>';
   html += '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Per-employee presence isn’t tracked -- every employee on a team that day is credited with the full team visit time, not individual clock-in/out.</div>';
   if (failedDays.length) {
     html += '<div style="margin-top:10px;font-size:12px;color:var(--red)">Could not load: ' + failedDays.map(function (f) { return _vsnapFriendlyDate(f.date) + ' (' + _adminEsc(f.reason) + ')'; }).join(', ') + '</div>';
@@ -37060,13 +37070,25 @@ async function _vsnapRun() {
 
   var counts = { matched: 0, ambiguous: 0, no_gps: 0, unmatched: 0, skipped: 0, alreadyBuilt: 0, incompleteLaborCost: 0, writeErrors: 0 };
   var notYetHappened = 0;
+  var closedSkipped = 0;
   var failedDays = [];
   var teams = _pentaTeamNames();
+
+  // Close Day (close-day branch): a closed day's data is final and
+  // never re-pulled from GPS -- read-only lookup, no write, no change
+  // to matching. Best-effort: a failed lookup just means no dates get
+  // skipped this run (same as before this existed), never a hard stop.
+  var closedDates = {};
+  try {
+    var cdRes = await sbCtx.sb.from('day_closes').select('close_date').eq('business_id', sbCtx.bid).eq('status', 'closed').in('close_date', range.dates);
+    if (!cdRes.error) (cdRes.data || []).forEach(function (r) { closedDates[r.close_date] = true; });
+  } catch (e) { console.warn('[VisitData] closed-day lookup failed', e); }
 
   for (var d = 0; d < range.dates.length; d++) {
     if (myGen !== _visitSnapGeneration) return; // cancelled (sheet closed / a new Build started)
     var dateStr = range.dates[d];
     if (dateStr >= todayStr) { notYetHappened++; continue; } // completion signal: date strictly before today only
+    if (closedDates[dateStr]) { closedSkipped++; continue; } // closed -- final, never rebuilt here
     statusEl.textContent = 'Building ' + _vsnapFriendlyDate(dateStr) + ', ' + (d + 1) + ' of ' + range.dates.length + '…';
     try {
       for (var ti = 0; ti < teams.length; ti++) {
@@ -37083,7 +37105,7 @@ async function _vsnapRun() {
   if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Build'; }
   statusEl.textContent = failedDays.length ? (failedDays.length + ' day(s) could not load (shown below).') : 'Done.';
   _visitSnapLastSummary = counts;
-  summaryEl.innerHTML = _vsnapRenderSummary(counts, notYetHappened, failedDays);
+  summaryEl.innerHTML = _vsnapRenderSummary(counts, notYetHappened, failedDays, closedSkipped);
 }
 
 function openVisitDataTool() {
@@ -37128,6 +37150,782 @@ function closeVisitDataTool() {
   _visitSnapRunInFlight = false;
   var el = document.getElementById('visit-data-overlay');
   if (el) el.remove();
+}
+
+
+// ─────────────────────────────────────────
+// CLOSE DAY (PR: close-day). Owner/admin-only "finalize this day's
+// visit data" workflow in the Schedule tab (migration 122:
+// day_closes). Reuses, UNMODIFIED:
+//   - openTeamManager(dateStr)                 -- all employee/vehicle
+//     edits for the day (Move/Off/vehicle select already live there).
+//   - openJobModal/saveJob/cancelJob/deleteJob  -- all job add/edit/
+//     cancel for the day.
+//   - window.PentaJobs.insert                   -- the SAME primitive
+//     saveJob()'s own new-job branch calls, for "Add to schedule and
+//     mark cleaned".
+//   - _fetchTeamDayGpsDetail, matchStopToClientGeo, _teamHoursEligibility,
+//     _teamHoursEmpUuid, _tdrClassifyStop, _tdrTrimMorningStops,
+//     _tdrMergeLunchCandidates, _vsnapClassifyTeamDayJobs,
+//     _vsnapComputeLaborCost, _vsnapDecideWriteAction -- every read
+//     and every piece of matching/labor-cost math, verbatim.
+// Close Day's OWN writes go only to job_visit_snapshots (existing
+// columns) and day_closes (new). It never writes to daily_assignments,
+// team_device_assignments, or jobs directly -- those are written only
+// through the reused functions above.
+// ─────────────────────────────────────────
+var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;
+
+var _closeDaySession = null;      // built fresh each time the sheet opens; null when closed
+var _closeDayStatusCache = {};    // dateStr -> day_closes row | 'none'
+var _closeDayRunInFlight = false; // close/reopen double-tap guard
+var _closeDayCancelObserver = null;
+
+// ─────────────────────────────────────────
+// PURE FUNCTIONS (unit-tested in tests/close-day.test.js)
+// ─────────────────────────────────────────
+
+// NOT-CLEANED reason text. status is one of _vsnapClassifyTeamDayJobs's
+// own outputs, reused verbatim -- never recomputed here. null means
+// "matched, no flag".
+function _closeDayNotCleanedReason(status, clientHasCoords) {
+  if (status === 'matched') return null;
+  if (status === 'ambiguous') return 'Ambiguous: two jobs for this client on this team-day.';
+  if (status === 'no_gps') return 'Team had no vehicle/GPS that day.';
+  if (status === 'unmatched') return clientHasCoords ? 'No stop found at that address.' : 'This client has no saved coordinates.';
+  return 'No GPS visit found.';
+}
+
+// Pure: NOT-CLEANED flags for a team-day. Reuses
+// _vsnapClassifyTeamDayJobs (the Visit Data builder's own job-to-stop
+// matching) VERBATIM -- never a second matching algorithm.
+// clientsById: {clientId: {lat, lng}} -- caller builds this from
+// PentaClients so this stays a pure function.
+function _closeDayComputeNotCleanedFlags(teamJobs, gpsOutcome, team, matchFn, clientsById) {
+  var classified = _vsnapClassifyTeamDayJobs(teamJobs, gpsOutcome, team, matchFn);
+  var flags = [];
+  classified.forEach(function (c) {
+    if (c.status === 'matched') return;
+    var client = clientsById[c.job.clientId] || null;
+    var hasCoords = !!(client && client.lat != null && client.lng != null);
+    flags.push({
+      job: c.job, status: c.status,
+      reason: _closeDayNotCleanedReason(c.status, hasCoords),
+      matchNote: c.match_note
+    });
+  });
+  return { classified: classified, flags: flags };
+}
+
+// Pure: EXTRA STOP flags for a team-day. Reuses _tdrClassifyStop/
+// _tdrTrimMorningStops/_tdrMergeLunchCandidates (the Team Day Report's
+// own per-stop classification + single-lunch merge) VERBATIM -- same
+// algorithm that already decides office/lunch/a real visit for that
+// report. A stop is an EXTRA STOP candidate only when it's not depot,
+// not part of the day's single merged lunch block, not a scheduled+
+// matched visit, and at least minMinutes long. Returns the merge
+// result too (lunch start/minutes), so the caller never recomputes it
+// a second time for flags_snapshot.
+function _closeDayComputeExtraStops(gpsOutcome, team, teamJobs, trueStart, trueEnd, matchFn, minMinutes) {
+  if (!gpsOutcome || !gpsOutcome.ok || !gpsOutcome.detail || !Array.isArray(gpsOutcome.detail.stopList)) {
+    return { stops: [], lunchMerge: null };
+  }
+  var stopList = gpsOutcome.detail.stopList;
+  var ctx = { team: team, teamJobs: teamJobs, trueStart: trueStart, trueEnd: trueEnd };
+  var classified = stopList.map(function (s) { return _tdrClassifyStop(s, ctx); });
+  var trimmed = _tdrTrimMorningStops(classified, trueStart);
+  // _tdrTrimMorningStops only ever drops LEADING entries -- keep the
+  // raw stopList in lock-step so index i still refers to the same stop
+  // in both arrays (needed below for lat/lng, which _tdrClassifyStop's
+  // own return shape drops).
+  var dropped = classified.length - trimmed.length;
+  var alignedStops = stopList.slice(dropped);
+  var merge = _tdrMergeLunchCandidates(trimmed);
+  var mergedSet = {};
+  if (merge) merge.mergedIndexes.forEach(function (i) { mergedSet[i] = true; });
+
+  var out = [];
+  trimmed.forEach(function (c, i) {
+    if (c.isDepot) return;
+    if (mergedSet[i]) return; // part of this team-day's single lunch
+    // "Not lunch" (isExcluded) stays exempt too -- _tdrClassifyStop
+    // already forces isPossibleLunch=false for an excluded stop, so it
+    // can never land in mergedSet above; this is the explicit check
+    // for that case. A manager already reviewed/explained this stop
+    // via the Team Hours GPS timeline -- Close Day doesn't re-surface
+    // it as a new, separate flag.
+    if (c.isExcluded) return;
+    if (c.isClientMatch && c.isScheduled) return; // a real, scheduled visit
+    if (c.durationMin == null || c.durationMin < minMinutes) return;
+    var s = alignedStops[i] || {};
+    var match = matchFn(s.lat, s.lng, s.addr, teamJobs, team);
+    out.push({
+      stopKey: c.inTime ? c.inTime.toISOString() : ('idx' + i),
+      addr: c.addr, inTime: c.inTime, outTime: c.outTime, durationMin: c.durationMin,
+      isClientMatch: !!match, clientId: match ? match.id : null, clientName: match ? match.name : null
+    });
+  });
+  return { stops: out, lunchMerge: merge };
+}
+
+// Pure: STEP C per-team live preview. classifiedJobs is
+// _vsnapClassifyTeamDayJobs's own output (or the equivalent session-
+// overridden shape). presentEmployees is the SAME roster-row shape
+// _vsnapBuildTeamDay builds post-await-fix (pay_rate/pay_type read
+// straight off the roster row, never a second async lookup).
+// allTeamJobs is every non-cancelled scheduled job for the team/day
+// (revenue counts every scheduled job's live price, not just matched
+// ones -- jobs.price is always read live, never cached here).
+function _closeDayComputeTeamPreview(classifiedJobs, presentEmployees, allTeamJobs, targetCentsPerEmpHour) {
+  var inHomeMinutes = 0, employeeMinutes = 0, laborCostCents = 0, laborIncomplete = false;
+  classifiedJobs.forEach(function (c) {
+    if (c.status !== 'matched' || c.team_minutes == null) return;
+    inHomeMinutes += c.team_minutes;
+    var cost = _vsnapComputeLaborCost(presentEmployees, c.team_minutes);
+    employeeMinutes += cost.employees.reduce(function (s, e) { return s + (e.minutes || 0); }, 0);
+    laborCostCents += cost.labor_cost_gross_cents || 0;
+    if (!cost.labor_cost_complete) laborIncomplete = true;
+  });
+  var revenueCents = allTeamJobs.reduce(function (s, j) { return s + Math.round((parseFloat(j.price) || 0) * 100); }, 0);
+  var marginPct = revenueCents > 0 ? Math.round(((revenueCents - laborCostCents) / revenueCents) * 1000) / 10 : null;
+  var employeeHours = employeeMinutes / 60;
+  var revenuePerEmpHourCents = employeeHours > 0 ? Math.round(revenueCents / employeeHours) : null;
+  return {
+    inHomeMinutes: inHomeMinutes, employeeMinutes: employeeMinutes,
+    laborCostCents: laborCostCents, laborIncomplete: laborIncomplete,
+    revenueCents: revenueCents, marginPct: marginPct,
+    revenuePerEmpHourCents: revenuePerEmpHourCents, targetCentsPerEmpHour: targetCentsPerEmpHour,
+    meetsTarget: (revenuePerEmpHourCents != null && targetCentsPerEmpHour != null) ? revenuePerEmpHourCents >= targetCentsPerEmpHour : null
+  };
+}
+
+// Pure: decides what to write for ONE job at close time.
+//   sessionOverride: {status, in_at, out_at, team_minutes, employees,
+//     labor_cost_gross_cents, labor_cost_complete, match_note} | null
+//     -- present only when Tom explicitly acted on this job during
+//     this session (confirmed cleaned, cancelled, linked a stop,
+//     edited times). That explicit action IS the confirmation to
+//     write manually_edited=true.
+//   existingRow: the current job_visit_snapshots row for this job, or
+//     null/undefined.
+// No session override + an existing manually_edited row = skip
+// entirely ("no overwrite of existing manually_edited rows without
+// confirmation"). No session override + nothing manually_edited =
+// write the fresh GPS-computed values as-is, manually_edited=false
+// ("untouched GPS-matched rows saved as-is").
+function _closeDayDecideJobClose(sessionOverride, existingRow, fresh) {
+  if (sessionOverride) {
+    return {
+      action: 'write',
+      row: {
+        status: sessionOverride.status, match_note: sessionOverride.match_note,
+        in_at: sessionOverride.in_at, out_at: sessionOverride.out_at, team_minutes: sessionOverride.team_minutes,
+        employees: sessionOverride.employees, labor_cost_gross_cents: sessionOverride.labor_cost_gross_cents,
+        labor_cost_complete: sessionOverride.labor_cost_complete,
+        manually_edited: true, source: 'manual'
+      }
+    };
+  }
+  if (existingRow && existingRow.manually_edited) {
+    return { action: 'skip', row: null };
+  }
+  return {
+    action: 'write',
+    row: {
+      status: fresh.status, match_note: fresh.match_note, in_at: fresh.in_at, out_at: fresh.out_at,
+      team_minutes: fresh.team_minutes, employees: fresh.employees,
+      labor_cost_gross_cents: fresh.labor_cost_gross_cents, labor_cost_complete: fresh.labor_cost_complete,
+      manually_edited: false, source: 'geotab'
+    }
+  };
+}
+
+// Pure: HH:MM (24h, for the job modal's time field) from a Date, or ''
+// when there's nothing to show.
+function _closeDayTimeHHMM(d) {
+  if (!d) return '';
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// Pure: 12-hour display time for a Date, business-timezone-agnostic
+// (the caller already has a real Date object; this only formats it).
+function _closeDayFmt12(d) {
+  if (!d) return '—';
+  var h = d.getHours(), m = d.getMinutes();
+  var ap = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+
+// ─────────────────────────────────────────
+// ROLE GATE + SCHEDULE TAB HEADER SLOT
+// ─────────────────────────────────────────
+function _closeDayCanUse() {
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  return ['owner', 'admin'].indexOf(role) !== -1;
+}
+
+// Called from renderCal()'s day-mode branch. Never resets calDate --
+// only reads it. Best-effort async refresh of the badge; the slot
+// stays hidden (not stale-wrong) while that's in flight.
+function _closeDaySyncHeader() {
+  var slot = document.getElementById('close-day-slot');
+  if (!slot) return;
+  if (!_closeDayCanUse()) { slot.style.display = 'none'; slot.innerHTML = ''; return; }
+  var dateStr = dateKey(calDate);
+  slot.style.display = '';
+  var cached = _closeDayStatusCache[dateStr];
+  if (cached === undefined) {
+    slot.innerHTML = '<span style="font-size:12px;color:var(--muted)">…</span>';
+    _closeDayFetchStatus(dateStr).then(function () {
+      if (dateKey(calDate) === dateStr) _closeDaySyncHeader();
+    });
+    return;
+  }
+  if (cached && cached !== 'none' && cached.status === 'closed') {
+    var when = cached.closed_at ? _closeDayFmt12(new Date(cached.closed_at)) : '';
+    var who = cached._closedByName ? ' by ' + cached._closedByName : '';
+    slot.innerHTML =
+      '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--green);background:rgba(34,197,94,0.1);padding:5px 10px;border-radius:14px" title="Closed' + who + (when ? ' at ' + when : '') + '">🔒 Closed' + (when ? ' ' + when : '') + '</span>'
+      + '<button onclick="reopenTheDay()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:14px;cursor:pointer;margin-left:6px">Reopen</button>'
+      + '<button onclick="openCloseDaySheet()" style="background:none;border:none;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:12px;text-decoration:underline;cursor:pointer;margin-left:6px">Review</button>';
+  } else {
+    slot.innerHTML = '<button onclick="openCloseDaySheet()" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">🔒 Close day</button>';
+  }
+}
+
+async function _closeDayFetchStatus(dateStr) {
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!sb || !bid) { _closeDayStatusCache[dateStr] = 'none'; return; }
+    var res = await sb.from('day_closes').select('*').eq('business_id', bid).eq('close_date', dateStr).maybeSingle();
+    var row = (res && res.data) ? res.data : 'none';
+    if (row && row !== 'none' && row.closed_by) {
+      try {
+        var ur = await sb.from('users').select('first_name,last_name').eq('id', row.closed_by).maybeSingle();
+        if (ur && ur.data) row._closedByName = ((ur.data.first_name || '') + ' ' + (ur.data.last_name || '')).trim();
+      } catch (e) {}
+    }
+    _closeDayStatusCache[dateStr] = row;
+  } catch (e) {
+    console.warn('[CloseDay] status fetch failed', e);
+    _closeDayStatusCache[dateStr] = 'none';
+  }
+}
+
+// ─────────────────────────────────────────
+// SHEET: open/close + navigation
+// ─────────────────────────────────────────
+function openCloseDaySheet() {
+  if (!_closeDayCanUse()) { alert('Only owners and admins can use Close day.'); return; }
+  var old = document.getElementById('close-day-overlay');
+  if (old) old.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'close-day-overlay';
+  overlay.style.cssText = "position:fixed;inset:0;z-index:9700;background:var(--surface);display:flex;flex-direction:column;font-family:'DM Sans',sans-serif";
+  overlay.innerHTML = '<div style="padding:16px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);flex-shrink:0">'
+    +   '<div style="font-size:17px;font-weight:700;color:var(--text)" id="cd-sheet-title">Close day</div>'
+    +   '<button onclick="closeCloseDaySheet()" aria-label="Close" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;font-family:inherit;padding:0">&times;</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;padding:10px 20px;border-bottom:1px solid var(--border);flex-shrink:0" id="cd-steps-nav"></div>'
+    + '<div id="cd-sheet-body" style="flex:1;overflow-y:auto;padding:14px 20px"></div>';
+  document.body.appendChild(overlay);
+
+  var dateStr = dateKey(calDate);
+  _closeDaySession = { dateStr: dateStr, step: 'A', perTeam: {}, jobOverrides: {}, stopReviews: {}, loaded: false };
+  _closeDayStartCancelWatcher();
+  _closeDayLoad().then(function () { _closeDayRenderStep(); });
+  _closeDayRenderStep(); // immediate loading state
+}
+
+function closeCloseDaySheet() {
+  _closeDaySession = null;
+  if (_closeDayCancelObserver) { _closeDayCancelObserver.disconnect(); _closeDayCancelObserver = null; }
+  var el = document.getElementById('close-day-overlay');
+  if (el) el.remove();
+}
+
+// Watches for the existing cancel-job sheet closing (cancelJob's own
+// overlay, unmodified) so Step B can refresh after Tom cancels a job
+// from a NOT-CLEANED flag -- without this file ever touching
+// cancelJob/_commitCancelJob itself.
+function _closeDayStartCancelWatcher() {
+  if (_closeDayCancelObserver) _closeDayCancelObserver.disconnect();
+  _closeDayCancelObserver = new MutationObserver(function () {
+    if (!document.getElementById('cancel-job-overlay') && _closeDaySession && _closeDaySession.loaded) {
+      _closeDayLoad().then(function () { if (_closeDaySession) _closeDayRenderStep(); });
+    }
+  });
+  _closeDayCancelObserver.observe(document.body, { childList: true });
+}
+
+function _closeDayGoToStep(step) {
+  if (!_closeDaySession) return;
+  _closeDaySession.step = step;
+  _closeDayRenderStep();
+}
+
+// ─────────────────────────────────────────
+// LOAD: GPS + roster + classification for every team with a job or an
+// employee that day. Re-runs after any edit in Step A/B so later steps
+// always see fresh state.
+// ─────────────────────────────────────────
+async function _closeDayLoad() {
+  var s = _closeDaySession;
+  if (!s) return;
+  var dateStr = s.dateStr;
+  var tz = _pentaBusinessTimezone();
+  var allTeams = _pentaTeamNames();
+  var dayJobs = (typeof jobs !== 'undefined' && Array.isArray(jobs)) ? jobs.filter(function (j) { return j.date === dateStr; }) : [];
+  var teamsInvolved = allTeams.filter(function (t) {
+    return dayJobs.some(function (j) { return j.team === t && !j.cancelled; }) || _teamHoursEligibility(t, dateStr).included.length > 0;
+  });
+
+  var clientsById = {};
+  if (window.PentaClients && window.PentaClients.forEachClient) {
+    window.PentaClients.forEachClient(function (c) { clientsById[c.id] = { lat: c.lat, lng: c.lng }; });
+  }
+
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+  var existingByJobId = {};
+  var jobIdsToday = dayJobs.map(function (j) { return j.id; });
+  if (sb && bid && jobIdsToday.length) {
+    try {
+      var exRes = await sb.from('job_visit_snapshots').select('*').eq('business_id', bid).in('job_id', jobIdsToday);
+      if (!exRes.error) (exRes.data || []).forEach(function (r) { existingByJobId[r.job_id] = r; });
+    } catch (e) { console.warn('[CloseDay] existing snapshot read failed', e); }
+  }
+  var existingDayClose = null;
+  if (sb && bid) {
+    try {
+      var dcRes = await sb.from('day_closes').select('*').eq('business_id', bid).eq('close_date', dateStr).maybeSingle();
+      if (!dcRes.error) existingDayClose = dcRes.data || null;
+    } catch (e) { console.warn('[CloseDay] day_closes read failed', e); }
+  }
+
+  var perTeam = {};
+  for (var ti = 0; ti < teamsInvolved.length; ti++) {
+    var team = teamsInvolved[ti];
+    var teamJobs = dayJobs.filter(function (j) { return j.team === team && !j.cancelled; });
+    var elig = _teamHoursEligibility(team, dateStr);
+    var presentEmployees = elig.included.map(function (e) {
+      var uuid = _teamHoursEmpUuid(e);
+      return uuid ? { employee_id: uuid, pay_rate: (e.pay_rate != null ? e.pay_rate : null), pay_type: (e.pay_type || null) } : null;
+    }).filter(function (e) { return !!e; });
+
+    var gpsOutcome;
+    try { gpsOutcome = { ok: true, detail: await _fetchTeamDayGpsDetail(team, dateStr) }; }
+    catch (e) { gpsOutcome = { ok: false, error: (e && e.message) || String(e) }; }
+
+    var gpsAvailable = !!(gpsOutcome.ok && gpsOutcome.detail && gpsOutcome.detail.gps && gpsOutcome.detail.gps.available);
+    var trueStart = gpsAvailable ? gpsOutcome.detail.gps.start : null;
+    var trueEnd = gpsAvailable ? gpsOutcome.detail.gps.end : null;
+
+    var notCleaned = _closeDayComputeNotCleanedFlags(teamJobs, gpsOutcome, team, matchStopToClientGeo, clientsById);
+    var extra = _closeDayComputeExtraStops(gpsOutcome, team, teamJobs, trueStart, trueEnd, matchStopToClientGeo, CLOSE_DAY_EXTRA_STOP_MIN_MINUTES);
+
+    perTeam[team] = {
+      team: team, teamJobs: teamJobs, elig: elig, presentEmployees: presentEmployees,
+      gpsOutcome: gpsOutcome, trueStart: trueStart, trueEnd: trueEnd,
+      classified: notCleaned.classified, notCleanedFlags: notCleaned.flags,
+      extraStops: extra.stops, lunchMerge: extra.lunchMerge
+    };
+  }
+
+  var profitTarget = null;
+  if (sb && bid) {
+    try {
+      var ptRes = await sb.from('business_profit_targets').select('*').eq('business_id', bid).maybeSingle();
+      if (!ptRes.error) profitTarget = ptRes.data || null;
+    } catch (e) { console.warn('[CloseDay] profit target read failed', e); }
+  }
+
+  s.perTeam = perTeam;
+  s.dayJobs = dayJobs;
+  s.existingByJobId = existingByJobId;
+  s.existingDayClose = existingDayClose;
+  s.profitTarget = profitTarget;
+  s.loaded = true;
+
+  // Reopen-edit-close: if a previous close exists and status is still
+  // 'closed' (just reopened this instant, or viewing before reopening),
+  // rehydrate prior review decisions so Tom isn't reviewing from
+  // scratch.
+  if (existingDayClose && existingDayClose.flags_snapshot && existingDayClose.flags_snapshot.stopReviews) {
+    s.stopReviews = Object.assign({}, existingDayClose.flags_snapshot.stopReviews);
+  }
+}
+
+// ─────────────────────────────────────────
+// RENDER
+// ─────────────────────────────────────────
+function _closeDayRenderStep() {
+  var s = _closeDaySession;
+  var nav = document.getElementById('cd-steps-nav');
+  var body = document.getElementById('cd-sheet-body');
+  var title = document.getElementById('cd-sheet-title');
+  if (!s || !nav || !body) return;
+  title.textContent = 'Close day — ' + s.dateStr;
+
+  var steps = [['A', 'Verify teams'], ['B', 'Flags'], ['C', 'Review & close']];
+  nav.innerHTML = steps.map(function (st) {
+    var active = s.step === st[0];
+    return '<button onclick="_closeDayGoToStep(\'' + st[0] + '\')" style="flex:1;background:' + (active ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (active ? '#fff' : 'var(--text)') + ';border:1px solid var(--border);font-family:inherit;font-size:12px;font-weight:600;padding:8px;border-radius:8px;cursor:pointer">' + st[1] + '</button>';
+  }).join('');
+
+  if (!s.loaded) { body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted);font-size:13px">Loading…</div>'; return; }
+  if (s.step === 'A') body.innerHTML = _closeDayRenderStepA();
+  else if (s.step === 'B') body.innerHTML = _closeDayRenderStepB();
+  else body.innerHTML = _closeDayRenderStepC();
+}
+
+function _closeDayRenderStepA() {
+  var s = _closeDaySession;
+  var teams = Object.keys(s.perTeam);
+  var html = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Add, cancel, or move jobs and employees for this day using the normal screens. Come back here when the schedule looks right.</div>'
+    + '<button onclick="openJobModal(null)" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:13px;font-weight:600;padding:10px;border-radius:10px;cursor:pointer;margin-bottom:14px">➕ Add job for this day</button>';
+  if (!teams.length) html += '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No teams scheduled or assigned this day.</div>';
+  teams.forEach(function (team) {
+    var t = s.perTeam[team];
+    html += '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+      + '<div style="font-weight:700;font-size:14px">' + _adminEsc(team) + '</div>'
+      + '<button onclick="openTeamManager(\'' + s.dateStr + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;padding:5px 10px;border-radius:12px;cursor:pointer">Manage team →</button>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">👤 ' + t.elig.included.length + ' employee(s) scheduled</div>'
+      + t.teamJobs.map(function (j) {
+          var timeLabel = j.flexible ? 'Flexible' : (j.time || '—');
+          return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:13px">'
+            + '<span>' + _adminEsc(timeLabel) + ' — ' + _adminEsc(j.clientName || '') + (j.price ? ' · $' + _adminEsc(String(j.price)) : '') + '</span>'
+            + '<span style="display:flex;gap:6px">'
+            + '<button onclick="openJobModal(\'' + j.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Edit</button>'
+            + '<button onclick="cancelJob(\'' + j.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Cancel</button>'
+            + '</span></div>';
+        }).join('')
+      + (t.teamJobs.length === 0 ? '<div style="color:var(--muted);font-size:12px;padding:4px 0">No scheduled jobs.</div>' : '')
+      + '</div>';
+  });
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:4px">Add/cancel a job here, then reopen this sheet\'s "Verify teams" step if you don\'t see it yet — it refreshes automatically after closing the job editor.</div>';
+  return html;
+}
+
+function _closeDayRenderStepB() {
+  var s = _closeDaySession;
+  var teams = Object.keys(s.perTeam);
+  var any = false;
+  var html = '';
+  teams.forEach(function (team) {
+    var t = s.perTeam[team];
+    var notCleaned = t.notCleanedFlags.filter(function (f) { return !s.jobOverrides[f.job.id]; });
+    var extra = t.extraStops.filter(function (e) { return !s.stopReviews[team + '|' + e.stopKey]; });
+    if (!notCleaned.length && !extra.length) return;
+    any = true;
+    html += '<div style="margin-bottom:16px"><div style="font-weight:700;font-size:14px;margin-bottom:8px">' + _adminEsc(team) + '</div>';
+    notCleaned.forEach(function (f) {
+      html += '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+        + '<div style="font-size:13px;font-weight:600;margin-bottom:2px">No GPS visit found</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + _adminEsc(f.job.clientName || '') + ' — ' + _adminEsc(f.reason || '') + '</div>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+        + '<button onclick="_closeDayConfirmCleaned(\'' + team + '\',\'' + f.job.id + '\')" style="background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:11px;font-weight:600;padding:5px 10px;border-radius:10px;cursor:pointer">Confirm it was cleaned</button>'
+        + '<button onclick="cancelJob(\'' + f.job.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Mark cancelled/not done</button>'
+        + '<button onclick="_closeDayLeaveForReview(\'' + team + '\',\'' + f.job.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Leave for review</button>'
+        + '</div></div>';
+    });
+    extra.forEach(function (e) {
+      var range = _closeDayFmt12(e.inTime) + ' – ' + _closeDayFmt12(e.outTime) + ' (' + e.durationMin + ' min, GPS)';
+      if (e.isClientMatch) {
+        html += '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+          + '<div style="font-size:13px;font-weight:600;margin-bottom:2px">Looks like a clean that wasn\'t on the schedule</div>'
+          + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + _adminEsc(e.clientName || '') + ' · ' + range + '</div>'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'
+          + '<span style="font-size:12px;color:var(--muted)">Price</span>'
+          + '<input type="text" id="cd-price-' + _adminEsc(team + e.stopKey).replace(/[^a-zA-Z0-9]/g, '') + '" value="' + (_closeDayClientUsualPrice(e.clientId) || '') + '" style="width:80px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:12px;padding:5px 8px;border-radius:8px">'
+          + '</div>'
+          + '<button onclick="_closeDayAddFromExtraStop(\'' + team + '\',\'' + e.stopKey + '\')" style="background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:11px;font-weight:600;padding:5px 10px;border-radius:10px;cursor:pointer">Add to schedule and mark cleaned</button>'
+          + '</div>';
+      } else {
+        html += '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+          + '<div style="font-size:13px;font-weight:600;margin-bottom:2px">Unrecognized stop, needs review</div>'
+          + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + _adminEsc(e.addr || '') + ' · ' + range + '</div>'
+          + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+          + '<button onclick="_closeDayNotAClient(\'' + team + '\',\'' + e.stopKey + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Not a client stop</button>'
+          + '<button onclick="_closeDayLeaveStopForReview(\'' + team + '\',\'' + e.stopKey + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Leave for review</button>'
+          + '</div></div>';
+      }
+    });
+    html += '</div>';
+  });
+  if (!any) html = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No flags for this day.</div>';
+  return html;
+}
+
+function _closeDayRenderStepC() {
+  var s = _closeDaySession;
+  var teams = Object.keys(s.perTeam);
+  var target = (s.profitTarget && s.profitTarget.target_revenue_per_employee_hour_cents) || 7000;
+  var unresolved = _closeDayCountUnresolvedFlags();
+  var html = '';
+  teams.forEach(function (team) {
+    var t = s.perTeam[team];
+    var p = _closeDayComputeTeamPreview(t.classified, t.presentEmployees, t.teamJobs, target);
+    var marginStr = p.marginPct != null ? p.marginPct + '%' : '—';
+    var perEmpStr = p.revenuePerEmpHourCents != null ? '$' + (p.revenuePerEmpHourCents / 100).toFixed(0) + '/emp-hr' : '—';
+    html += '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:10px">'
+      + '<div style="font-weight:700;font-size:14px;margin-bottom:6px">' + _adminEsc(team) + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);line-height:1.6">'
+      + 'In-home: ' + p.inHomeMinutes + ' min · Employee-minutes: ' + p.employeeMinutes + '<br>'
+      + 'Labor (current rates): $' + (p.laborCostCents / 100).toFixed(2) + (p.laborIncomplete ? ' <span style="color:var(--amber)">· labor incomplete</span>' : '') + '<br>'
+      + 'Revenue: $' + (p.revenueCents / 100).toFixed(2) + ' · Margin: ' + marginStr + ' · ' + perEmpStr
+      + '</div></div>';
+  });
+  html += '<div style="font-size:12px;color:var(--muted);margin:10px 0">Target: $' + (target / 100).toFixed(0) + '/employee-hour' + ((s.profitTarget && s.profitTarget.target_margin_pct != null) ? ', margin goal ' + s.profitTarget.target_margin_pct + '%' : ', margin goal not set') + '.</div>';
+  html += '<div style="font-size:12px;color:' + (unresolved ? 'var(--amber)' : 'var(--muted)') + ';margin-bottom:12px">' + unresolved + ' flag(s) left for review. Closing does not require resolving them -- the count is saved.</div>';
+  html += '<button id="cd-close-btn" onclick="closeTheDay()" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:14px;font-weight:700;padding:12px;border-radius:10px;cursor:pointer">Close day</button>'
+    + '<div id="cd-close-status" style="font-size:12px;color:var(--muted);margin-top:8px;min-height:16px"></div>';
+  return html;
+}
+
+function _closeDayCountUnresolvedFlags() {
+  var s = _closeDaySession;
+  var count = 0;
+  Object.keys(s.perTeam).forEach(function (team) {
+    var t = s.perTeam[team];
+    t.notCleanedFlags.forEach(function (f) { if (!s.jobOverrides[f.job.id]) count++; });
+    t.extraStops.forEach(function (e) { if (!s.stopReviews[team + '|' + e.stopKey]) count++; });
+  });
+  return count;
+}
+
+// Best-effort: most recent non-cancelled job's price for a client,
+// used only as an editable default -- never written without Tom
+// seeing/changing it first.
+function _closeDayClientUsualPrice(clientId) {
+  if (!clientId || typeof jobs === 'undefined') return null;
+  var matches = jobs.filter(function (j) { return j.clientId === clientId && !j.cancelled && j.price; })
+    .sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
+  return matches.length ? matches[0].price : null;
+}
+
+// ─────────────────────────────────────────
+// STEP B actions
+// ─────────────────────────────────────────
+function _closeDayConfirmCleaned(team, jobId) {
+  var s = _closeDaySession;
+  var t = s.perTeam[team];
+  var c = t.classified.find(function (x) { return x.job.id === jobId; });
+  if (!c) return;
+  if (!confirm('Confirm this job was cleaned even though no GPS visit was found? This will be saved as reviewed.')) return;
+  var cost = _vsnapComputeLaborCost(t.presentEmployees, null);
+  s.jobOverrides[jobId] = {
+    status: 'matched', match_note: 'Confirmed cleaned by owner/admin during day close (no GPS visit found).',
+    in_at: null, out_at: null, team_minutes: null,
+    employees: cost.employees, labor_cost_gross_cents: null, labor_cost_complete: false
+  };
+  showToast('Marked confirmed cleaned.', 'success');
+  _closeDayRenderStep();
+}
+
+// "Leave for review" takes no action at all -- no jobOverride is
+// written, so the flag stays visible and still counts as unresolved
+// in _closeDayCountUnresolvedFlags. The toast is the only visible
+// result; nothing in the flag list changes.
+function _closeDayLeaveForReview() {
+  showToast('Left for review.', 'success');
+}
+
+function _closeDayLeaveStopForReview() {
+  showToast('Left for review.', 'success');
+}
+
+function _closeDayNotAClient(team, stopKey) {
+  var s = _closeDaySession;
+  s.stopReviews[team + '|' + stopKey] = { decision: 'not_a_client', reviewedAt: new Date().toISOString() };
+  showToast('Saved: not a client stop.', 'success');
+  _closeDayRenderStep();
+}
+
+var _closeDayAddInFlight = {};
+async function _closeDayAddFromExtraStop(team, stopKey) {
+  var s = _closeDaySession;
+  var t = s.perTeam[team];
+  var stop = t.extraStops.find(function (x) { return x.stopKey === stopKey; });
+  if (!stop) return;
+  var flightKey = team + '|' + stopKey;
+  if (_closeDayAddInFlight[flightKey]) return; // double-tap guard
+  var priceElId = 'cd-price-' + (team + stopKey).replace(/[^a-zA-Z0-9]/g, '');
+  var priceEl = document.getElementById(priceElId);
+  var price = priceEl ? priceEl.value.trim() : '';
+  if (!confirm('Add a job for this client on ' + s.dateStr + ' (team ' + team + ', price $' + (price || '0') + ') and mark it cleaned?')) return;
+  _closeDayAddInFlight[flightKey] = true;
+  try {
+    var newJob = await _closeDayAddJobFromStop(stop, team, s.dateStr, price);
+    var cost = _vsnapComputeLaborCost(t.presentEmployees, stop.durationMin);
+    s.jobOverrides[newJob.id] = {
+      status: 'matched', match_note: 'Added from an unscheduled GPS stop during day close.',
+      in_at: stop.inTime ? stop.inTime.toISOString() : null, out_at: stop.outTime ? stop.outTime.toISOString() : null,
+      team_minutes: stop.durationMin, employees: cost.employees,
+      labor_cost_gross_cents: cost.labor_cost_gross_cents, labor_cost_complete: cost.labor_cost_complete
+    };
+    s.stopReviews[team + '|' + stopKey] = { decision: 'added', job_id: newJob.id, reviewedAt: new Date().toISOString() };
+    showToast('Job added and marked cleaned.', 'success');
+    await _closeDayLoad();
+    _closeDayRenderStep();
+  } catch (e) {
+    showToast('Could not add the job: ' + ((e && e.message) || String(e)), 'error');
+  } finally {
+    delete _closeDayAddInFlight[flightKey];
+  }
+}
+
+// The SAME write primitive saveJob()'s own new-job branch calls
+// (window.PentaJobs.insert), plus the same companion side-effects
+// (push to the in-memory jobs array, localStorage persist, activity
+// log) -- never a second/parallel job-creation path.
+async function _closeDayAddJobFromStop(stop, team, dateStr, price) {
+  var client = (window.PentaClients && window.PentaClients.getClient) ? window.PentaClients.getClient(stop.clientId) : null;
+  var clientName = client ? ((client.fn || '') + ' ' + (client.ln || '')).trim() : (stop.clientName || '');
+  var newJob = {
+    id: Date.now().toString(), clientName: clientName, clientId: stop.clientId, addr: (client && client.addr) || '',
+    date: dateStr, flexible: false,
+    time: _closeDayTimeHHMM(stop.inTime), endTime: _closeDayTimeHHMM(stop.outTime),
+    notes: 'Added from an unscheduled GPS stop during day close.', done: false, team: team,
+    color: _pentaTeamColor(team, '#6b7280'),
+    price: price,
+    quotedMin: getClientQuotedMinutes(stop.clientId) || Math.max(1, Math.round(stop.durationMin))
+  };
+  if (typeof jobs !== 'undefined') jobs.push(newJob);
+  if (window.PentaJobs) await window.PentaJobs.insert(newJob);
+  if (typeof logPendingUpdate === 'function') logPendingUpdate('Add job: ' + clientName, 'Added from an unscheduled GPS stop on ' + dateStr, null, stop.clientId || null);
+  if (typeof saveJobs === 'function') saveJobs();
+  return newJob;
+}
+
+// ─────────────────────────────────────────
+// CLOSE / REOPEN
+// ─────────────────────────────────────────
+async function closeTheDay() {
+  if (_closeDayRunInFlight) return;
+  var s = _closeDaySession;
+  if (!s || !_closeDayCanUse()) return;
+  var statusEl = document.getElementById('cd-close-status');
+  var btn = document.getElementById('cd-close-btn');
+  _closeDayRunInFlight = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Closing…'; }
+  if (statusEl) { statusEl.style.color = 'var(--muted)'; statusEl.textContent = ''; }
+
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!sb || !bid) throw new Error('Not signed in to a business.');
+    var userId = null;
+    try {
+      var ures = await sb.auth.getUser();
+      if (ures && ures.data && ures.data.user) {
+        var ur = await sb.from('users').select('id').eq('auth_user_id', ures.data.user.id).maybeSingle();
+        if (ur && ur.data) userId = ur.data.id;
+      }
+    } catch (e) {}
+
+    var writeErrors = 0, written = 0, skipped = 0;
+    var teams = Object.keys(s.perTeam);
+    var flagsSnapshot = { teams: {}, stopReviews: s.stopReviews, unresolvedFlagCount: _closeDayCountUnresolvedFlags() };
+
+    for (var ti = 0; ti < teams.length; ti++) {
+      var team = teams[ti];
+      var t = s.perTeam[team];
+      flagsSnapshot.teams[team] = {
+        lunch: (t.lunchMerge ? { start: t.lunchMerge.start.toISOString(), minutes: t.lunchMerge.minutes } : null)
+      };
+      for (var ci = 0; ci < t.classified.length; ci++) {
+        var c = t.classified[ci];
+        var override = s.jobOverrides[c.job.id];
+        var cost = _vsnapComputeLaborCost(t.presentEmployees, c.team_minutes);
+        var fresh = {
+          status: c.status, match_note: c.match_note, in_at: c.in_at, out_at: c.out_at, team_minutes: c.team_minutes,
+          employees: cost.employees, labor_cost_gross_cents: cost.labor_cost_gross_cents, labor_cost_complete: cost.labor_cost_complete
+        };
+        var existingRow = s.existingByJobId[c.job.id];
+        var decision = _closeDayDecideJobClose(override, existingRow, fresh);
+        if (decision.action === 'skip') { skipped++; continue; }
+        var row = Object.assign({
+          business_id: bid, job_id: c.job.id, client_id: c.job.clientId || null, visit_date: s.dateStr, team: team,
+          in_at: decision.row.in_at ? (decision.row.in_at instanceof Date ? decision.row.in_at.toISOString() : decision.row.in_at) : null,
+          out_at: decision.row.out_at ? (decision.row.out_at instanceof Date ? decision.row.out_at.toISOString() : decision.row.out_at) : null,
+          built_at: new Date().toISOString(), built_by: userId
+        }, decision.row);
+        try {
+          var res = existingRow
+            ? await sb.from('job_visit_snapshots').update(row).eq('business_id', bid).eq('job_id', c.job.id)
+            : await sb.from('job_visit_snapshots').insert(row);
+          if (res.error) throw res.error;
+          written++;
+        } catch (e) {
+          writeErrors++;
+          console.warn('[CloseDay] row write failed', e);
+        }
+      }
+    }
+
+    var dcRow = {
+      business_id: bid, close_date: s.dateStr, status: 'closed',
+      closed_at: new Date().toISOString(), closed_by: userId,
+      flags_snapshot: flagsSnapshot, updated_at: new Date().toISOString()
+    };
+    var dcRes = s.existingDayClose
+      ? await sb.from('day_closes').update(dcRow).eq('business_id', bid).eq('close_date', s.dateStr)
+      : await sb.from('day_closes').insert(dcRow);
+    if (dcRes.error) throw dcRes.error;
+
+    if (writeErrors) {
+      if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = written + ' job row(s) saved, ' + writeErrors + ' failed. Day closed with what succeeded.'; }
+    } else if (statusEl) {
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = 'Day closed. ' + written + ' job row(s) saved, ' + skipped + ' left untouched (already manually edited).';
+    }
+    _closeDayStatusCache[s.dateStr] = dcRow;
+    _closeDaySyncHeader();
+    showToast('Day closed.', 'success');
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Could not close the day: ' + ((e && e.message) || String(e)); }
+  } finally {
+    _closeDayRunInFlight = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Close day'; }
+  }
+}
+
+async function reopenTheDay() {
+  if (_closeDayRunInFlight) return;
+  var dateStr = dateKey(calDate);
+  var existing = _closeDayStatusCache[dateStr];
+  if (!existing || existing === 'none') return;
+  if (!confirm('Reopen ' + dateStr + '? Data is kept -- you can edit and close it again.')) return;
+  _closeDayRunInFlight = true;
+  try {
+    var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+    var bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
+    if (!sb || !bid) throw new Error('Not signed in to a business.');
+    var userId = null;
+    try {
+      var ures = await sb.auth.getUser();
+      if (ures && ures.data && ures.data.user) {
+        var ur = await sb.from('users').select('id').eq('auth_user_id', ures.data.user.id).maybeSingle();
+        if (ur && ur.data) userId = ur.data.id;
+      }
+    } catch (e) {}
+    var res = await sb.from('day_closes').update({ status: 'open', reopened_at: new Date().toISOString(), reopened_by: userId, updated_at: new Date().toISOString() })
+      .eq('business_id', bid).eq('close_date', dateStr);
+    if (res.error) throw res.error;
+    existing.status = 'open';
+    _closeDayStatusCache[dateStr] = existing;
+    _closeDaySyncHeader();
+    showToast('Day reopened.', 'success');
+  } catch (e) {
+    showToast('Could not reopen: ' + ((e && e.message) || String(e)), 'error');
+  } finally {
+    _closeDayRunInFlight = false;
+  }
 }
 
 
