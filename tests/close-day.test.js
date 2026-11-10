@@ -30,8 +30,14 @@ const dateKeySource = extract('function dateKey(d) {', '\n\nfunction jobsForDate
 const tdrSource = extract('var TDR_MAX_RANGE_DAYS = 31;', '\nfunction openTeamDayReport() {', 'TDR module');
 const vsnapSource = extract('var _visitSnapGeneration = 0;', 'var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;', 'Visit Data module');
 const closeDaySource = extract('var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;', '// GPS MAP (Leaflet)', 'Close Day module');
+// schedule-save-queue branch: _closeDayAddJobFromStop now generates a
+// real client-side uuid and routes its insert through the shared
+// _pentaJobWrite helper instead of calling window.PentaJobs.insert
+// directly -- both are real dependencies now, extracted verbatim.
+const uuidSource = extract('function _generateUuidV4() {', '\n\nasync function submitApplication', '_generateUuidV4');
+const queueSource = extract('var SCHEDULE_SAVE_RETRY_INTERVAL_MS = 60000;', '(function pentaPrimeJobs', 'Schedule Save Queue module');
 
-const fnSource = [dateKeySource, tdrSource, vsnapSource, closeDaySource].join('\n');
+const fnSource = [dateKeySource, uuidSource, queueSource, tdrSource, vsnapSource, closeDaySource].join('\n');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -101,14 +107,16 @@ function buildSandbox(opts) {
         forEachClient: function (fn) { Object.keys(opts.clientsById || {}).forEach(function (id) { fn(Object.assign({ id: id }, opts.clientsById[id])); }); }
       },
       PentaJobs: { insert: function (job) { insertCalls.push(job); return Promise.resolve(job); } },
-      supabaseClient: opts.fakeSupabase || null
+      supabaseClient: opts.fakeSupabase || null,
+      addEventListener: function () {}
     },
-    document: opts.document || { getElementById: function () { return null; } },
+    document: Object.assign({ getElementById: function () { return null; }, addEventListener: function () {} }, opts.document || {}),
     alert: opts.alertFn || function () {},
     confirm: opts.confirmFn || function () { return true; },
     showToast: opts.showToastFn || function () {},
     jobs: opts.jobs || [],
     insertCalls: insertCalls,
+    setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval, clearInterval: clearInterval,
     getCurrentAppRole: function () { return opts.role !== undefined ? opts.role : 'owner'; },
     getClientQuotedMinutes: function () { return 60; },
     logPendingUpdate: function () {},

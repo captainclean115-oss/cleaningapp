@@ -21,7 +21,7 @@ const path = require('path');
 const INDEX_HTML = path.join(__dirname, '..', 'index.html');
 const src = fs.readFileSync(INDEX_HTML, 'utf8');
 
-const startMarker = 'function jobDragEnd(e) {';
+const startMarker = 'async function jobDragEnd(e) {';
 const startIdx = src.indexOf(startMarker);
 if (startIdx === -1) {
   console.error('FAIL: could not find jobDragEnd in index.html — did the drag handler get refactored?');
@@ -70,6 +70,13 @@ function buildSandbox(job, snappedMins) {
       PentaJobs: {
         update: function (id, patch) { state.updatePayload = { id: id, patch: patch }; return Promise.resolve(); },
       },
+    },
+    // schedule-save-queue branch: jobDragEnd now routes its write
+    // through the shared helper instead of calling window.PentaJobs.update
+    // directly -- stub captures the same shape this test already asserts on.
+    _pentaJobWrite: function (op, args) {
+      if (op === 'update') state.updatePayload = { id: args.id, patch: args.patch };
+      return Promise.resolve({ ok: true });
     },
     recalcTeamTimes: function (team, date, id) { state.recalcArgs = { team: team, date: date, id: id }; },
   };
