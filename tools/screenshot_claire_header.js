@@ -82,7 +82,8 @@ async function run() {
     }
     await new Promise((r) => setTimeout(r, 1500));
 
-    await withTimeout(page.screenshot({ path: OUT_PATH, clip: { x: 0, y: 0, width: 390, height: 300 } }), 10000, 'screenshot');
+    const clipHeight = parseInt(process.argv[4] || '300', 10);
+    await withTimeout(page.screenshot({ path: OUT_PATH, clip: { x: 0, y: 0, width: 390, height: clipHeight } }), 10000, 'screenshot');
     console.log('screenshot saved:', OUT_PATH, fs.statSync(OUT_PATH).size, 'bytes');
   } finally {
     try { await withTimeout(browser.close(), 5000, 'close'); }

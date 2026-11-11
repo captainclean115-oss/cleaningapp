@@ -119,23 +119,56 @@ function makeFakeSupabase(tables, opts) {
   return { from: function (table) { return builder(table); } };
 }
 
+// Minimal in-memory localStorage stand-in -- real Node has no
+// localStorage global, and the real _claireSave/Load/ClearLocalCopy
+// functions call window.localStorage.{getItem,setItem,removeItem}.
+function makeFakeLocalStorage(opts) {
+  const store = {};
+  return {
+    _store: store,
+    getItem: function (k) {
+      if (opts && opts.throwOnGet) throw new Error('localStorage disabled');
+      return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null;
+    },
+    setItem: function (k, v) {
+      if (opts && opts.throwOnSet) throw new Error('localStorage disabled');
+      store[k] = String(v);
+    },
+    removeItem: function (k) { delete store[k]; },
+  };
+}
+
 function buildSandbox(opts) {
   opts = opts || {};
   const tables = opts.tables || { claire_chat_sessions: [], claire_proposals: [] };
   const fakeSb = makeFakeSupabase(tables, { forceError: opts.forceError, forceErrorTables: opts.forceErrorTables || [] });
   const bubbles = []; // { who, html }
-  const systemNotes = [];
   const introCalls = [];
+  const eventListeners = {}; // { eventName: [handlers] }
+  const fakeLocalStorage = opts.localStorage || makeFakeLocalStorage(opts.localStorageOpts);
+  function fakeAddEventListener(name, handler) {
+    (eventListeners[name] = eventListeners[name] || []).push(handler);
+  }
   const sandbox = {
     console: console,
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
     window: {
       supabaseClient: fakeSb,
       confirm: function () { return opts.confirmReturns !== false; },
+      localStorage: fakeLocalStorage,
+      addEventListener: fakeAddEventListener,
     },
     getCurrentAppRole: function () { return opts.role || 'owner'; },
     _pentaParseAuthToken: function () { return { user: { id: opts.authUserId || 'user_1' } }; },
     document: {
-      createElement: function () { return { innerHTML: '', className: '', id: '', dataset: {} }; },
+      createElement: function () { return { innerHTML: '', className: '', id: '', dataset: {}, classList: { contains: function () { return false; } } }; },
+      getElementById: function (id) {
+        if (id === 'claire-view') return opts.claireViewEl || { classList: { contains: function () { return false; } } };
+        return null;
+      },
+      addEventListener: fakeAddEventListener,
+      hidden: false,
     },
     // _claireRenderSystemNote (a real, extracted function) builds its own
     // DOM node via document.createElement then appends it to _claireMsgsEl()'s
@@ -155,7 +188,7 @@ function buildSandbox(opts) {
   sandbox.window.PentaTenant = { current: function () { return opts.businessId || 'biz_1'; } };
   vm.createContext(sandbox);
   vm.runInContext(COMBINED_SRC, sandbox);
-  return { sandbox: sandbox, tables: tables, bubbles: bubbles, introCalls: introCalls };
+  return { sandbox: sandbox, tables: tables, bubbles: bubbles, introCalls: introCalls, localStorage: fakeLocalStorage, fireEvent: function (name) { (eventListeners[name] || []).forEach(function (h) { h(); }); } };
 }
 
 async function main() {
@@ -335,6 +368,150 @@ await (async () => {
   const { sandbox, bubbles } = buildSandbox({ authUserId: 'user_1', tables: tables });
   await sandbox._claireOpenView();
   check('a pending proposal renders a card on open (survives reload)', bubbles.some(b => b.html.indexOf('Cancel Alex Strong') !== -1));
+})();
+
+// ======================================================================
+// PART 4 -- why the thread vanished: the save was fire-and-forget, so
+// claire_chat_sessions stayed empty. These tests prove (1) the save is
+// now genuinely awaited end-to-end, (2) a local fallback copy is
+// written synchronously on every save (immune to a navigation
+// cancelling the network leg), and (3) a slow/failing server read
+// falls back to that local copy instead of showing nothing.
+// ======================================================================
+
+// Every real save writes a local fallback copy too, BEFORE the network
+// call -- this is the actual fix for "zero rows, ever": even if the
+// server leg is cancelled by a page navigation right after this turn,
+// the local copy already landed synchronously.
+await (async () => {
+  const { sandbox, tables, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1' });
+  sandbox._claireHistory = [
+    { role: 'user', content: 'cancel Pat Tuesday' },
+    { role: 'assistant', content: [{ type: 'text', text: 'Proposal created.' }] },
+  ];
+  await sandbox._claireSaveConversationTurn();
+  check('the server save succeeded (table has a row)', tables.claire_chat_sessions.length === 1);
+  const raw = localStorage.getItem('claire_local_conv_biz_1_user_1');
+  check('a local fallback copy is written on every successful save too', !!raw);
+  const parsed = raw ? JSON.parse(raw) : null;
+  check('the local copy holds the same messages', !!parsed && parsed.messages.length === 2);
+})();
+
+// Even when the SERVER leg fails outright, the local copy still lands
+// (it's written before the network call, not after/instead of it).
+await (async () => {
+  const { sandbox, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1', forceError: 'network down', forceErrorTables: ['claire_chat_sessions'] });
+  sandbox._claireHistory = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }];
+  await sandbox._claireSaveConversationTurn();
+  check('a local fallback copy is written even when the server save fails', !!localStorage.getItem('claire_local_conv_biz_1_user_1'));
+})();
+
+// A slow/hanging server read (never resolves within the bound) falls
+// back to the local copy instead of showing nothing.
+await (async () => {
+  const hangingTables = { claire_chat_sessions: [], claire_proposals: [] };
+  const neverResolvingSb = {
+    from: function (table) {
+      if (table === 'claire_chat_sessions') {
+        return { select: () => ({ eq: () => ({ order: () => ({ limit: () => ({ maybeSingle: () => new Promise(() => {}) }) }) }) }) };
+      }
+      return makeFakeSupabase(hangingTables).from(table);
+    },
+  };
+  const { sandbox, bubbles, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1' });
+  sandbox.window.supabaseClient = neverResolvingSb;
+  sandbox.window.PentaAuth.client = neverResolvingSb;
+  localStorage.setItem('claire_local_conv_biz_1_user_1', JSON.stringify({
+    messages: [{ role: 'user', content: 'from local fallback' }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }],
+    updatedAt: new Date().toISOString(),
+  }));
+  await sandbox._claireOpenView();
+  check('a hanging server read falls back to the local copy (bounded, not an infinite wait)', sandbox._claireHistory.length === 2);
+  check('the local-fallback transcript is actually rendered', bubbles.some(b => b.html === 'from local fallback'));
+})();
+
+// A genuinely erroring server read ALSO falls back to the local copy
+// (not just a timeout).
+await (async () => {
+  const { sandbox, bubbles, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1', forceError: 'boom', forceErrorTables: ['claire_chat_sessions'] });
+  localStorage.setItem('claire_local_conv_biz_1_user_1', JSON.stringify({
+    messages: [{ role: 'user', content: 'local after server error' }],
+    updatedAt: new Date().toISOString(),
+  }));
+  await sandbox._claireOpenView();
+  check('a server error falls back to the local copy', sandbox._claireHistory.some(m => m.content === 'local after server error'));
+})();
+
+// Both the server AND the local fallback coming up empty is the ONE
+// genuine-failure case that shows a visible note.
+await (async () => {
+  const { sandbox, bubbles } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1', forceError: 'boom', forceErrorTables: ['claire_chat_sessions'], localStorageOpts: { throwOnGet: true } });
+  await sandbox._claireOpenView();
+  check('server failure + no usable local copy shows a visible note (the one real-failure case)', bubbles.some(b => /could.?n.?t load|went wrong/i.test(b.html)));
+})();
+
+// A stale (>12h) local copy is not resurrected either.
+await (async () => {
+  const { sandbox, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1' });
+  localStorage.setItem('claire_local_conv_biz_1_user_1', JSON.stringify({
+    messages: [{ role: 'user', content: 'too old' }],
+    updatedAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
+  }));
+  await sandbox._claireOpenView();
+  check('a stale (>12h) local fallback copy is not loaded', sandbox._claireHistory.length === 0);
+})();
+
+// _claireHandlePageVisible: restores on pageshow/visibilitychange ONLY
+// when Claire's view is active AND history is genuinely empty (the
+// "iOS killed and reloaded the tab" case) -- never when content already
+// survived in memory (nothing to fix, re-rendering would duplicate it).
+await (async () => {
+  const savedMessages = [{ role: 'user', content: 'resumed after reload' }, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }];
+  const tables = { claire_chat_sessions: [
+    { id: 'row_x', user_id: 'user_1', business_id: 'biz_1', messages: savedMessages, updated_at: new Date().toISOString() },
+  ], claire_proposals: [] };
+  const activeClaireView = { classList: { contains: function (c) { return c === 'active'; } } };
+  const { sandbox, fireEvent } = buildSandbox({ authUserId: 'user_1', tables: tables, claireViewEl: activeClaireView });
+  check('_claireHistory starts empty (simulating a fresh reload)', sandbox._claireHistory.length === 0);
+  fireEvent('pageshow');
+  // _claireOpenView is fire-and-forget from inside the handler -- give its
+  // microtasks a turn.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  check('pageshow with an active Claire view + empty history restores the conversation', sandbox._claireHistory.length === savedMessages.length);
+})();
+
+await (async () => {
+  const tables = { claire_chat_sessions: [
+    { id: 'row_y', user_id: 'user_1', business_id: 'biz_1', messages: [{ role: 'user', content: 'should not be loaded' }], updated_at: new Date().toISOString() },
+  ], claire_proposals: [] };
+  const activeClaireView = { classList: { contains: function (c) { return c === 'active'; } } };
+  const { sandbox, fireEvent } = buildSandbox({ authUserId: 'user_1', tables: tables, claireViewEl: activeClaireView });
+  sandbox._claireHistory = [{ role: 'user', content: 'already here' }]; // state survived -- nothing lost
+  fireEvent('visibilitychange');
+  await new Promise((r) => setTimeout(r, 0));
+  check('visibilitychange does nothing when history already has content (no duplicate re-render)', sandbox._claireHistory.length === 1 && sandbox._claireHistory[0].content === 'already here');
+})();
+
+await (async () => {
+  const tables = { claire_chat_sessions: [
+    { id: 'row_z', user_id: 'user_1', business_id: 'biz_1', messages: [{ role: 'user', content: 'should not be loaded either' }], updated_at: new Date().toISOString() },
+  ], claire_proposals: [] };
+  const inactiveClaireView = { classList: { contains: function () { return false; } } };
+  const { sandbox, fireEvent } = buildSandbox({ authUserId: 'user_1', tables: tables, claireViewEl: inactiveClaireView });
+  fireEvent('pageshow');
+  await new Promise((r) => setTimeout(r, 0));
+  check('pageshow does nothing when Claire\'s view is not even the active tab', sandbox._claireHistory.length === 0);
+})();
+
+// New chat clears the local fallback copy too -- otherwise leaving
+// right after starting a new chat (before any turn writes a fresh
+// local copy) would resurrect the OLD conversation next time.
+await (async () => {
+  const { sandbox, localStorage } = buildSandbox({ authUserId: 'user_1', businessId: 'biz_1' });
+  localStorage.setItem('claire_local_conv_biz_1_user_1', JSON.stringify({ messages: [{ role: 'user', content: 'old' }], updatedAt: new Date().toISOString() }));
+  sandbox._claireStartNewChat();
+  check('"New chat" clears the local fallback copy', localStorage.getItem('claire_local_conv_biz_1_user_1') === null);
 })();
 
 }
