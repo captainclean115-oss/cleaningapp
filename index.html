@@ -5391,6 +5391,13 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     <div id="claire-voice-hint" class="claire-voice-hint" style="display:none"></div>
     <!-- Debug line so Tom can see which voice actually got picked. -->
     <div id="claire-voice-name" style="font-size:10px;color:rgba(255,255,255,0.30);text-align:center;margin-top:4px"></div>
+    <!-- Claire gate-bypass fix: visible build stamp. This app has no
+         service worker/build step -- an already-open tab or iOS home-
+         screen PWA can keep running old JS indefinitely with no
+         prompt to reload. If something Claire-related doesn't seem
+         to be working, check this against the version in the latest
+         shipped PR before assuming the code itself is wrong. -->
+    <div id="claire-build-stamp" style="font-size:10px;color:rgba(255,255,255,0.30);text-align:center;margin-top:2px"></div>
     <!-- Claire safety foundation (Stage 2a): saved-conversation controls. -->
     <div style="display:flex;gap:8px;justify-content:center;margin-top:10px">
       <button onclick="_claireStartNewChat()" type="button"
@@ -17325,7 +17332,10 @@ function showTab(tab) {
   // Claire safety foundation (Stage 2a): load the user's most recent
   // saved conversation (or start fresh) + any pending proposals, once
   // per page load.
-  if (tab === 'claire' && typeof _claireOpenView === 'function') _claireOpenView();
+  if (tab === 'claire') {
+    if (typeof _claireRenderBuildStamp === 'function') _claireRenderBuildStamp();
+    if (typeof _claireOpenView === 'function') _claireOpenView();
+  }
   // Home nav button is active on the home screen itself OR on any app reached via home
   // (for now, that's 'home' and 'clients'/'tasks').
   var navHome = document.getElementById('nav-home');
@@ -25662,6 +25672,17 @@ var CLAIRE_TOOLS = [
   { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" -- only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
+// Claire gate-bypass fix: visible build stamp (no build tooling exists
+// in this single-file app, so this is bumped BY HAND on every deploy
+// that touches Claire's gate/dispatch code -- see _claireRenderBuildStamp).
+// Format: "gate-fix YYYY-MM-DD" -- change the date, not the prefix,
+// unless the next change is a different fix/feature worth naming.
+var CLAIRE_BUILD_STAMP = 'gate-fix 2026-11-11';
+function _claireRenderBuildStamp() {
+  var el = document.getElementById('claire-build-stamp');
+  if (el) el.textContent = 'build: ' + CLAIRE_BUILD_STAMP;
+}
+
 // -----------------------------------------------------------------------
 // CLAIRE SAFETY FOUNDATION (Stage 2a) -- approval-gate classification.
 // Every one of the 32 tools above is classified here:
@@ -28357,36 +28378,37 @@ function claireSendSms(clientId, msgText) {
 // normal message," and without dumping JSON/status codes into the chat.
 // The full technical detail is logged separately (console + audit_log) by
 // every caller before this fires.
+// Claire approval-gate bypass fix (PR follow-up to #219): every branch
+// below used to write directly (job.cancelled=true + _pentaJobWrite,
+// dailyAssignments + PentaAssignments.assign, manualTasks, or a same-
+// page Yes/No panel -> executeScheduleCmd) whenever the Claude API call
+// failed and this local fallback ran instead. NONE of that ever touched
+// _claireDispatchOrPropose -- the approval gate only gated the API-
+// driven path, leaving this offline/degraded path free to execute
+// immediately. Every matched branch now builds the SAME {name, input}
+// shape the real CLAIRE_TOOLS dispatcher uses and routes it through
+// the SAME gate -- same proposal card, same Approve/Reject, same
+// owner/admin sensitive check. No branch here writes anything itself.
 async function processVoiceCommandLocal(text, apiErrorReason) {
   var lower = text.toLowerCase();
 
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
     var result = parseScheduleCommand(lower, text);
     if (result.error) { claireReply(result.error); return; }
-    var dayLabel = new Date(result.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    var status = document.getElementById('voice-cmd-status');
-    status.innerHTML = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:14px">✦</span><span style="font-size:14px;font-weight:600;color:var(--accent)">Claire</span></div>'
-      +'<div style="font-size:13px;color:var(--text);margin-bottom:10px;line-height:1.4">I\'ll schedule <strong>'+result.clientName+'</strong> for <strong>'+dayLabel+'</strong> at <strong>'+result.timeDisplay+'</strong> with <strong style="color:'+_pentaTeamColor(result.team, 'var(--text)')+'">Team '+result.team+'</strong>. Sound good?</div>'
-      +'<div style="display:flex;gap:8px">'
-      +'<button onclick="cancelVoiceCmd()" style="flex:1;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:DM Sans,sans-serif;font-size:14px;cursor:pointer">No</button>'
-      +'<button onclick="executeScheduleCmd()" style="flex:1;padding:12px;background:var(--green);border:none;border-radius:10px;color:#000;font-family:DM Sans,sans-serif;font-size:14px;font-weight:700;cursor:pointer">Yes, do it</button>'
-      +'</div>';
-    window._pendingVoiceCmd = result;
+    var scheduleClientName = ((result.client && result.client.fn) || '') + ' ' + ((result.client && result.client.ln) || '');
+    var scheduleGateResult = await _claireDispatchOrPropose({ name: 'schedule_clean', input: { client: scheduleClientName.trim(), date: result.date, time: result.time, team: result.team } }, null);
+    claireReply(scheduleGateResult);
+    _claireFlushProposalCards();
     return;
   }
   if (lower.includes('cancel')) {
     var result2 = parseScheduleCommand(lower, text);
-    if (result2.client) {
-      var targetDate = result2.date || dateKey(new Date());
-      var job = jobs.find(function(j){ return j.clientId === result2.client.id && j.date === targetDate && !j.cancelled; });
-      if (job) {
-        job.cancelled = true; saveJobs();
-        var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}); logPendingUpdate('Cancelled: '+job.clientName, dayL, null, result2.client.id); renderCal(); claireReply('Done! Cancelled '+job.clientName+' for '+dayL+'.');
-        await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
-        return;
-      }
-    }
-    claireReply('Couldn\'t find that job to cancel.');
+    if (!result2.client) { claireReply('Couldn\'t find that job to cancel.'); return; }
+    var cancelClientName = ((result2.client && result2.client.fn) || '') + ' ' + ((result2.client && result2.client.ln) || '');
+    var cancelTargetDate = result2.date || dateKey(new Date());
+    var cancelGateResult = await _claireDispatchOrPropose({ name: 'cancel_clean', input: { client: cancelClientName.trim(), date: cancelTargetDate } }, null);
+    claireReply(cancelGateResult);
+    _claireFlushProposalCards();
     return;
   }
   if (lower.includes('day off') || lower.includes('out sick') || lower.includes('off today')) {
@@ -28397,21 +28419,22 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
       emp = window.PentaEmployees.find(function(e){ return empName.toLowerCase().includes((e.name||'').toLowerCase()); });
     }
     if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return empName.toLowerCase().includes(e.name.toLowerCase()); });
-    if (emp) {
-      var dk=dateKey(new Date());
-      dailyAssignments[dk+'_'+emp.id]='OFF'; saveDailyAssignments();
-      // Sprint 10 Phase 3f: dual-write voice dayoff to Supabase.
-      try { if (window.PentaAssignments) window.PentaAssignments.assign(dk, 'OFF', emp.id).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
-      logPendingUpdate(emp.name+' → Day Off', new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
-      claireReply('Got it! '+emp.name+' is off today.');
-      return;
-    }
-    claireReply('Couldn\'t find that employee.'); return;
+    if (!emp) { claireReply('Couldn\'t find that employee.'); return; }
+    var dayOffDate = dateKey(new Date());
+    var dayOffGateResult = await _claireDispatchOrPropose({ name: 'employee_day_off', input: { employee: emp.name, date: dayOffDate } }, null);
+    claireReply(dayOffGateResult);
+    _claireFlushProposalCards();
+    return;
   }
   // ── REMINDER ──
   if (lower.includes('remind') || lower.includes('remember') || lower.includes('note')) {
     var noteText = text.replace(/remind me to |remind me |remember to |remember |note /gi,'').trim();
-    if (noteText) { var now=new Date(); var ts=now.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); manualTasks.unshift({id:Date.now().toString(),text:noteText,time:ts,done:false}); saveManualTasks(); renderTasks(); claireReply('Noted! Added "'+noteText+'" to your reminders.'); return; }
+    if (noteText) {
+      var reminderGateResult = await _claireDispatchOrPropose({ name: 'add_reminder', input: { text: noteText } }, null);
+      claireReply(reminderGateResult);
+      _claireFlushProposalCards();
+      return;
+    }
   }
   claireReply((apiErrorReason || 'Sorry, I\'m having trouble connecting right now.')
     + ' Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
