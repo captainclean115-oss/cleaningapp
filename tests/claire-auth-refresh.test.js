@@ -50,6 +50,13 @@ const apiSrc = extract(
   '\n\n// ── VOICE/TEXT COMMANDS ──'
 );
 const toolMetaSrc = extract('var CLAIRE_TOOL_META = {', 'async function processVoiceCommand(text) {');
+// Claire proposal-resolve-verify: _claireDispatchOrPropose now resolves
+// the target (client + specific job) via these real functions before a
+// proposal exists -- needed wherever gateSrc is combined in below.
+const resolversSrc = extract(
+  'function _cleanName(s) {',
+  '\n// Ranked employee matcher, mirrors findClients() above'
+);
 const gateSrc = extract(
   'var _clairePendingProposals = []; // { id, html, sensitive }',
   '\n\n// When a pending action (schedule/invoice/SMS) is later confirmed by Tom'
@@ -185,6 +192,11 @@ function buildParseSandbox(clients) {
     console,
     PentaClients: { forEachClient: (cb) => clients.forEach(cb) },
     dateKey: (d) => d.toISOString().slice(0, 10),
+    // Claire proposal-resolve-verify: parseScheduleCommand now anchors
+    // "today" on the business's configured timezone instead of the
+    // device clock -- UTC here, matching this file's own dateKey helper.
+    _bizTodayParts: () => { const d = new Date(); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }; },
+    _pentaBusinessTimezone: () => 'America/New_York',
   };
   vm.createContext(sandbox);
   vm.runInContext(extract('function parseScheduleCommand(lower, original) {', '\n\n// v9.5.2: clientExtras'), sandbox);
@@ -270,8 +282,15 @@ function buildFallbackSandbox(clients, jobs) {
     isManagerRole: () => true,
     _pentaParseAuthToken: () => ({ user: { id: 'user_1' } }),
     _claireRenderBubble: () => {},
-    PentaClients: { forEachClient: (cb) => clients.forEach(cb) },
+    PentaClients: { forEachClient: (cb) => clients.forEach(cb), getClient: (id) => clients.find((c) => c.id === id) || null },
     EMPLOYEE_ROSTER: [],
+    findEmployeeWithSuggestions: () => ({ matches: [], suggestions: [] }),
+    // Claire proposal-resolve-verify: _claireTodayKey() (used by both
+    // the resolver and parseScheduleCommand's own "today" anchor) reads
+    // these. UTC-based, matching this file's own dateKey helper below
+    // so a fixture job dated "today" and a request for "today" agree.
+    _bizTodayParts: () => { const d = new Date(); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }; },
+    _pentaBusinessTimezone: () => 'America/New_York',
     jobs: jobs || [],
     dateKey: (d) => d.toISOString().slice(0, 10),
     saveJobs: () => {},
@@ -284,13 +303,14 @@ function buildFallbackSandbox(clients, jobs) {
     _pentaJobWrite: async () => ({ ok: true }),
   };
   vm.createContext(sandbox);
-  vm.runInContext(toolMetaSrc + '\n' + gateSrc + '\n' + extract('function parseScheduleCommand(lower, original) {', '\n\n// v9.5.2: clientExtras') + '\n' + localFallbackSrc, sandbox);
+  vm.runInContext(toolMetaSrc + '\n' + resolversSrc + '\n' + gateSrc + '\n' + extract('function parseScheduleCommand(lower, original) {', '\n\n// v9.5.2: clientExtras') + '\n' + localFallbackSrc, sandbox);
   return { sandbox, tables, replies };
 }
 
 await (async () => {
   // Exactly Tom's bug report: a single Lisa, API genuinely down.
-  const { sandbox, tables, replies } = buildFallbackSandbox([{ id: 'c1', fn: 'Lisa', ln: 'Finkel' }]);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const { sandbox, tables, replies } = buildFallbackSandbox([{ id: 'c1', fn: 'Lisa', ln: 'Finkel' }], [{ id: 'j1', clientId: 'c1', clientName: 'Finkel, Lisa', date: todayKey, cancelled: false }]);
   await sandbox.processVoiceCommandLocal('Cancel Lisa today', 'You got signed out — sign back in and try again.');
   check('"Cancel Lisa today" with a single matching Lisa creates a proposal (the bug-report phrase, now fixed)', tables.claire_proposals.length === 1);
   check('the reply never falsely claims the job doesn\'t exist', !/couldn.?t find/i.test(replies[replies.length - 1] || ''));
@@ -326,7 +346,8 @@ await (async () => {
   // A genuine, confident EXACT full-name match still works fine even
   // during a real API failure -- "keep the offline parser only for
   // exact full-name commands" means it still WORKS for those.
-  const { sandbox, tables, replies } = buildFallbackSandbox([{ id: 'c1', fn: 'Lisa', ln: 'Finkel' }]);
+  const todayKey2 = new Date().toISOString().slice(0, 10);
+  const { sandbox, tables, replies } = buildFallbackSandbox([{ id: 'c1', fn: 'Lisa', ln: 'Finkel' }], [{ id: 'j1', clientId: 'c1', clientName: 'Finkel, Lisa', date: todayKey2, cancelled: false }]);
   await sandbox.processVoiceCommandLocal('Cancel Lisa Finkel today', 'You got signed out — sign back in and try again.');
   check('an exact full-name command still creates a proposal even during a real API failure', tables.claire_proposals.length === 1);
 })();

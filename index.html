@@ -26026,6 +26026,19 @@ var CLAIRE_TOOL_META = {
   batch_edit_employee_hours:     { gate: true,  sensitive: true, previewGate: true }
 };
 
+// Claire proposal-resolve-verify (STEP 5 audit): gated tools that take a
+// bare client/employee name and write straight to that record (no
+// specific job to look up) -- resolved the same ambiguity-safe way as
+// cancel/uncancel/move/schedule_clean, so their proposal summaries also
+// show a real resolved name instead of ever falling back to "a
+// client"/"an employee".
+var CLAIRE_CLIENT_FIELD_TOOLS = {
+  change_frequency: 1, update_client_notes: 1, edit_client: 1, change_price: 1, record_payment: 1
+};
+var CLAIRE_EMPLOYEE_FIELD_TOOLS = {
+  employee_day_off: 1, move_employee: 1, edit_employee_hours: 1
+};
+
 // Any tool not listed above fails SAFE: gated + sensitive -- a future new
 // tool is never accidentally exempt just because this object wasn't
 // updated for it. This is the one place anything reads CLAIRE_TOOL_META.
@@ -26465,6 +26478,44 @@ function _cleanName(s) {
 //    800 = prefix match on first or last ("Stro" → Strong)
 //    700 = substring match anywhere ("ong" → Strong)
 //    500 = multi-token: every search token hits some name field
+// Claire proposal-resolve-verify: business-timezone-aware "today" for
+// every Claire date fallback. dateKey(new Date()) (used throughout the
+// rest of the app) is DEVICE-local-time -- fine for a manager glancing
+// at their own device's calendar, but wrong for Claire: she must agree
+// with the BUSINESS's own configured timezone (businesses.timezone),
+// not whatever timezone a given phone happens to be set to, so a
+// request near midnight resolves to the same calendar day the
+// business's own schedule data uses.
+function _claireTodayKey() {
+  var p = _bizTodayParts(_pentaBusinessTimezone());
+  return p.y + '-' + String(p.m).padStart(2, '0') + '-' + String(p.d).padStart(2, '0');
+}
+
+// 12-hour "9:00 AM" display for a "HH:MM"/"HH:MM:SS" time string.
+function _claireTimeDisplay(hhmm) {
+  if (!hhmm) return '';
+  var tp = String(hhmm).split(':');
+  var hr = parseInt(tp[0], 10), mn = parseInt(tp[1] || '0', 10);
+  if (isNaN(hr)) return '';
+  return (hr % 12 || 12) + ':' + (mn < 10 ? '0' : '') + mn + ' ' + (hr >= 12 ? 'PM' : 'AM');
+}
+
+// "Wed, Nov 11" weekday+month+day label for a YYYY-MM-DD date key.
+function _claireDayLabel(dk) {
+  if (!dk) return '';
+  return new Date(dk + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// First name + last initial -- enough to tell "Lisa F." apart from any
+// other client sharing her first name, without putting a full last
+// name on a one-line proposal summary.
+function _claireShortName(c) {
+  if (!c) return 'that client';
+  var fn = (c.fn || '').trim();
+  var li = c.ln ? (String(c.ln).trim().charAt(0) + '.') : '';
+  return (fn + ' ' + li).trim() || 'that client';
+}
+
 function findClients(query) {
   if (!query) return [];
   var q = _cleanName(query);
@@ -26529,6 +26580,195 @@ function findClientWithSuggestions(query) {
   });
   all.sort(function(a, b) { return a.dist - b.dist; });
   return { matches: [], suggestions: all.slice(0, 3).map(function(x) { return x.client; }) };
+}
+
+// Claire proposal-resolve-verify (bug #1): resolves a client + an
+// EXISTING job BEFORE a proposal is ever created, so the proposal's
+// summary and args always carry a real, looked-up database record --
+// never a raw, unchecked model-supplied string that can fall back to
+// placeholder text like "a client". Used by cancel_clean/uncancel_clean.
+// wantCancelled=true looks for an already-cancelled job (uncancel);
+// false looks for an active one (cancel).
+function _claireResolveClientJob(input, wantCancelled) {
+  var lookup = findClientWithSuggestions(input && input.client);
+  if (lookup.matches.length === 0) {
+    return { ok: false, reason: 'client_not_found', suggestions: lookup.suggestions };
+  }
+  if (lookup.matches.length > 1) {
+    return { ok: false, reason: 'ambiguous_client', candidates: lookup.matches.slice(0, 5) };
+  }
+  var client = lookup.matches[0];
+  var targetDate = (input && input.date) || _claireTodayKey();
+  var job = jobs.find(function(j) { return j.clientId === client.id && j.date === targetDate && !!j.cancelled === !!wantCancelled; });
+  if (job) return { ok: true, client: client, job: job, dateKey: targetDate };
+  var nearest = jobs.filter(function(j) { return j.clientId === client.id && !!j.cancelled === !!wantCancelled; })
+    .sort(function(a, b) { return a.date.localeCompare(b.date); })
+    .find(function(j) { return j.date >= targetDate; }) || null;
+  return { ok: false, reason: 'job_not_found', client: client, dateKey: targetDate, nearest: nearest };
+}
+
+// Shared by _claireDispatchOrPropose (propose-time) and
+// _executeClaireToolCallInner's move_clean branch (execute-time) so the
+// two can never pick a different job for the same request. Mirrors the
+// original inline move_clean matching: an exact from_date match, else
+// the closest active job within +/-3 days, else the next upcoming clean.
+function _claireFindMoveSourceJob(clientId, fromDateInput) {
+  function normDate(d) {
+    if (!d) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+    var p = d.split(/[\/\-]/);
+    if (p.length === 3 && p[0].length <= 2) return p[2] + '-' + p[0].padStart(2, '0') + '-' + p[1].padStart(2, '0');
+    return d;
+  }
+  var todayKey = _claireTodayKey();
+  var clientJobs = jobs.filter(function(j) { return j.clientId === clientId && !j.cancelled; })
+    .map(function(j) { return Object.assign(j, { _d: normDate(j.date) }); });
+  var job = null;
+  if (fromDateInput) {
+    var wanted = normDate(fromDateInput);
+    job = clientJobs.find(function(j) { return j._d === wanted; });
+    if (!job) {
+      var closest = clientJobs.slice().sort(function(a, b) {
+        return Math.abs(new Date(a._d) - new Date(wanted)) - Math.abs(new Date(b._d) - new Date(wanted));
+      })[0];
+      if (closest && Math.abs(new Date(closest._d) - new Date(wanted)) <= 3 * 86400000) job = closest;
+    }
+  }
+  if (!job) job = clientJobs.filter(function(j) { return j._d >= todayKey; }).sort(function(a, b) { return a._d.localeCompare(b._d); })[0];
+  if (!job) {
+    var past = clientJobs.sort(function(a, b) { return b._d.localeCompare(a._d); })[0];
+    return { job: null, pastLabel: past ? _claireDayLabel(past._d) : null };
+  }
+  return { job: job, pastLabel: null };
+}
+
+// move_clean's full propose-time resolution: client (ambiguity-safe) +
+// the specific source job (shared lookup above) + the destination
+// fields the model supplied. A move with no destination at all (no
+// to_date/time/team) is meaningless, so that's its own failure reason
+// rather than silently "moving" a job to itself.
+function _claireResolveMoveClean(input) {
+  var lookup = findClientWithSuggestions(input && input.client);
+  if (lookup.matches.length === 0) return { ok: false, reason: 'client_not_found', suggestions: lookup.suggestions };
+  if (lookup.matches.length > 1) return { ok: false, reason: 'ambiguous_client', candidates: lookup.matches.slice(0, 5) };
+  var client = lookup.matches[0];
+  if (!input || (!input.to_date && !input.time && !input.team)) {
+    return { ok: false, reason: 'missing_destination', client: client };
+  }
+  var found = _claireFindMoveSourceJob(client.id, input && input.from_date);
+  if (!found.job) return { ok: false, reason: 'move_source_not_found', client: client, pastLabel: found.pastLabel };
+  return {
+    ok: true,
+    client: client,
+    job: found.job,
+    toDate: (input.to_date) || found.job.date,
+    time: input.time || found.job.time,
+    team: input.team ? String(input.team).toUpperCase() : found.job.team
+  };
+}
+
+// schedule_clean's propose-time resolution: client only (ambiguity-safe
+// -- findClient() used by the executor is first-match-wins, which is
+// exactly the same risk class cancel_clean had). Date/time/team default
+// the same way the executor already does, computed here too so the
+// proposal card shows the real values before approval, not just
+// whatever subset the model happened to supply.
+function _claireResolveScheduleClean(input) {
+  var lookup = findClientWithSuggestions(input && input.client);
+  if (lookup.matches.length === 0) return { ok: false, reason: 'client_not_found', suggestions: lookup.suggestions };
+  if (lookup.matches.length > 1) return { ok: false, reason: 'ambiguous_client', candidates: lookup.matches.slice(0, 5) };
+  return {
+    ok: true,
+    client: lookup.matches[0],
+    date: (input && input.date) || _claireTodayKey(),
+    time: (input && input.time) || '09:00',
+    team: ((input && input.team) || 'B1').toUpperCase()
+  };
+}
+
+// Client-only resolution (no specific job) for the gated tools that
+// write to the CLIENT record itself (price, notes, frequency, profile
+// fields, payments) rather than a specific scheduled job. Same
+// ambiguity-safe lookup, same "never guess" rule.
+function _claireResolveClientOnly(input) {
+  var lookup = findClientWithSuggestions(input && input.client);
+  if (lookup.matches.length === 0) return { ok: false, reason: 'client_not_found', suggestions: lookup.suggestions };
+  if (lookup.matches.length > 1) return { ok: false, reason: 'ambiguous_client', candidates: lookup.matches.slice(0, 5) };
+  return { ok: true, client: lookup.matches[0] };
+}
+
+// Employee-only resolution, mirrors _claireResolveClientOnly above --
+// reuses findEmployeeWithSuggestions (already ambiguity-safe; this
+// codebase has 7+ duplicate employee-name groups, see its own comment
+// a few lines down).
+function _claireResolveEmployeeOnly(input, asOfDate) {
+  var lookup = findEmployeeWithSuggestions((input && input.employee) || '', asOfDate || _claireTodayKey());
+  if (lookup.matches.length === 0) return { ok: false, reason: 'employee_not_found', suggestions: lookup.suggestions.map(function(e) { return e.name; }) };
+  if (lookup.matches.length > 1) return { ok: false, reason: 'ambiguous_employee', candidates: lookup.matches.slice(0, 5) };
+  return { ok: true, employee: lookup.matches[0] };
+}
+
+// Plain-English, no-proposal message for every resolver failure above.
+// Shown INSTEAD of a proposal card -- nothing is ever created when
+// resolution fails, per the resolve-before-propose rule.
+function _claireResolveFailureMessage(res, actionLabel) {
+  if (res.reason === 'client_not_found') {
+    var sugg = (res.suggestions || []).map(function(c) { return ((c.fn || '') + ' ' + (c.ln || '')).trim(); }).filter(Boolean).join(', ');
+    return 'I couldn\'t find that client.' + (sugg ? ' Did you mean: ' + sugg + '?' : '');
+  }
+  if (res.reason === 'ambiguous_client') {
+    var names = res.candidates.map(function(c) { return ((c.fn || '') + ' ' + (c.ln || '')).trim(); }).join(', or ');
+    return 'I found more than one match -- did you mean ' + names + '? Try their full name.';
+  }
+  if (res.reason === 'employee_not_found') {
+    var esugg = (res.suggestions || []).join(', ');
+    return 'I couldn\'t find that employee.' + (esugg ? ' Did you mean: ' + esugg + '?' : '');
+  }
+  if (res.reason === 'ambiguous_employee') {
+    var enames = res.candidates.map(function(e) { return e.name; }).join(', or ');
+    return 'I found more than one match -- did you mean ' + enames + '? Try their full name.';
+  }
+  if (res.reason === 'job_not_found') {
+    var who = _claireShortName(res.client);
+    var when = _claireDayLabel(res.dateKey);
+    var wantCancelled = actionLabel === 'uncancel';
+    var hint = res.nearest ? ' Their next ' + (wantCancelled ? 'cancelled clean I see is' : 'clean is') + ' ' + _claireDayLabel(res.nearest.date) + '.' : '';
+    return who + ' has no' + (wantCancelled ? ' cancelled' : '') + ' clean on ' + when + '.' + hint + ' Nothing was ' + (wantCancelled ? 'restored' : 'changed') + '.';
+  }
+  if (res.reason === 'move_source_not_found') {
+    var who2 = _claireShortName(res.client);
+    return who2 + ' has no upcoming clean I can find to move.' + (res.pastLabel ? ' Their last one was ' + res.pastLabel + '.' : '') + ' Nothing was moved.';
+  }
+  if (res.reason === 'missing_destination') {
+    return 'I don\'t have a new date, time, or team to move ' + _claireShortName(res.client) + '\'s clean to.';
+  }
+  return 'I couldn\'t find that. Nothing was changed.';
+}
+
+// Builds a proposal's summary from RESOLVED, VERIFIED data (never raw
+// model input) for the 4 job-write tools above. Format: "Cancel Lisa
+// F.'s clean, Wed Nov 11, 9:00 AM, team B1."
+function _claireSummaryTail(j) {
+  var bits = [];
+  if (j && j.time) bits.push(_claireTimeDisplay(j.time));
+  if (j && j.team) bits.push('team ' + String(j.team).toUpperCase());
+  return bits.length ? ', ' + bits.join(', ') : '';
+}
+function _claireResolvedSummary(toolName, r) {
+  var who = _claireShortName(r.client);
+  if (toolName === 'cancel_clean') {
+    return 'Cancel ' + who + '\'s clean, ' + _claireDayLabel(r.job.date) + _claireSummaryTail(r.job) + '.';
+  }
+  if (toolName === 'uncancel_clean') {
+    return 'Restore ' + who + '\'s cancelled clean, ' + _claireDayLabel(r.job.date) + _claireSummaryTail(r.job) + '.';
+  }
+  if (toolName === 'move_clean') {
+    return 'Move ' + who + '\'s clean, ' + _claireDayLabel(r.job.date) + ' \u2192 ' + _claireDayLabel(r.toDate) + _claireSummaryTail({ time: r.time, team: r.team }) + '.';
+  }
+  if (toolName === 'schedule_clean') {
+    return 'Schedule ' + who + ', ' + _claireDayLabel(r.date) + _claireSummaryTail({ time: r.time, team: r.team }) + '.';
+  }
+  return null;
 }
 
 // Ranked employee matcher, mirrors findClients() above -- same score
@@ -26691,7 +26931,43 @@ async function _claireDispatchOrPropose(toolCall, textReply) {
     return 'Only a manager or above can ask Claire to do that.';
   }
 
-  var summary = _claireProposalSummary(toolCall.name, toolCall.input || {});
+  // Claire proposal-resolve-verify (bug #1): resolve the real target
+  // BEFORE a proposal is created, so the summary is always built from a
+  // verified database record instead of raw, unchecked model input. If
+  // nothing resolves, no proposal is created at all.
+  var _rawInput = toolCall.input || {};
+  var _resolvedSummary = null;
+  var _resolvedArgsExtra = null;
+
+  if (toolCall.name === 'cancel_clean' || toolCall.name === 'uncancel_clean') {
+    var _rj = _claireResolveClientJob(_rawInput, toolCall.name === 'uncancel_clean');
+    if (!_rj.ok) return _claireResolveFailureMessage(_rj, toolCall.name === 'uncancel_clean' ? 'uncancel' : 'cancel');
+    _resolvedSummary = _claireResolvedSummary(toolCall.name, _rj);
+    _resolvedArgsExtra = { _resolvedClientId: _rj.client.id, _resolvedJobId: _rj.job.id, _resolvedDate: _rj.dateKey };
+  } else if (toolCall.name === 'move_clean') {
+    var _rm = _claireResolveMoveClean(_rawInput);
+    if (!_rm.ok) return _claireResolveFailureMessage(_rm, 'move');
+    _resolvedSummary = _claireResolvedSummary('move_clean', _rm);
+    _resolvedArgsExtra = { _resolvedClientId: _rm.client.id, _resolvedJobId: _rm.job.id, _resolvedToDate: _rm.toDate, _resolvedTime: _rm.time, _resolvedTeam: _rm.team };
+  } else if (toolCall.name === 'schedule_clean') {
+    var _rs = _claireResolveScheduleClean(_rawInput);
+    if (!_rs.ok) return _claireResolveFailureMessage(_rs, 'schedule');
+    _resolvedSummary = _claireResolvedSummary('schedule_clean', _rs);
+    _resolvedArgsExtra = { _resolvedClientId: _rs.client.id, _resolvedDate: _rs.date, _resolvedTime: _rs.time, _resolvedTeam: _rs.team };
+  } else if (CLAIRE_CLIENT_FIELD_TOOLS[toolCall.name]) {
+    var _rc = _claireResolveClientOnly(_rawInput);
+    if (!_rc.ok) return _claireResolveFailureMessage(_rc, toolCall.name);
+    _resolvedArgsExtra = { _resolvedClientId: _rc.client.id };
+    _resolvedSummary = _claireProposalSummary(toolCall.name, Object.assign({}, _rawInput, { client: ((_rc.client.fn || '') + ' ' + (_rc.client.ln || '')).trim() }));
+  } else if (CLAIRE_EMPLOYEE_FIELD_TOOLS[toolCall.name]) {
+    var _re = _claireResolveEmployeeOnly(_rawInput, _rawInput.date);
+    if (!_re.ok) return _claireResolveFailureMessage(_re, toolCall.name);
+    _resolvedArgsExtra = { _resolvedEmployeeId: _re.employee.id };
+    _resolvedSummary = _claireProposalSummary(toolCall.name, Object.assign({}, _rawInput, { employee: _re.employee.name }));
+  }
+
+  var summary = _resolvedSummary || _claireProposalSummary(toolCall.name, _rawInput);
+  var argsToStore = _resolvedArgsExtra ? Object.assign({}, _rawInput, _resolvedArgsExtra) : _rawInput;
   var row;
   try {
     var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
@@ -26701,7 +26977,7 @@ async function _claireDispatchOrPropose(toolCall, textReply) {
       created_by: session.authUserId,
       conversation_id: (typeof _claireActiveConversationId === 'string') ? _claireActiveConversationId : null,
       tool_name: toolCall.name,
-      args: toolCall.input || {},
+      args: argsToStore,
       summary: summary,
       risk: meta.sensitive ? 'sensitive' : 'normal'
     }).select().single();
@@ -26972,15 +27248,23 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── SCHEDULE ──
   if (name === 'schedule_clean') {
-    var client = findClient(input.client);
-    if (!client) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client. Can you give me their full name?'); return; }
+    var client = null;
+    if (input._resolvedClientId) client = (PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+    if (!client) {
+      // Defensive fallback -- should only be reachable if this ever ran
+      // without going through _claireDispatchOrPropose's resolution.
+      var _schedLookup = findClientWithSuggestions(input.client);
+      if (_schedLookup.matches.length === 0) throw new Error('that client could not be found.');
+      if (_schedLookup.matches.length > 1) throw new Error('more than one client matches "' + input.client + '" -- ask which one.');
+      client = _schedLookup.matches[0];
+    }
     var result = {
       client: client,
       clientName: (client.ln||'')+', '+(client.fn||''),
-      date: input.date || dateKey(new Date()),
-      time: input.time || '09:00',
+      date: input._resolvedDate || input.date || _claireTodayKey(),
+      time: input._resolvedTime || input.time || '09:00',
       timeDisplay: '',
-      team: (input.team||'B1').toUpperCase(),
+      team: (input._resolvedTeam || input.team || 'B1').toUpperCase(),
       viaClaire: true
     };
     var tp = result.time.split(':'), hr=parseInt(tp[0]), mn=parseInt(tp[1]||0);
@@ -26998,52 +27282,57 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── CANCEL ──
   } else if (name === 'cancel_clean') {
-    var _cancelLookup = findClientWithSuggestions(input.client);
-    if (_cancelLookup.matches.length === 0) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'client_not_found',
-        query: input.client,
-        suggestions: _cancelLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
+    var client2 = null, job = null;
+    if (input._resolvedClientId && input._resolvedJobId) {
+      client2 = (PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+      job = jobs.find(function(j){ return j.id === input._resolvedJobId; });
     }
-    if (_cancelLookup.matches.length > 1) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'ambiguous_client',
-        query: input.client,
-        candidates: _cancelLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
-    }
-    var client2 = _cancelLookup.matches[0];
-    var targetDate = input.date || dateKey(new Date());
-    var job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
-    if (job) {
-      job.cancelled = true; saveJobs();
-      var dayL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
-      _claireLastToolResult = 'Cancelled '+client2.fn+' '+client2.ln+'\'s '+dayL+' clean. Done.';
-      claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
-      await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
-    } else {
-      // Claire cleanup PART 2: the ONLY matching job on this date might
-      // already be cancelled -- that used to fall straight through to
-      // "no clean scheduled," which is what produced the original bug
-      // report ("un cancel it" -> "couldn't find that job to cancel").
-      // Check for it explicitly and say so, with the restore offer.
-      var alreadyCancelled = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && j.cancelled; });
-      if (alreadyCancelled) {
-        var dateAC = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-        _claireLastToolResult = client2.fn+' '+client2.ln+'\'s clean on '+dateAC+' is already cancelled. Nothing changed.';
-        claireReply('That clean is already cancelled — want me to restore it?');
-        return;
+    if (!client2 || !job) {
+      // Defensive fallback -- should only be reachable if this ever ran
+      // without going through _claireDispatchOrPropose's resolution.
+      var _cancelLookup = findClientWithSuggestions(input.client);
+      if (_cancelLookup.matches.length === 0) {
+        throw new Error('that client could not be found.');
       }
-      var nextJob = jobs.filter(function(j){ return j.clientId === client2.id && !j.cancelled && j.date > targetDate; }).sort(function(a,b){ return a.date.localeCompare(b.date); })[0];
-      var dateL = new Date(targetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      var hint = nextJob ? ' Their next clean is '+new Date(nextJob.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.' : '';
-      _claireLastToolResult = client2.fn+' '+client2.ln+' has no clean scheduled on '+dateL+'.'+hint+' Nothing was cancelled.';
-      claireReply(client2.fn+' '+client2.ln+' doesn\'t have a clean on '+dateL+'.'+hint);
+      if (_cancelLookup.matches.length > 1) {
+        throw new Error('more than one client matches "' + input.client + '" -- ask which one.');
+      }
+      client2 = _cancelLookup.matches[0];
+      var targetDate = input.date || _claireTodayKey();
+      job = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && !j.cancelled; });
+      if (!job) {
+        // A more specific reason than "no clean at all" when there IS
+        // one, it's just already cancelled -- same distinction the
+        // original handler made, lost if collapsed into one
+        // active-only search.
+        var _alreadyCancelled = jobs.find(function(j){ return j.clientId === client2.id && j.date === targetDate && j.cancelled; });
+        if (_alreadyCancelled) {
+          throw new Error(client2.fn+' '+client2.ln+'\'s clean on '+_claireDayLabel(_alreadyCancelled.date)+' was already cancelled.');
+        }
+      }
     }
+    if (!job) {
+      throw new Error((client2 ? client2.fn + ' ' + client2.ln : 'that client') + ' has no clean on that date -- it may have already been changed.');
+    }
+    if (job.cancelled) {
+      // Already in the target state (a race between propose and
+      // approve, or a stale resolved id) -- NOT the outcome the human
+      // asked for, so this is a failure to report honestly, never "Done."
+      throw new Error(client2.fn+' '+client2.ln+'\'s clean on '+_claireDayLabel(job.date)+' was already cancelled.');
+    }
+    var dayL = _claireDayLabel(job.date);
+    var wasCancelled = job.cancelled;
+    job.cancelled = true; saveJobs();
+    var _cancelWrite = await _pentaJobWrite('update', { id: job.id, patch: { cancelled: true } });
+    var _cancelConfirmed = _cancelWrite && _cancelWrite.ok
+      && (!(window.PentaJobs && window.PentaJobs.getById) || (function(){ var f = window.PentaJobs.getById(job.id); return !!f && f.cancelled === true; })());
+    if (!_cancelConfirmed) {
+      job.cancelled = wasCancelled; saveJobs();
+      throw new Error(client2.fn+' '+client2.ln+'\'s '+dayL+' clean was not cancelled -- the save did not go through.');
+    }
+    logPendingUpdate('Cancelled: '+job.clientName, dayL, null, client2.id); renderCal();
+    _claireLastToolResult = 'Cancelled '+client2.fn+' '+client2.ln+'\'s '+dayL+' clean. Done.';
+    claireReply(message || 'Done! Cancelled '+client2.fn+' '+client2.ln+' for '+dayL+'.');
 
   // ── UNCANCEL CLEAN ──
   // Claire cleanup PART 2. Mirror of cancel_clean's lookup, but the job
@@ -27051,65 +27340,54 @@ async function _executeClaireToolCallInner(toolCall, message) {
   // exact same patch shape the Schedule tab's own cancelJob() uncancel
   // branch already uses -- the same existing uncancel path, not a new one.
   } else if (name === 'uncancel_clean') {
-    var _uncancelLookup = findClientWithSuggestions(input.client);
-    if (_uncancelLookup.matches.length === 0) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'client_not_found',
-        query: input.client,
-        suggestions: _uncancelLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
+    var client4 = null, cancelledJob = null;
+    if (input._resolvedClientId && input._resolvedJobId) {
+      client4 = (PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+      cancelledJob = jobs.find(function(j){ return j.id === input._resolvedJobId; });
     }
-    if (_uncancelLookup.matches.length > 1) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'ambiguous_client',
-        query: input.client,
-        candidates: _uncancelLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
-    }
-    var client4 = _uncancelLookup.matches[0];
-    var uncancelTargetDate = input.date || dateKey(new Date());
-    var cancelledJob = jobs.find(function(j){ return j.clientId === client4.id && j.date === uncancelTargetDate && j.cancelled; });
-    if (cancelledJob) {
-      cancelledJob.cancelled = false; cancelledJob.cancelReason = null; saveJobs();
-      var dayU = new Date(uncancelTargetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      logPendingUpdate('Uncancelled: '+cancelledJob.clientName, dayU, null, client4.id); renderCal();
-      _claireLastToolResult = 'Restored '+client4.fn+' '+client4.ln+'\'s '+dayU+' clean. Done.';
-      claireReply(message || 'Done! Restored '+client4.fn+' '+client4.ln+'\'s clean for '+dayU+'.');
-      await _pentaJobWrite('update', { id: cancelledJob.id, patch: { cancelled: false, cancelReason: null } });
-    } else {
-      var activeJob = jobs.find(function(j){ return j.clientId === client4.id && j.date === uncancelTargetDate && !j.cancelled; });
-      var dateU = new Date(uncancelTargetDate+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-      if (activeJob) {
-        _claireLastToolResult = client4.fn+' '+client4.ln+'\'s clean on '+dateU+' isn\'t cancelled. Nothing changed.';
-        claireReply(client4.fn+' '+client4.ln+'\'s clean on '+dateU+' isn\'t cancelled -- nothing to restore.');
-      } else {
-        _claireLastToolResult = 'No cancelled clean found for '+client4.fn+' '+client4.ln+' on '+dateU+'. Nothing was restored.';
-        claireReply('I couldn\'t find a cancelled clean for '+client4.fn+' '+client4.ln+' on '+dateU+'.');
+    if (!client4 || !cancelledJob) {
+      var _uncancelLookup = findClientWithSuggestions(input.client);
+      if (_uncancelLookup.matches.length === 0) {
+        throw new Error('that client could not be found.');
+      }
+      if (_uncancelLookup.matches.length > 1) {
+        throw new Error('more than one client matches "' + input.client + '" -- ask which one.');
+      }
+      client4 = _uncancelLookup.matches[0];
+      var uncancelTargetDate = input.date || _claireTodayKey();
+      cancelledJob = jobs.find(function(j){ return j.clientId === client4.id && j.date === uncancelTargetDate && j.cancelled; });
+      if (!cancelledJob) {
+        // A more specific reason than "no job at all" when there IS a
+        // clean on that date, it's just already active -- same
+        // distinction the original handler made, lost if collapsed into
+        // one cancelled-only search.
+        var _activeJob = jobs.find(function(j){ return j.clientId === client4.id && j.date === uncancelTargetDate && !j.cancelled; });
+        if (_activeJob) {
+          throw new Error(client4.fn+' '+client4.ln+'\'s clean on '+_claireDayLabel(_activeJob.date)+' isn\'t cancelled -- there is nothing to restore.');
+        }
       }
     }
+    if (!cancelledJob) {
+      throw new Error((client4 ? client4.fn + ' ' + client4.ln : 'that client') + ' has no cancelled clean on that date to restore.');
+    }
+    if (!cancelledJob.cancelled) {
+      throw new Error(client4.fn+' '+client4.ln+'\'s clean on '+_claireDayLabel(cancelledJob.date)+' isn\'t cancelled -- there is nothing to restore.');
+    }
+    var dayU = _claireDayLabel(cancelledJob.date);
+    cancelledJob.cancelled = false; cancelledJob.cancelReason = null; saveJobs();
+    var _uncancelWrite = await _pentaJobWrite('update', { id: cancelledJob.id, patch: { cancelled: false, cancelReason: null } });
+    var _uncancelConfirmed = _uncancelWrite && _uncancelWrite.ok
+      && (!(window.PentaJobs && window.PentaJobs.getById) || (function(){ var f = window.PentaJobs.getById(cancelledJob.id); return !!f && f.cancelled === false; })());
+    if (!_uncancelConfirmed) {
+      cancelledJob.cancelled = true; saveJobs();
+      throw new Error(client4.fn+' '+client4.ln+'\'s '+dayU+' clean was not restored -- the save did not go through.');
+    }
+    logPendingUpdate('Uncancelled: '+cancelledJob.clientName, dayU, null, client4.id); renderCal();
+    _claireLastToolResult = 'Restored '+client4.fn+' '+client4.ln+'\'s '+dayU+' clean. Done.';
+    claireReply(message || 'Done! Restored '+client4.fn+' '+client4.ln+'\'s clean for '+dayU+'.');
 
   // ── MOVE CLEAN ──
   } else if (name === 'move_clean') {
-    var _moveLookup = findClientWithSuggestions(input.client);
-    if (_moveLookup.matches.length === 0) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'client_not_found',
-        query: input.client,
-        suggestions: _moveLookup.suggestions.map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
-    }
-    if (_moveLookup.matches.length > 1) {
-      _claireLastToolResult = JSON.stringify({
-        error: 'ambiguous_client',
-        query: input.client,
-        candidates: _moveLookup.matches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; })
-      });
-      return;
-    }
-    var client3 = _moveLookup.matches[0];
     // Normalize a job's date to YYYY-MM-DD regardless of stored format
     function _normDate(d){
       if (!d) return '';
@@ -27118,62 +27396,75 @@ async function _executeClaireToolCallInner(toolCall, message) {
       if (p.length === 3 && p[0].length <= 2) return p[2]+'-'+p[0].padStart(2,'0')+'-'+p[1].padStart(2,'0');
       return d;
     }
-    var todayKey = dateKey(new Date());
-    var clientJobs = jobs.filter(function(j){ return j.clientId === client3.id && !j.cancelled; })
-      .map(function(j){ return Object.assign(j, { _d: _normDate(j.date) }); });
-    var job2 = null;
-    if (input.from_date) {
-      var wanted = _normDate(input.from_date);
-      job2 = clientJobs.find(function(j){ return j._d === wanted; });
-      // If no exact match, try the closest job within ±3 days
+    var client3 = null, job2 = null;
+    if (input._resolvedClientId && input._resolvedJobId) {
+      client3 = (PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+      job2 = jobs.find(function(j){ return j.id === input._resolvedJobId; });
+    }
+    if (!client3 || !job2) {
+      // Defensive fallback -- should only be reachable if this ever ran
+      // without going through _claireDispatchOrPropose's resolution.
+      var _moveLookup = findClientWithSuggestions(input.client);
+      if (_moveLookup.matches.length === 0) throw new Error('that client could not be found.');
+      if (_moveLookup.matches.length > 1) throw new Error('more than one client matches "' + input.client + '" -- ask which one.');
+      client3 = _moveLookup.matches[0];
+      var _found = _claireFindMoveSourceJob(client3.id, input.from_date);
+      job2 = _found.job;
       if (!job2) {
-        var closest = clientJobs.slice().sort(function(a,b){
-          return Math.abs(new Date(a._d) - new Date(wanted)) - Math.abs(new Date(b._d) - new Date(wanted));
-        })[0];
-        if (closest && Math.abs(new Date(closest._d) - new Date(wanted)) <= 3*86400000) job2 = closest;
+        throw new Error('no upcoming clean could be found for ' + client3.fn + ' ' + client3.ln + (_found.pastLabel ? ' (last one was ' + _found.pastLabel + ')' : '') + '.');
       }
     }
-    if (!job2) {
-      // Fall back to the next upcoming clean for this client
-      job2 = clientJobs.filter(function(j){ return j._d >= todayKey; }).sort(function(a,b){ return a._d.localeCompare(b._d); })[0];
-    }
-    if (!job2) {
-      var past = clientJobs.sort(function(a,b){ return b._d.localeCompare(a._d); })[0];
-      _claireLastToolResult = 'No upcoming clean found for '+client3.fn+' '+client3.ln+'.'+(past?' Their last clean was '+new Date(past._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.':'')+' Nothing was moved.';
-      claireReply((message ? message + ' ' : '') + 'I couldn\'t find an upcoming clean for '+client3.fn+' '+client3.ln+'.'+(past?' The last one I see is '+new Date(past._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'.':''));
-      return;
-    }
     // Confirm WHICH clean we're moving (by the found date) in the reply
-    var foundDayL = new Date(job2._d+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    if (input.to_date) job2.date = input.to_date;
-    if (input.time) { job2.time = input.time; job2.flexible = false; }
-    if (input.team) job2.team = input.team.toUpperCase();
-    saveJobs();
-    // Sprint 10 Phase 3c: dual-write Claire move_clean to Supabase. Only
-    // patch fields that actually changed. recalcTeamTimes (called below)
-    // dual-writes the cascade for downstream jobs on the destination team,
-    // and is now the single render point for this move (it always renders
-    // exactly once) -- an extra renderCal() here used to double-render.
+    var foundDayL = _claireDayLabel(_normDate(job2.date));
+    var toDate = input._resolvedToDate || input.to_date;
+    var toTime = input._resolvedTime || input.time;
+    var toTeam = input._resolvedTeam || (input.team ? String(input.team).toUpperCase() : null);
     var _movePatch = {};
-    if (input.to_date) _movePatch.date = job2.date;
-    if (input.time)    { _movePatch.time = job2.time; _movePatch.flexible = job2.flexible; }
-    if (input.team)    _movePatch.team = job2.team;
-    if (Object.keys(_movePatch).length) await _pentaJobWrite('update', { id: job2.id, patch: _movePatch });
-    var newDayL = new Date(_normDate(job2.date)+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL, null, client3.id);
+    if (toDate) { job2.date = toDate; _movePatch.date = toDate; }
+    if (toTime) { job2.time = toTime; job2.flexible = false; _movePatch.time = toTime; _movePatch.flexible = false; }
+    if (toTeam) { job2.team = toTeam; _movePatch.team = toTeam; }
+    if (!Object.keys(_movePatch).length) {
+      throw new Error('there was no new date, time, or team to move ' + client3.fn + ' ' + client3.ln + '\'s clean to.');
+    }
+    saveJobs();
+    // Sprint 10 Phase 3c: dual-write Claire move_clean to Supabase.
+    var _moveWrite = await _pentaJobWrite('update', { id: job2.id, patch: _movePatch });
+    var _moveConfirmed = _moveWrite && _moveWrite.ok
+      && (!(window.PentaJobs && window.PentaJobs.getById) || (function(){
+            var f = window.PentaJobs.getById(job2.id);
+            if (!f) return false;
+            if (_movePatch.date && f.date !== _movePatch.date) return false;
+            if (_movePatch.time && f.time !== _movePatch.time) return false;
+            if (_movePatch.team && f.team !== _movePatch.team) return false;
+            return true;
+          })());
+    if (!_moveConfirmed) {
+      throw new Error(client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean was not moved -- the save did not go through.');
+    }
+    var newDayL = _claireDayLabel(_normDate(job2.date));
+    // recalcTeamTimes dual-writes the cascade for downstream jobs on the
+    // destination team, and is the single render point for this move
+    // (it always renders exactly once) -- an extra renderCal() here
+    // used to double-render.
     recalcTeamTimes(job2.team, job2.date, job2.id);
-    var moveMsg = 'Moved '+client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean to '+newDayL+(input.time ? ' at '+input.time : '')+(input.team ? ' with Team '+input.team.toUpperCase() : '')+'.';
+    logPendingUpdate('Moved: '+job2.clientName, foundDayL + ' → ' + newDayL, null, client3.id);
+    var moveMsg = 'Moved '+client3.fn+' '+client3.ln+'\'s '+foundDayL+' clean to '+newDayL+(toTime ? ' at '+toTime : '')+(toTeam ? ' with Team '+toTeam : '')+'.';
     _claireLastToolResult = moveMsg+' Done.';
     claireReply(message || moveMsg);
 
   // ── DAY OFF ──
   } else if (name === 'employee_day_off') {
-    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
-    var emp = null;
-    if (window.PentaEmployees && window.PentaEmployees.getByName) emp = window.PentaEmployees.getByName(input.employee || '');
-    if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Claire proposal-resolve-verify: prefer the id already resolved
+    // (ambiguity-safe) at propose time, so this can never act on a
+    // different same-named employee than the one shown on the card.
+    var emp = (input._resolvedEmployeeId && window.PentaEmployees && window.PentaEmployees.getById) ? window.PentaEmployees.getById(input._resolvedEmployeeId) : null;
+    if (!emp) {
+      // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+      if (window.PentaEmployees && window.PentaEmployees.getByName) emp = window.PentaEmployees.getByName(input.employee || '');
+      if (!emp) emp = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    }
     if (!emp) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
-    var dk = input.date || dateKey(new Date());
+    var dk = input.date || _claireTodayKey();
     dailyAssignments[dk+'_'+emp.id] = 'OFF'; saveDailyAssignments();
     // Sprint 10 Phase 3f: dual-write Claire dayoff to Supabase.
     try { if (window.PentaAssignments) window.PentaAssignments.assign(dk, 'OFF', emp.id).catch(function(e){ console.warn('[Phase 3f] assign failed:', e); }); } catch(e){}
@@ -27184,12 +27475,16 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── MOVE EMPLOYEE ──
   } else if (name === 'move_employee') {
-    // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
-    var emp2 = null;
-    if (window.PentaEmployees && window.PentaEmployees.getByName) emp2 = window.PentaEmployees.getByName(input.employee || '');
-    if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    // Claire proposal-resolve-verify: same resolved-id preference as
+    // employee_day_off above.
+    var emp2 = (input._resolvedEmployeeId && window.PentaEmployees && window.PentaEmployees.getById) ? window.PentaEmployees.getById(input._resolvedEmployeeId) : null;
+    if (!emp2) {
+      // Phase 6.5a: facade-first, EMPLOYEE_ROSTER fallback.
+      if (window.PentaEmployees && window.PentaEmployees.getByName) emp2 = window.PentaEmployees.getByName(input.employee || '');
+      if (!emp2) emp2 = EMPLOYEE_ROSTER.find(function(e){ return e.name.toLowerCase() === (input.employee||'').toLowerCase(); });
+    }
     if (!emp2) { _claireLastToolResult = 'Employee not found: "'+input.employee+'".'; claireReply(message || 'I couldn\'t find that employee.'); return; }
-    var dk2 = input.date || dateKey(new Date());
+    var dk2 = input.date || _claireTodayKey();
     assignEmployee(emp2.id, input.team.toUpperCase(), dk2).catch(function(e){ console.warn('[Claire move_employee] assign failed', e); });
     logPendingUpdate(emp2.name+' → '+input.team.toUpperCase(), new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'}));
     _claireLastToolResult = emp2.name+' moved to Team '+input.team.toUpperCase()+' on '+new Date(dk2+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'. Done.';
@@ -27416,7 +27711,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── EDIT CLIENT PROFILE ──
   } else if (name === 'edit_client') {
-    var ecClient = findClient(input.client);
+    var ecClient = (input._resolvedClientId && PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+    if (!ecClient) ecClient = findClient(input.client);
     if (!ecClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     var fieldMap = {ph:'Phone',em:'Email',addr:'Address',city:'City',zip:'Zip',pkg:'Package',notes:'Notes',fn:'First Name',ln:'Last Name'};
     var fieldName = fieldMap[input.field] || input.field;
@@ -27428,7 +27724,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── CHANGE PRICE ──
   } else if (name === 'change_price') {
-    var cpClient = findClient(input.client);
+    var cpClient = (input._resolvedClientId && PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+    if (!cpClient) cpClient = findClient(input.client);
     if (!cpClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'Couldn\'t find that client.'); return; }
     var newPrice = input.price.replace(/[$,]/g,'');
     var todayK = dateKey(new Date());
@@ -28180,7 +28477,8 @@ async function _executeClaireToolCallInner(toolCall, message) {
 
   // ── UPDATE CLIENT NOTES ──
   } else if (name === 'update_client_notes') {
-    var nClient = findClient(input.client);
+    var nClient = (input._resolvedClientId && PentaClients && PentaClients.getClient) ? PentaClients.getClient(input._resolvedClientId) : null;
+    if (!nClient) nClient = findClient(input.client);
     if (!nClient) { _claireLastToolResult = 'Client not found: "'+input.client+'".'; claireReply(message || 'I couldn\'t find that client.'); return; }
     var oldNotes = nClient.notes || '';
     PentaClients.setField(nClient.id, 'notes', oldNotes ? oldNotes + ' | ' + input.notes : input.notes);
@@ -28784,7 +29082,7 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
     if (!uncancelCheck.ok) { claireReply(uncancelCheck.message); return; }
     var resultU = uncancelCheck.result;
     var uncancelClientName = ((resultU.client && resultU.client.fn) || '') + ' ' + ((resultU.client && resultU.client.ln) || '');
-    var uncancelTargetDate = resultU.date || dateKey(new Date());
+    var uncancelTargetDate = resultU.date || _claireTodayKey();
     var uncancelGateResult = await _claireDispatchOrPropose({ name: 'uncancel_clean', input: { client: uncancelClientName.trim(), date: uncancelTargetDate } }, null);
     claireReply(uncancelGateResult);
     _claireFlushProposalCards();
@@ -28795,7 +29093,7 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
     if (!cancelCheck.ok) { claireReply(cancelCheck.message); return; }
     var result2 = cancelCheck.result;
     var cancelClientName = ((result2.client && result2.client.fn) || '') + ' ' + ((result2.client && result2.client.ln) || '');
-    var cancelTargetDate = result2.date || dateKey(new Date());
+    var cancelTargetDate = result2.date || _claireTodayKey();
     var cancelGateResult = await _claireDispatchOrPropose({ name: 'cancel_clean', input: { client: cancelClientName.trim(), date: cancelTargetDate } }, null);
     claireReply(cancelGateResult);
     _claireFlushProposalCards();
@@ -28867,6 +29165,27 @@ async function executeScheduleCmd() {
   saveJobs();
 
   var dayLabel = new Date(cmd.date+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+
+  // Claire proposal-resolve-verify (bug #2): await the write and verify
+  // it actually landed BEFORE reporting success -- the old code called
+  // claireReply('All set! ...') first and never checked _pentaJobWrite's
+  // return value at all.
+  var _schedWrite = await _pentaJobWrite('insert', { job: _voiceJob });
+  var _schedConfirmed = _schedWrite && _schedWrite.ok
+    && (!(window.PentaJobs && window.PentaJobs.getById) || !!window.PentaJobs.getById(_voiceJob.id));
+  window._pendingVoiceCmd = null;
+  if (!_schedConfirmed) {
+    jobs = jobs.filter(function(j){ return j.id !== _voiceJob.id; });
+    saveJobs(); renderCal();
+    var _schedFailMsg = cmd.clientName+'\'s clean for '+dayLabel+' was NOT saved -- the save did not go through. Try again.';
+    if (status) {
+      status.innerHTML = '<div style="font-size:13px;color:#f87171;line-height:1.4">'+_claireEscapeHtml(_schedFailMsg)+'</div>';
+      setTimeout(function(){ status.style.display='none'; }, 4000);
+    }
+    claireReply(_schedFailMsg);
+    throw new Error(_schedFailMsg);
+  }
+
   logPendingUpdate('Add job: '+cmd.clientName, cmd.timeDisplay+' on '+dayLabel+' · Team '+cmd.team, cmd.viaAI ? 'AI Chat' : (cmd.viaClaire ? 'Claire' : undefined), cmd.client ? cmd.client.id : null);
   renderCal();
 
@@ -28874,8 +29193,6 @@ async function executeScheduleCmd() {
   if (typeof _claireAmendLastToolResult === 'function' && cmd.viaClaire) {
     _claireAmendLastToolResult('Tom confirmed. '+cmd.clientName+' booked for '+dayLabel+' at '+cmd.timeDisplay+' with Team '+cmd.team+'.');
   }
-  await _pentaJobWrite('insert', { job: _voiceJob });
-  window._pendingVoiceCmd = null;
   setTimeout(function(){ status.style.display='none'; }, 3000);
 }
 
@@ -28931,7 +29248,10 @@ function parseScheduleCommand(lower, original) {
 
   // Find date
   var date = '';
-  var today = new Date(); today.setHours(0,0,0,0);
+  // Claire proposal-resolve-verify: anchor "today" on the BUSINESS's
+  // configured timezone, not the device's own clock/timezone setting.
+  var _pscTzToday = _bizTodayParts(_pentaBusinessTimezone());
+  var today = new Date(_pscTzToday.y, _pscTzToday.m - 1, _pscTzToday.d);
   var dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   var shortDays = ['sun','mon','tue','wed','thu','fri','sat'];
 
