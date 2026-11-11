@@ -46,6 +46,12 @@ function sliceBetween(startMarker, endMarker) {
 }
 
 const headerBlock = sliceBetween('<div id="claire-view">', '<div id="claire-messages"');
+// The menu sheet (New chat / Clear history / Voice tips) lives AFTER
+// #claire-messages / the input row, as the last child of #claire-view --
+// headerBlock above deliberately stops before it (it's the always-
+// visible portion); this wider slice covers the whole view, menu
+// included, for checks that need to see both.
+const fullClaireViewBlock = sliceBetween('<div id="claire-view">', '\n<!-- GPS VIEW -->');
 
 // ======================================================================
 // 1. No white/near-white text color anywhere in Claire's header block.
@@ -125,10 +131,48 @@ const headerBlock = sliceBetween('<div id="claire-view">', '<div id="claire-mess
 //    also fixed (found during the same investigation, same root cause).
 // ======================================================================
 {
-  check('"New chat" / "Clear history" buttons use readable text (not white-on-white)', !/New chat<\/button>/.test(headerBlock) || headerBlock.indexOf('color:var(--text)') !== -1);
-  check('the voice-name debug line uses a readable color token', /id="claire-voice-name" style="font-size:10px;color:var\(--muted\)/.test(headerBlock));
+  check('"New chat" / "Clear history" buttons use readable text (not white-on-white)', !/New chat<\/button>/.test(fullClaireViewBlock) || fullClaireViewBlock.indexOf('color:var(--text)') !== -1);
+  check('the voice-name debug line uses a readable color token', /id="claire-voice-name" style="font-size:\d+px;color:var\(--muted\)/.test(fullClaireViewBlock));
   const voiceHintCssBlock = sliceBetween('.claire-voice-hint {', '}');
   check('the voice-hint base CSS class uses a readable color token', /color:\s*var\(--muted\)/.test(voiceHintCssBlock));
+}
+
+// ======================================================================
+// 8. Claire cleanup PART 1: header must be a slim bar ONLY. The voice-
+//    quality paragraph, the voice-name debug line, and the New chat /
+//    Clear history buttons are NOT in the always-visible flow anymore --
+//    they live in a closed-by-default "..." menu sheet instead. This is
+//    what actually fixes "header still takes 1/3 of the screen": those
+//    elements used to always be in the layout (just invisible before the
+//    color fix, still taking up vertical space once visible).
+// ======================================================================
+{
+  // The ALWAYS-VISIBLE portion is specifically the header bar + build
+  // stamp + waveform/stop-button (mid-speech only) -- everything up to
+  // where the menu sheet begins.
+  const alwaysVisibleBlock = sliceBetween('<div class="claire-view-stage">', '<div id="claire-menu-overlay"');
+
+  check('the voice-quality paragraph is NOT in the always-visible header', alwaysVisibleBlock.indexOf('id="claire-voice-hint"') === -1);
+  check('the voice-name debug line is NOT in the always-visible header', alwaysVisibleBlock.indexOf('id="claire-voice-name"') === -1);
+  check('"New chat" is NOT in the always-visible header', alwaysVisibleBlock.indexOf('_claireStartNewChat()') === -1);
+  check('"Clear history" is NOT in the always-visible header', alwaysVisibleBlock.indexOf('_claireClearHistory()') === -1);
+
+  check('a "..." menu button exists in the header bar', /id="claire-menu-btn"[^>]*onclick="openClaireMenu\(\)"/.test(headerBlock));
+
+  const menuBlock = sliceBetween('<div id="claire-menu-overlay"', '\n</div>\n\n<!-- GPS VIEW -->');
+  check('the menu sheet is closed (display:none) by default', /id="claire-menu-overlay" style="display:none/.test(fullClaireViewBlock));
+  check('the menu sheet contains New chat', menuBlock.indexOf('_claireStartNewChat()') !== -1);
+  check('the menu sheet contains Clear history', menuBlock.indexOf('_claireClearHistory()') !== -1);
+  check('the menu sheet contains a Voice tips item', menuBlock.indexOf('_claireToggleVoiceTips()') !== -1);
+  check('the voice-hint paragraph now lives inside the menu sheet', menuBlock.indexOf('id="claire-voice-hint"') !== -1);
+  check('the voice-name debug line now lives inside the menu sheet', menuBlock.indexOf('id="claire-voice-name"') !== -1);
+
+  // The voice tip must NOT show unless the user opens that menu item --
+  // its own detail container is closed by default, independent of the
+  // sheet's own open/closed state.
+  check('the voice-tips detail block is closed (display:none) by default -- independent of the sheet itself', /id="claire-voice-tips-detail" style="display:none/.test(fullClaireViewBlock));
+
+  check('openClaireMenu() / closeClaireMenu() / _claireToggleVoiceTips() are all defined', src.indexOf('function openClaireMenu()') !== -1 && src.indexOf('function closeClaireMenu()') !== -1 && src.indexOf('function _claireToggleVoiceTips()') !== -1);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
