@@ -5410,14 +5410,6 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       <button id="claire-menu-btn" class="claire-header-voice-btn" onclick="openClaireMenu()" type="button"
               aria-label="More options" title="More options">⋯</button>
     </div>
-    <!-- Claire build stamp: ALWAYS visible (rendered unconditionally at
-         script-load by _claireRenderBuildStamp(), not gated on this view
-         ever opening). This app has no service worker/build step -- an
-         already-open tab or iOS home-screen PWA can keep running old JS
-         indefinitely with no prompt to reload. If something Claire-related
-         doesn't seem to be working, check this against the version in the
-         latest shipped PR before assuming the code itself is wrong. -->
-    <div id="claire-build-stamp" class="claire-build-stamp-line"></div>
     <div id="claire-waveform" class="claire-waveform">
       <span></span><span></span><span></span><span></span><span></span>
     </div>
@@ -5448,11 +5440,18 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
        voice. -->
   <div id="claire-menu-overlay" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.4);align-items:flex-end;justify-content:center">
     <div style="background:var(--surface);width:100%;max-width:560px;border-radius:16px 16px 0 0;padding:16px 16px calc(var(--safe-bottom) + 16px);box-sizing:border-box">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
         <div style="font-size:16px;font-weight:700;color:var(--text)">Claire</div>
         <button type="button" onclick="closeClaireMenu()" aria-label="Close"
                 style="background:var(--surface2);border:1px solid var(--border);color:var(--text);width:30px;height:30px;border-radius:50%;font-size:16px;cursor:pointer;-webkit-tap-highlight-color:transparent">×</button>
       </div>
+      <!-- Claire auth-refresh fix: moved out of the always-visible header
+           (it was adding height there for no real benefit to Tom day to
+           day) and into the menu, relabeled "Version" -- still rendered
+           unconditionally at script-load by _claireRenderBuildStamp(),
+           into this SAME element id, so an already-open tab/PWA running
+           old JS is still checkable here if something seems off. -->
+      <div id="claire-build-stamp" class="claire-build-stamp-line" style="margin-bottom:10px"></div>
       <button type="button" onclick="closeClaireMenu();_claireStartNewChat()" type="button"
               style="display:block;width:100%;text-align:left;padding:13px 2px;background:none;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent">New chat</button>
       <button type="button" onclick="closeClaireMenu();_claireClearHistory()"
@@ -21951,6 +21950,28 @@ function getAnthropicKey() { return null; }
 // tools, messages, etc.); response is whatever Anthropic returned
 // unchanged. Throws on any failure so callers can fall back the same
 // way they used to when the direct fetch returned !resp.ok.
+// Claire auth-refresh fix: getSession() is cheap (no network) and
+// usually enough, but a backgrounded iOS tab/PWA can suspend the SDK's
+// own background refresh timer long enough that the cached session is
+// stale by the time Claire is the first thing touched after returning.
+// forceRefresh=true skips straight to a real refreshSession() round-
+// trip instead, used both when getSession() itself comes back empty and
+// as a one-time retry when the SERVER rejects a client-side-looking-
+// valid token (a 401 despite getSession() being satisfied).
+async function _claireGetSessionToken(sb, forceRefresh) {
+  var session = null;
+  if (forceRefresh) {
+    try {
+      var rr = await sb.auth.refreshSession();
+      session = rr && rr.data && rr.data.session;
+    } catch (e) {}
+  }
+  if (!session) {
+    try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
+  }
+  return (session && session.access_token) ? session : null;
+}
+
 async function _claireApi(body) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) throw new Error('Supabase client not ready');
@@ -21960,19 +21981,14 @@ async function _claireApi(body) {
   // current session's bearer token attached so we can read the real
   // upstream error verbatim — that's the only way to surface Anthropic's
   // explanation when the EF returns 502.
-  var session;
-  try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
-  if (!session || !session.access_token) {
-    throw new Error('claire-chat: no active session (sign in again)');
-  }
   // Resolve the project URL + anon key from the existing client config.
   // supabaseClient.supabaseUrl is exposed in v2.x; fall back to
   // window.SUPABASE_URL if a build redacts it.
   var supaUrl = (sb.supabaseUrl || window.SUPABASE_URL || '').replace(/\/+$/, '');
   var anonKey = sb.supabaseKey || window.SUPABASE_ANON_KEY || '';
-  var resp;
-  try {
-    resp = await fetch(supaUrl + '/functions/v1/claire-chat', {
+
+  async function doFetch(session) {
+    return fetch(supaUrl + '/functions/v1/claire-chat', {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
@@ -21981,9 +21997,41 @@ async function _claireApi(body) {
       },
       body: JSON.stringify(body),
     });
+  }
+
+  var session = await _claireGetSessionToken(sb, false);
+  if (!session) {
+    // getSession() came back with nothing at all -- force a real
+    // refresh before giving up. This is the fix: the old code threw
+    // "no active session" right here with zero retry.
+    session = await _claireGetSessionToken(sb, true);
+  }
+  if (!session) {
+    throw new Error('claire-chat: no active session (sign in again)');
+  }
+
+  var resp;
+  try {
+    resp = await doFetch(session);
   } catch (netErr) {
     throw new Error('claire-chat: network ' + (netErr.message || netErr));
   }
+
+  if (resp.status === 401) {
+    // The token looked valid client-side but the server rejected it
+    // anyway (expiry/clock-skew/revocation/rotation race) -- force one
+    // real refresh and retry once before surfacing a signed-out message.
+    var refreshed = await _claireGetSessionToken(sb, true);
+    if (!refreshed) {
+      throw new Error('claire-chat: no active session (sign in again)');
+    }
+    try {
+      resp = await doFetch(refreshed);
+    } catch (netErr2) {
+      throw new Error('claire-chat: network ' + (netErr2.message || netErr2));
+    }
+  }
+
   var raw;
   try { raw = await resp.text(); } catch (e) { raw = ''; }
   var data = null;
@@ -25894,23 +25942,25 @@ var CLAIRE_TOOLS = [
   { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" -- only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
-// Claire build stamp -- ALWAYS visible in her header, never gated on
-// the view opening. No build tooling exists in this single-file app,
-// so CLAIRE_BUILD_STAMP is bumped BY HAND on every deploy that touches
-// Claire's gate/dispatch code (format: short date "YYYY-MM-DD", easiest
-// to read at a glance and to keep accurate without a real build step --
-// a short commit hash would need to be known before the commit that
-// contains it exists, which isn't possible without CI). Rendered
-// unconditionally right here at script-load time -- #claire-build-stamp
-// is static markup that already exists in the DOM by now (this whole
-// app is one inline <script> after all of the page's HTML), so
-// visibility never depends on Claire's tab ever being opened. The
+// Claire build stamp -- lives in the "..." menu (Claire auth-refresh
+// fix: moved out of the always-visible header, which doesn't need it
+// cluttering up day-to-day use). Still rendered unconditionally at
+// script-load time, never gated on the menu ever being opened, so it's
+// already correct the moment someone DOES open the menu. No build
+// tooling exists in this single-file app, so CLAIRE_BUILD_STAMP is
+// bumped BY HAND on every deploy that touches Claire's gate/dispatch
+// code (format: short date "YYYY-MM-DD", easiest to read at a glance
+// and to keep accurate without a real build step -- a short commit
+// hash would need to be known before the commit that contains it
+// exists, which isn't possible without CI). #claire-build-stamp is
+// static markup that already exists in the DOM by now (this whole app
+// is one inline <script> after all of the page's HTML). The
 // showTab('claire') call site re-renders the same constant too
 // (harmless, just keeps a long-lived open tab's display consistent).
 var CLAIRE_BUILD_STAMP = '2026-11-11';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
-  if (el) el.textContent = 'build ' + CLAIRE_BUILD_STAMP;
+  if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
 }
 _claireRenderBuildStamp();
 
@@ -28687,12 +28737,39 @@ function claireSendSms(clientId, msgText) {
 // shape the real CLAIRE_TOOLS dispatcher uses and routes it through
 // the SAME gate -- same proposal card, same Approve/Reject, same
 // owner/admin sensitive check. No branch here writes anything itself.
+// Claire auth-refresh fix: this function ONLY ever runs because the
+// real API call already failed (both its call sites always pass
+// apiErrorReason) -- so it must never let a crude local guess claim a
+// job/client doesn't exist when the real problem is the dead
+// connection. Only a CONFIDENT match is acted on in that degraded mode
+// -- an explicit full-name command, OR a bare first name that resolves
+// to exactly one client (see parseScheduleCommand's confidentMatch,
+// which already rules out ambiguity for that case; Tom's exact bug-
+// report phrase, "Cancel Lisa today," is this case and must still
+// work when there's only one Lisa). An ambiguous match asks which
+// client was meant, never guesses. Anything else -- no match, or only
+// a risky partial match (last-name-only, a raw substring with no
+// ambiguity check at all) -- surfaces the real, honest reason instead.
+function _claireOfflineClientResult(lower, text, apiErrorReason) {
+  var result = parseScheduleCommand(lower, text);
+  if (result.error === 'ambiguous_client') {
+    var names = result.candidates.map(function (c) { return c.name; }).join(', or ');
+    return { ok: false, message: 'I found more than one match — did you mean ' + names + '? Try their full name.' };
+  }
+  if (!result.client || !result.confidentMatch) {
+    if (apiErrorReason) return { ok: false, message: apiErrorReason };
+    return { ok: false, message: result.error || 'Could not find that client. Try saying their full name.' };
+  }
+  return { ok: true, result: result };
+}
+
 async function processVoiceCommandLocal(text, apiErrorReason) {
   var lower = text.toLowerCase();
 
   if (lower.includes('schedule') || lower.includes('book') || lower.includes('add a clean') || lower.includes('add clean')) {
-    var result = parseScheduleCommand(lower, text);
-    if (result.error) { claireReply(result.error); return; }
+    var scheduleCheck = _claireOfflineClientResult(lower, text, apiErrorReason);
+    if (!scheduleCheck.ok) { claireReply(scheduleCheck.message); return; }
+    var result = scheduleCheck.result;
     var scheduleClientName = ((result.client && result.client.fn) || '') + ' ' + ((result.client && result.client.ln) || '');
     var scheduleGateResult = await _claireDispatchOrPropose({ name: 'schedule_clean', input: { client: scheduleClientName.trim(), date: result.date, time: result.time, team: result.team } }, null);
     claireReply(scheduleGateResult);
@@ -28703,8 +28780,9 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
   // "uncancel" contains the substring "cancel", so this MUST come first or
   // an uncancel phrase would always match cancel_clean instead.
   if (lower.includes('uncancel') || lower.includes('un-cancel') || lower.includes('un cancel') || lower.includes('restore') || lower.includes('put it back') || lower.includes('put that back')) {
-    var resultU = parseScheduleCommand(lower, text);
-    if (!resultU.client) { claireReply('Couldn\'t find that job to restore.'); return; }
+    var uncancelCheck = _claireOfflineClientResult(lower, text, apiErrorReason);
+    if (!uncancelCheck.ok) { claireReply(uncancelCheck.message); return; }
+    var resultU = uncancelCheck.result;
     var uncancelClientName = ((resultU.client && resultU.client.fn) || '') + ' ' + ((resultU.client && resultU.client.ln) || '');
     var uncancelTargetDate = resultU.date || dateKey(new Date());
     var uncancelGateResult = await _claireDispatchOrPropose({ name: 'uncancel_clean', input: { client: uncancelClientName.trim(), date: uncancelTargetDate } }, null);
@@ -28713,8 +28791,9 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
     return;
   }
   if (lower.includes('cancel')) {
-    var result2 = parseScheduleCommand(lower, text);
-    if (!result2.client) { claireReply('Couldn\'t find that job to cancel.'); return; }
+    var cancelCheck = _claireOfflineClientResult(lower, text, apiErrorReason);
+    if (!cancelCheck.ok) { claireReply(cancelCheck.message); return; }
+    var result2 = cancelCheck.result;
     var cancelClientName = ((result2.client && result2.client.fn) || '') + ' ' + ((result2.client && result2.client.ln) || '');
     var cancelTargetDate = result2.date || dateKey(new Date());
     var cancelGateResult = await _claireDispatchOrPropose({ name: 'cancel_clean', input: { client: cancelClientName.trim(), date: cancelTargetDate } }, null);
@@ -28804,16 +28883,45 @@ function parseScheduleCommand(lower, original) {
   // Find client name
   var client = null;
   var clientName = '';
-  // Try matching against all clients — find best match
-  var bestMatch = null, bestLen = 0;
+  // Try matching against all clients — find best match. matchKind tracks
+  // HOW the match was found -- 'full' or 'both_tokens' mean the message
+  // genuinely named the client by first AND last name. 'first_name_only'
+  // (below) is ALSO confident once resolved safely (ambiguity ruled
+  // out). 'last_name_only' is the one heuristic partial match the
+  // offline fallback should NOT act on confidently when it's only
+  // running because the real API call failed (see
+  // processVoiceCommandLocal's use of result.confidentMatch below).
+  var bestMatch = null, bestLen = 0, matchKind = null;
   PentaClients.forEachClient(function(c) {
     var fn = (c.fn||'').toLowerCase(), ln = (c.ln||'').toLowerCase();
     var full = fn + ' ' + ln;
-    if (lower.includes(full) && full.length > bestLen) { bestMatch = c; bestLen = full.length; }
-    else if (lower.includes(ln + ' ' + fn) && (ln+' '+fn).length > bestLen) { bestMatch = c; bestLen = (ln+' '+fn).length; }
-    else if (lower.includes(fn) && lower.includes(ln) && (fn.length+ln.length) > bestLen) { bestMatch = c; bestLen = fn.length+ln.length; }
-    else if (ln.length > 3 && lower.includes(ln) && ln.length > bestLen) { bestMatch = c; bestLen = ln.length; }
+    if (lower.includes(full) && full.length > bestLen) { bestMatch = c; bestLen = full.length; matchKind = 'full'; }
+    else if (lower.includes(ln + ' ' + fn) && (ln+' '+fn).length > bestLen) { bestMatch = c; bestLen = (ln+' '+fn).length; matchKind = 'full'; }
+    else if (lower.includes(fn) && lower.includes(ln) && (fn.length+ln.length) > bestLen) { bestMatch = c; bestLen = fn.length+ln.length; matchKind = 'both_tokens'; }
+    else if (ln.length > 3 && lower.includes(ln) && ln.length > bestLen) { bestMatch = c; bestLen = ln.length; matchKind = 'last_name_only'; }
   });
+  // Claire auth-refresh fix: first-name-only fallback, tried ONLY if
+  // nothing above matched -- "Cancel Lisa today" (a bare first name,
+  // Tom's exact bug-report phrase) never matched any branch above.
+  // Resolved SAFELY: a single match is used; more than one match is
+  // genuinely ambiguous and must ask, never guess which "Lisa" was meant.
+  var firstNameMatches = [];
+  if (!bestMatch) {
+    var _pscWords = lower.split(/\s+/).filter(Boolean);
+    PentaClients.forEachClient(function(c) {
+      var fn2 = (c.fn||'').toLowerCase();
+      if (fn2.length > 2 && _pscWords.indexOf(fn2) !== -1) firstNameMatches.push(c);
+    });
+    if (firstNameMatches.length === 1) {
+      bestMatch = firstNameMatches[0];
+      matchKind = 'first_name_only';
+    } else if (firstNameMatches.length > 1) {
+      return {
+        error: 'ambiguous_client',
+        candidates: firstNameMatches.slice(0, 5).map(function(c){ return { name: ((c.fn||'')+' '+(c.ln||'')).trim(), city: c.city, id: c.id }; }),
+      };
+    }
+  }
   if (bestMatch) {
     client = bestMatch;
     clientName = (bestMatch.ln||'')+', '+(bestMatch.fn||'');
@@ -28896,7 +29004,19 @@ function parseScheduleCommand(lower, original) {
     team = 'B1'; // fallback
   }
 
-  return { client: client, clientName: clientName, date: date, time: time, timeDisplay: timeDisplay, team: team };
+  // Claire auth-refresh fix: "confident" means the processVoiceCommandLocal
+  // honest-fallback gate (below) is willing to act on this match even
+  // during a real API failure. 'full' (an explicit first+last name
+  // substring) and 'both_tokens' (first AND last both named somewhere)
+  // are confident by construction. 'first_name_only' is ALSO confident
+  // -- it's an exact word-boundary match that was already resolved
+  // SAFELY above (a single match is used; more than one asks instead
+  // of guessing -- see firstNameMatches), so it's no less trustworthy
+  // than a full-name match once ambiguity has been ruled out. Only
+  // 'last_name_only' -- a raw substring match with NO ambiguity check
+  // at all -- stays unconfident.
+  var confidentMatch = (matchKind === 'full' || matchKind === 'both_tokens' || matchKind === 'first_name_only');
+  return { client: client, clientName: clientName, date: date, time: time, timeDisplay: timeDisplay, team: team, confidentMatch: confidentMatch };
 }
 
 // v9.5.2: clientExtras must be declared BEFORE initSheets() can run.

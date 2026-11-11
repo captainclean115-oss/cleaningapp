@@ -47,7 +47,7 @@ const dispatcherSrc = extract(
   '\n\n// (legacy — replaced by executeClaireToolCall)'
 );
 const localFallbackSrc = extract(
-  'async function processVoiceCommandLocal(text, apiErrorReason) {',
+  'function _claireOfflineClientResult(lower, text, apiErrorReason) {',
   '\nfunction cancelVoiceCmd() {'
 );
 const parseSrc = extract(
