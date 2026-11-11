@@ -68,10 +68,13 @@ const fullClaireViewBlock = sliceBetween('<div id="claire-view">', '\n<!-- GPS V
 }
 
 // ======================================================================
-// 2. The build stamp is readable: real color token, >= 12px.
+// 2. The build stamp is readable: real color token, >= 12px. Claire
+// auth-refresh fix: it now lives in the "..." menu, NOT the always-
+// visible header -- checked against the full view, and separately
+// confirmed absent from the always-visible portion in section 8 below.
 // ======================================================================
 {
-  const stampLine = headerBlock.match(/<div id="claire-build-stamp"[^>]*>/);
+  const stampLine = fullClaireViewBlock.match(/<div id="claire-build-stamp"[^>]*>/);
   check('the build stamp element exists', !!stampLine);
   const stampCssBlock = sliceBetween('.claire-build-stamp-line {', '}');
   const fontSizeMatch = stampCssBlock.match(/font-size:\s*(\d+)px/);
@@ -156,6 +159,11 @@ const fullClaireViewBlock = sliceBetween('<div id="claire-view">', '\n<!-- GPS V
   check('the voice-name debug line is NOT in the always-visible header', alwaysVisibleBlock.indexOf('id="claire-voice-name"') === -1);
   check('"New chat" is NOT in the always-visible header', alwaysVisibleBlock.indexOf('_claireStartNewChat()') === -1);
   check('"Clear history" is NOT in the always-visible header', alwaysVisibleBlock.indexOf('_claireClearHistory()') === -1);
+  // Claire auth-refresh fix: the build/version stamp is ALSO out of the
+  // always-visible header now, moved into the menu.
+  check('the build/version stamp is NOT in the always-visible header', alwaysVisibleBlock.indexOf('id="claire-build-stamp"') === -1);
+  check('the build/version stamp now lives inside the menu sheet, labeled "Version"', sliceBetween('<div id="claire-menu-overlay"', '\n</div>\n\n<!-- GPS VIEW -->').indexOf('id="claire-build-stamp"') !== -1);
+  check('_claireRenderBuildStamp labels it "Version" (non-technical), not "build"', /el\.textContent = 'Version ' \+ CLAIRE_BUILD_STAMP/.test(src));
 
   check('a "..." menu button exists in the header bar', /id="claire-menu-btn"[^>]*onclick="openClaireMenu\(\)"/.test(headerBlock));
 

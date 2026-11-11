@@ -53,7 +53,7 @@ function extract(startMarker, endMarker) {
 }
 
 const localFallbackSrc = extract(
-  'async function processVoiceCommandLocal(text, apiErrorReason) {',
+  'function _claireOfflineClientResult(lower, text, apiErrorReason) {',
   '\nfunction cancelVoiceCmd() {'
 );
 const parseSrc = extract(
@@ -217,7 +217,12 @@ await (async () => {
 
 // ======================================================================
 // 2. "cancel with me for today" -- no resolvable client; must not write
-//    and must not even create a proposal (nothing to propose).
+//    and must not even create a proposal (nothing to propose). Claire
+//    auth-refresh fix: this function only ever runs because the real
+//    API call already failed, so it must NEVER claim a job doesn't
+//    exist (a false, specific-sounding diagnosis) when the real
+//    problem is the dead connection -- it now surfaces the real,
+//    honest apiErrorReason instead of "couldn't find that job."
 // ======================================================================
 await (async () => {
   const jobs = [{ id: 'job1', clientId: 'c1', clientName: 'Strong, Alex', date: new Date().toISOString().slice(0, 10), cancelled: false }];
@@ -225,7 +230,7 @@ await (async () => {
   await sandbox.processVoiceCommandLocal('cancel with me for today', 'API unavailable');
   check('an unresolvable "cancel" phrase creates no proposal', tables.claire_proposals.length === 0);
   check('an unresolvable "cancel" phrase performs no write', jobWrites.length === 0);
-  check('an unresolvable "cancel" phrase replies honestly, not a false success', /couldn.?t find/i.test(replies[replies.length - 1] || ''));
+  check('an unresolvable "cancel" phrase surfaces the REAL reason (the dead connection), never a false "job not found" claim', replies[replies.length - 1] === 'API unavailable');
 })();
 
 // ======================================================================
