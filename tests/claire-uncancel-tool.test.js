@@ -38,6 +38,17 @@ function extract(startMarker, endMarker) {
 }
 
 const toolMetaSrc = extract('var CLAIRE_TOOL_META = {', 'async function processVoiceCommand(text) {');
+// Claire proposal-resolve-verify: _claireDispatchOrPropose now resolves
+// the target via these real functions before a proposal exists. Only
+// the resolver block itself is needed here -- findClients/_cleanName/
+// findClientWithSuggestions are skipped since this file already stubs
+// findClientWithSuggestions directly (a well-isolated collaborator, same
+// convention as the rest of this file).
+const claireTodayHelpersSrc = extract('function _claireTodayKey() {', 'function findClients(query) {');
+const resolversSrc = extract(
+  'function _claireResolveClientJob(input, wantCancelled) {',
+  '\n// Ranked employee matcher, mirrors findClients() above'
+);
 const gateSrc = extract(
   'var _clairePendingProposals = []; // { id, html, sensitive }',
   '\n\n// When a pending action (schedule/invoice/SMS) is later confirmed by Tom'
@@ -55,7 +66,7 @@ const parseSrc = extract(
   '\n\n// v9.5.2: clientExtras'
 );
 
-const COMBINED_SRC = toolMetaSrc + '\n' + gateSrc + '\n' + dispatcherSrc + '\n' + localFallbackSrc + '\n' + parseSrc;
+const COMBINED_SRC = toolMetaSrc + '\n' + claireTodayHelpersSrc + '\n' + resolversSrc + '\n' + gateSrc + '\n' + dispatcherSrc + '\n' + localFallbackSrc + '\n' + parseSrc;
 
 function makeFakeSupabase(tables) {
   function execQuery(state) {
@@ -121,9 +132,15 @@ function buildSandbox(opts) {
     isManagerRole: () => true,
     _pentaParseAuthToken: () => ({ user: { id: 'user_1' } }),
     _claireRenderBubble: () => {},
-    PentaClients: { forEachClient: (cb) => clients.forEach(cb) },
+    PentaClients: { forEachClient: (cb) => clients.forEach(cb), getClient: (id) => clients.find((c) => c.id === id) || null },
     EMPLOYEE_ROSTER: [],
     PentaEmployees: null,
+    findEmployeeWithSuggestions: () => ({ matches: [], suggestions: [] }),
+    // Claire proposal-resolve-verify: _claireTodayKey() reads these.
+    // UTC-based, matching this file's own dateKey helper below so a
+    // fixture job dated "today" and a request for "today" always agree.
+    _bizTodayParts: () => { const d = new Date(); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }; },
+    _pentaBusinessTimezone: () => 'America/New_York',
     jobs,
     dateKey: (d) => d.toISOString().slice(0, 10),
     saveJobs: () => {},
@@ -202,25 +219,34 @@ await (async () => {
 
 // ======================================================================
 // 4. uncancel_clean on a job that ISN'T cancelled says so plainly,
-//    writes nothing.
+//    writes nothing. Claire proposal-resolve-verify: calling the real
+//    executor directly (bypassing Approve's try/catch, as these tests
+//    do to exercise the dispatcher in isolation) now THROWS instead of
+//    silently claireReply()-ing -- that's the whole point of STEP 3:
+//    a "nothing to do" outcome must never look like quiet success when
+//    this runs through _claireApproveProposal in production.
 // ======================================================================
 await (async () => {
   const dateKey = new Date().toISOString().slice(0, 10);
   const job = { id: 'j1', clientId: 'c1', clientName: 'Strong, Alex', date: dateKey, cancelled: false };
-  const { sandbox, replies, jobWrites } = buildSandbox({ jobs: [job] });
-  await sandbox.executeClaireToolCall({ name: 'uncancel_clean', input: { client: 'Alex Strong', date: dateKey } }, null);
+  const { sandbox, jobWrites } = buildSandbox({ jobs: [job] });
+  let caught = null;
+  try { await sandbox.executeClaireToolCall({ name: 'uncancel_clean', input: { client: 'Alex Strong', date: dateKey } }, null); }
+  catch (e) { caught = e; }
   check('uncancel_clean on an active (not cancelled) job changes nothing', job.cancelled === false && jobWrites.length === 0);
-  check('uncancel_clean replies that it is not cancelled, not a generic error', /isn.?t cancelled/i.test(replies[replies.length - 1] || ''));
+  check('uncancel_clean throws that it is not cancelled, not a generic error', !!caught && /isn.?t cancelled/i.test(caught.message));
 })();
 
 // ======================================================================
 // 5. uncancel_clean with no matching job at all (any state) says so.
 // ======================================================================
 await (async () => {
-  const { sandbox, replies, jobWrites } = buildSandbox({ jobs: [] });
-  await sandbox.executeClaireToolCall({ name: 'uncancel_clean', input: { client: 'Alex Strong', date: '2026-01-01' } }, null);
+  const { sandbox, jobWrites } = buildSandbox({ jobs: [] });
+  let caught = null;
+  try { await sandbox.executeClaireToolCall({ name: 'uncancel_clean', input: { client: 'Alex Strong', date: '2026-01-01' } }, null); }
+  catch (e) { caught = e; }
   check('uncancel_clean with no job at all writes nothing', jobWrites.length === 0);
-  check('uncancel_clean replies honestly when nothing was found', /couldn.?t find a cancelled clean/i.test(replies[replies.length - 1] || ''));
+  check('uncancel_clean throws honestly when nothing was found', !!caught && /has no cancelled clean/i.test(caught.message));
 })();
 
 // ======================================================================
@@ -231,10 +257,12 @@ await (async () => {
 await (async () => {
   const dateKey = new Date().toISOString().slice(0, 10);
   const job = { id: 'j1', clientId: 'c1', clientName: 'Strong, Alex', date: dateKey, cancelled: true };
-  const { sandbox, replies, jobWrites } = buildSandbox({ jobs: [job] });
-  await sandbox.executeClaireToolCall({ name: 'cancel_clean', input: { client: 'Alex Strong', date: dateKey } }, null);
+  const { sandbox, jobWrites } = buildSandbox({ jobs: [job] });
+  let caught = null;
+  try { await sandbox.executeClaireToolCall({ name: 'cancel_clean', input: { client: 'Alex Strong', date: dateKey } }, null); }
+  catch (e) { caught = e; }
   check('cancel_clean on an already-cancelled job writes nothing', jobWrites.length === 0);
-  check('cancel_clean on an already-cancelled job gives the exact bug-report-fix message', /already cancelled.*restore it/i.test(replies[replies.length - 1] || ''));
+  check('cancel_clean on an already-cancelled job throws the specific message, not "no clean scheduled"', !!caught && /already cancelled/i.test(caught.message));
 })();
 
 // ======================================================================

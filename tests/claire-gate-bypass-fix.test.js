@@ -64,12 +64,22 @@ const toolMetaSrc = extract(
   'var CLAIRE_TOOL_META = {',
   'async function processVoiceCommand(text) {'
 );
+// Claire proposal-resolve-verify: _claireDispatchOrPropose now resolves
+// the target via these real functions (including the real
+// findClients/findClientWithSuggestions, which only need the
+// PentaClients.forEachClient fake already below) before a proposal
+// exists, and parseScheduleCommand's own "today" anchor now reads
+// _bizTodayParts/_pentaBusinessTimezone too -- both stubbed below.
+const resolversSrc = extract(
+  'function _cleanName(s) {',
+  '\n// Ranked employee matcher, mirrors findClients() above'
+);
 const gateSrc = extract(
   'var _clairePendingProposals = []; // { id, html, sensitive }',
   '\n\n// When a pending action (schedule/invoice/SMS) is later confirmed by Tom'
 );
 
-const COMBINED_SRC = localFallbackSrc + '\n' + parseSrc + '\n' + toolMetaSrc + '\n' + gateSrc;
+const COMBINED_SRC = localFallbackSrc + '\n' + parseSrc + '\n' + toolMetaSrc + '\n' + resolversSrc + '\n' + gateSrc;
 
 // ---- in-memory fake Supabase query builder (same shape used in the
 // other Claire test files -- duplicated per this project's convention
@@ -148,9 +158,22 @@ function buildSandbox(opts) {
     isManagerRole: () => true,
     PentaClients: {
       forEachClient: (cb) => { (opts.clients || [{ id: 'c1', fn: 'Alex', ln: 'Strong' }]).forEach(cb); },
+      getClient: (id) => (opts.clients || [{ id: 'c1', fn: 'Alex', ln: 'Strong' }]).find((c) => c.id === id) || null,
     },
     EMPLOYEE_ROSTER: opts.employeeRoster || [{ id: 'e1', name: 'Nadia' }],
     PentaEmployees: null,
+    // Claire proposal-resolve-verify: employee_day_off/move_employee are
+    // now resolved ambiguity-safely before a proposal exists too.
+    findEmployeeWithSuggestions: (query) => {
+      const q = String(query || '').toLowerCase().trim();
+      const all = opts.employeeRoster || [{ id: 'e1', name: 'Nadia' }];
+      const matches = all.filter((e) => e.name.toLowerCase() === q);
+      return { matches, suggestions: matches.length ? [] : all.slice(0, 3) };
+    },
+    // UTC-based, matching this file's own dateKey helper below so a
+    // fixture job dated "today" and a request for "today" always agree.
+    _bizTodayParts: () => { const d = new Date(); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }; },
+    _pentaBusinessTimezone: () => 'America/New_York',
     PentaAssignments: { assign: async (dk, status, empId) => { assignmentWrites.push({ dk, status, empId }); return { ok: true }; } },
     jobs: jobs,
     dateKey: (d) => d.toISOString().slice(0, 10),

@@ -1,14 +1,23 @@
 // Claire safety foundation (Stage 2a) -- approval gate tests.
 //
 // Extracts the REAL CLAIRE_TOOL_META classification, _claireToolMeta,
-// _claireSessionInfo, _claireIsOwnerOrAdmin, isManagerRole, and the full
-// gate/proposal/approve/reject/approve-all/badge functions straight out
-// of index.html (not reimplementations). Supabase is a small in-memory
-// fake query-builder (insert/update/delete/select/eq/order/limit/
-// single/maybeSingle, matching supabase-js's chainable shape) so the
-// REAL control flow (role checks, idempotent claim-by-status, proposal
-// creation) runs against real async stubs, per the house rule that
-// test stubs must be async and match production behavior.
+// _claireSessionInfo, _claireIsOwnerOrAdmin, isManagerRole, the real
+// client-resolver chain (_cleanName/findClients/findClientWithSuggestions/
+// _claireResolveClientJob/_claireResolveMoveClean/_claireResolveScheduleClean/
+// _claireResolveClientOnly/_claireResolveEmployeeOnly/_claireResolveFailureMessage/
+// _claireResolvedSummary -- added by the Claire proposal-resolve-verify
+// sprint), and the full gate/proposal/approve/reject/approve-all/badge
+// functions straight out of index.html (not reimplementations).
+// findEmployeeWithSuggestions/PentaClients/jobs/_bizTodayParts/
+// _pentaBusinessTimezone are lightweight sandbox fakes (this file tests
+// the gate's ROLE/idempotency/resolve-before-propose behavior, not the
+// client/employee matching algorithm itself -- that has its own
+// dedicated test file). Supabase is a small in-memory fake query-builder
+// (insert/update/delete/select/eq/order/limit/single/maybeSingle,
+// matching supabase-js's chainable shape) so the REAL control flow
+// (role checks, resolve-before-propose, idempotent claim-by-status)
+// runs against real async stubs, per the house rule that test stubs
+// must be async and match production behavior.
 //
 // Run with: node tests/claire-approval-gate.test.js
 
@@ -37,6 +46,10 @@ const toolMetaSrc = extract(
   'var CLAIRE_TOOL_META = {',
   'async function processVoiceCommand(text) {'
 );
+const resolverSrc = extract(
+  'function _cleanName(s) {',
+  '\n// Ranked employee matcher, mirrors findClients() above'
+);
 const isManagerRoleSrc = extract(
   'function isManagerRole() {',
   '\n\n// Hook the existing onAuthStateChange'
@@ -46,7 +59,7 @@ const gateSrc = extract(
   '\n\n// When a pending action (schedule/invoice/SMS) is later confirmed by Tom'
 );
 
-const COMBINED_SRC = toolMetaSrc + '\n' + isManagerRoleSrc + '\n' + gateSrc;
+const COMBINED_SRC = toolMetaSrc + '\n' + resolverSrc + '\n' + isManagerRoleSrc + '\n' + gateSrc;
 
 // ---- in-memory fake Supabase query builder --------------------------
 // Mirrors the chainable shape this code actually uses: from().insert()/
@@ -128,6 +141,12 @@ function makeFakeSupabase(tables, opts) {
 }
 
 // ---- sandbox factory --------------------------------------------------
+// Default fixture: one client ("Alex Strong") with one active job dated
+// 2026-11-15, which the sandbox's _bizTodayParts fake also treats as
+// "today" by default -- so both an explicit date:'2026-11-15' and an
+// omitted date (falls back to "today") resolve to the SAME real job.
+// Tests that need a different shape (ambiguous/no-match/no-job) pass
+// opts.clients/opts.jobs/opts.employees/opts.today explicitly.
 function buildSandbox(opts) {
   opts = opts || {};
   const tables = { claire_proposals: [], claire_chat_sessions: [] };
@@ -144,6 +163,23 @@ function buildSandbox(opts) {
       _btns: btns,
     };
   }
+
+  const defaultClients = opts.clients || [{ id: 'c_alex', fn: 'Alex', ln: 'Strong' }];
+  const jobsArr = opts.jobs || [{ id: 'job_1', clientId: 'c_alex', date: '2026-11-15', time: '09:00', team: 'B1', cancelled: false, clientName: 'Strong, Alex' }];
+  const employeesList = opts.employees || [{ id: 'e_nadia', name: 'Nadia' }];
+  const todayParts = opts.today || { y: 2026, m: 11, d: 15 };
+
+  const PentaClientsFake = {
+    forEachClient: function (fn) { defaultClients.forEach(fn); },
+    getClient: function (id) { return defaultClients.find(function (c) { return c.id === id; }) || null; },
+  };
+  const findEmployeeWithSuggestionsFake = function (query) {
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) return { matches: [], suggestions: [] };
+    const matches = employeesList.filter(function (e) { return e.name.toLowerCase() === q; });
+    return { matches: matches, suggestions: matches.length ? [] : employeesList.slice(0, 3) };
+  };
+
   const sandbox = {
     console: console,
     window: {
@@ -163,6 +199,13 @@ function buildSandbox(opts) {
     },
     getCurrentAppRole: function () { return opts.role; },
     _pentaParseAuthToken: function () { return { user: { id: opts.authUserId || 'user_1' } }; },
+    // Resolver dependencies (real _claire* resolver functions call these as
+    // bare globals, matching how they're referenced in index.html itself).
+    jobs: jobsArr,
+    PentaClients: PentaClientsFake,
+    findEmployeeWithSuggestions: findEmployeeWithSuggestionsFake,
+    _bizTodayParts: function () { return todayParts; },
+    _pentaBusinessTimezone: function () { return 'America/New_York'; },
     executeClaireToolCall: async function (toolCall, message) {
       executeCalls.push({ name: toolCall.name, input: toolCall.input });
       if (opts.executeThrows) throw new Error(opts.executeThrows);
@@ -218,14 +261,16 @@ async function main() {
 }
 
 // ======================================================================
-// 3. Every real WRITE tool creates a proposal and executes NOTHING.
+// 3. Every real WRITE tool resolves its target and creates a proposal,
+//    executing NOTHING. (move_clean needs a destination -- to_date here --
+//    or resolution itself refuses to propose; see section 11 below.)
 // ======================================================================
 {
   const WRITES = ['schedule_clean','cancel_clean','move_clean','employee_day_off','move_employee','add_reminder','change_frequency','update_client_notes','edit_client','send_text','change_price','record_payment','edit_employee_hours'];
   await (async () => {
     for (const name of WRITES) {
       const { sandbox, executeCalls, tables } = buildSandbox({ role: 'owner' });
-      const resStr = await sandbox._claireDispatchOrPropose({ name: name, input: { client: 'Alex Strong', employee: 'Nadia', price: '150', amount: '50', text: 'x' } }, '');
+      const resStr = await sandbox._claireDispatchOrPropose({ name: name, input: { client: 'Alex Strong', employee: 'Nadia', price: '150', amount: '50', text: 'x', to_date: '2026-11-20' } }, '');
       check('WRITE tool "' + name + '" creates exactly one proposal row', tables.claire_proposals.length === 1);
       check('WRITE tool "' + name + '" never calls executeClaireToolCall on tool_use', executeCalls.length === 0);
       check('WRITE tool "' + name + '" tool_result never claims the change happened', !/done\.|saved|scheduled|cancelled|moved|sent/i.test(resStr) && /waiting for your approval/i.test(resStr));
@@ -308,14 +353,16 @@ async function main() {
   })();
 }
 
-// A failed execution is marked failed with the error text, not silently lost.
+// A failed EXECUTION (distinct from a failed RESOLUTION, which never even
+// creates a proposal -- see section 11) is marked failed with the error
+// text, not silently lost.
 {
   await (async () => {
-    const { sandbox, tables } = buildSandbox({ role: 'owner', executeThrows: 'client not found' });
-    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Nobody' } }, '');
+    const { sandbox, tables } = buildSandbox({ role: 'owner', executeThrows: 'the save did not go through' });
+    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Alex Strong', date: '2026-11-15' } }, '');
     const id = tables.claire_proposals[0].id;
     await sandbox._claireApproveProposal(id);
-    check('a failed execution is marked failed with the real error text', tables.claire_proposals[0].status === 'failed' && tables.claire_proposals[0].error === 'client not found');
+    check('a failed execution is marked failed with the real error text', tables.claire_proposals[0].status === 'failed' && tables.claire_proposals[0].error === 'the save did not go through');
   })();
 }
 
@@ -374,20 +421,74 @@ async function main() {
 {
   await (async () => {
     const { sandbox, tables, executeCalls } = buildSandbox({ role: 'owner', confirmReturns: false });
-    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'A' } }, '');
-    await sandbox._claireDispatchOrPropose({ name: 'move_clean', input: { client: 'B' } }, '');
+    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Alex Strong' } }, '');
+    await sandbox._claireDispatchOrPropose({ name: 'move_clean', input: { client: 'Alex Strong', to_date: '2026-11-18' } }, '');
     const ids = tables.claire_proposals.map(r => r.id);
     await sandbox._claireApproveAllProposals(ids);
     check('declining the Approve-all confirmation executes nothing', executeCalls.length === 0);
   })();
   await (async () => {
     const { sandbox, tables, executeCalls } = buildSandbox({ role: 'owner', confirmReturns: true });
-    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'A' } }, '');
-    await sandbox._claireDispatchOrPropose({ name: 'move_clean', input: { client: 'B' } }, '');
+    await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Alex Strong' } }, '');
+    await sandbox._claireDispatchOrPropose({ name: 'move_clean', input: { client: 'Alex Strong', to_date: '2026-11-18' } }, '');
     const ids = tables.claire_proposals.map(r => r.id);
     await sandbox._claireApproveAllProposals(ids);
     check('confirming Approve-all executes every one of them', executeCalls.length === 2);
     check('Approve-all marks every one of them executed', tables.claire_proposals.every(r => r.status === 'executed'));
+  })();
+}
+
+// ======================================================================
+// 11. Claire proposal-resolve-verify: resolution happens BEFORE a
+//     proposal is created. Deeper resolver-behavior tests (ambiguous
+//     first name, business-timezone "today", resolved-id verify-after-
+//     write) live in tests/claire-proposal-resolve-verify.test.js --
+//     this section only confirms _claireDispatchOrPropose itself wires
+//     the resolver in and refuses to propose when nothing resolves.
+// ======================================================================
+{
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner', clients: [] });
+    const r = await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Nobody Here' } }, '');
+    check('an unresolvable client creates NO proposal row', tables.claire_proposals.length === 0);
+    check('an unresolvable client gets a plain "couldn\'t find" message, not a vague placeholder', /couldn't find that client/i.test(r));
+  })();
+  await (async () => {
+    const twoLisas = [{ id: 'c1', fn: 'Lisa', ln: 'Finkel' }, { id: 'c2', fn: 'Lisa', ln: 'Owens' }];
+    const { sandbox, tables } = buildSandbox({ role: 'owner', clients: twoLisas, jobs: [] });
+    const r = await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Lisa' } }, '');
+    check('an ambiguous first name creates NO proposal row', tables.claire_proposals.length === 0);
+    check('an ambiguous first name asks which one, naming both candidates', /more than one match/i.test(r) && /Lisa Finkel/.test(r) && /Lisa Owens/.test(r));
+  })();
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner' });
+    const r = await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Alex Strong', date: '2026-11-15' } }, '');
+    check('a resolved cancel_clean proposal names the client and date, never "a client"', tables.claire_proposals.length === 1 && /Alex S\./.test(tables.claire_proposals[0].summary) && !/a client/i.test(tables.claire_proposals[0].summary));
+    check('the resolved job id is stored in args for Approve to use directly', tables.claire_proposals[0].args._resolvedJobId === 'job_1');
+    check('Claire\'s own reply after creating the proposal also names the client (STEP 4)', /Alex S\./.test(r) && !/a client/i.test(r));
+  })();
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner', jobs: [] }); // no job for Alex Strong at all
+    const r = await sandbox._claireDispatchOrPropose({ name: 'cancel_clean', input: { client: 'Alex Strong', date: '2026-11-15' } }, '');
+    check('a resolved client with NO matching job creates no proposal', tables.claire_proposals.length === 0);
+    check('a resolved client with no matching job says so plainly', /has no clean/i.test(r) && /nothing was changed/i.test(r));
+  })();
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner' });
+    const r = await sandbox._claireDispatchOrPropose({ name: 'move_clean', input: { client: 'Alex Strong' } }, ''); // no to_date/time/team at all
+    check('a move with no destination at all creates no proposal', tables.claire_proposals.length === 0);
+    check('a move with no destination says so plainly', /new date, time, or team/i.test(r));
+  })();
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner' });
+    await sandbox._claireDispatchOrPropose({ name: 'change_price', input: { client: 'Alex Strong', price: '200' } }, '');
+    check('a client-field tool (change_price) names the resolved client, never "a client"', /Alex Strong/.test(tables.claire_proposals[0].summary) && !/a client/i.test(tables.claire_proposals[0].summary));
+  })();
+  await (async () => {
+    const { sandbox, tables } = buildSandbox({ role: 'owner' });
+    const r = await sandbox._claireDispatchOrPropose({ name: 'employee_day_off', input: { employee: 'Someone Else' } }, '');
+    check('an unresolvable employee creates no proposal', tables.claire_proposals.length === 0);
+    check('an unresolvable employee gets a plain message, not "an employee"', /couldn't find that employee/i.test(r));
   })();
 }
 
