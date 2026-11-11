@@ -25672,16 +25672,25 @@ var CLAIRE_TOOLS = [
   { name: 'send_response_to', description: 'Send a text-message version of an answer to Tom (recipient="me") or to a named employee (recipient="<employee first name>"). Renders an SMS button in the chat that opens the RingCentral SMS composer pre-filled. Use when Tom says "text me this", "send this to Lisa", or similar. Always confirm what is about to be sent before calling this when content is long.', input_schema: { type:'object', properties: { recipient:{type:'string',description:'"me" for Tom, or an employee first name (e.g. "Lisa")'}, via:{type:'string',description:'"sms" -- only SMS supported today'}, content:{type:'string',description:'The message body to send (plain text, no markdown)'} }, required:['recipient','content'] } }
 ];
 
-// Claire gate-bypass fix: visible build stamp (no build tooling exists
-// in this single-file app, so this is bumped BY HAND on every deploy
-// that touches Claire's gate/dispatch code -- see _claireRenderBuildStamp).
-// Format: "gate-fix YYYY-MM-DD" -- change the date, not the prefix,
-// unless the next change is a different fix/feature worth naming.
-var CLAIRE_BUILD_STAMP = 'gate-fix 2026-11-11';
+// Claire build stamp -- ALWAYS visible in her header, never gated on
+// the view opening. No build tooling exists in this single-file app,
+// so CLAIRE_BUILD_STAMP is bumped BY HAND on every deploy that touches
+// Claire's gate/dispatch code (format: short date "YYYY-MM-DD", easiest
+// to read at a glance and to keep accurate without a real build step --
+// a short commit hash would need to be known before the commit that
+// contains it exists, which isn't possible without CI). Rendered
+// unconditionally right here at script-load time -- #claire-build-stamp
+// is static markup that already exists in the DOM by now (this whole
+// app is one inline <script> after all of the page's HTML), so
+// visibility never depends on Claire's tab ever being opened. The
+// showTab('claire') call site re-renders the same constant too
+// (harmless, just keeps a long-lived open tab's display consistent).
+var CLAIRE_BUILD_STAMP = '2026-11-11';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
-  if (el) el.textContent = 'build: ' + CLAIRE_BUILD_STAMP;
+  if (el) el.textContent = 'build ' + CLAIRE_BUILD_STAMP;
 }
+_claireRenderBuildStamp();
 
 // -----------------------------------------------------------------------
 // CLAIRE SAFETY FOUNDATION (Stage 2a) -- approval-gate classification.
