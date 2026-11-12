@@ -106,31 +106,29 @@ function main() {
   }
 
   // ---- Quick-select "Last week"/"This week" (hours-report-match-hours-tab
-  // fix): must be the EXACT 5 weekdays getWeekDates (the Hours tab's own
-  // week) returns for that offset -- NOT a separately-computed Mon-Sun
-  // 7-day span respecting pay_week_start_day. That old 7-day behavior is
-  // exactly what caused the real bug this fix addresses: Oneida Rojas
-  // showed 46h in the report vs the Hours tab's 42h for "last week,"
-  // because the report's wider range picked up incidental weekend GPS/
-  // device activity (zero scheduled jobs that Saturday) the Hours tab's
-  // per-employee view never even looks at. getWeekDates itself ignores
-  // pay_week_start_day too (every business's Hours tab is always
-  // Monday-Friday, regardless of that setting) -- so delegating to it
-  // is MORE consistent with the Hours tab for every business, not less,
-  // even though it changes what these two checks used to assert.
+  // fix, STEP 2 of 2 -- hours-weekend-days fix): must be the EXACT days
+  // getWeekDates (the Hours tab's own week) returns for that offset --
+  // never a separately-computed span of its own. getWeekDates itself
+  // now returns the full 7-day week (Mon-Sun, or Sun-Sat for a
+  // sunday-start business -- hours-weekend-days fix corrected PR #227's
+  // conclusion that the real Saturday hours found there were noise;
+  // Tom confirmed the team actually worked that day, so weekends are
+  // now shown and counted, not excluded). Delegating to getWeekDates
+  // means this quick-select picks up that fix automatically, with no
+  // code of its own to change.
   {
     let fromVal = '', toVal = '';
     const fakeFrom = { get value() { return fromVal; }, set value(v) { fromVal = v; } };
     const fakeTo = { get value() { return toVal; }, set value(v) { toVal = v; } };
-    const weekDates = [new Date('2026-11-02T00:00:00'), new Date('2026-11-03T00:00:00'), new Date('2026-11-04T00:00:00'), new Date('2026-11-05T00:00:00'), new Date('2026-11-06T00:00:00')];
+    const weekDates = ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08'].map(function (dk) { return new Date(dk + 'T00:00:00'); });
     const sandbox = buildSandbox({
       getWeekDates: function (offset) { check('lastweek is requested with offset -1', offset, -1); return weekDates; },
       document: { getElementById: function (id) { return id === 'hours-report-from' ? fakeFrom : id === 'hours-report-to' ? fakeTo : null; } },
     });
     sandbox._hoursReportQuickSelect('lastweek');
     check('quick-select last-week populates both from/to date inputs', fromVal.length === 10 && toVal.length === 10, true);
-    check('the picked range is the Hours tab\'s own 5 weekdays (4 days from Mon to Fri), never a 7-day Mon-Sun span', (new Date(toVal + 'T00:00:00') - new Date(fromVal + 'T00:00:00')) / 86400000, 4);
-    check('from/to are exactly getWeekDates\' first/last day', [fromVal, toVal], ['2026-11-02', '2026-11-06']);
+    check('the picked range is the Hours tab\'s own full 7-day week (6 days from Mon to Sun), including the weekend', (new Date(toVal + 'T00:00:00') - new Date(fromVal + 'T00:00:00')) / 86400000, 6);
+    check('from/to are exactly getWeekDates\' first/last day', [fromVal, toVal], ['2026-11-02', '2026-11-08']);
   }
 
   // ---- Quick-select "This week" also delegates to getWeekDates, with offset 0 ----
@@ -138,13 +136,13 @@ function main() {
     let fromVal = '', toVal = '';
     const fakeFrom = { get value() { return fromVal; }, set value(v) { fromVal = v; } };
     const fakeTo = { get value() { return toVal; }, set value(v) { toVal = v; } };
-    const weekDates = [new Date('2026-11-09T00:00:00'), new Date('2026-11-10T00:00:00'), new Date('2026-11-11T00:00:00'), new Date('2026-11-12T00:00:00'), new Date('2026-11-13T00:00:00')];
+    const weekDates = ['2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'].map(function (dk) { return new Date(dk + 'T00:00:00'); });
     const sandbox = buildSandbox({
       getWeekDates: function (offset) { check('thisweek is requested with offset 0', offset, 0); return weekDates; },
       document: { getElementById: function (id) { return id === 'hours-report-from' ? fakeFrom : id === 'hours-report-to' ? fakeTo : null; } },
     });
     sandbox._hoursReportQuickSelect('thisweek');
-    check('this-week range is exactly getWeekDates(0)\'s first/last day, matching the Hours tab for ANY pay-week-start-day setting', [fromVal, toVal], ['2026-11-09', '2026-11-13']);
+    check('this-week range is exactly getWeekDates(0)\'s first/last day, matching the Hours tab for ANY pay-week-start-day setting', [fromVal, toVal], ['2026-11-09', '2026-11-15']);
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

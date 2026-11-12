@@ -101,9 +101,10 @@ function runBoth(sandbox, empId, d, dayIdx, weekHoursData, empHoursMapData) {
   const oldResult = sandbox.OLD_resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapData);
   const newResult = sandbox.resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapData);
   // The new function additionally returns startDate/endDate (needed by
-  // the portal) -- strip those before comparing, since the OLD formula
-  // never had them; every OTHER field must match byte-for-byte.
-  const { startDate, endDate, ...newComparable } = newResult;
+  // the portal) and isUnconfirmed (hours-weekend-days fix) -- strip
+  // those before comparing, since the OLD formula never had them;
+  // every OTHER field must match byte-for-byte.
+  const { startDate, endDate, isUnconfirmed, ...newComparable } = newResult;
   return { oldResult, newComparable };
 }
 

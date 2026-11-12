@@ -864,7 +864,10 @@ body {
 }
 .hrs-emp-row-wrap.is-expanded .hrs-days { display: block; }
 .hrs-days-grid {
-  display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px;
+  display: flex; gap: 5px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 .hrs-day {
   background: var(--surface); border: 1px solid var(--border);
@@ -872,8 +875,14 @@ body {
   text-align: center; cursor: pointer;
   transition: transform .1s, border-color .12s;
   min-height: 70px;
+  /* Hours-weekend-days fix: fixed width so exactly 5 columns (Mon-Fri)
+     fill the card by default, matching the old grid's look -- Sat/Sun
+     overflow the row and are reached by swiping, never squeezed in. */
+  flex: 0 0 calc((100% - 20px) / 5);
+  scroll-snap-align: start;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
 }
+.hrs-day-unconfirmed { font-size: 11px; color: #f59e0b; font-weight: 800; margin-top: 1px; cursor: pointer; }
 .hrs-day:active { transform: scale(0.97); }
 .hrs-day.is-today { border-color: var(--accent); background: rgba(108,143,255,0.06); }
 .hrs-day.is-off { opacity: 0.55; }
@@ -28203,7 +28212,7 @@ async function _executeClaireToolCallInner(toolCall, message) {
       if (typeof weekHours !== 'undefined' && typeof hoursWeekOffset !== 'undefined') {
         var _ehWeekDays = getWeekDates(hoursWeekOffset);
         var _ehDateObj = new Date(ehDate + 'T00:00:00');
-        if (_ehDateObj >= _ehWeekDays[0] && _ehDateObj <= _ehWeekDays[4] && Object.keys(weekHours).length > 0) {
+        if (_ehDateObj >= _ehWeekDays[0] && _ehDateObj <= _ehWeekDays[_ehWeekDays.length - 1] && Object.keys(weekHours).length > 0) {
           _writeWeekHoursCache(_ehWeekDays);
         }
       }
@@ -33259,7 +33268,7 @@ function addLunch(team, dayIdx) {
   const lunchDate = new Date(days[dayIdx]);
   lunchDate.setHours(h, m, 0, 0);
   if (!weekHours[team]) return;
-  if (!weekHours[team].lunch) weekHours[team].lunch = [null,null,null,null,null];
+  if (!weekHours[team].lunch) weekHours[team].lunch = days.map(function () { return null; });
   weekHours[team].lunch[dayIdx] = { time: lunchDate, duration: parseInt(dur), manual: true };
   // Save to localStorage
   saveLunchEdits();
@@ -33513,16 +33522,25 @@ let hoursWeekOffset = 0; // 0 = current week, -1 = last week, etc.
 // same way on a fresh page load.
 let _weekHoursLoadToken = 0;
 
+// Hours-weekend-days fix: the ONE shared week definition, now the
+// full 7 days (Mon-Sun, or Sun-Sat for a sunday-start business) --
+// every caller (manager Hours tab, employee portal, Export Hours
+// Report) gets Saturday/Sunday automatically, and all three stay
+// exactly in sync since none of them compute a week range any other
+// way. Still device-local time (unchanged from before this fix --
+// not a timezone fix, just a day-count one).
 function getWeekDates(offset) {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1) + (offset * 7));
-  monday.setHours(0,0,0,0);
+  const day = now.getDay(); // 0=Sun..6=Sat
+  const startDayNum = (typeof _pentaPayWeekStartDay === 'function' && _pentaPayWeekStartDay() === 'sunday') ? 0 : 1;
+  const weekStart = new Date(now);
+  const diff = (day - startDayNum + 7) % 7;
+  weekStart.setDate(now.getDate() - diff + (offset * 7));
+  weekStart.setHours(0,0,0,0);
   const days = [];
-  for (let i = 0; i < 5; i++) { // Mon-Fri only
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
     days.push(d);
   }
   return days;
@@ -33978,7 +33996,7 @@ function _writeWeekHoursCache(days) {
     localStorage.setItem('weekHours_cache', JSON.stringify(cacheData));
 
     // Archive this week's data with week key for history
-    var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[4]);
+    var weekKey = 'weekHours_' + dateKey(days[0]) + '_' + dateKey(days[days.length - 1]);
     localStorage.setItem(weekKey, JSON.stringify(cacheData));
 
     // Save per-employee overrides into a format the portal can read.
@@ -34285,8 +34303,11 @@ async function _loadWeekHoursInner() {
 
   const days = getWeekDates(hoursWeekOffset);
   const mon = days[0];
-  const fri = days[4];
-  const DAYS_SHORT = ['Mon','Tue','Wed','Thu','Fri'];
+  const fri = days[days.length - 1];
+  // Hours-weekend-days fix: derived from the real days array -- correct
+  // length AND correct weekday order for a sunday-start business
+  // (the old literal always started "Mon").
+  const DAYS_SHORT = days.map(function (d) { return d.toLocaleDateString('en-US', { weekday: 'short' }); });
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   // Update week label
@@ -34315,7 +34336,8 @@ async function _loadWeekHoursInner() {
       var _bid = (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current()) || null;
       if (_sb && _bid) {
         var _weekStart = new Date(days[0].getFullYear(), days[0].getMonth(), days[0].getDate(), 0, 0, 0);
-        var _weekEnd   = new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59, 999);
+        var _lastDay = days[days.length - 1];
+        var _weekEnd   = new Date(_lastDay.getFullYear(), _lastDay.getMonth(), _lastDay.getDate(), 23, 59, 59, 999);
         var _teRes = await _sb.from('time_entries')
           .select('id, employee_id, clock_in_at, clock_out_at')
           .eq('business_id', _bid)
@@ -34359,10 +34381,10 @@ async function _loadWeekHoursInner() {
             // Per-team aggregate (keeps existing renderer + export shape).
             if (!weekHours[team]) {
               weekHours[team] = {
-                days:   [0,0,0,0,0],
-                starts: [null,null,null,null,null],
-                ends:   [null,null,null,null,null],
-                lunch:  [null,null,null,null,null],
+                days:   days.map(function () { return 0; }),
+                starts: days.map(function () { return null; }),
+                ends:   days.map(function () { return null; }),
+                lunch:  days.map(function () { return null; }),
                 total:  0,
                 color:  _pentaTeamColor(team, '#6b7280'),
                 source: 'time_entries'
@@ -34409,11 +34431,12 @@ async function _loadWeekHoursInner() {
       // each day's GPS backfill uses whichever vehicle was actually
       // assigned that specific day.
       teamDeviceMapByDay = await Promise.all(days.map(day => _resolveTeamDeviceMap(devices, teamOrder, day)));
+      var _gpsLastDay = days[days.length - 1];
       trips = await _geotabCall('Get', {
         typeName: 'Trip',
         search: {
           fromDate: days[0].toISOString(),
-          toDate: new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23, 59, 59).toISOString(),
+          toDate: new Date(_gpsLastDay.getFullYear(), _gpsLastDay.getMonth(), _gpsLastDay.getDate(), 23, 59, 59).toISOString(),
           includeOverlappedTrips: true
         },
         resultsLimit: 2000
@@ -34437,9 +34460,9 @@ async function _loadWeekHoursInner() {
       // populate this team. Otherwise we'd clobber the primary data source.
       var _teHadData = !!weekHours[team];
       if (!weekHours[team]) {
-        weekHours[team] = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], total: 0, color: _pentaTeamColor(team, '#6b7280'), source: 'geotab' };
+        weekHours[team] = { days: days.map(function () { return 0; }), starts: days.map(function () { return null; }), ends: days.map(function () { return null; }), lunch: days.map(function () { return null; }), total: 0, color: _pentaTeamColor(team, '#6b7280'), source: 'geotab' };
       } else {
-        weekHours[team].lunch = weekHours[team].lunch || [null,null,null,null,null];
+        weekHours[team].lunch = weekHours[team].lunch || days.map(function () { return null; });
       }
 
       days.forEach((day, dayIdx) => {
@@ -34657,12 +34680,13 @@ async function debugTrips() {
     if (!b1) { alert('B1 not found'); return; }
 
     const days = getWeekDates(-1); // last week
+    const _dtLastDay = days[days.length - 1];
     const trips = await _geotabCall('Get', {
       typeName: 'Trip',
       search: {
         deviceSearch: { id: b1.id },
         fromDate: days[0].toISOString(),
-        toDate: new Date(days[4].getFullYear(), days[4].getMonth(), days[4].getDate(), 23,59,59).toISOString()
+        toDate: new Date(_dtLastDay.getFullYear(), _dtLastDay.getMonth(), _dtLastDay.getDate(), 23,59,59).toISOString()
       },
       resultsLimit: 50
     });
@@ -36079,10 +36103,26 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
   var lunchMin = override ? (override.lunch || 0)
     : (dayData && dayData.lunch && dayData.lunch[dayIdx] ? dayData.lunch[dayIdx].duration : 0);
 
+  // Hours-weekend-days fix: hours sourced ONLY from the team's blended
+  // GPS/vehicle average (no personal override, no personal GPS cell)
+  // are "confirmed" by a real scheduled job for this team that day, or
+  // an explicit daily_assignments entry for THIS employee that day --
+  // either one means a human expected this day to be worked. With
+  // neither, the hours are real vehicle/GPS activity but nothing ties
+  // them to this employee specifically -- shown, never dropped, but
+  // flagged so a manager reviews before trusting them for payroll or
+  // publishing to the employee.
+  var isUnconfirmed = false;
+  if (hours > 0 && !override && !teCell) {
+    var hasJob = (typeof jobs !== 'undefined' && Array.isArray(jobs)) && jobs.some(function (j) { return j.date === dk && j.team === dayTeam && !j.cancelled; });
+    var hasAssignment = (typeof dailyAssignments !== 'undefined') && dailyAssignments[dk + '_' + empId] !== undefined;
+    isUnconfirmed = !hasJob && !hasAssignment;
+  }
+
   return {
     dayTeam: dayTeam, isOff: false,
     hours: hours, startStr: startStr, endStr: endStr, startDate: startDate, endDate: endDate,
-    lunchMin: lunchMin, isOpenShift: isOpenShift, isOverride: !!override
+    lunchMin: lunchMin, isOpenShift: isOpenShift, isOverride: !!override, isUnconfirmed: isUnconfirmed
   };
 }
 
@@ -36279,7 +36319,7 @@ function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettin
       else { hrs = rd.hours; }
       anyDayIncluded = true;
       totalHours += hrs;
-      if (rate != null && hrs > 0) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
+      if (rate != null && hrs > 0 && !rd.isUnconfirmed) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
       cumBefore += hrs;
     });
     if (!anyDayIncluded) return; // nothing at all this week for her -- omit entirely
@@ -36385,6 +36425,10 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       // (isOverride is what tells the two apart).
       if (rd.hours === 0 && !rd.isOverride) {
         if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'unresolved -- no GPS/clock data yet' });
+        return;
+      }
+      if (rd.isUnconfirmed) {
+        skipped.push({ emp: emp.name, date: dk, reason: 'unconfirmed -- vehicle/GPS hours with no job or assignment, awaiting manager review' });
         return;
       }
       var fieldCumBefore = cumHoursByEmp[empUuid] || 0;
@@ -36655,6 +36699,14 @@ async function publishLast4Weeks() {
 }
 
 function renderHoursTable(days, dayNames) {
+  // Hours-weekend-days fix: never trust a caller-supplied dayNames that
+  // doesn't match days.length (several call sites still pass the old
+  // hardcoded 5-element Mon-Fri literal) -- derive it fresh from the
+  // real days array, which also gets the weekday ORDER right for a
+  // sunday-start business (that literal always started "Mon").
+  if (!Array.isArray(dayNames) || dayNames.length !== days.length) {
+    dayNames = days.map(function (d) { return d.toLocaleDateString('en-US', { weekday: 'short' }); });
+  }
   const teams = _pentaTeamNames();
   const today = new Date(); today.setHours(0,0,0,0);
   const empHoursMap = window._empHoursMap || {};
@@ -36770,12 +36822,19 @@ function renderHoursTable(days, dayNames) {
         const hrsHtml = empH > 0
           ? '<div class="hrs-day-hrs">' + _hrsFmtHrs(empH) + '<span style="font-size:9px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
           : '<div class="hrs-day-hrs is-dash">&#8212;</div>';
+        // Hours-weekend-days fix: hours with no job or assignment behind
+        // them (team-average GPS/vehicle activity only) are shown, never
+        // dropped, but flagged -- tap the badge for why; tap elsewhere
+        // on the cell still opens the normal day detail.
+        const unconfirmedBadge = (_rd.isUnconfirmed && empH > 0)
+          ? '<div class="hrs-day-unconfirmed" onclick="event.stopPropagation();alert(\'Hours from vehicle activity, no job or assignment on this day. Review and confirm if correct.\')" title="Unconfirmed -- tap for why">&#9888;</div>'
+          : '';
         // Cross-team day tag -- visible marker (not a duplicate row) when
         // this specific day's real team differs from the card's team.
         const teamTag = dayTeam !== team
           ? '<div class="hrs-day-time" style="color:' + _pentaTeamColor(dayTeam, '#6b7280') + ';font-weight:700">' + _audEsc(dayTeam) + '</div>'
           : '';
-        const timeHtml = teamTag
+        const timeHtml = unconfirmedBadge + teamTag
           + (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
           + ((!isOpen && eStr) ? '<div class="hrs-day-time hrs-day-time-end">' + _audEsc(eStr) + '</div>' : '')
           + (lunchMin ? '<div class="hrs-day-time" style="color:#f59e0b">&#127828; ' + lunchMin + 'm</div>' : '')
@@ -52674,7 +52733,7 @@ async function renderHours() {
 
   var days = getPortalWeekDates(_portalWeekOffset);
   var mon = days[0];
-  var fri = days[4];
+  var fri = days[days.length - 1];
   var lang = currentLang || 'en';
 
   // Update header
@@ -52722,7 +52781,7 @@ async function renderHours() {
   // GPS hours. Confirmed live: Blanca marked OFF for Aug 10 showed no
   // hours correctly on the manager's Live tab, but showed a full day of
   // B-team GPS hours on her own portal login.
-  var composite = { days: [0,0,0,0,0], starts: [null,null,null,null,null], ends: [null,null,null,null,null], lunch: [null,null,null,null,null], status: [null,null,null,null,null], total: 0 };
+  var composite = { days: days.map(function () { return 0; }), starts: days.map(function () { return null; }), ends: days.map(function () { return null; }), lunch: days.map(function () { return null; }), status: days.map(function () { return null; }), total: 0 };
 
   // Admin/Office designation (migration 113). An Admin/Office employee
   // has no team at all, which makes getEmployeeTeam(id, date) return
@@ -52755,10 +52814,10 @@ async function renderHours() {
         _salDayOff[i] = offInfo ? offInfo.label : null;
       });
       var daysFullSal = {
-        en: ['Monday','Tuesday','Wednesday','Thursday','Friday'],
-        es: ['Lunes','Martes','Miércoles','Jueves','Viernes'],
-        pt: ['Segunda','Terça','Quarta','Quinta','Sexta'],
-        cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta']
+        en: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
+        es: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'],
+        pt: ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'],
+        cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta','Sabadu','Dumingu']
       };
       var salLabel = { en: 'Salaried', es: 'Asalariado/a', pt: 'Assalariado(a)', cv: 'Salariadu' }[currentLang] || 'Salaried';
       var salSub = { en: 'No hours are tracked for salaried staff.', es: 'No se registran horas para el personal asalariado.', pt: 'Não há controle de horas para funcionários assalariados.', cv: 'Ka ten ora ta rejistradu pa pesoal salariadu.' }[currentLang] || 'No hours are tracked for salaried staff.';
@@ -52847,7 +52906,7 @@ async function renderHours() {
       }
     }
 
-    var _phMon = dateKey(days[0]), _phFri = dateKey(days[4]);
+    var _phMon = dateKey(days[0]), _phFri = dateKey(days[days.length - 1]);
     var _phRes = await _sb.from('published_employee_hours')
       .select('work_date, hours, start_time, end_time, lunch_minutes, status, published_at, est_gross')
       .eq('employee_id', _myUuid)
@@ -52900,14 +52959,11 @@ async function renderHours() {
   renderHoursData(composite);
 }
 
+// Hours-weekend-days fix: delegates to getWeekDates (the Hours tab's
+// own week definition) instead of a separate 5-day reimplementation --
+// the employee portal now sees the exact same 7 days the manager does.
 function getPortalWeekDates(offset) {
-  var off = offset || 0;
-  var today = new Date(); today.setHours(0,0,0,0);
-  var dow = today.getDay(); // 0=Sun
-  var mon = new Date(today); mon.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1) + (off * 7));
-  var days = [];
-  for (var i = 0; i < 5; i++) { var d = new Date(mon); d.setDate(mon.getDate()+i); days.push(d); }
-  return days;
+  return getWeekDates(offset || 0);
 }
 
 // Swipe left/right on hours card to change weeks
@@ -52991,20 +53047,23 @@ function renderPastWeeks() {
 
 function renderHoursData(data) {
   const daysFull = {
-    en: ['Monday','Tuesday','Wednesday','Thursday','Friday'],
-    es: ['Lunes','Martes','Miércoles','Jueves','Viernes'],
-    pt: ['Segunda','Terça','Quarta','Quinta','Sexta'],
-    cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta']
+    en: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
+    es: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'],
+    pt: ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'],
+    cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta','Sabadu','Dumingu']
   };
   const lunchLabel = { en:'Lunch', es:'Almuerzo', pt:'Almoço', cv:'Almosu' };
   const disputeLabel = { en:'Does this look right?', es:'¿Se ve correcto?', pt:'Está correto?', cv:'Sta bon?' };
 
   let totalHrs = 0;
-  const today = new Date().getDay(); // 0=Sun,1=Mon...5=Fri
-  const todayIdx = today >= 1 && today <= 5 ? today - 1 : -1;
 
   // Load extra tasks for this employee
   var portalDays = getPortalWeekDates();
+  // Hours-weekend-days fix: looked up directly against the real week
+  // dates (any day, not just Mon-Fri) instead of getDay() arithmetic
+  // that only ever covered 5 days.
+  var _todayDateObj = new Date(); _todayDateObj.setHours(0, 0, 0, 0);
+  const todayIdx = portalDays.findIndex(function (d) { return d.getTime() === _todayDateObj.getTime(); });
   var empTaskIcons = { office:'🏢', meeting:'📋', training:'📚', supply_run:'🛒', vehicle:'🚗', other:'⚡' };
   var empTaskLabels = { office:'Office', meeting:'Meeting', training:'Training', supply_run:'Supply Run', vehicle:'Vehicle', other:'Other' };
 
@@ -53076,7 +53135,7 @@ function renderHoursData(data) {
 }
 
 function openHoursDispute(dayIdx, startStr, endStr, lunch) {
-  const daysFull = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
+  const daysFull = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
   const dayName = daysFull[dayIdx] || 'Day ' + dayIdx;
   openHoursDisputeModal(dayName, startStr, endStr, lunch);
 }
@@ -53084,10 +53143,10 @@ function openHoursDispute(dayIdx, startStr, endStr, lunch) {
 function openWeeklyDispute() {
   const lang = currentLang || 'en';
   const daysFull = {
-    en: ['Monday','Tuesday','Wednesday','Thursday','Friday','Whole Week'],
-    es: ['Lunes','Martes','Miércoles','Jueves','Viernes','Toda la semana'],
-    pt: ['Segunda','Terça','Quarta','Quinta','Sexta','Semana toda'],
-    cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta','Simana inteira']
+    en: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday','Whole Week'],
+    es: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo','Toda la semana'],
+    pt: ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo','Semana toda'],
+    cv: ['Sigunda','Tersa','Kuarta','Kinta','Sesta','Sabadu','Dumingu','Simana inteira']
   };
   const days = daysFull[lang] || daysFull.en;
   const title = {en:'Which day?', es:'¿Qué día?', pt:'Qual dia?', cv:'Kual dia?'}[lang] || 'Which day?';
