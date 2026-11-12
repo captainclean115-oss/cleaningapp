@@ -25957,7 +25957,7 @@ var CLAIRE_TOOLS = [
 // is one inline <script> after all of the page's HTML). The
 // showTab('claire') call site re-renders the same constant too
 // (harmless, just keeps a long-lived open tab's display consistent).
-var CLAIRE_BUILD_STAMP = '2026-11-11';
+var CLAIRE_BUILD_STAMP = '2026-11-12';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
   if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
@@ -36086,6 +36086,24 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
   };
 }
 
+// Hours-report-match-hours-tab fix: the ONE shared "weekly total"
+// function. Sums resolveEmployeeDayHours across the given dates for
+// one employee -- the exact same per-day call and accumulation rule
+// (skip only genuinely OFF/unassigned days; everything else counts,
+// including an incomplete-looking entry, same as the Hours tab's own
+// total always has) that renderHoursTable and _buildHoursReportFromData
+// both now call into, instead of each keeping its own copy. `dates` can
+// be Date objects or YYYY-MM-DD strings -- resolveEmployeeDayHours
+// accepts either via dateKey().
+function _pentaEmployeeWeekHours(empId, dates, weekHoursData, empHoursMapData) {
+  var total = 0;
+  dates.forEach(function (d, i) {
+    var rd = resolveEmployeeDayHours(empId, d, i, weekHoursData, empHoursMapData);
+    if (!rd.isOff) total += rd.hours;
+  });
+  return total;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Published Hours (migrations/115_published_employee_hours.sql).
 //
@@ -36701,7 +36719,10 @@ function renderHoursTable(days, dayNames) {
 
     const empRowsHtml = teamEmployees.map(emp => {
       const empMap = empHoursMap[emp.id] || {};
-      let empWeekTotal = 0;
+      // Hours-report-match-hours-tab fix: the ONE shared weekly-total
+      // function, also used by _buildHoursReportFromData -- computed up
+      // front so the cell-building loop below never has to re-derive it.
+      let empWeekTotal = _pentaEmployeeWeekHours(emp.id, days, weekHours, empHoursMap);
       let empHasOpenShift = false;
 
       // Build the 5-day breakdown for this employee. Each day resolves
@@ -36739,7 +36760,6 @@ function renderHoursTable(days, dayNames) {
         }
 
         const empH = _rd.hours;
-        empWeekTotal += empH;
         const isOpen = _rd.isOpenShift;
         if (isOpen) empHasOpenShift = true;
         const sStr = _rd.startStr;
@@ -37155,32 +37175,23 @@ function openHoursReportPicker() {
   overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
 }
 
-// "This week"/"Last week" quick-selects respect the per-business pay
-// week setting (businesses.pay_week_start_day, migration 111) -- same
-// helper the GPS filter uses, never a hardcoded Mon-Sun/Sun-Sat.
+// Hours-report-match-hours-tab fix: "This week"/"Last week" must be
+// the EXACT same days getWeekDates (the Hours tab's own week
+// definition, Mon-Fri only) would show for that offset -- not a
+// separately-computed Mon-Sun 7-day span, which silently included
+// Saturday/Sunday the Hours tab's per-employee view never looks at,
+// inflating anyone with incidental weekend GPS/device activity on a
+// day nobody was actually scheduled to work (see this fix's own
+// deploy notes for the real data that confirmed it). The general
+// custom date-range picker (typing From/To by hand) is untouched.
 function _hoursReportQuickSelect(which) {
   var fromEl = document.getElementById('hours-report-from');
   var toEl = document.getElementById('hours-report-to');
   if (!fromEl || !toEl) return;
-  var tz = _pentaBusinessTimezone();
-  var startDay = _pentaPayWeekStartDay();
-  var pad2 = function (n) { return String(n).padStart(2, '0'); };
-  if (which === 'lastweek') {
-    var r = _computeLastPayWeekRange(tz, startDay);
-    fromEl.value = r.startYmd;
-    toEl.value = r.endYmd;
-    return;
-  }
-  // 'thisweek' -- the week containing today, same start-day convention.
-  var startDayNum = startDay === 'sunday' ? 0 : 1;
-  var today = _bizTodayParts(tz);
-  var todayUtcMidnight = Date.UTC(today.y, today.m - 1, today.d);
-  var weekday = new Date(todayUtcMidnight).getUTCDay();
-  var daysSinceStart = (weekday - startDayNum + 7) % 7;
-  var weekStart = new Date(todayUtcMidnight - daysSinceStart * 86400000);
-  var weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
-  fromEl.value = weekStart.getUTCFullYear() + '-' + pad2(weekStart.getUTCMonth() + 1) + '-' + pad2(weekStart.getUTCDate());
-  toEl.value = weekEnd.getUTCFullYear() + '-' + pad2(weekEnd.getUTCMonth() + 1) + '-' + pad2(weekEnd.getUTCDate());
+  var offset = (which === 'lastweek') ? -1 : 0;
+  var wd = getWeekDates(offset);
+  fromEl.value = dateKey(wd[0]);
+  toEl.value = dateKey(wd[wd.length - 1]);
 }
 
 async function confirmHoursReportExport() {
@@ -37487,13 +37498,9 @@ function _buildHoursReportFromData(dates, weekHoursData, teams, empHoursMapData)
   var fieldEmployees = getUnifiedRoster(dates[0]).filter(function (e) {
     return e.work_type !== 'admin' && dates.some(function (dk) { return !!getEmployeeTeam(e.id, dk); });
   });
+  var dateObjs = dates.map(function (dk) { return new Date(dk + 'T00:00:00'); });
   fieldEmployees.forEach(function (emp) {
-    var empWeekHours = 0;
-    dates.forEach(function (dk, dayIdx) {
-      var d = new Date(dk + 'T00:00:00');
-      var rd = resolveEmployeeDayHours(emp.id, d, dayIdx, weekHoursData, empHoursMapData);
-      if (!rd.isOff) empWeekHours += rd.hours;
-    });
+    var empWeekHours = _pentaEmployeeWeekHours(emp.id, dateObjs, weekHoursData, empHoursMapData);
     if (empWeekHours > 0) rows.push({ emp: emp, hours: empWeekHours });
   });
 
