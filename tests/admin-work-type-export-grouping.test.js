@@ -1,21 +1,24 @@
 // Admin/Office employee designation (migration 113) -- Export Hours
-// Report (_buildHoursReportFromData) grouping.
+// Report (_buildHoursReportFromData), now against the simplified
+// Name+Hours output (payroll report simplification).
 //
 // Covers, against the REAL extracted source:
-//   1. An Admin/Office employee appears exactly once, under an
-//      "ADMIN / OFFICE" section, with the same text/CSV layout field
-//      employees get.
-//   2. No override on file -> blank ("—"), never "0:00" claimed as a
-//      real entry, and never an error.
-//   3. An explicit OFF/vacation day shows the real status, not a
-//      zeroed/blank day indistinguishable from "nothing happened".
+//   1. An Admin/Office employee with real override hours gets a row,
+//      same as a field employee -- one combined report, not two.
+//   2. No override on file contributes nothing (never a fabricated
+//      "0:00" counted as real hours).
+//   3. An explicit OFF/vacation day is excluded from her total, not
+//      zeroed-and-counted.
 //   4. Admin hours are included in the SAME grandHours/empsSeen totals
-//      the team sections feed -- one combined report, not two.
+//      field employees feed.
 //   5. The PR #180/#186 fragmentation fix (a cross-team field employee
-//      appearing ONCE with a combined weekly total) still works
-//      correctly alongside an Admin/Office employee in the same report
-//      -- the two code paths don't interact, but this proves it, not
-//      just asserts it.
+//      counted ONCE with a combined weekly total) still works
+//      correctly alongside an Admin/Office employee in the same report.
+//
+// The old per-day CSV rows / "ADMIN / OFFICE" section header / "(Admin)"
+// label / per-day dash-or-vacation display this test used to check are
+// gone by design (two columns only, Name and Hours) -- updated to check
+// the underlying totals/inclusion instead of removed display details.
 //
 // Run with: node tests/admin-work-type-export-grouping.test.js
 
@@ -34,16 +37,9 @@ function extract(startMarker, endMarker, label) {
   return src.slice(s, e);
 }
 
-const helpersSrc = extract(
-  'function _hrTo24hr(d) {',
-  '\n\n// Tom: Export Hours Report',
-  '_hr* CSV/formatting helpers'
-);
-const buildReportSrc = extract(
-  'function _buildHoursReportFromData(dates, weekHoursData, teams) {',
-  '\n\nfunction _hrDownloadCsv(',
-  '_buildHoursReportFromData'
-);
+const resolveSrc = extract('function _hrsFmtHrs(h) {', 'function _hrCsvField(s) {', 'resolveEmployeeDayHours');
+const csvFieldSrc = extract('function _hrCsvField(s) {', 'function _hoursReportDefaultRange() {', '_hrCsvField');
+const buildReportSrc = extract('function _hrSplitName(emp) {', '\n\nfunction _hrDownloadCsv(', '_buildHoursReportFromData');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -64,6 +60,8 @@ function buildSandbox(opts) {
   const sandbox = {
     console,
     window: { PentaTenant: { name: function () { return 'Manna Maids'; } } },
+    dateKey: function (d) { return typeof d === 'string' ? d : (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')); },
+    _pentaBusinessTimezone: function () { return 'America/New_York'; },
     getUnifiedRoster: function () { return roster; },
     getEmployeeTeam: function (empId, dk) { return teamByEmpDate[empId + '|' + dk] || null; },
     getEmpHours: function (empId, dk) {
@@ -72,22 +70,14 @@ function buildSandbox(opts) {
     _adminEmpDayOff: function (empId, dk) {
       return offDays[empId + '|' + dk] || null;
     },
-    // Terminated-employee date-awareness fix: now-separate top-level
-    // helpers _buildHoursReportFromData calls into.
-    _hrsEffectiveTeamForRange: function (emp, dateKeys) {
-      if (emp.defaultTeam) return emp.defaultTeam;
-      for (var i = dateKeys.length - 1; i >= 0; i--) {
-        var t = sandbox.getEmployeeTeam(emp.id, dateKeys[i]);
-        if (t) return t;
-      }
-      return null;
-    },
+    isSalariedAdmin: function () { return false; },
     _employeeExcludedAsOf: function (emp, dateStr) {
       return !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at);
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(helpersSrc, sandbox);
+  vm.runInContext(resolveSrc, sandbox);
+  vm.runInContext(csvFieldSrc, sandbox);
   vm.runInContext(buildReportSrc, sandbox);
   return sandbox;
 }
@@ -95,7 +85,7 @@ function buildSandbox(opts) {
 function main() {
   const teams = ['B1', 'S3'];
 
-  // ---- Core Admin/Office behavior: appears once, blank/off/override days ----
+  // ---- Core Admin/Office behavior: one row, only her REAL hours count ----
   {
     const roster = [
       { id: 'e-linda', name: 'Linda', defaultTeam: null, work_type: 'admin' },
@@ -104,26 +94,16 @@ function main() {
       'e-linda': { '2026-10-06': { start: '09:00', end: '17:00', lunch: 30, hours: 7.5 } }, // Tue -- real entry
       // Mon, Wed, Thu left blank -- no override on file at all
     };
-    const offDays = { 'e-linda|2026-10-09': { label: 'Vacation' } }; // Fri -- vacation
+    const offDays = { 'e-linda|2026-10-09': { label: 'Vacation' } }; // Fri -- vacation, must not count
 
     const sandbox = buildSandbox({ roster: roster, overrides: overrides, offDays: offDays });
-    const report = sandbox._buildHoursReportFromData(DATES, {}, teams);
+    const report = sandbox._buildHoursReportFromData(DATES, {}, teams, {});
 
     check('Linda is counted once', report.empsSeen, 1);
-    check('grand total reflects only her real Tuesday entry (7.5h)', report.grandHours, 7.5);
-    check('report text has an ADMIN / OFFICE section header', /ADMIN \/ OFFICE/.test(report.text), true);
-    check('Linda\'s own line is labeled (Admin)', /LINDA \(Admin\) — 7h 30m/.test(report.text), true);
-    check('her blank Monday shows a dash, not "0:00" or an error', /Mon Oct 5\s+—/.test(report.text), true);
-    check('her real Tuesday entry shows the time range', /Tue Oct 6\s+09:00 – 17:00/.test(report.text), true);
-    check('her Friday vacation shows the real status, not a blank/zero day', /Fri Oct 9\s+VACATION/.test(report.text), true);
-
-    // CSV: one row per date, Team column says "Admin".
-    const csvLines = report.csv.trim().split('\n');
-    const lindaLines = csvLines.filter(function (l) { return l.indexOf('Linda') === 0; });
-    check('exactly 5 CSV rows for Linda (one per date in range)', lindaLines.length, 5);
-    check('every one of Linda\'s CSV rows uses "Admin" as the Team column', lindaLines.every(function (l) { return l.split(',')[1] === 'Admin'; }), true);
-    const tuesdayRow = lindaLines.find(function (l) { return l.indexOf('2026-10-06') !== -1; });
-    check('Tuesday\'s CSV row carries the real clock-in/out/hours', tuesdayRow, 'Linda,Admin,2026-10-06,09:00,17:00,00:30,07:30');
+    check('grand total reflects only her real Tuesday entry (7.5h), blank/vacation days contribute nothing', report.grandHours, 7.5);
+    check('she appears in the report at 7.50h', report.text.indexOf('7.50') !== -1, true);
+    check('the CSV has exactly one row for her', report.csv.trim().split('\n').slice(1).length, 1);
+    check('that CSV row is just Name,Hours', report.csv.trim().split('\n')[1], 'Linda,7.50');
   }
 
   // ---- Grand total includes BOTH a field team and Admin/Office ----
@@ -133,19 +113,16 @@ function main() {
       { id: 'e-linda', name: 'Linda', defaultTeam: null, work_type: 'admin' },
     ];
     const teamByEmpDate = { 'e-alice|2026-10-05': 'B1' };
-    // ISO strings, not Date instances -- _hrTo24hr constructs its own
-    // Date internally via `new Date(d)`, which must happen INSIDE the vm
-    // sandbox's own realm. A Date instance built in the outer Node realm
-    // fails `instanceof Date` inside the sandbox (each vm.createContext
-    // gets its own separate built-ins) and would silently render as "".
     const weekHoursData = { B1: { days: [8, 0, 0, 0, 0], starts: ['2026-10-05T13:00:00Z'], ends: ['2026-10-05T21:00:00Z'], lunch: [null] } };
     const overrides = { 'e-linda': { '2026-10-05': { start: '09:00', end: '13:00', lunch: 0, hours: 4 } } };
 
     const sandbox = buildSandbox({ roster: roster, teamByEmpDate: teamByEmpDate, overrides: overrides });
-    const report = sandbox._buildHoursReportFromData(DATES, weekHoursData, teams);
+    const report = sandbox._buildHoursReportFromData(DATES, weekHoursData, teams, {});
 
     check('both Alice and Linda are counted', report.empsSeen, 2);
     check('grand total combines the field team\'s GPS hours and Admin\'s manual hours (8 + 4 = 12)', report.grandHours, 12);
+    check('Alice shows 8.00h', report.text.indexOf('8.00') !== -1, true);
+    check('Linda shows 4.00h', report.text.indexOf('4.00') !== -1, true);
   }
 
   // ---- PR #180/#186 fragmentation fix still works alongside Admin/Office ----
@@ -167,11 +144,10 @@ function main() {
     const overrides = { 'e-linda': { '2026-10-07': { start: '09:00', end: '15:00', lunch: 0, hours: 6 } } };
 
     const sandbox = buildSandbox({ roster: roster, teamByEmpDate: teamByEmpDate, overrides: overrides });
-    const report = sandbox._buildHoursReportFromData(DATES, weekHoursData, teams);
+    const report = sandbox._buildHoursReportFromData(DATES, weekHoursData, teams, {});
 
-    check('Katia (cross-team week) is still counted exactly once', report.empsSeen, 2);
-    check('Katia\'s combined weekly total is 14h (8 on B1 + 6 on S3), not split into two partial entries', /KATIA \(B1\) — 14h 0m/.test(report.text), true);
-    check('her Tuesday row is tagged with the real day-of team [S3]', /Tue Oct 6.*\[S3\]/.test(report.text), true);
+    check('Katia (cross-team week) is still counted exactly once, not fragmented into two entries', report.empsSeen, 2);
+    check('Katia\'s combined weekly total is 14h (8 on B1 + 6 on S3)', report.text.indexOf('14.00') !== -1, true);
     check('grand total includes Katia\'s 14h plus Linda\'s 6h (20h total)', report.grandHours, 20);
   }
 

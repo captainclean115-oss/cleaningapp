@@ -41,6 +41,7 @@ function buildSandbox(opts) {
   const calls = [];
   const sandbox = {
     console,
+    window: {}, // payroll report simplification: fast path reads window._empHoursMap
     weekHours: opts.weekHours || {},
     hoursWeekOffset: 0,
     dateKey: function (d) { var dt = (d instanceof Date) ? d : new Date(d); return dt.toISOString().slice(0, 10); },

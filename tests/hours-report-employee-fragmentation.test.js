@@ -12,20 +12,20 @@
 // team_device override to S3 on one day that week) showed
 // "KATIA MEJIA (B1) — 22h 47m" in one section and a separate,
 // easy-to-miss "KATIA MEJIA (S3) — 6h 3m" section elsewhere in the same
-// report -- the two together (28h 50m) match the Live tab's 28.8h
-// exactly, but read as a report, it looked like her total was 22h47m,
-// a "6 hour" discrepancy that was actually just a missing second section.
+// report -- the two together match the Live tab exactly, but read as a
+// report, it looked like her total was 22h47m, a "6 hour" discrepancy
+// that was actually just a missing second section.
 //
-// This test extracts the REAL _buildHoursReportFromData (not a
-// reimplementation) and asserts:
-//   1. An employee who worked more than one team that week appears
-//      EXACTLY ONCE, grouped under their default team (matching
-//      renderHoursTable's PR #109 Item 1 behavior).
-//   2. Their weekly total correctly sums hours from EVERY team worked
-//      that week, not just the days matching their default team.
-//   3. Each day's CSV/text row is labeled with the team ACTUALLY worked
-//      that day (a real cross-team day), not silently attributed to
-//      their default team.
+// Payroll report simplification (Tom's request): the team-grouped
+// display (and per-day/per-team CSV rows) this test used to check is
+// GONE entirely now -- the report is two columns, Name and Hours, one
+// row per employee, period. The underlying concern this test guards
+// against is unchanged, though: an employee who worked more than one
+// team in range must still appear exactly ONCE, with ONE total that
+// correctly sums hours from EVERY team worked, never fragmented or
+// silently dropped. Updated to assert that against the new shape,
+// via resolveEmployeeDayHours -- the same real, shared function the
+// Hours tab itself calls, extracted here instead of re-implemented.
 //
 // Run with: node tests/hours-report-employee-fragmentation.test.js
 
@@ -51,8 +51,9 @@ function extract(startMarker, endMarker) {
   return src.slice(startIdx, endIdx);
 }
 
-const helpersSrc = extract('function _hrTo24hr(d) {', '\n\n// Tom: Export Hours Report always used');
-const fnSrc = extract('function _buildHoursReportFromData(dates, weekHoursData, teams) {', '\n\nfunction _hrDownloadCsv(');
+const resolveSrc = extract('function _hrsFmtHrs(h) {', 'function _hrCsvField(s) {');
+const csvFieldSrc = extract('function _hrCsvField(s) {', 'function _hoursReportDefaultRange() {');
+const fnSrc = extract('function _hrSplitName(emp) {', '\n\nfunction _hrDownloadCsv(');
 
 function buildSandbox(opts) {
   opts = opts || {};
@@ -62,28 +63,22 @@ function buildSandbox(opts) {
   const sandbox = {
     console,
     window: { PentaTenant: null },
+    dateKey: function (d) { return typeof d === 'string' ? d : (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')); },
     getUnifiedRoster: function () { return roster; },
     getEmployeeTeam: function (empId, dk) {
       var key = dk + '_' + empId;
       return Object.prototype.hasOwnProperty.call(assignments, key) ? assignments[key] : null;
     },
     getEmpHours: function (empId, dk) { return overrides[empId + '_' + dk] || null; },
-    // Terminated-employee date-awareness fix: now-separate top-level
-    // helpers _buildHoursReportFromData calls into.
-    _hrsEffectiveTeamForRange: function (emp, dateKeys) {
-      if (emp.defaultTeam) return emp.defaultTeam;
-      for (var i = dateKeys.length - 1; i >= 0; i--) {
-        var t = sandbox.getEmployeeTeam(emp.id, dateKeys[i]);
-        if (t) return t;
-      }
-      return null;
-    },
     _employeeExcludedAsOf: function (emp, dateStr) {
       return !!(emp && emp.status === 'terminated' && emp.terminated_at && dateStr >= emp.terminated_at);
     },
+    _adminEmpDayOff: function () { return null; },
+    isSalariedAdmin: function () { return false; },
   };
   vm.createContext(sandbox);
-  vm.runInContext(helpersSrc, sandbox);
+  vm.runInContext(resolveSrc, sandbox);
+  vm.runInContext(csvFieldSrc, sandbox);
   vm.runInContext(fnSrc, sandbox);
   return sandbox;
 }
@@ -107,20 +102,17 @@ function main() {
       S3: { days: [0, 0, 0, 0, 6.049166666666667], starts: [null, null, null, null, '09:02'], ends: [null, null, null, null, '15:25'], lunch: [null, null, null, null, { duration: 20 }], total: 0 },
     };
     const sandbox = buildSandbox({ roster: roster, assignments: assignments });
-    const rep = sandbox._buildHoursReportFromData(dates, weekHoursData, ['B1', 'S3']);
+    const rep = sandbox._buildHoursReportFromData(dates, weekHoursData, ['B1', 'S3'], {});
 
     check('exactly one employee row (not fragmented across B1 and S3 sections)', rep.empsSeen, 1);
-    const katiaHeaderLines = rep.text.split('\n').filter(function (l) { return /KATIA/i.test(l); });
-    check('appears exactly once in the text report', katiaHeaderLines.length, 1);
-    check('grouped under her DEFAULT team (B1), not the cross-team day', katiaHeaderLines[0].indexOf('(B1)') !== -1, true);
-    check('weekly total combines BOTH teams worked (28h 50m), matching the Live tab exactly', katiaHeaderLines[0].indexOf('28h 50m') !== -1, true);
+    const katiaLines = rep.text.split('\n').filter(function (l) { return /katia/i.test(l); });
+    check('appears exactly once in the text report', katiaLines.length, 1);
+    check('weekly total combines BOTH teams worked (28.84h), matching the Live tab exactly -- never fragmented into two partial sections', katiaLines[0].indexOf('28.84') !== -1, true);
+    check('the old per-team grouping tag is gone -- no team code shown at all', /\(B1\)|\(S3\)/.test(katiaLines[0]), false);
 
     const csvRows = rep.csv.trim().split('\n').slice(1); // drop header
-    check('5 CSV rows (one per date), not 10 (fragmented across 2 team sections)', csvRows.length, 5);
-    const sep4Row = csvRows.find(function (r) { return r.indexOf('2026-09-04') !== -1; });
-    check('the cross-team day (Sep 4) is correctly labeled S3 in the CSV, not silently attributed to her default B1', sep4Row.split(',')[1], 'S3');
-    const sep1Row = csvRows.find(function (r) { return r.indexOf('2026-09-01') !== -1; });
-    check('a normal default-team day is still labeled correctly (B1)', sep1Row.split(',')[1], 'B1');
+    check('exactly ONE CSV row for her (one employee, one total -- not one row per date/team)', csvRows.length, 1);
+    check('the CSV row is just Name,Hours', csvRows[0], '"Mejia, Katia",28.84');
   }
 
   // ==== Analia DeSouza: default S3, manual overrides on 2 days (different
@@ -145,17 +137,15 @@ function main() {
       S3: { days: [0, 0, 9.482222222222223, 0, 6.049166666666667], starts: [null, null, '08:49', null, '09:02'], ends: [null, null, '18:22', null, '15:25'], lunch: [null, null, { duration: 4 }, null, { duration: 20 }], total: 0 },
     };
     const sandbox = buildSandbox({ roster: roster, assignments: assignments, overrides: overrides });
-    const rep = sandbox._buildHoursReportFromData(dates, weekHoursData, ['B1', 'B3', 'S3']);
+    const rep = sandbox._buildHoursReportFromData(dates, weekHoursData, ['B1', 'B3', 'S3'], {});
 
     check('exactly one employee row across 3 different teams touched', rep.empsSeen, 1);
-    const line = rep.text.split('\n').filter(function (l) { return /ANALIA/i.test(l); })[0];
-    check('grouped under her default team (S3)', line.indexOf('(S3)') !== -1, true);
-    check('weekly total combines all 3 teams (34h 34m), matching the Live tab', line.indexOf('34h 34m') !== -1, true);
+    const line = rep.text.split('\n').filter(function (l) { return /analia/i.test(l); })[0];
+    check('weekly total combines all 3 teams (34.56h) -- overrides on 2 days, team-GPS on the other 3, all added together', line.indexOf('34.56') !== -1, true);
 
     const csvRows = rep.csv.trim().split('\n').slice(1);
-    check('5 CSV rows, one per date', csvRows.length, 5);
-    check('Aug 31 correctly labeled B1 (manual override day)', csvRows[0].split(',')[1], 'B1');
-    check('Sep 1 correctly labeled B3 (manual override day)', csvRows[1].split(',')[1], 'B3');
+    check('exactly one CSV row (not 5, not split by team)', csvRows.length, 1);
+    check('the CSV row is just Name,Hours', csvRows[0], '"DeSouza, Analia",34.56');
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
