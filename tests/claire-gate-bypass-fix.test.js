@@ -132,6 +132,10 @@ function buildSandbox(opts) {
   const taskWrites = [];      // manualTasks pushes -- the real reminder write path
   const scheduleCmdCalls = []; // executeScheduleCmd calls -- the real schedule-confirm write path
   const replies = [];
+  // Claire-draft-and-fallback fix: the generic fallback now renders via
+  // _claireReplyWithRetry -> _claireRenderBubble directly, not through
+  // the claireReply stub that feeds `replies` -- captured separately.
+  const bubbles = [];
   const jobs = opts.jobs || [];
   const manualTasks = [];
   const cards = {};
@@ -187,7 +191,14 @@ function buildSandbox(opts) {
     renderCal: () => {},
     _pentaTeamColor: () => '#000',
     claireReply: (msg) => { replies.push(msg); },
-    _claireRenderBubble: () => {},
+    _claireRenderBubble: (who, html) => { bubbles.push(html); },
+    // Claire-draft-and-fallback fix: the new generic-fallback path calls
+    // _claireReplyWithRetry (extracted alongside processVoiceCommandLocal),
+    // which hides typing and renders via _claireRenderBubble directly --
+    // not through the claireReply stub above.
+    claireHideTyping: () => {},
+    claireShowTyping: () => {},
+    _claireSilent: false,
     _pentaJobWrite: async (op, args) => { jobWrites.push({ op, args }); return { ok: true }; },
     executeClaireToolCall: async (toolCall) => {
       // Stub for the Approve path: performs the REAL write for the
@@ -214,7 +225,7 @@ function buildSandbox(opts) {
   };
   vm.createContext(sandbox);
   vm.runInContext(COMBINED_SRC, sandbox);
-  return { sandbox, tables, jobWrites, assignmentWrites, taskWrites: manualTasks, scheduleCmdCalls, replies, jobs };
+  return { sandbox, tables, jobWrites, assignmentWrites, taskWrites: manualTasks, scheduleCmdCalls, replies, bubbles, jobs };
 }
 
 async function main() {
@@ -288,10 +299,14 @@ await (async () => {
 // ======================================================================
 await (async () => {
   const jobs = [{ id: 'job1', clientId: 'c1', clientName: 'Strong, Alex', date: new Date().toISOString().slice(0, 10), cancelled: false }];
-  const { sandbox, tables, jobWrites, replies } = buildSandbox({ jobs });
+  const { sandbox, tables, jobWrites, replies, bubbles } = buildSandbox({ jobs });
   await sandbox.processVoiceCommandLocal('move Alex Strong to Thursday', 'API unavailable');
   check('"move X to Thursday" has no local-fallback write path at all (by design -- not a bypass)', jobWrites.length === 0 && tables.claire_proposals.length === 0);
-  check('"move X to Thursday" gets the honest generic fallback (includes the passed-in error reason), not a false success', (replies[replies.length - 1] || '').indexOf('API unavailable') === 0);
+  check('"move X to Thursday" gets no old-style claireReply call', replies.length === 0);
+  // Claire-draft-and-fallback fix: the generic fallback is now the
+  // honest "couldn't reach my AI" message with a Retry button -- never
+  // a false success, and never the old raw-reason-prefixed text either.
+  check('"move X to Thursday" gets the honest retry message, not a false success', bubbles.length === 1 && /couldn.t reach my AI/i.test(bubbles[0]));
 })();
 
 // ======================================================================

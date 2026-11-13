@@ -87,7 +87,11 @@ const fullClaireViewBlock = sliceBetween('<div id="claire-view">', '\n<!-- GPS V
 //    prior PR), not only inside showTab -- still true, unmodified here.
 // ======================================================================
 {
-  const unconditionalCallIdx = src.indexOf('_claireRenderBuildStamp();\n\n// -----------------------------------------------------------------------\n// CLAIRE SAFETY FOUNDATION');
+  // Claire-draft-and-fallback fix: a second unconditional load-time call
+  // (the last-error line) now sits between the build-stamp call and the
+  // CLAIRE SAFETY FOUNDATION comment -- still unconditional, just one
+  // more line.
+  const unconditionalCallIdx = src.indexOf("_claireRenderBuildStamp();\nif (typeof _claireRenderLastErrorLine === 'function') _claireRenderLastErrorLine();\n\n// -----------------------------------------------------------------------\n// CLAIRE SAFETY FOUNDATION");
   check('the build stamp still renders unconditionally at script-load (not gated on the view opening)', unconditionalCallIdx !== -1);
 }
 
