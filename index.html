@@ -5459,7 +5459,10 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
            unconditionally at script-load by _claireRenderBuildStamp(),
            into this SAME element id, so an already-open tab/PWA running
            old JS is still checkable here if something seems off. -->
-      <div id="claire-build-stamp" class="claire-build-stamp-line" style="margin-bottom:10px"></div>
+      <div id="claire-build-stamp" class="claire-build-stamp-line" style="margin-bottom:4px"></div>
+      <!-- Claire-draft-and-fallback fix: visible "what went wrong last
+           time" line so Tom can check a failure reason without devtools. -->
+      <div id="claire-last-error-line" style="font-size:11px;color:var(--muted);margin-bottom:10px"></div>
       <button type="button" onclick="closeClaireMenu();_claireStartNewChat()" type="button"
               style="display:block;width:100%;text-align:left;padding:13px 2px;background:none;border:none;border-bottom:1px solid var(--border);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent">New chat</button>
       <button type="button" onclick="closeClaireMenu();_claireClearHistory()"
@@ -22128,6 +22131,18 @@ function _detectClaireMode(text) {
   // research question never reads like a date list, so this check runs
   // BEFORE the length fallback and wins regardless of length.
   if ((t.match(/\b\d{1,2}\/\d{1,2}\b/g) || []).length >= 2) return 'voice';
+  // Claire-draft-and-fallback fix: "Can you draft a text to the client
+  // [...] and we have not received one in the past nine cleans and the
+  // balance is $1917 ..." -- a long, dictated drafting request doesn't
+  // start with an action verb either (the verb list above is anchored
+  // to the start of the message, and "draft"/"write" weren't even on
+  // it), so it fell through to the length fallback below and got
+  // routed into research mode purely because it ran long, not because
+  // it reads like a research question. Checked here, before the
+  // length fallback, for the same reason the date-token check above
+  // is: the signal itself (asking to draft/write/compose a message)
+  // is strong and specific regardless of message length.
+  if (/\b(draft|compose)\b/.test(t) || /\bwrite\b.{0,40}\b(text|message|email|note)\b/.test(t)) return 'voice';
   // Long messages without action flavor → research.
   if (t.length > 120) return 'research';
   return 'voice';
@@ -22620,9 +22635,59 @@ function claireReply(msg, mode) {
   if (_claireSilent) return;
   // Research mode: render markdown structure (headers, bullets, paragraphs).
   // Voice mode (default): plain text passthrough — existing behavior preserved.
-  var html = (mode === 'research') ? _claireMarkdownToHtml(msg) : msg;
+  var html = (mode === 'research') ? _claireMarkdownToHtml(msg) : _claireRenderDraftBlock(msg);
   _claireRenderBubble('claire', html);
   claireSpeak(msg);  // _claireStripForSpeech inside already strips markdown for TTS
+}
+
+// Claire-draft-and-fallback fix: a drafted message/text/email/note is
+// wrapped in a plain ``` fenced block per the DRAFTING system-prompt
+// instruction -- rendered as its own copyable block with a Copy
+// button (the exact text Tom would paste elsewhere; Claire never
+// sends it herself). Any reply with no fence passes through
+// unchanged, byte-for-byte, exactly like before this fix.
+function _claireRenderDraftBlock(msg) {
+  var m = /```([\s\S]*?)```/.exec(String(msg == null ? '' : msg));
+  if (!m) return msg;
+  var before = msg.slice(0, m.index).trim();
+  var after = msg.slice(m.index + m[0].length).trim();
+  var draftText = m[1].replace(/^\n/, '').replace(/\n$/, '');
+  var draftId = 'claire-draft-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return (before ? '<div style="margin-bottom:8px">' + _claireEscapeHtml(before) + '</div>' : '')
+    + '<div id="' + draftId + '" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;white-space:pre-wrap;font-size:13px;line-height:1.5">' + _claireEscapeHtml(draftText) + '</div>'
+    + '<button type="button" onclick="_claireCopyDraft(\'' + draftId + '\')" style="margin-top:8px;padding:8px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:600;cursor:pointer">Copy</button>'
+    + (after ? '<div style="margin-top:8px">' + _claireEscapeHtml(after) + '</div>' : '');
+}
+
+function _claireCopyDraft(id) {
+  try {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var text = el.textContent || '';
+    var done = function () { try { if (typeof showToast === 'function') showToast('Copied', 'success'); } catch (e) {} };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () { _claireFallbackCopy(text, done); });
+    } else {
+      _claireFallbackCopy(text, done);
+    }
+  } catch (e) { console.warn('[claire] copy draft failed', e); }
+}
+
+// Pre-clipboard-API fallback (older iOS Safari/PWA) -- a temporary,
+// off-screen, selected textarea + execCommand('copy'), same technique
+// used broadly for "copy to clipboard" buttons before the async API.
+function _claireFallbackCopy(text, done) {
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (done) done();
+  } catch (e) { console.warn('[claire] fallback copy failed', e); }
 }
 
 // ── Claire voice (Tier 1: browser speechSynthesis) ──
@@ -22720,6 +22785,7 @@ function _claireVoiceEnabled() {
 function openClaireMenu() {
   var el = document.getElementById('claire-menu-overlay');
   if (el) el.style.display = 'flex';
+  if (typeof _claireRenderLastErrorLine === 'function') _claireRenderLastErrorLine();
 }
 function closeClaireMenu() {
   var el = document.getElementById('claire-menu-overlay');
@@ -25971,6 +26037,7 @@ function _claireRenderBuildStamp() {
   if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
 }
 _claireRenderBuildStamp();
+if (typeof _claireRenderLastErrorLine === 'function') _claireRenderLastErrorLine();
 
 // -----------------------------------------------------------------------
 // CLAIRE SAFETY FOUNDATION (Stage 2a) -- approval-gate classification.
@@ -26197,7 +26264,13 @@ async function processVoiceCommand(text) {
     +'   If it returns error: "entry_resolution_failed", resolve each listed employee (same ambiguous/not-found handling as step 4) before retrying — nothing is written or previewed until every entry resolves. If it returns error: "batch_write_failed", tell ' + _opName + ' exactly what was rolled back and what (if anything) still needs manual review — never imply the whole batch succeeded. On success, your final reply for this message MUST state plainly what was saved — name every employee/date pair or say the count and range (e.g. "Saved Fatima, Franchesca, Nadia and Natalia for 8/9, 8/10 and 8/11. Done.") — never end a completed write with an open-ended line like "anything else?" that doesn\'t confirm the save happened.\n'
     +'For any direct hours edit where ' + _opName + ' already gave exact times ("set Maria\'s Tuesday to 9 to 5"), you can call edit_employee_hours directly without a separate confirmation round — the confirm-first rule above is specifically for copy/match requests where the source values aren\'t already known to ' + _opName + '. This exception does NOT apply to batch_edit_employee_hours, which always previews and confirms first regardless.\n'
     +'6. If ' + _opName + ' asks "is it done?" / "did that save?" after any hours edit, do not answer from memory of what you intended to do — call get_employee_hours for the employee(s)/date(s) in question and report the actual current value read back from the database. If your own last message already stated a save succeeded, you may state that directly, but never claim or deny a save you cannot see in this conversation\'s tool results — if you genuinely don\'t know, say that and re-check rather than guessing either way.\n\n'
-    +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long.\n\n'
+    +'DRAFTING A MESSAGE (text, email, or note) -- follow this exactly:\n'
+    +'This is READ-ONLY and needs no approval -- writing a draft changes nothing. Never create a proposal and never call send_text/send_message/send_response_to for a plain drafting request, even if ' + _opName + ' asks you to send the draft to themselves -- just show it in chat; they copy and send it from their own phone/app.\n'
+    +'1. If the client is not clearly named in the request, or the name matches more than one client, ask ONE short question listing the candidates ("Which client — X or Y?") and wait for the answer. Never guess.\n'
+    +'2. Once the client is resolved, call lookup_balance (and lookup_schedule or count_jobs if useful) to pull their REAL current balance, last payment date, and number of cleans since -- never invent or assume these numbers. If ' + _opName + ' gave you a dollar figure or a count in their message and it disagrees with what the tools return, say so plainly and use the real figure in the draft (e.g. "Heads up — you said $1,917, the system shows a different number — I used what the system shows.").\n'
+    +'3. Write the draft message itself wrapped in a plain ``` fenced block with nothing else inside the fence but the exact text to send -- one short lead-in sentence before it, nothing after. Example:\n'
+    +'   Here\'s a draft for Jane Smith:\n```\nHi Jane, this is [Business] — we show a balance of $X and haven\'t received a check in your last N cleans. Could you leave one out for pickup today? Thanks!\n```\n\n'
+    +'You can also send any response as SMS to ' + _opName + ' or a named employee using send_response_to — useful when ' + _opName + ' asks "text me this" or "send this to Lisa." Always confirm what is about to be sent before the tool call when the message is long. This is for sending something Claire herself composes and dispatches, never a drafting request (rule above) -- those are never sent by Claire at all.\n\n'
     +(_claireMode === 'research'
       ? ('RESEARCH STYLE (typed answer — depth and structure expected)\n'
         +'- ' + _opName + ' is reading this on screen, not listening. Take the room you need.\n'
@@ -27048,8 +27121,38 @@ function _claireEscapeHtml(s) {
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Claire-draft-and-fallback fix: a PENDING proposal is stale when
+// either its formal 48h TTL (expires_at) has passed, or -- a check
+// expires_at alone never caught -- its own action date has already
+// gone by. Approving "cancel a clean on Nov 11" makes no sense once
+// Nov 11 is already over, regardless of how many hours old the card
+// itself is. Only ever meaningful for a 'pending' row; a row already
+// decided (approved/rejected/executed/failed/expired) is never "live"
+// in the first place, so it is never "stale" either -- it just is
+// whatever it already became.
+function _claireProposalIsStale(row) {
+  if (!row || row.status !== 'pending') return false;
+  if (row.expires_at && new Date() > new Date(row.expires_at)) return true;
+  var args = row.args || {};
+  var actionDate = args._resolvedDate || args._resolvedToDate || args.date || args.to_date;
+  if (actionDate && /^\d{4}-\d{2}-\d{2}$/.test(actionDate)) {
+    var todayKey = (typeof _claireTodayKey === 'function') ? _claireTodayKey() : null;
+    if (todayKey && actionDate < todayKey) return true;
+  }
+  return false;
+}
+
 function _claireProposalCardHtml(row) {
   var riskBadge = row.risk === 'sensitive' ? '<span style="background:rgba(248,113,113,0.15);color:#f87171;border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:6px">SENSITIVE</span>' : '';
+  if (_claireProposalIsStale(row)) {
+    return '<div class="claire-proposal-card" id="claire-proposal-' + row.id + '" style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-top:6px;background:var(--surface2)">'
+      + '<div style="font-size:13px;line-height:1.4"><strong>Proposal</strong>' + riskBadge + '<br>' + _claireEscapeHtml(row.summary) + '</div>'
+      + '<div class="claire-proposal-status" style="font-size:12px;color:var(--muted);margin-top:6px">Expired -- too old to act on. Ask Claire again if you still want this.</div>'
+      + '<div style="display:flex;gap:8px;margin-top:10px">'
+      + '<button onclick="_claireRejectProposal(\'' + row.id + '\')" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;cursor:pointer">Dismiss</button>'
+      + '</div>'
+      + '</div>';
+  }
   return '<div class="claire-proposal-card" id="claire-proposal-' + row.id + '" style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-top:6px;background:var(--surface2)">'
     + '<div style="font-size:13px;line-height:1.4"><strong>Proposal</strong>' + riskBadge + '<br>' + _claireEscapeHtml(row.summary) + '</div>'
     + '<div class="claire-proposal-status" style="font-size:12px;color:var(--muted);margin-top:6px">Waiting for your approval. Nothing has changed yet.</div>'
@@ -27115,9 +27218,10 @@ async function _claireApproveProposal(id) {
       if (statusEl) statusEl.textContent = 'Already ' + row.status + '.';
       return;
     }
-    if (new Date(row.expires_at) < new Date()) {
+    if (_claireProposalIsStale(row)) {
       await sb.from('claire_proposals').update({ status: 'expired' }).eq('id', id).eq('status', 'pending');
       if (statusEl) statusEl.textContent = 'This is out of date, ask Claire again.';
+      if (card) card.remove();
       return;
     }
     var meta = _claireToolMeta(row.tool_name);
@@ -27197,6 +27301,7 @@ async function _claireRejectProposal(id) {
       return;
     }
     if (statusEl) statusEl.textContent = 'Rejected.';
+    if (card) card.remove();
   } catch (e) {
     console.error('[claire] reject failed', e);
     if (statusEl) statusEl.textContent = 'Something went wrong.';
@@ -29132,8 +29237,54 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
       return;
     }
   }
-  claireReply((apiErrorReason || 'Sorry, I\'m having trouble connecting right now.')
-    + ' Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
+  _claireSetLastErrorNote(apiErrorReason);
+  _claireReplyWithRetry(text);
+}
+
+// Claire-draft-and-fallback fix: the message that couldn't be handled
+// (server failed AND no local keyword matched it) is preserved --
+// never discarded -- so Retry can resend EXACTLY what Tom asked,
+// instead of making him retype it.
+var _claireLastFailedMessage = null;
+function _claireReplyWithRetry(originalText) {
+  _claireLastFailedMessage = originalText;
+  claireHideTyping();
+  if (_claireSilent) return;
+  var html = 'I couldn\'t reach my AI just now. Your message is saved.'
+    + '<div style="margin-top:8px"><button type="button" onclick="_claireRetryFailedMessage()" style="padding:8px 14px;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;cursor:pointer">Retry</button></div>';
+  _claireRenderBubble('claire', html);
+}
+function _claireRetryFailedMessage() {
+  var text = _claireLastFailedMessage;
+  if (!text) return;
+  _claireLastFailedMessage = null;
+  claireShowTyping();
+  processVoiceCommand(text);
+}
+
+// Claire-draft-and-fallback fix: a short, visible "what went wrong
+// last time" line in the Claire menu (the "..." sheet) -- so Tom can
+// check why a message failed without opening devtools. Best-effort,
+// never throws; persisted to localStorage so it survives a reload.
+function _claireSetLastErrorNote(reasonText) {
+  try {
+    localStorage.setItem('claire_last_error', JSON.stringify({
+      when: new Date().toISOString(),
+      message: reasonText || 'Could not reach the AI.'
+    }));
+  } catch (e) {}
+  try { _claireRenderLastErrorLine(); } catch (e) {}
+}
+function _claireRenderLastErrorLine() {
+  try {
+    var el = document.getElementById('claire-last-error-line');
+    if (!el) return;
+    var raw = localStorage.getItem('claire_last_error');
+    if (!raw) { el.textContent = ''; return; }
+    var entry = JSON.parse(raw);
+    var when = new Date(entry.when).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    el.textContent = 'Last error: ' + when + ' — ' + entry.message;
+  } catch (e) {}
 }
 
 function cancelVoiceCmd() {

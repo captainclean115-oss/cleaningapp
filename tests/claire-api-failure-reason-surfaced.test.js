@@ -147,6 +147,12 @@ function makeFakeSupabase(tables) {
 
 function buildSandbox() {
   const calls = [];
+  // Claire-draft-and-fallback fix: the generic-fallback path no longer
+  // calls claireReply at all -- it renders via _claireReplyWithRetry,
+  // which goes straight to _claireRenderBubble. Captured separately so
+  // the existing `calls` assertions (every KEYWORD-recognized path,
+  // which still goes through claireReply) are unaffected.
+  const bubbles = [];
   const tables = { claire_proposals: [] };
   const sandbox = {
     console,
@@ -158,35 +164,47 @@ function buildSandbox() {
     saveManualTasks: function () {},
     renderTasks: function () {},
     claireReply: function (msg) { calls.push(msg); },
-    _claireRenderBubble: function () {},
+    _claireRenderBubble: function (who, html) { bubbles.push(html); },
+    claireHideTyping: function () {},
+    claireShowTyping: function () {},
+    _claireSilent: false,
     getCurrentAppRole: function () { return 'owner'; },
     isManagerRole: function () { return true; },
     _pentaParseAuthToken: function () { return { user: { id: 'user_1' } }; },
   };
   vm.createContext(sandbox);
   vm.runInContext(gateSrc + '\n' + fnSource, sandbox);
-  return { sandbox: sandbox, calls: calls, tables: tables };
+  return { sandbox: sandbox, calls: calls, bubbles: bubbles, tables: tables };
 }
 
-// ---- The failure case: local parsing finds nothing to do AND an API
-// error reason was passed through -- the reason must be surfaced. ----
+// ---- Claire-draft-and-fallback fix: the generic catch-all no longer
+// recites the schedule/cancel template for a message that was never
+// about scheduling or cancelling anything (Tom's exact bug report: a
+// drafting request fell through to this branch and got "Try:
+// Schedule [name]..." -- nonsensical for what he actually asked). It
+// now shows an honest "couldn't reach my AI" message with a working
+// Retry button, and the real failure reason goes to the visible
+// last-error note (_claireSetLastErrorNote), not into the chat text. ----
 async function runChecks() {
 {
-  const { sandbox, calls } = buildSandbox();
+  const { sandbox, calls, bubbles } = buildSandbox();
   await sandbox.processVoiceCommandLocal('Set Maria hours to 9 to 5 on Tuesday', 'Anthropic error: invalid_request_error');
-  check('exactly one reply', calls.length, 1);
-  check('the generic fallback now includes the real failure reason', calls[0].indexOf('Anthropic error: invalid_request_error') !== -1, true);
-  check('the format-hint suggestions are still present', /Schedule \[name\]/.test(calls[0]), true);
+  check('no old-style claireReply call for the generic fallback', calls.length, 0);
+  check('exactly one bubble rendered (the honest retry message)', bubbles.length, 1);
+  check('the schedule/cancel template is gone -- never shown for a non-schedule message', /Schedule \[name\]/.test(bubbles[0]), false);
+  check('the message is the plain, honest "couldn\'t reach my AI" text', /couldn.t reach my AI/i.test(bubbles[0]), true);
+  check('a working Retry button is present, wired to resend the same message', /_claireRetryFailedMessage\(\)/.test(bubbles[0]), true);
 }
 
-// ---- No reason supplied (apiErrorReason omitted): message is unchanged
-// from before -- a genuinely-unrecognized message doesn't grow a scary
-// error suffix out of nowhere. ----
+// ---- No reason supplied (apiErrorReason omitted): the SAME honest
+// message still renders -- it never depended on a reason being given,
+// unlike the old parenthetical-suffix design. ----
 {
-  const { sandbox, calls } = buildSandbox();
+  const { sandbox, calls, bubbles } = buildSandbox();
   await sandbox.processVoiceCommandLocal('asdkjfh nonsense gibberish');
-  check('exactly one reply', calls.length, 1);
-  check('no parenthetical appears when no reason was given', calls[0], 'Sorry, I\'m having trouble connecting right now. Try: "Schedule [name] [day] [time] [team]" or "Cancel [name] [day]".');
+  check('no old-style claireReply call for the generic fallback', calls.length, 0);
+  check('exactly one bubble rendered', bubbles.length, 1);
+  check('the same honest message renders with no reason supplied either', /couldn.t reach my AI/i.test(bubbles[0]), true);
 }
 
 // ---- Every existing keyword-recognized path is completely unaffected by
