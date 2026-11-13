@@ -2,7 +2,10 @@
 // calls loadWeekHours()/resolveEmployeeDayHours at all for a field
 // employee: it reads published_employee_hours directly, filtered to her
 // own employee_id, via a mocked Supabase client. Extracts and runs the
-// ACTUAL renderHours() source from index.html, not a reimplementation.
+// ACTUAL rendering logic from index.html, not a reimplementation --
+// hours-week-nav fix renamed it to _renderHoursInnerImpl and wrapped
+// it with a thin in-flight/rerun guard (renderHours() itself); this
+// file calls the inner implementation directly, same logic as before.
 //
 // The sandbox deliberately provides NO getEmpHours/dailyAssignments/
 // Geotab-shaped globals at all, and the mocked `from()` throws loudly if
@@ -27,8 +30,13 @@ function extract(startMarker, endMarker, label) {
   return src.slice(startIdx, endIdx);
 }
 
+// Hours-week-nav fix: renderHours() is now a thin in-flight/rerun
+// wrapper (see tests/hours-week-nav.test.js for ITS coverage) around
+// this renamed inner implementation, which still holds all the actual
+// published-hours read logic this file tests -- called directly here,
+// bypassing the wrapper (no concurrency exercised in these cases).
 const renderHoursSrc = extract(
-  '\nasync function renderHours() {',
+  '\nasync function _renderHoursInnerImpl() {',
   '\nfunction getPortalWeekDates(',
   'renderHours'
 );
@@ -112,6 +120,10 @@ async function runRenderHours(opts) {
     t: function (k) { return k; },
     dateKey: dk,
     getPortalWeekDates: function () { return days; },
+    // Hours-week-nav fix: the real _renderHoursInnerImpl now computes
+    // the label text via this helper -- not tested here (see
+    // tests/hours-week-nav.test.js), just stubbed.
+    _portalWeekLabelText: function () { return ''; },
     renderHoursData: function (composite) { capturedComposite = composite; },
     _renderPortalHoursUpdatedLabel: function () {},
     _renderPortalEstimatedPay: function () {},
@@ -123,7 +135,7 @@ async function runRenderHours(opts) {
 
   vm.createContext(sandbox);
   vm.runInContext(renderHoursSrc, sandbox);
-  await vm.runInContext('renderHours()', sandbox);
+  await vm.runInContext('_renderHoursInnerImpl()', sandbox);
   return { composite: capturedComposite, queryCalls: sbStub.calls };
 }
 

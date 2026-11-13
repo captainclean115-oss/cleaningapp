@@ -112,6 +112,9 @@ function buildSandbox() {
     _findJobCrossrefStartEnd: () => ({ matched: false }),
     _findTrueDepotDepartureTrip: (validTrips) => ({ depotArrivalsAsc: [], trueStartTrip: validTrips[0] }),
     _detectDayLunch: () => null,
+    // Hours-week-nav fix: _loadWeekHoursInner now calls this to set the
+    // label -- this test doesn't check the label text, just stub it.
+    _hoursWeekLabelText: () => '',
     loadLunchEdits: () => {},
     _reconcileHoursWithLunch: () => {},
     _writeWeekHoursCache: () => {},
