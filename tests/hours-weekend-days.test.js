@@ -61,7 +61,10 @@ function extract(startMarker, endMarker) {
   return src.slice(s, e);
 }
 
-const getWeekDatesSrc = extract('function getWeekDates(offset) {', '\n\nfunction hoursWeekMove(dir) {');
+// Hours-week-nav fix: getWeekDates is now followed by the new
+// _hoursWeekLabelText helper (not hoursWeekMove directly) -- stop
+// right at getWeekDates' own closing brace instead.
+const getWeekDatesSrc = extract('function getWeekDates(offset) {', '\n\n// Hours-week-nav fix: the one shared label-text formula');
 // resolveEmployeeDayHours + the shared _pentaEmployeeWeekHours together
 // (adjacent in index.html).
 const resolveAndSharedSrc = extract('function _hrsFmtHrs(h) {', '\n\n// ═══════════════════════════════════════════════════════════════════════\n// Published Hours');

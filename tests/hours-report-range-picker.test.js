@@ -86,7 +86,18 @@ function main() {
     // "now" for _bizTodayParts is the real system clock here (not mocked)
     // -- just confirm the range is exactly 7 days ending today, business tz.
     const r = sandbox._hoursReportDefaultRange();
-    const days = (new Date(r.to + 'T00:00:00') - new Date(r.from + 'T00:00:00')) / 86400000;
+    // Hours-week-nav fix: count CALENDAR days via Date.UTC on the
+    // parsed Y/M/D, not a raw local-time Date subtraction -- the old
+    // version was flaky whenever "today" fell within 7 days of a DST
+    // transition (confirmed: Nov 2026 and Mar 2026 both reproduce it),
+    // because a local midnight-to-midnight span across DST is 23h or
+    // 25h, not 24h. Date.UTC has no DST at all, so this is exact
+    // regardless of what day the suite happens to run on.
+    function ymdToUtcDayNumber(ymd) {
+      var p = ymd.split('-').map(Number);
+      return Date.UTC(p[0], p[1] - 1, p[2]) / 86400000;
+    }
+    const days = ymdToUtcDayNumber(r.to) - ymdToUtcDayNumber(r.from);
     check('a 7d rolling window default spans exactly 7 days', days, 6);
   }
 

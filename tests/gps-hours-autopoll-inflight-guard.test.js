@@ -62,9 +62,17 @@ function buildSandbox(wrapperSrc, innerName, opts) {
   let resolveInner;
   const innerPromise = new Promise(function (r) { resolveInner = r; });
   const state = { innerCalls: 0 };
-  const sandbox = { console };
+  // Hours-week-nav fix: loadWeekHours' wrapper now reruns the inner
+  // load whenever hoursWeekOffset has moved on since the last attempt
+  // (see that function's own comment) -- nothing in THIS test ever
+  // changes the offset, so the mock just mirrors the real inner
+  // function's one relevant side effect (recording which offset it
+  // attempted) to keep the loop's own condition false after one pass,
+  // same "did the pileup guard work" behavior as before this fix.
+  const sandbox = { console, hoursWeekOffset: 0, _weekHoursLastAttemptedOffset: null };
   sandbox[innerName] = function () {
     state.innerCalls++;
+    if (innerName === '_loadWeekHoursInner') sandbox._weekHoursLastAttemptedOffset = sandbox.hoursWeekOffset;
     if (opts.innerThrows) return Promise.reject(new Error('inner boom'));
     return innerPromise;
   };

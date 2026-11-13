@@ -33314,10 +33314,16 @@ function saveLunchEdits() {
   localStorage.setItem('lunch_edits', JSON.stringify(edits));
 }
 
-function loadLunchEdits() {
+function loadLunchEdits(offset) {
+  // Hours-week-nav fix: an explicit offset (passed by
+  // _loadWeekHoursInner, captured before its own slow fetch) always
+  // wins over the live global, which can have moved on to a different
+  // week by the time this runs. Other callers (none currently pass one)
+  // keep reading the live global, unchanged.
+  var _effOffset = (offset !== undefined) ? offset : hoursWeekOffset;
   const edits = JSON.parse(localStorage.getItem('lunch_edits') || '{}');
   Object.keys(weekHours).forEach(team => {
-    const key = hoursWeekOffset + '_' + team;
+    const key = _effOffset + '_' + team;
     if (edits[key]) {
       weekHours[team].lunch = edits[key].map(l => l ? {
         time: l.time ? new Date(l.time) : null,
@@ -33545,10 +33551,34 @@ function getWeekDates(offset) {
   return days;
 }
 
+// Hours-week-nav fix: the one shared label-text formula, used both for
+// instant tap feedback (hoursWeekMove, below) and inside
+// _loadWeekHoursInner once the real data is in -- a single source so
+// the label can never say one week while the table shows another.
+function _hoursWeekLabelText(offset, days) {
+  if (offset === 0) return 'This Week';
+  if (offset === -1) return 'Last Week';
+  days = days || getWeekDates(offset);
+  var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var mon = days[0], fri = days[days.length - 1];
+  return MONTHS[mon.getMonth()] + ' ' + mon.getDate() + ' – ' + MONTHS[fri.getMonth()] + ' ' + fri.getDate();
+}
+
+// Hours-week-nav fix: the label and a loading placeholder now update
+// INSTANTLY on every tap, synchronously, before any async work starts
+// -- the old code only updated them once the full load (several
+// readiness awaits plus a Geotab/time_entries fetch) had finished, so
+// a slow load made a tap look like it did nothing. The actual data
+// fetch/render still happens inside loadWeekHours(), which is now safe
+// against repeated fast taps (see that function's own comment).
 function hoursWeekMove(dir) {
   hoursWeekOffset += dir;
   // Don't go into future
   if (hoursWeekOffset > 0) { hoursWeekOffset = 0; return; }
+  var label = document.getElementById('hours-week-label');
+  if (label) label.textContent = _hoursWeekLabelText(hoursWeekOffset);
+  var table = document.getElementById('hours-table');
+  if (table) table.innerHTML = '<div class="hours-loading">Loading hours...</div>';
   loadWeekHours();
 }
 
@@ -34216,6 +34246,12 @@ function _detectDayLunch(dayTrips, team, todayTeamJobs, dateStr, trueStart, true
 // initial call) uniformly.
 var _weekHoursLoadInFlight = false;
 var _weekHoursLoadInFlightPromise = null;
+// Hours-week-nav fix: the offset _loadWeekHoursInner most recently
+// attempted to render, set as soon as it captures hoursWeekOffset
+// (before its own slow Geotab/time_entries fetch). loadWeekHours()
+// below reruns the load whenever hoursWeekOffset has moved on from
+// this since the last attempt started -- see that function's comment.
+var _weekHoursLastAttemptedOffset = null;
 // Portal-hours-match-manager fix: share the in-flight promise instead
 // of silently no-op'ing a concurrent call. Every existing fire-and-
 // forget caller (the button, the 60s timer, gpsInit()'s own initial
@@ -34223,12 +34259,28 @@ var _weekHoursLoadInFlightPromise = null;
 // Every AWAITED caller (including the portal's new live fetch) now
 // correctly waits for the REAL result instead of racing a no-op that
 // returned before the computation it was piggybacking on had finished.
+//
+// Hours-week-nav fix: still never runs two overlapping Geotab/
+// time_entries fetches (the original reason this guard exists -- see
+// _weekHoursLoadToken's own comment above), but a tap landing while a
+// load is already in flight is never dropped either: the old code just
+// returned the SAME stale promise with no new attempt for the new
+// offset, so the one in-flight call would eventually read whatever
+// hoursWeekOffset happened to be by the time it got there, landing on
+// a week nobody individually tapped for ("tap Back, nothing happens;
+// tap again, it skips a week"). Now, once a load finishes, if
+// hoursWeekOffset no longer matches what it actually rendered, it
+// reruns immediately -- as many times as it takes to catch up -- all
+// under the SAME promise, so every existing awaited caller still sees
+// the final, fully-settled, correct week.
 async function loadWeekHours() {
   if (_weekHoursLoadInFlight) return _weekHoursLoadInFlightPromise;
   _weekHoursLoadInFlight = true;
   _weekHoursLoadInFlightPromise = (async function () {
     try {
-      await _loadWeekHoursInner();
+      do {
+        await _loadWeekHoursInner();
+      } while (hoursWeekOffset !== _weekHoursLastAttemptedOffset);
     } finally {
       _weekHoursLoadInFlight = false;
       _weekHoursLoadInFlightPromise = null;
@@ -34300,24 +34352,27 @@ async function _loadWeekHoursInner() {
   // whatever that newer call has already written.
   if (_myWeekHoursToken !== _weekHoursLoadToken) return;
 
-  const days = getWeekDates(hoursWeekOffset);
-  const mon = days[0];
-  const fri = days[days.length - 1];
+  // Hours-week-nav fix: captured ONCE here and used for every read in
+  // this function from this point on (days, the label, the lunch-edit
+  // cache key) -- never hoursWeekOffset itself again, which can change
+  // mid-flight if another tap lands while this load's own Geotab/
+  // time_entries fetch is still pending. Reading the live global at
+  // scattered points used to let the label, the lunch cache, and the
+  // actually-rendered data each reflect a different week within the
+  // same call.
+  const _myHoursOffset = hoursWeekOffset;
+  _weekHoursLastAttemptedOffset = _myHoursOffset;
+  const days = getWeekDates(_myHoursOffset);
   // Hours-weekend-days fix: derived from the real days array -- correct
   // length AND correct weekday order for a sunday-start business
   // (the old literal always started "Mon").
   const DAYS_SHORT = days.map(function (d) { return d.toLocaleDateString('en-US', { weekday: 'short' }); });
-  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-  // Update week label
+  // Update week label -- hoursWeekMove() already set this instantly on
+  // tap; this just re-confirms it (for every OTHER caller of
+  // loadWeekHours too) once the real data is actually in.
   const label = document.getElementById('hours-week-label');
-  if (hoursWeekOffset === 0) {
-    label.textContent = 'This Week';
-  } else if (hoursWeekOffset === -1) {
-    label.textContent = 'Last Week';
-  } else {
-    label.textContent = MONTHS[mon.getMonth()] + ' ' + mon.getDate() + ' – ' + MONTHS[fri.getMonth()] + ' ' + fri.getDate();
-  }
+  if (label) label.textContent = _hoursWeekLabelText(_myHoursOffset, days);
 
   document.getElementById('hours-table').innerHTML = '<div class="hours-loading">Loading hours...</div>';
 
@@ -34642,7 +34697,7 @@ async function _loadWeekHoursInner() {
     // time_entries -- our result is stale. Don't persist or paint it.
     if (_myWeekHoursToken !== _weekHoursLoadToken) return;
 
-    loadLunchEdits();
+    loadLunchEdits(_myHoursOffset);
     _reconcileHoursWithLunch();
     _writeWeekHoursCache(days);
 
@@ -52633,10 +52688,35 @@ function toggleJobDetail(jobId, btn) {
 // ─────────────────────────────────────────
 var _portalWeekOffset = 0;
 
+// Hours-week-nav fix: the one shared label-text formula, used both for
+// instant tap feedback (portalWeekNav, below) and inside
+// _renderHoursInnerImpl once the real data is in.
+function _portalWeekLabelText(offset) {
+  var lang = currentLang || 'en';
+  if (offset === 0) return t('thisWeek');
+  if (offset === -1) return {en:'Last Week',es:'Semana pasada',pt:'Semana passada',cv:'Simana pasadu'}[lang] || 'Last Week';
+  return Math.abs(offset) + ' ' + ({en:'weeks ago',es:'semanas atrás',pt:'semanas atrás',cv:'simanas atras'}[lang] || 'weeks ago');
+}
+
+// Hours-week-nav fix: the label, the forward-button state, and a
+// loading placeholder now update INSTANTLY on tap (and on swipe --
+// same handler), synchronously, before the published-hours fetch even
+// starts -- same fix as the manager Hours tab's hoursWeekMove(). The
+// actual fetch/render still happens inside renderHours(), which is now
+// safe against repeated fast taps (see that function's own comment).
 function portalWeekNav(dir) {
   if (dir > 0 && _portalWeekOffset >= 0) return; // can't go future
   _portalWeekOffset += dir;
   if (_portalWeekOffset > 0) _portalWeekOffset = 0;
+  var labelEl = document.getElementById('week-label');
+  if (labelEl) labelEl.textContent = _portalWeekLabelText(_portalWeekOffset);
+  var fwdBtn = document.getElementById('portal-week-fwd');
+  if (fwdBtn) {
+    fwdBtn.style.opacity = _portalWeekOffset >= 0 ? '0.3' : '1';
+    fwdBtn.style.pointerEvents = _portalWeekOffset >= 0 ? 'none' : 'auto';
+  }
+  var breakdownEl = document.getElementById('hours-breakdown');
+  if (breakdownEl) breakdownEl.innerHTML = '<div style="color:var(--muted);text-align:center;padding:16px 0;font-size:13px">Loading your hours...</div>';
   renderHours();
 }
 
@@ -52705,7 +52785,35 @@ async function _renderPortalEstimatedPay(estGrossCentsSoFar, anyDayIncomplete) {
   }
 }
 
+var _portalHoursLoadInFlight = false;
+var _portalHoursLoadInFlightPromise = null;
+// Hours-week-nav fix: same rerun-on-change pattern as the manager's
+// loadWeekHours -- never two overlapping published-hours fetches
+// racing each other's DOM paint (whichever finished last used to win,
+// even if it was requested first and had gone stale), but a tap
+// landing mid-flight is never dropped: once the current fetch
+// finishes, if _portalWeekOffset no longer matches what was actually
+// rendered, it reruns immediately, under the SAME promise every
+// existing caller (fire-and-forget or the realtime callback) already
+// relies on by name.
 async function renderHours() {
+  if (_portalHoursLoadInFlight) return _portalHoursLoadInFlightPromise;
+  _portalHoursLoadInFlight = true;
+  _portalHoursLoadInFlightPromise = (async function () {
+    try {
+      do {
+        await _renderHoursInnerImpl();
+      } while (_portalWeekOffset !== _portalHoursLastAttemptedOffset);
+    } finally {
+      _portalHoursLoadInFlight = false;
+      _portalHoursLoadInFlightPromise = null;
+    }
+  })();
+  return _portalHoursLoadInFlightPromise;
+}
+
+var _portalHoursLastAttemptedOffset = null;
+async function _renderHoursInnerImpl() {
   // PR #134 -- same PentaAssignments/PentaEmployees hydration race
   // PR #128/#133 fixed for the manager's Live tab, present here too:
   // getEmployeeTeam (called below) reads dailyAssignments, which only
@@ -52736,27 +52844,29 @@ async function renderHours() {
     } catch (e) { console.warn('[portal hours] PentaAssignments/PentaEmployees/PentaHourOverrides ready or mirror failed', e); }
   }
 
-  var days = getPortalWeekDates(_portalWeekOffset);
+  // Hours-week-nav fix: captured ONCE here and used for every read in
+  // this function from this point on (days, the label, the
+  // forward-button state, renderHoursData below) instead of the live
+  // global, which can change mid-flight if another tap or swipe lands
+  // while this fetch is still pending.
+  var _myPortalOffset = _portalWeekOffset;
+  _portalHoursLastAttemptedOffset = _myPortalOffset;
+  var days = getPortalWeekDates(_myPortalOffset);
   var mon = days[0];
   var fri = days[days.length - 1];
-  var lang = currentLang || 'en';
 
-  // Update header
-  if (_portalWeekOffset === 0) {
-    document.getElementById('week-label').textContent = t('thisWeek');
-  } else if (_portalWeekOffset === -1) {
-    document.getElementById('week-label').textContent = {en:'Last Week',es:'Semana pasada',pt:'Semana passada',cv:'Simana pasadu'}[lang] || 'Last Week';
-  } else {
-    document.getElementById('week-label').textContent = Math.abs(_portalWeekOffset) + ' ' + ({en:'weeks ago',es:'semanas atrás',pt:'semanas atrás',cv:'simanas atras'}[lang] || 'weeks ago');
-  }
+  // Update header -- portalWeekNav() already set this instantly on
+  // tap/swipe; this just re-confirms it once the real data is in.
+  var _labelEl = document.getElementById('week-label');
+  if (_labelEl) _labelEl.textContent = _portalWeekLabelText(_myPortalOffset);
   var datesEl = document.getElementById('portal-week-dates');
   if (datesEl) datesEl.textContent = mon.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + fri.toLocaleDateString('en-US',{month:'short',day:'numeric'});
 
   // Disable forward button if on current week
   var fwdBtn = document.getElementById('portal-week-fwd');
   if (fwdBtn) {
-    fwdBtn.style.opacity = _portalWeekOffset >= 0 ? '0.3' : '1';
-    fwdBtn.style.pointerEvents = _portalWeekOffset >= 0 ? 'none' : 'auto';
+    fwdBtn.style.opacity = _myPortalOffset >= 0 ? '0.3' : '1';
+    fwdBtn.style.pointerEvents = _myPortalOffset >= 0 ? 'none' : 'auto';
   }
 
   document.getElementById('total-label').textContent = t('totalHours');
@@ -52848,6 +52958,7 @@ async function renderHours() {
     }
     return;
   }
+  // (Salaried view never reaches renderHoursData -- no hours grid.)
 
   if (currentEmployee && currentEmployee.work_type === 'admin') {
     try {
@@ -52876,7 +52987,7 @@ async function renderHours() {
     } catch (e) {
       console.error('[portal hours] Admin/Office hours failed to load', e);
     }
-    renderHoursData(composite);
+    renderHoursData(composite, _myPortalOffset);
     return;
   }
 
@@ -52961,7 +53072,7 @@ async function renderHours() {
     return;
   }
 
-  renderHoursData(composite);
+  renderHoursData(composite, _myPortalOffset);
 }
 
 // Hours-weekend-days fix: delegates to getWeekDates (the Hours tab's
@@ -53050,7 +53161,7 @@ function renderPastWeeks() {
   } catch(e) {}
 }
 
-function renderHoursData(data) {
+function renderHoursData(data, offset) {
   const daysFull = {
     en: ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'],
     es: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'],
@@ -53062,8 +53173,13 @@ function renderHoursData(data) {
 
   let totalHrs = 0;
 
-  // Load extra tasks for this employee
-  var portalDays = getPortalWeekDates();
+  // Hours-week-nav fix: an explicit offset (passed by renderHours,
+  // captured before its own fetch) always wins over the live global --
+  // this used to default to THIS week unconditionally (getPortalWeekDates()
+  // with no argument), so the "is this today" highlight and the
+  // extra-task lookup below used the wrong week's dates whenever
+  // viewing anything other than the current week.
+  var portalDays = getPortalWeekDates(offset);
   // Hours-weekend-days fix: looked up directly against the real week
   // dates (any day, not just Mon-Fri) instead of getDay() arithmetic
   // that only ever covered 5 days.
