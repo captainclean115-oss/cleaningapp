@@ -882,7 +882,6 @@ body {
   scroll-snap-align: start;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
 }
-.hrs-day-unconfirmed { font-size: 11px; color: #f59e0b; font-weight: 800; margin-top: 1px; cursor: pointer; }
 .hrs-day:active { transform: scale(0.97); }
 .hrs-day.is-today { border-color: var(--accent); background: rgba(108,143,255,0.06); }
 .hrs-day.is-off { opacity: 0.55; }
@@ -36060,9 +36059,43 @@ function _hrsFmt12(date) {
 // be loaded globally at the moment.
 function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapData) {
   var dk = dateKey(d);
+
+  // Weekend-hours-assignment-only fix -- PART 2 (the Emilia bug).
+  // Checked first, before any override/team/assignment logic: an
+  // employee not on the roster as of THIS exact date (terminated
+  // on/before it) never has hours, even if a stale daily_assignments
+  // row exists for the date (getEmployeeTeam's explicit-assignment
+  // branch never checked termination -- that row alone used to
+  // resurrect her hours past termination).
+  var _onRosterToday = (typeof getUnifiedRoster === 'function')
+    && getUnifiedRoster(dk).some(function (e) { return e.id === empId; });
+  if (!_onRosterToday) {
+    return {
+      dayTeam: null, isOff: true,
+      hours: 0, startStr: '', endStr: '', startDate: null, endDate: null,
+      lunchMin: 0, isOpenShift: false, isOverride: false
+    };
+  }
+
   var dayTeam = getEmployeeTeam(empId, dk);
+  var override = getEmpHours(empId, dk);
+
+  // Weekend-hours-assignment-only fix -- PART 1 (the Blanca/Ana bug).
+  // On a Saturday or Sunday, the default-team fallback never applies
+  // unless Tom put this employee on a team (or OFF) for this exact
+  // date in Team Assignments -- no default team, no team-average
+  // GPS/vehicle blend, no spreading. A manual override is itself
+  // explicit and is never blocked by this (checked first, above).
+  var _dow = d.getDay();
+  if (dayTeam && (_dow === 0 || _dow === 6) && !override) {
+    var _hasExplicitAssignment = (typeof dailyAssignments !== 'undefined')
+      && dailyAssignments[dk + '_' + empId] !== undefined;
+    if (!_hasExplicitAssignment) dayTeam = null;
+  }
+
   if (!dayTeam) {
-    // Genuinely off / unassigned that day (not just "off THIS team").
+    // Genuinely off / unassigned that day (not just "off THIS team"),
+    // or an unassigned weekend day under the rule above.
     return {
       dayTeam: null, isOff: true,
       hours: 0, startStr: '', endStr: '', startDate: null, endDate: null,
@@ -36070,7 +36103,6 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
     };
   }
   var dayData = weekHoursData[dayTeam];
-  var override = getEmpHours(empId, dk);
   var empMap = empHoursMapData[empId] || {};
   var teCell = empMap[dk] || null;
   var teamH = (dayData && Array.isArray(dayData.days)) ? (dayData.days[dayIdx] || 0) : 0;
@@ -36103,26 +36135,10 @@ function resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapDat
   var lunchMin = override ? (override.lunch || 0)
     : (dayData && dayData.lunch && dayData.lunch[dayIdx] ? dayData.lunch[dayIdx].duration : 0);
 
-  // Hours-weekend-days fix: hours sourced ONLY from the team's blended
-  // GPS/vehicle average (no personal override, no personal GPS cell)
-  // are "confirmed" by a real scheduled job for this team that day, or
-  // an explicit daily_assignments entry for THIS employee that day --
-  // either one means a human expected this day to be worked. With
-  // neither, the hours are real vehicle/GPS activity but nothing ties
-  // them to this employee specifically -- shown, never dropped, but
-  // flagged so a manager reviews before trusting them for payroll or
-  // publishing to the employee.
-  var isUnconfirmed = false;
-  if (hours > 0 && !override && !teCell) {
-    var hasJob = (typeof jobs !== 'undefined' && Array.isArray(jobs)) && jobs.some(function (j) { return j.date === dk && j.team === dayTeam && !j.cancelled; });
-    var hasAssignment = (typeof dailyAssignments !== 'undefined') && dailyAssignments[dk + '_' + empId] !== undefined;
-    isUnconfirmed = !hasJob && !hasAssignment;
-  }
-
   return {
     dayTeam: dayTeam, isOff: false,
     hours: hours, startStr: startStr, endStr: endStr, startDate: startDate, endDate: endDate,
-    lunchMin: lunchMin, isOpenShift: isOpenShift, isOverride: !!override, isUnconfirmed: isUnconfirmed
+    lunchMin: lunchMin, isOpenShift: isOpenShift, isOverride: !!override
   };
 }
 
@@ -36319,7 +36335,7 @@ function _computeWeekPayroll(days, weekHoursData, empHoursMapData, payrollSettin
       else { hrs = rd.hours; }
       anyDayIncluded = true;
       totalHours += hrs;
-      if (rate != null && hrs > 0 && !rd.isUnconfirmed) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
+      if (rate != null && hrs > 0) totalGrossCents += _computeDayPayCents(hrs, rate, cumBefore, overtimeEnabled);
       cumBefore += hrs;
     });
     if (!anyDayIncluded) return; // nothing at all this week for her -- omit entirely
@@ -36425,10 +36441,6 @@ async function publishWeekHours(days, weekHoursData, empHoursMapData) {
       // (isOverride is what tells the two apart).
       if (rd.hours === 0 && !rd.isOverride) {
         if (dk !== todayKey) skipped.push({ emp: emp.name, date: dk, reason: 'unresolved -- no GPS/clock data yet' });
-        return;
-      }
-      if (rd.isUnconfirmed) {
-        skipped.push({ emp: emp.name, date: dk, reason: 'unconfirmed -- vehicle/GPS hours with no job or assignment, awaiting manager review' });
         return;
       }
       var fieldCumBefore = cumHoursByEmp[empUuid] || 0;
@@ -36822,19 +36834,12 @@ function renderHoursTable(days, dayNames) {
         const hrsHtml = empH > 0
           ? '<div class="hrs-day-hrs">' + _hrsFmtHrs(empH) + '<span style="font-size:9px;font-weight:600;color:var(--muted);margin-left:1px">h</span></div>'
           : '<div class="hrs-day-hrs is-dash">&#8212;</div>';
-        // Hours-weekend-days fix: hours with no job or assignment behind
-        // them (team-average GPS/vehicle activity only) are shown, never
-        // dropped, but flagged -- tap the badge for why; tap elsewhere
-        // on the cell still opens the normal day detail.
-        const unconfirmedBadge = (_rd.isUnconfirmed && empH > 0)
-          ? '<div class="hrs-day-unconfirmed" onclick="event.stopPropagation();alert(\'Hours from vehicle activity, no job or assignment on this day. Review and confirm if correct.\')" title="Unconfirmed -- tap for why">&#9888;</div>'
-          : '';
         // Cross-team day tag -- visible marker (not a duplicate row) when
         // this specific day's real team differs from the card's team.
         const teamTag = dayTeam !== team
           ? '<div class="hrs-day-time" style="color:' + _pentaTeamColor(dayTeam, '#6b7280') + ';font-weight:700">' + _audEsc(dayTeam) + '</div>'
           : '';
-        const timeHtml = unconfirmedBadge + teamTag
+        const timeHtml = teamTag
           + (sStr ? '<div class="hrs-day-time hrs-day-time-start">' + _audEsc(sStr) + '</div>' : '')
           + ((!isOpen && eStr) ? '<div class="hrs-day-time hrs-day-time-end">' + _audEsc(eStr) + '</div>' : '')
           + (lunchMin ? '<div class="hrs-day-time" style="color:#f59e0b">&#127828; ' + lunchMin + 'm</div>' : '')
