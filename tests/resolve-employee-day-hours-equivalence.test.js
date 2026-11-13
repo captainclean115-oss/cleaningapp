@@ -90,6 +90,10 @@ function buildSandbox(deps) {
       if (x instanceof Date) return x.toISOString();
       return String(x);
     },
+    // Weekend-hours-assignment-only fix: 'e1' (every scenario below)
+    // is always on the roster -- termination-awareness itself is
+    // covered separately in tests/hours-weekend-days.test.js.
+    getUnifiedRoster: function () { return [{ id: 'e1' }]; },
   }, deps);
   vm.createContext(sandbox);
   vm.runInContext(oldFnSrc, sandbox);
@@ -101,10 +105,9 @@ function runBoth(sandbox, empId, d, dayIdx, weekHoursData, empHoursMapData) {
   const oldResult = sandbox.OLD_resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapData);
   const newResult = sandbox.resolveEmployeeDayHours(empId, d, dayIdx, weekHoursData, empHoursMapData);
   // The new function additionally returns startDate/endDate (needed by
-  // the portal) and isUnconfirmed (hours-weekend-days fix) -- strip
-  // those before comparing, since the OLD formula never had them;
-  // every OTHER field must match byte-for-byte.
-  const { startDate, endDate, isUnconfirmed, ...newComparable } = newResult;
+  // the portal) -- strip those before comparing, since the OLD formula
+  // never had them; every OTHER field must match byte-for-byte.
+  const { startDate, endDate, ...newComparable } = newResult;
   return { oldResult, newComparable };
 }
 

@@ -1,32 +1,42 @@
-// Hours-weekend-days fix.
+// Weekend-hours-assignment-only fix, replacing PR #228's "unconfirmed"
+// design entirely.
 //
-// Tom corrected PR #227's conclusion: last Saturday's hours for team M2
-// were real work, not incidental vehicle/GPS noise -- real data
-// (Supabase, read-only) showed the business owner himself reassigned
-// the team's device for that exact date and marked another employee
-// explicitly OFF the same day, both same-day actions, strong evidence
-// of deliberate Saturday operations. The Hours tab never showed
-// Saturday/Sunday at all (getWeekDates was hardcoded to 5 weekdays),
-// so there was never a chance to see or confirm it.
+// PR #227 excluded weekends entirely from the Hours tab/report/portal/
+// payroll. PR #228 corrected that to "show and count weekend hours,
+// flagging GPS/vehicle-only ones as unconfirmed." Tom overrode PR
+// #228 with a stricter, absolute rule: a weekend day (Saturday/Sunday)
+// has hours ONLY when Tom explicitly put the employee on a team (or
+// marked them OFF) in Team Assignments for that exact date. A default
+// team, a team-average GPS/vehicle blend, or vehicle movement NEVER
+// creates weekend hours -- the "M3 car moved, Blanca and Ana got
+// hours they didn't work" bug. There is no isUnconfirmed flag anymore;
+// an unassigned weekend day is simply zero, the same shape as any
+// other day off. A manual override is itself explicit and always
+// counts, weekend or not.
 //
-// Fix: getWeekDates (the one shared week definition for the manager
-// Hours tab, the employee portal, and the Export Hours Report) now
-// returns the full 7-day week -- Mon-Sun, or Sun-Sat for a sunday-start
-// business. Weekend hours are shown and counted using the SAME rule as
-// weekdays (resolveEmployeeDayHours / the shared _pentaEmployeeWeekHours
-// total) -- no special weekend logic. A day whose hours come only from
-// team-average GPS/vehicle activity, with no scheduled job and no
-// explicit assignment behind it, is flagged isUnconfirmed: true --
-// still shown and still counted (never dropped), but a manager should
-// review it (the Hours tab shows a small warning badge) before fully
-// trusting it, same reasoning Tom described.
+// Separately, resolveEmployeeDayHours now also guards against a
+// terminated employee ever having hours on or after her termination
+// date, even when a stale daily_assignments row exists for that date
+// (the confirmed root cause of a real bug: a backfilled assignment
+// row, created after the fact, resurrected a terminated employee's
+// hours because getEmployeeTeam's explicit-assignment branch never
+// checked termination at all).
 //
-// This test extracts the REAL getWeekDates and resolveEmployeeDayHours
-// straight out of index.html and covers the 3 scenarios the task asked
-// for: a Saturday backed by a real assignment counts normally in both
-// the Hours tab and the report; a GPS-only Saturday is flagged but
-// still totals the same in both; and the Sun/Mon week boundary is
-// correct for both pay-week-start-day settings.
+// This test extracts the REAL getWeekDates, resolveEmployeeDayHours,
+// and the shared _pentaEmployeeWeekHours straight out of index.html
+// and covers every scenario Tom asked for: an unassigned weekend day
+// with team vehicle movement is zero (the Blanca/Ana shape); an
+// explicitly-assigned weekend day counts fully; an employee marked
+// OFF on a weekend stays zero; a manual override on a weekend counts;
+// a terminated employee gets no hours on/after her termination date
+// even with a stale assignment row (the Emilia shape); and for every
+// scenario, the Hours tab's own weekly total
+// (_pentaEmployeeWeekHours) agrees exactly with a direct
+// resolveEmployeeDayHours read, since the report (_buildHoursReportFromData)
+// and the Hours tab both call into this exact same function -- proven
+// separately in tests/hours-report-matches-hours-tab.test.js. Weekday
+// behavior (the default-team fallback) is unchanged and still covered
+// by tests/resolve-employee-day-hours-equivalence.test.js.
 //
 // Run with: node tests/hours-weekend-days.test.js
 
@@ -56,6 +66,8 @@ const getWeekDatesSrc = extract('function getWeekDates(offset) {', '\n\nfunction
 // (adjacent in index.html).
 const resolveAndSharedSrc = extract('function _hrsFmtHrs(h) {', '\n\n// ═══════════════════════════════════════════════════════════════════════\n// Published Hours');
 
+// Default roster: just 'e1', always present (not terminated) unless a
+// scenario overrides getUnifiedRoster to test the termination guard.
 function buildSandbox(opts) {
   opts = opts || {};
   const jobsArr = opts.jobs || [];
@@ -65,6 +77,7 @@ function buildSandbox(opts) {
     dateKey: function (d) { return typeof d === 'string' ? d : (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')); },
     getEmployeeTeam: opts.getEmployeeTeam || function () { return null; },
     getEmpHours: opts.getEmpHours || function () { return null; },
+    getUnifiedRoster: opts.getUnifiedRoster || function () { return [{ id: 'e1' }, { id: 'blanca' }, { id: 'oneida' }, { id: 'mariana' }, { id: 'ana' }]; },
     _pentaPayWeekStartDay: function () { return opts.payWeekStartDay || 'monday'; },
     jobs: jobsArr,
     dailyAssignments: assignments,
@@ -77,110 +90,131 @@ function buildSandbox(opts) {
 
 async function main() {
 
+const SAT = '2026-11-07'; // a Saturday
+const SUN = '2026-11-08'; // a Sunday
+const satDate = new Date(SAT + 'T00:00:00');
+const sunDate = new Date(SUN + 'T00:00:00');
+
 // ======================================================================
-// 1. A Saturday backed by a real assignment (an explicit
-//    daily_assignments-style entry for this employee that day) counts
-//    normally -- not flagged unconfirmed -- and totals the SAME in
-//    both the "Hours tab" total (_pentaEmployeeWeekHours) and a direct
-//    resolveEmployeeDayHours read, since both are the same function.
+// (a) The Blanca/Ana shape: an unassigned weekend day with real team
+//     vehicle/GPS movement (team-average fallback has a non-zero
+//     value) gives ZERO hours -- no default team, no GPS, no team
+//     average ever creates a weekend hour without an explicit
+//     daily_assignments entry for THIS employee on THIS date.
 // ======================================================================
 {
-  const satDk = '2026-11-07'; // a Saturday
   const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; },
-    assignments: { '2026-11-07_e1': 'M2' }, // explicit assignment for THIS employee, this date
+    getEmployeeTeam: function () { return 'M3'; }, // default team fallback, no explicit assignment either day
+    assignments: {}, // nobody explicitly assigned this weekend
+  });
+  const weekHoursData = { M3: { days: [6, 5], starts: [null, null], ends: [null, null], lunch: [null, null], source: 'geotab' } };
+  const rdSat = sandbox.resolveEmployeeDayHours('blanca', satDate, 0, weekHoursData, {});
+  const rdSun = sandbox.resolveEmployeeDayHours('blanca', sunDate, 1, weekHoursData, {});
+  check('unassigned Saturday with team vehicle movement is zero hours (Blanca/Ana shape)', rdSat.hours === 0 && rdSat.isOff === true);
+  check('unassigned Sunday with team vehicle movement is zero hours too', rdSun.hours === 0 && rdSun.isOff === true);
+
+  const weekTotal = sandbox._pentaEmployeeWeekHours('blanca', [satDate, sunDate], weekHoursData, {});
+  check('the shared weekly-total function agrees: 0h for the whole weekend', weekTotal === 0);
+}
+
+// ======================================================================
+// (b) An explicitly-assigned weekend day counts fully -- same value --
+//     via a direct resolveEmployeeDayHours read AND the shared weekly
+//     total both the Hours tab and the report call into. (publishWeekHours
+//     and _computeWeekPayroll's own no-skip behavior for an already-
+//     resolved weekend row with hours>0 is proven directly in
+//     tests/publish-week-hours.test.js and tests/payroll-cost-tally.test.js --
+//     neither function has any day-of-week logic of its own; the rule
+//     lives entirely here.)
+// ======================================================================
+{
+  const sandbox = buildSandbox({
+    getEmployeeTeam: function () { return 'M2'; },
+    assignments: { '2026-11-07_oneida': 'M2' }, // explicit assignment for THIS employee, this date
   });
   const weekHoursData = { M2: { days: [6], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const satDate = new Date(satDk + 'T00:00:00');
-  const rd = sandbox.resolveEmployeeDayHours('e1', satDate, 0, weekHoursData, {});
-  check('a Saturday backed by a real assignment counts its hours (6h)', rd.hours === 6);
-  check('a Saturday backed by a real assignment is NOT flagged unconfirmed', rd.isUnconfirmed === false);
+  const rd = sandbox.resolveEmployeeDayHours('oneida', satDate, 0, weekHoursData, {});
+  check('an explicitly-assigned Saturday counts its hours (6h)', rd.hours === 6 && rd.isOff === false);
 
-  const weekTotal = sandbox._pentaEmployeeWeekHours('e1', [satDate], weekHoursData, {});
-  check('the shared weekly-total function (what both the Hours tab and the report call) agrees exactly (6h)', weekTotal === 6);
+  const weekTotal = sandbox._pentaEmployeeWeekHours('oneida', [satDate], weekHoursData, {});
+  check('the Hours-tab/report shared total agrees exactly (6h) -- same function, same number', weekTotal === 6);
 }
 
 // ======================================================================
-// 2. A GPS-only Saturday (no job, no assignment -- team-average
-//    fallback only) is shown and counted, flagged isUnconfirmed, and
-//    still totals the SAME in both surfaces -- never dropped, never
-//    silently trusted as "confirmed."
+// (c) An employee explicitly marked OFF on a weekend stays at zero --
+//     an explicit assignment entry exists (OFF counts as explicit),
+//     but OFF itself still means no hours, same as any other day.
 // ======================================================================
 {
-  const satDk = '2026-11-07';
   const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; }, // falls back to default team, no explicit assignment
-    jobs: [], // no scheduled job for M2 that day
-    assignments: {}, // no explicit assignment for this employee that day either
+    getEmployeeTeam: function (empId, dk) { return dk === SAT ? null : 'M2'; }, // getEmployeeTeam already maps OFF -> null
+    assignments: { '2026-11-07_mariana': 'OFF' },
   });
-  const weekHoursData = { M2: { days: [3.5], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const satDate = new Date(satDk + 'T00:00:00');
-  const rd = sandbox.resolveEmployeeDayHours('e1', satDate, 0, weekHoursData, {});
-  check('a GPS-only Saturday is shown and counted (3.5h), never silently dropped', rd.hours === 3.5);
-  check('a GPS-only Saturday with no job or assignment IS flagged unconfirmed', rd.isUnconfirmed === true);
-
-  const weekTotal = sandbox._pentaEmployeeWeekHours('e1', [satDate], weekHoursData, {});
-  check('the shared weekly-total function still counts it (3.5h) -- unconfirmed is a review flag, not an exclusion rule', weekTotal === 3.5);
+  const weekHoursData = { M2: { days: [6], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
+  const rd = sandbox.resolveEmployeeDayHours('mariana', satDate, 0, weekHoursData, {});
+  check('an employee explicitly marked OFF on a weekend stays at zero hours', rd.hours === 0 && rd.isOff === true);
 }
 
-// A scheduled (non-cancelled) job for the team that day is ALSO enough
-// to confirm it, independent of any employee-level assignment.
+// ======================================================================
+// (d) A manual override entered for a weekend day counts -- it's
+//     itself an explicit action, never blocked by the assignment-only
+//     guard even with no daily_assignments entry at all.
+// ======================================================================
 {
-  const satDk = '2026-11-07';
   const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; },
-    jobs: [{ id: 'j1', date: satDk, team: 'M2', cancelled: false }],
-    assignments: {},
-  });
-  const weekHoursData = { M2: { days: [4], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const rd = sandbox.resolveEmployeeDayHours('e1', new Date(satDk + 'T00:00:00'), 0, weekHoursData, {});
-  check('a scheduled job for the team that day confirms it too, even with no employee-level assignment', rd.isUnconfirmed === false);
-}
-
-// A CANCELLED job does not count as confirmation.
-{
-  const satDk = '2026-11-07';
-  const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; },
-    jobs: [{ id: 'j1', date: satDk, team: 'M2', cancelled: true }],
-    assignments: {},
-  });
-  const weekHoursData = { M2: { days: [4], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const rd = sandbox.resolveEmployeeDayHours('e1', new Date(satDk + 'T00:00:00'), 0, weekHoursData, {});
-  check('a CANCELLED job does not confirm the day -- still flagged unconfirmed', rd.isUnconfirmed === true);
-}
-
-// A manual override or a personal GPS cell is its own confirmation --
-// never flagged, even with no job/assignment at all.
-{
-  const satDk = '2026-11-07';
-  const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; },
+    getEmployeeTeam: function () { return 'M3'; }, // default team fallback only, no explicit assignment
     getEmpHours: function () { return { hours: 5, start: '09:00', end: '14:00', lunch: 0 }; },
-    jobs: [], assignments: {},
+    assignments: {},
   });
-  const weekHoursData = { M2: { days: [3.5], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const rd = sandbox.resolveEmployeeDayHours('e1', new Date(satDk + 'T00:00:00'), 0, weekHoursData, {});
-  check('a manual override is its own confirmation -- not flagged unconfirmed even with no job/assignment', rd.isUnconfirmed === false && rd.hours === 5);
-}
+  const weekHoursData = { M3: { days: [0], starts: [null], ends: [null], lunch: [null], source: 'geotab' } }; // no vehicle activity at all -- the override is the only source
+  const rd = sandbox.resolveEmployeeDayHours('ana', satDate, 0, weekHoursData, {});
+  check('a manual override on a weekend counts in full (5h), not blocked by the assignment-only guard', rd.hours === 5 && rd.isOff === false && rd.isOverride === true);
 
-// A day with zero hours is never flagged (nothing to confirm or review).
-{
-  const satDk = '2026-11-07';
-  const sandbox = buildSandbox({
-    getEmployeeTeam: function (empId, dk) { return dk === satDk ? 'M2' : null; },
-    jobs: [], assignments: {},
-  });
-  const weekHoursData = { M2: { days: [0], starts: [null], ends: [null], lunch: [null], source: 'geotab' } };
-  const rd = sandbox.resolveEmployeeDayHours('e1', new Date(satDk + 'T00:00:00'), 0, weekHoursData, {});
-  check('a zero-hour day is never flagged unconfirmed (nothing to review)', rd.isUnconfirmed === false);
+  const weekTotal = sandbox._pentaEmployeeWeekHours('ana', [satDate], weekHoursData, {});
+  check('the shared weekly total agrees exactly (5h)', weekTotal === 5);
 }
 
 // ======================================================================
-// 3. getWeekDates' Sun/Mon week boundary is correct for BOTH
-//    pay-week-start-day settings, on whatever day the suite actually
-//    runs (no fixed/mocked clock needed -- these properties hold for
-//    any "today").
+// (e) The Emilia shape: a terminated employee gets no hours on or
+//     after her termination date, even with a stale explicit
+//     daily_assignments row for that exact date (the confirmed real
+//     bug -- getEmployeeTeam's explicit-assignment branch never
+//     checked termination). Covers a WEEKDAY too, since the real bug
+//     spanned both.
+// ======================================================================
+{
+  const TERM_DATE = '2026-11-04'; // a Wednesday
+  const dayAfterTerm = '2026-11-05'; // a Thursday, the day Tom flagged
+  const sandbox = buildSandbox({
+    getEmployeeTeam: function () { return 'M2'; }, // stale assignment resolves her onto a team either day
+    assignments: { '2026-11-04_emilia': 'M2', '2026-11-05_emilia': 'M2' }, // the stale rows -- explicit, but after termination
+    getUnifiedRoster: function (asOfDate) {
+      // Same isTerminatedAsOf convention getUnifiedRoster itself uses:
+      // excluded ON OR AFTER the termination date.
+      return asOfDate >= TERM_DATE ? [] : [{ id: 'emilia' }];
+    },
+  });
+  const weekHoursData = { M2: { days: [7.79, 10.81], starts: [null, null], ends: [null, null], lunch: [null, null], source: 'geotab' } };
+  const rdTermDay = sandbox.resolveEmployeeDayHours('emilia', new Date(TERM_DATE + 'T00:00:00'), 0, weekHoursData, {});
+  const rdAfter = sandbox.resolveEmployeeDayHours('emilia', new Date(dayAfterTerm + 'T00:00:00'), 1, weekHoursData, {});
+  check('no hours on the termination date itself, even with a stale explicit assignment row', rdTermDay.hours === 0 && rdTermDay.isOff === true);
+  check('no hours the day after termination either (the exact Emilia bug), even with a stale explicit assignment row', rdAfter.hours === 0 && rdAfter.isOff === true);
+
+  const weekTotal = sandbox._pentaEmployeeWeekHours('emilia', [new Date(TERM_DATE + 'T00:00:00'), new Date(dayAfterTerm + 'T00:00:00')], weekHoursData, {});
+  check('the shared weekly total agrees: zero for both days on/after termination', weekTotal === 0);
+
+  // Control: the day BEFORE termination still counts normally -- the
+  // guard is date-aware, not a blanket exclusion of the employee.
+  const dayBeforeTerm = '2026-11-03'; // a Tuesday
+  const rdBefore = sandbox.resolveEmployeeDayHours('emilia', new Date(dayBeforeTerm + 'T00:00:00'), 0, { M2: { days: [8], starts: [null], ends: [null], lunch: [null], source: 'geotab' } }, {});
+  check('the day BEFORE termination still counts normally (not a blanket exclusion)', rdBefore.hours === 8 && rdBefore.isOff === false);
+}
+
+// ======================================================================
+// (f) getWeekDates' Sun/Mon week boundary is correct for BOTH
+//     pay-week-start-day settings, on whatever day the suite actually
+//     runs (no fixed/mocked clock needed -- these properties hold for
+//     any "today").
 // ======================================================================
 {
   const sandbox = buildSandbox({ payWeekStartDay: 'monday' });
