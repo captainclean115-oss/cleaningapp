@@ -229,7 +229,10 @@ async function runChecks() {
 // translation happens, so a real regression stays diagnosable even though
 // the operator no longer sees the raw text. ----
 {
-  const callSiteIdx = src.indexOf('if (!didAnyToolCall) { processVoiceCommandLocal(text, _claireUserFacingError(claireErr)); return; }');
+  // Claire-ai-call-failing fix: this call site now also sets the raw
+  // last-error detail (for the menu's diagnostics line) before
+  // translating -- same two statements, just no longer a single line.
+  const callSiteIdx = src.indexOf("if (!didAnyToolCall) {\n          _claireSetLastErrorNote(_claireRawErrorDetail(claireErr));\n          processVoiceCommandLocal(text, _claireUserFacingError(claireErr));\n          return;\n        }");
   check('the round-0 API failure call site passes a translated (not raw) error through', callSiteIdx !== -1, true);
   const roundLogIdx = src.indexOf("_claireLogTechnicalError('processVoiceCommand round ' + round, claireErr);");
   check('the round-0 failure logs the full technical error before translating it', roundLogIdx !== -1, true);
