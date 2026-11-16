@@ -27,6 +27,9 @@ function extract(startMarker, endMarker, label) {
 }
 
 const dateKeySource = extract('function dateKey(d) {', '\n\nfunction jobsForDate', 'dateKey');
+// Schedule-revenue-total fix: Close Day's revenue line now reads the
+// one shared per-job price resolver instead of a bare parseFloat.
+const resolvePriceSource = extract('function _pentaResolveJobPrice(j) {', '\nfunction getDayRevenue(dateStr) {', '_pentaResolveJobPrice');
 const tdrSource = extract('var TDR_MAX_RANGE_DAYS = 31;', '\nfunction openTeamDayReport() {', 'TDR module');
 const vsnapSource = extract('var _visitSnapGeneration = 0;', 'var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;', 'Visit Data module');
 const closeDaySource = extract('var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;', '// GPS MAP (Leaflet)', 'Close Day module');
@@ -37,7 +40,7 @@ const closeDaySource = extract('var CLOSE_DAY_EXTRA_STOP_MIN_MINUTES = 15;', '//
 const uuidSource = extract('function _generateUuidV4() {', '\n\nasync function submitApplication', '_generateUuidV4');
 const queueSource = extract('var SCHEDULE_SAVE_RETRY_INTERVAL_MS = 60000;', '(function pentaPrimeJobs', 'Schedule Save Queue module');
 
-const fnSource = [dateKeySource, uuidSource, queueSource, tdrSource, vsnapSource, closeDaySource].join('\n');
+const fnSource = [dateKeySource, resolvePriceSource, uuidSource, queueSource, tdrSource, vsnapSource, closeDaySource].join('\n');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -133,6 +136,10 @@ function buildSandbox(opts) {
     _pentaBusinessTimezone: function () { return 'UTC'; },
     _adminEsc: function (s) { return String(s); }
   };
+  // Schedule-revenue-total fix: _pentaResolveJobPrice reads the bare
+  // global PentaClients (same alias a real browser gives window.X) --
+  // mirrored here the same way production actually works.
+  sandbox.PentaClients = sandbox.window.PentaClients;
   vm.createContext(sandbox);
   vm.runInContext(fnSource, sandbox);
   return sandbox;
