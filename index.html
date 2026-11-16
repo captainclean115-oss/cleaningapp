@@ -21924,7 +21924,21 @@ function _claireUserFacingError(err) {
   var msg = String((err && err.message) || '');
   if (/no active session|sign in again/i.test(msg)) return 'You got signed out — sign back in and try again.';
   if (/network/i.test(msg)) return 'Connection dropped. Try again?';
-  if (/unexpected tool_use_id|tool_use ids without tool_result|invalid_request_error/i.test(msg)) return 'I lost track — can you resend your last request?';
+  // Claire-ai-call-failing fix: Anthropic's own billing/credits
+  // rejection ("Your credit balance is too low...") is an
+  // invalid_request_error too, but it is NEVER a conversation/memory
+  // problem -- retrying can't fix it, and the old generic mapping
+  // below falsely implied Claire "lost track." Checked first, with
+  // its own honest, specific, actionable message.
+  if (/credit balance is too low|insufficient[ _]?(credits?|quota|balance)|plans\s*&\s*billing/i.test(msg)) return 'Claire\'s AI account is out of credits — ask the owner to check Anthropic billing before trying again.';
+  // invalid_request_error is Anthropic's GENERIC "something about the
+  // request was invalid" type -- covers many distinct causes, not
+  // just a broken tool_use/tool_result pairing. Only the specific
+  // pairing phrases get the "lost track" message now; any OTHER
+  // invalid_request_error gets a neutral message instead of a false
+  // memory-loss claim.
+  if (/unexpected tool_use_id|tool_use ids without tool_result/i.test(msg)) return 'I lost track — can you resend your last request?';
+  if (/invalid_request_error/i.test(msg)) return 'That request wasn\'t accepted. Try again?';
   if (/time(d)?[ -]?out/i.test(msg)) return 'That took too long. Try again?';
   // Claire safety foundation (Stage 2a): a saved-conversation load
   // failure (network/DB, not a corrupted-history repair -- that case
@@ -26380,7 +26394,11 @@ async function processVoiceCommand(text) {
         // with "Anthropic status: 400" etc) -- useless and scary to a
         // non-technical operator. _claireUserFacingError translates it to
         // a short plain sentence; the real detail is still logged above.
-        if (!didAnyToolCall) { processVoiceCommandLocal(text, _claireUserFacingError(claireErr)); return; }
+        if (!didAnyToolCall) {
+          _claireSetLastErrorNote(_claireRawErrorDetail(claireErr));
+          processVoiceCommandLocal(text, _claireUserFacingError(claireErr));
+          return;
+        }
         claireReply('I had trouble finishing that — want me to try again?');
         return;
       }
@@ -26543,8 +26561,21 @@ async function processVoiceCommand(text) {
     _claireLogTechnicalError('processVoiceCommand outer catch', e);
     _claireSilent = false;
     claireHideTyping();
+    _claireSetLastErrorNote(_claireRawErrorDetail(e));
     processVoiceCommandLocal(text, _claireUserFacingError(e));
   }
+}
+
+// Claire-ai-call-failing fix: the RAW detail (HTTP status + the
+// server's own error message, trimmed) for the last-error line in the
+// Claire menu -- deliberately more detailed than the short, friendly
+// chat-bubble text _claireUserFacingError produces, since the whole
+// point of a diagnostics line is to carry what the chat bubble can't.
+function _claireRawErrorDetail(err) {
+  if (!err) return 'Unknown error.';
+  var statusPrefix = (err.status != null) ? ('HTTP ' + err.status + ': ') : '';
+  var msg = String(err.message || err);
+  return (statusPrefix + msg).slice(0, 150);
 }
 
 // v9.5.4: name normalizer. Strips trailing comma/semicolon + whitespace
@@ -29237,7 +29268,11 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
       return;
     }
   }
-  _claireSetLastErrorNote(apiErrorReason);
+  // Claire-ai-call-failing fix: the richer raw detail is already set
+  // by the real caller (processVoiceCommand's two catch blocks) before
+  // this function ever runs -- setting it again here, from the
+  // already-translated friendly apiErrorReason, would just overwrite
+  // that detail with something less useful.
   _claireReplyWithRetry(text);
 }
 
@@ -29246,7 +29281,17 @@ async function processVoiceCommandLocal(text, apiErrorReason) {
 // never discarded -- so Retry can resend EXACTLY what Tom asked,
 // instead of making him retype it.
 var _claireLastFailedMessage = null;
+// Claire-ai-call-failing fix: tracks how many times the SAME message
+// has failed in a row, and which message that count belongs to -- a
+// different message failing later always starts its own count at 0,
+// never inherits a stale count from an earlier, unrelated failure.
+var _claireRetryAttemptCount = 0;
+var _claireRetryTrackedText = null;
 function _claireReplyWithRetry(originalText) {
+  if (_claireRetryTrackedText !== originalText) {
+    _claireRetryTrackedText = originalText;
+    _claireRetryAttemptCount = 0;
+  }
   _claireLastFailedMessage = originalText;
   claireHideTyping();
   if (_claireSilent) return;
@@ -29258,6 +29303,18 @@ function _claireRetryFailedMessage() {
   var text = _claireLastFailedMessage;
   if (!text) return;
   _claireLastFailedMessage = null;
+  _claireRetryAttemptCount++;
+  if (_claireRetryAttemptCount >= 2) {
+    // The same message has now failed twice in a row (original send +
+    // one retry) -- fall back to a clean history + a fresh conversation
+    // id before trying a third time, in case the accumulated history
+    // itself was contributing. Tom's visible chat bubbles are untouched
+    // -- only the in-memory array actually sent to the API resets.
+    _claireHistory = [];
+    _claireActiveConversationId = null;
+    _claireRetryAttemptCount = 0;
+    _claireRetryTrackedText = null;
+  }
   claireShowTyping();
   processVoiceCommand(text);
 }
