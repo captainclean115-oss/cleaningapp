@@ -24,7 +24,11 @@ function extract(startMarker, endMarker, label) {
   return src.slice(s, e);
 }
 
-const wireSrc = extract('function pentaWireLoginForm() {', '\nasync function logout() {', 'pentaWireLoginForm');
+// login-hang-fix: pentaWireLoginForm now calls 3 helper functions
+// (_pentaWithTimeout, _pentaClearStaleSession, _pentaLoginErrorMessage)
+// declared immediately before it -- pull those in too so this sandbox has
+// them defined.
+const wireSrc = extract('function _pentaWithTimeout(promise, ms) {', '\nasync function logout() {', 'pentaWireLoginForm');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -62,6 +66,8 @@ function buildSandbox(authStub) {
   };
   const sandbox = {
     console: console,
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
     document: { getElementById: function (id) { return els[id] || null; } },
     window: { PentaAuth: authStub, location: { reload: function () {} } },
     PentaAuth: authStub,
@@ -141,9 +147,11 @@ function buildSandbox(authStub) {
     check('forgot-password in phone mode calls requestPhoneReset(phone), not resetPassword again', calls[1], ['requestPhoneReset', '7743606209']);
   }
 
-  // Case 4: a lockout-style error from signInWithPhone surfaces verbatim
-  // in the error box -- the exact "try again in a few minutes" wording
-  // the Edge Function returns after 5 failed attempts.
+  // Case 4: a lockout-style error from signInWithPhone (the exact "try
+  // again in a few minutes" wording the Edge Function returns after 5
+  // failed attempts) gets login-hang-fix's own clear, consistent
+  // rate-limit message rather than passing the raw server string through
+  // unlabeled.
   {
     const authStub = {
       signIn: function () { return Promise.resolve({ ok: true }); },
@@ -157,7 +165,7 @@ function buildSandbox(authStub) {
     els['penta-login-password'].value = 'wrong';
     els['penta-login-form']._fire('submit');
     await new Promise(function (r) { setTimeout(r, 0); });
-    check('a lockout error from the server surfaces verbatim to the employee', els['penta-login-error'].textContent, 'Too many attempts. Try again in a few minutes.');
+    check('a lockout error from the server gets the clear rate-limit message', els['penta-login-error'].textContent, "Couldn't sign in: too many attempts -- please wait a bit and try again.");
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
