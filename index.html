@@ -7067,6 +7067,11 @@ window.PentaGeocodeHistory = (function() {
     languages: 1, languages_spoken: 1,
     // schedule preference
     prefTime: 1, preferred_start_time: 1,
+    // Hire-transfer-missing-fields fix: preferred_language (column
+    // already existed, never wired in) + 3 new columns (migration 124)
+    // the application collects with nowhere to land on the employee
+    // side before this fix.
+    preferred_language: 1, has_reliable_transportation: 1, prior_employer: 1, earliest_start_date: 1,
     // localStorage-only / known safe drops (NOT real columns, intentionally dropped).
     // termReason/termNotes/rehire/termDate are the OLD dead field names from
     // the pre-PR-#149 status-dropdown termination fields (never had real
@@ -7225,6 +7230,14 @@ window.PentaGeocodeHistory = (function() {
     if (emp.emRel != null) row.emergency_contact_relationship = String(emp.emRel || '').trim() || null;
     if (emp.emergency_contact_relationship != null) row.emergency_contact_relationship = String(emp.emergency_contact_relationship || '').trim() || null;
 
+    // Hire-transfer-missing-fields fix: preferred_language (column
+    // already existed, never wired in before this fix) + 3 new
+    // columns (migration 124).
+    if (emp.preferred_language != null) row.preferred_language = String(emp.preferred_language || '').trim() || null;
+    if (emp.has_reliable_transportation != null) row.has_reliable_transportation = !!emp.has_reliable_transportation;
+    if (emp.prior_employer != null) row.prior_employer = String(emp.prior_employer || '').trim() || null;
+    if (emp.earliest_start_date != null) row.earliest_start_date = _normalizeDate(emp.earliest_start_date);
+
     return row;
   }
 
@@ -7315,6 +7328,13 @@ window.PentaGeocodeHistory = (function() {
     if (row.languages_spoken != null) emp.languages = row.languages_spoken;
     if (row.preferred_start_time != null) emp.prefTime = row.preferred_start_time;
     if (row.emergency_contact_relationship != null) emp.emRel = row.emergency_contact_relationship;
+
+    // Hire-transfer-missing-fields fix: preferred_language + 3 new
+    // columns (migration 124) -- see _toRow's matching comment.
+    if (row.preferred_language != null) emp.preferred_language = row.preferred_language;
+    if (row.has_reliable_transportation != null) emp.has_reliable_transportation = row.has_reliable_transportation;
+    if (row.prior_employer != null) emp.prior_employer = row.prior_employer;
+    if (row.earliest_start_date != null) emp.earliest_start_date = row.earliest_start_date;
 
     if (row.deleted_at != null) emp.deleted_at = row.deleted_at;
     if (row.created_at != null) emp.created_at = row.created_at;
@@ -26099,7 +26119,7 @@ var CLAIRE_TOOLS = [
 // is one inline <script> after all of the page's HTML). The
 // showTab('claire') call site re-renders the same constant too
 // (harmless, just keeps a long-lived open tab's display consistent).
-var CLAIRE_BUILD_STAMP = '2026-11-16';
+var CLAIRE_BUILD_STAMP = '2026-11-17';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
   if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
@@ -48947,6 +48967,11 @@ async function hireApplicant(id) {
   if (fetchErr || !app) { alert('Failed to load applicant'); return; }
   const langMap = { es:'mx', pt:'br', ko:'kr', kr:'kr', en:'us', cv:'cv' };
   const phoneClean = String(app.phone || '').replace(/\D/g, '') || null;
+
+  // Hire-transfer-missing-fields fix: ONE explicit application-field ->
+  // employee-field mapping, so a hire can never silently drop a field
+  // the applicant actually filled in. See this script's own header
+  // comment for the reasoning behind every non-obvious line below.
   const empRow = {
     business_id: app.business_id,
     first_name: app.first_name,
@@ -48955,8 +48980,24 @@ async function hireApplicant(id) {
     email: app.email || null,
     email_is_internal: !app.email,
     culture_tag: langMap[app.preferred_language] || 'us',
+    preferred_language: app.preferred_language || null,
     status: 'active',
-    legacy_roster_id: 'app_' + String(app.id).slice(0, 8)
+    legacy_roster_id: 'app_' + String(app.id).slice(0, 8),
+    address: app.address || null,
+    city: app.city || null,
+    state: app.state || null,
+    zip: app.zip_code || null,
+    workAuth: app.work_authorization || null,
+    hasLicense: app.drivers_license_status || null,
+    availDays: app.available_days ? String(app.available_days).split(',').map(function (s) { return s.trim(); }).filter(Boolean) : null,
+    experience: app.prior_cleaning_experience || null,
+    // See header comment: this is the applicant's "preferred start
+    // time" answer, not a real "hours per week" value -- mapped by
+    // what the data actually is.
+    prefTime: app.hours_per_week_desired || null,
+    emergency_contact_name: app.emergency_contact_name || null,
+    emergency_contact_phone: app.emergency_contact_phone || null,
+    emRel: app.emergency_contact_relation || null
   };
 
   // Sprint 4.2.B fix — pre-check for email conflict to give a clearer error
@@ -48980,6 +49021,23 @@ async function hireApplicant(id) {
     alert('Hire failed: ' + (e.message || String(e)));
     return;
   }
+
+  // Hire-transfer-missing-fields fix: has_reliable_transportation/
+  // prior_employer/earliest_start_date need migration 124 -- applied
+  // as a SEPARATE, best-effort patch after the main insert so a hire
+  // can never fail just because that migration hasn't landed yet on a
+  // given environment. A failure here is logged, never shown to the
+  // manager -- the hire itself already fully succeeded above.
+  try {
+    await window.PentaEmployees.update(empData.id, {
+      has_reliable_transportation: (app.has_reliable_transportation === true || app.has_reliable_transportation === false) ? app.has_reliable_transportation : null,
+      prior_employer: app.prior_employer || null,
+      earliest_start_date: app.earliest_start_date || null
+    });
+  } catch (e) {
+    console.warn('[hireApplicant] optional fields patch failed (needs migration 124 applied):', e);
+  }
+
   const session = await sb.auth.getSession();
   const reviewedBy = session && session.data && session.data.session ? session.data.session.user.id : null;
   await sb.from('job_applications').update({
@@ -49414,7 +49472,7 @@ function renderStaffView() {
     ${section('Personal Info', [
       row('Phone', emp.phone),
       row('Email', emp.email),
-      row('Address', emp.address ? emp.address + (emp.city ? ', ' + emp.city : '') + (emp.zip ? ' ' + emp.zip : '') : ''),
+      row('Address', emp.address ? emp.address + (emp.city ? ', ' + emp.city : '') + (emp.state ? ', ' + emp.state : '') + (emp.zip ? ' ' + emp.zip : '') : ''),
       row('Birthday', emp.birthday),
       row('Language', {en:'English',es:'Spanish',pt:'Portuguese',cv:'Kriolu'}[emp.lang] || emp.lang),
     ])}
@@ -49434,6 +49492,9 @@ function renderStaffView() {
       rowAlways('Days Available', emp.availDays && emp.availDays.length ? emp.availDays.join(', ') : ''),
       rowAlways('Preferred Start', {early:'Early (7-8am)',morning:'Morning (8-9am)',flexible:'Flexible'}[emp.prefTime] || emp.prefTime),
       rowAlways('Languages Spoken', emp.languages && emp.languages.length ? emp.languages.join(', ') : ''),
+      row('Prior Employer', emp.prior_employer),
+      row('Reliable Transportation', emp.has_reliable_transportation === true ? 'Yes' : emp.has_reliable_transportation === false ? 'No' : ''),
+      row('Earliest Start Date', emp.earliest_start_date),
     ])}
 
     ${section('Emergency Contact', [
@@ -49898,6 +49959,13 @@ function openEditStaff(idx) {
   if (emP) emP.value = emp.emergency_contact_phone || emp.emPhone || '';
   const emR = document.getElementById('staff-em-rel');
   if (emR) emR.value = emp.emergency_contact_relationship || emp.emRel || '';
+  // Hire-transfer-missing-fields fix (migration 124).
+  const relTransport = document.getElementById('staff-reliable-transport');
+  if (relTransport) relTransport.value = emp.has_reliable_transportation === true ? 'yes' : emp.has_reliable_transportation === false ? 'no' : '';
+  const priorEmployer = document.getElementById('staff-prior-employer');
+  if (priorEmployer) priorEmployer.value = emp.prior_employer || '';
+  const earliestStart = document.getElementById('staff-earliest-start');
+  if (earliestStart) earliestStart.value = emp.earliest_start_date || '';
   // Notes
   const notes = document.getElementById('staff-notes');
   if (notes) notes.value = emp.manager_notes || emp.notes || '';
@@ -50082,6 +50150,13 @@ async function saveStaffEmployee() {
     emPhone: (document.getElementById('staff-em-phone')||{}).value||'',
     emRel: (document.getElementById('staff-em-rel')||{}).value||'',
     notes: (document.getElementById('staff-notes')||{}).value||'',
+    // Hire-transfer-missing-fields fix (migration 124).
+    has_reliable_transportation: (function () {
+      var v = (document.getElementById('staff-reliable-transport')||{}).value||'';
+      return v === 'yes' ? true : v === 'no' ? false : null;
+    })(),
+    prior_employer: (document.getElementById('staff-prior-employer')||{}).value||'',
+    earliest_start_date: (document.getElementById('staff-earliest-start')||{}).value||'',
     // Phase 6.3a follow-up: alias to facade-expected names so _toRow + dual-write
     // pick them up correctly. JS-internal names (emName/emPhone/notes) kept above
     // for backward compat with any legacy emp_roster reader.
@@ -50185,6 +50260,14 @@ async function saveStaffEmployee() {
         if (emp.languages !== undefined) patch.languages_spoken = (Array.isArray(emp.languages) && emp.languages.length) ? emp.languages : null;
         if (emp.prefTime !== undefined) patch.preferred_start_time = emp.prefTime || null;
         if (emp.emRel !== undefined) patch.emergency_contact_relationship = emp.emRel || null;
+        // Hire-transfer-missing-fields fix (migration 124). Same
+        // conditional gate as every other field in this hand-built
+        // patch -- see this block's own comment above on why it is a
+        // SEPARATE mapping from _toRow's and needs each field added
+        // explicitly or it silently never persists for an edit.
+        if (emp.has_reliable_transportation !== undefined) patch.has_reliable_transportation = emp.has_reliable_transportation;
+        if (emp.prior_employer !== undefined) patch.prior_employer = emp.prior_employer || null;
+        if (emp.earliest_start_date !== undefined) patch.earliest_start_date = emp.earliest_start_date || null;
         // Admin/Office designation (migration 113). This hand-built
         // patch is a SEPARATE mapping from _toRow's -- the exact gap
         // that already dropped `position` (v9.5.1) and is_team_leader/
@@ -50353,6 +50436,8 @@ const T = {
     aboutMeSalaried: 'Salaried',
     aboutMeNotSet: 'Not set',
     aboutMeVacation: 'Vacation / PTO',
+    aboutMeAddress: 'Address',
+    aboutMeEmergencyContact: 'Emergency Contact',
     aboutMeNotAvailable: "This isn't available yet.",
     languageTitle: 'Language',
     menuClose: 'Close',
@@ -50446,6 +50531,8 @@ const T = {
     aboutMeSalaried: 'Asalariado/a',
     aboutMeNotSet: 'No establecido',
     aboutMeVacation: 'Vacaciones / PTO',
+    aboutMeAddress: 'Dirección',
+    aboutMeEmergencyContact: 'Contacto de Emergencia',
     aboutMeNotAvailable: 'Esto no está disponible todavía.',
     languageTitle: 'Idioma',
     menuClose: 'Cerrar',
@@ -50539,6 +50626,8 @@ const T = {
     aboutMeSalaried: 'Assalariado(a)',
     aboutMeNotSet: 'Não definido',
     aboutMeVacation: 'Férias / PTO',
+    aboutMeAddress: 'Endereço',
+    aboutMeEmergencyContact: 'Contato de Emergência',
     aboutMeNotAvailable: 'Isso ainda não está disponível.',
     languageTitle: 'Idioma',
     menuClose: 'Fechar',
@@ -50633,6 +50722,8 @@ const T = {
     aboutMeSalaried: 'Salariadu(a)',
     aboutMeNotSet: 'Ka stabelesidu',
     aboutMeVacation: 'Féria / PTO',
+    aboutMeAddress: 'Endereçu',
+    aboutMeEmergencyContact: 'Kontaktu di Emerjénsia',
     aboutMeNotAvailable: 'Kel li ka ta disponivel ainda.',
     languageTitle: 'Lingua',
     menuClose: 'Fecha',
@@ -54825,12 +54916,24 @@ function renderPortalAboutMe(d) {
         payRow = _portalAboutMeRow(t('aboutMePay'), '$' + Number(d.pay_rate).toFixed(2) + ' ' + t('aboutMePayHourly'));
       }
     }
+    // Hire-transfer-missing-fields fix: her own address + emergency
+    // contact (migration 125) -- blank rows just never render, same
+    // "only show what's actually on file" convention as payRow above.
+    var addressParts = [d.address, d.city, d.state].filter(Boolean).join(', ') + (d.zip ? ' ' + d.zip : '');
+    var addressRow = addressParts.trim() ? _portalAboutMeRow(t('aboutMeAddress'), addressParts.trim()) : '';
+    var emName = (d.emergency_contact_name || '').trim();
+    var emPhone = (d.emergency_contact_phone || '').trim();
+    var emRel = (d.emergency_contact_relationship || '').trim();
+    var emText = [emName, emRel].filter(Boolean).join(' — ') + (emPhone ? (emName || emRel ? ', ' : '') + emPhone : '');
+    var emergencyRow = emText.trim() ? _portalAboutMeRow(t('aboutMeEmergencyContact'), emText.trim()) : '';
     body.innerHTML = ''
       + _portalAboutMeRow(t('accountNameLabel'), d.name)
       + _portalAboutMeRow(t('aboutMeRole'), d.team_label)
       + _portalAboutMeRow(t('aboutMeTenure'), d.tenure_text)
       + payRow
-      + _portalAboutMeRow(t('aboutMeVacation'), d.vacation_text);
+      + _portalAboutMeRow(t('aboutMeVacation'), d.vacation_text)
+      + addressRow
+      + emergencyRow;
   } catch (e) { console.error('[portal about-me] render failed', e); }
 }
 
@@ -61570,6 +61673,17 @@ function _p3dPage(dir) {
           </select>
         </div>
       </div>
+      <!-- Hire-transfer-missing-fields fix: from the job application's
+           "reliable transportation" question (migration 124). Three-way
+           select, not a checkbox -- "not asked" must stay distinguishable
+           from an explicit "No". -->
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Reliable Transportation</div>
+        <select id="staff-reliable-transport" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none;appearance:none">
+          <option value="">Not set</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
 
       <!-- EXPERIENCE & AVAILABILITY -->
       <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Experience & Availability</div>
@@ -61599,6 +61713,14 @@ function _p3dPage(dir) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
           <label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="English" id="staff-spoken-English" style="accent-color:var(--accent)"> English</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Spanish" id="staff-spoken-Spanish" style="accent-color:var(--accent)"> Spanish</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Portuguese" id="staff-spoken-Portuguese" style="accent-color:var(--accent)"> Portuguese</label><label style="display:flex;align-items:center;gap:8px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:8px;padding:10px;cursor:pointer;font-size:13px"><input type="checkbox" value="Kriolu" id="staff-spoken-Kriolu" style="accent-color:var(--accent)"> Kriolu</label>
         </div>
+      </div>
+      <!-- Hire-transfer-missing-fields fix: from the job application
+           (migration 124 -- prior_employer, earliest_start_date). -->
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Prior Employer</div>
+        <input type="text" id="staff-prior-employer" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none">
+      </div>
+      <div style="margin-bottom:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Earliest Start Date (from application)</div>
+        <input type="date" id="staff-earliest-start" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:9px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:11px 14px;outline:none">
       </div>
 
       <!-- EMERGENCY CONTACT -->
