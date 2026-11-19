@@ -26134,7 +26134,7 @@ var CLAIRE_TOOLS = [
 // is one inline <script> after all of the page's HTML). The
 // showTab('claire') call site re-renders the same constant too
 // (harmless, just keeps a long-lived open tab's display consistent).
-var CLAIRE_BUILD_STAMP = '2026-11-17';
+var CLAIRE_BUILD_STAMP = '2026-11-19';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
   if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
@@ -49476,6 +49476,178 @@ function showStaffTab(tab) {
   }
 }
 
+// Stage 1 (manager promotion from the employee profile): shared
+// helpers for the "Manager access" section on both the Staff View and
+// Edit tabs. Role lives in the SEPARATE `users` table, not `employees`.
+
+function _pentaIsOwnerOrAdmin() {
+  var r = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  return r === 'owner' || r === 'admin';
+}
+
+// Resolves the users row (if any) for this employee: by auth_user_id
+// when she already has a login, else by business_id+email -- the same
+// keying saveStaffEmployee's own pre-insert-then-reconcile pattern uses
+// for a brand-new manager who hasn't accepted an invite yet.
+async function _pentaFetchUserRoleRow(emp) {
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) return null;
+  try {
+    if (emp.auth_user_id) {
+      var r1 = await sb.from('users').select('id, role, manager_permissions').eq('auth_user_id', emp.auth_user_id).maybeSingle();
+      return r1.data || null;
+    }
+    if (emp.email) {
+      var bid = emp.business_id || (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current());
+      if (!bid) return null;
+      var r2 = await sb.from('users').select('id, role, manager_permissions').eq('business_id', bid).eq('email', emp.email).maybeSingle();
+      return r2.data || null;
+    }
+  } catch (e) { console.warn('[managerAccess] role lookup failed', e); }
+  return null;
+}
+
+// Grants or revokes manager-tier access for one employee. See this
+// block's own header comment for the guard rules.
+async function _pentaSetManagerAccess(emp, enable) {
+  if (!_pentaIsOwnerOrAdmin()) {
+    alert('Only an owner or admin can change manager access.');
+    return false;
+  }
+  var blob = (typeof _pentaParseAuthToken === 'function') ? _pentaParseAuthToken() : null;
+  var viewerAuthId = blob && blob.user && blob.user.id;
+  if (emp.auth_user_id && viewerAuthId && emp.auth_user_id === viewerAuthId) {
+    alert("You can't change your own access.");
+    return false;
+  }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Supabase client not ready. Reload and try again.'); return false; }
+
+  try {
+    var existing = await _pentaFetchUserRoleRow(emp);
+
+    if (!enable) {
+      if (!existing) return true; // already employee-only, nothing to do
+      if (existing.role === 'owner' || existing.role === 'admin') {
+        alert("This person is an owner/admin -- manager access can't be changed here.");
+        return false;
+      }
+      var off = await sb.from('users').update({ role: 'employee' }).eq('id', existing.id);
+      if (off.error) { alert('Could not turn off manager access: ' + off.error.message); return false; }
+      return true;
+    }
+
+    // Turning ON.
+    if (existing) {
+      if (existing.role === 'owner' || existing.role === 'admin') {
+        alert('This person already has owner/admin access.');
+        return true;
+      }
+      var on = await sb.from('users').update({ role: 'manager' }).eq('id', existing.id);
+      if (on.error) { alert('Could not grant manager access: ' + on.error.message); return false; }
+      return true;
+    }
+
+    var bid = emp.business_id || (window.PentaTenant && window.PentaTenant.current && window.PentaTenant.current());
+    if (!bid) { alert('Could not resolve business -- reload and try again.'); return false; }
+
+    var firstN = emp.first_name || (emp.name || '').split(' ')[0] || '';
+    var lastN = emp.last_name || ((emp.name || '').split(' ').slice(1).join(' ')) || '-';
+    // Same synthetic-email fallback saveStaffEmployee's own manager-row
+    // creation already uses -- email here is just a stable row
+    // identifier, never the real invite channel (that's always SMS,
+    // handled below).
+    var email = emp.email || (String(firstN).toLowerCase() + '.' + String(lastN).toLowerCase().replace(/\s+/g, '') + '@managers.penta.internal');
+
+    var userRow = {
+      business_id: bid,
+      email: email,
+      first_name: firstN,
+      last_name: lastN,
+      phone: (emp.phone || '').replace(/\D/g, '') || null,
+      role: 'manager',
+      manager_permissions: {}
+    };
+    if (emp.auth_user_id) {
+      userRow.id = emp.auth_user_id;
+      userRow.auth_user_id = emp.auth_user_id;
+    }
+    var ins = await sb.from('users').insert(userRow).select().maybeSingle();
+    if (ins.error) { alert('Could not grant manager access: ' + ins.error.message); return false; }
+
+    if (!emp.auth_user_id) {
+      // No login yet -- the real invite channel is SMS (send-invite
+      // Edge Function), which needs a phone number. Ask for ONLY that
+      // if it's missing -- no questionnaire.
+      if (!emp.phone) {
+        var ph = prompt('No phone number on file for ' + (firstN || 'this employee') + ' yet -- the invite text needs one. Enter her phone number:');
+        if (!ph) {
+          alert('Manager access was saved, but no invite was sent yet -- add a phone number and tap Send Invite in the Penta Login section below.');
+          return true;
+        }
+        var cleanedPh = ph.replace(/\D/g, '');
+        try { await window.PentaEmployees.update(emp.id, { phone: cleanedPh }); } catch (e) { console.warn('[managerAccess] phone save failed', e); }
+        emp.phone = cleanedPh;
+      }
+      try {
+        var rid = emp.legacy_roster_id || emp.id || emp.name;
+        if (typeof pentaSendInvite === 'function') await pentaSendInvite(rid);
+      } catch (e) { console.warn('[managerAccess] invite send failed', e); }
+    }
+    return true;
+  } catch (e) {
+    alert('Manager access change failed: ' + (e.message || e));
+    return false;
+  }
+}
+
+// Shared paint+wire for the "Manager access" section -- used by both
+// the Staff View tab (data-attribute-located elements, dynamic per
+// roster id) and the Edit tab (fixed-id elements, one instance reused
+// across whichever employee is currently open).
+async function _renderManagerAccessSection(emp, els) {
+  if (!els || !els.statusEl) return;
+  if (els.wrapEl) els.wrapEl.style.display = 'block';
+  els.statusEl.textContent = 'Loading…';
+  if (els.toggleWrap) els.toggleWrap.style.display = 'none';
+  if (els.permLinkEl) els.permLinkEl.style.display = 'none';
+
+  var viewerIsOwnerOrAdmin = _pentaIsOwnerOrAdmin();
+  var blob = (typeof _pentaParseAuthToken === 'function') ? _pentaParseAuthToken() : null;
+  var viewerAuthId = blob && blob.user && blob.user.id;
+  var isSelf = !!(emp.auth_user_id && viewerAuthId && emp.auth_user_id === viewerAuthId);
+
+  var row = await _pentaFetchUserRoleRow(emp);
+  var role = row && row.role;
+
+  if (role === 'owner' || role === 'admin') {
+    els.statusEl.textContent = (role === 'owner' ? 'Owner' : 'Admin') + ' — full access. Not changeable here.';
+    return;
+  }
+
+  var hasManagerAccess = role === 'manager';
+  els.statusEl.textContent = hasManagerAccess ? 'Manager access: ON (full access, same as every manager today)' : 'Employee access only.';
+
+  if (!viewerIsOwnerOrAdmin || isSelf) {
+    if (isSelf) els.statusEl.textContent += ' You can\u2019t change your own access.';
+    return;
+  }
+
+  if (els.toggleWrap) els.toggleWrap.style.display = 'flex';
+  if (els.toggleEl) {
+    els.toggleEl.checked = hasManagerAccess;
+    els.toggleEl.onchange = async function () {
+      var turningOn = els.toggleEl.checked;
+      els.toggleEl.disabled = true;
+      var ok = await _pentaSetManagerAccess(emp, turningOn);
+      els.toggleEl.disabled = false;
+      if (!ok) { els.toggleEl.checked = !turningOn; return; }
+      _renderManagerAccessSection(emp, els);
+    };
+  }
+  if (els.permLinkEl && hasManagerAccess) els.permLinkEl.style.display = 'block';
+}
+
 function renderStaffView() {
   const idx = parseInt((document.getElementById('staff-edit-idx') || {}).value);
   const list = getStaffList();
@@ -49615,6 +49787,15 @@ function renderStaffView() {
         : ''
     ])}
 
+    ${section('Manager Access', [
+      `<div data-mgr-access-status data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="font-size:13px;color:var(--muted);margin-bottom:10px">Loading…</div>`,
+      `<label data-mgr-access-toggle-wrap data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="display:none;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0">
+        <span style="font-size:13px;font-weight:600">Give manager access</span>
+        <input type="checkbox" data-mgr-access-toggle data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="width:20px;height:20px;accent-color:var(--accent)">
+      </label>`,
+      `<div data-mgr-access-permlink data-roster-id="${emp.legacy_roster_id||emp.id||emp.name}" style="margin-top:6px;font-size:12px;color:var(--muted);display:none">Full access by default — per-permission toggles are coming in the next update.</div>`
+    ])}
+
     <!-- v11.0.25: Recent Forms preview — last 5 forms with status pills.
          Tapping a row opens the Forms sub-tab. Hoists the buried Forms
          sub-tab into the top-level view so managers see submissions
@@ -49660,6 +49841,17 @@ function renderStaffView() {
     if (_chip && typeof pentaRenderInviteChip === 'function') pentaRenderInviteChip(_rid, _chip, _sendBt);
     if (typeof applyPermissions === 'function') applyPermissions();
   } catch (e) { console.warn('[Penta Login section] wiring failed', e); }
+
+  // Stage 1: wire the Manager Access section (same roster-id-keyed
+  // data-attribute lookup pattern as Penta Login above).
+  try {
+    var _ridMA = emp.legacy_roster_id || emp.id || emp.name;
+    var _maStatus = document.querySelector('[data-mgr-access-status][data-roster-id="' + CSS.escape(_ridMA) + '"]');
+    var _maToggleWrap = document.querySelector('[data-mgr-access-toggle-wrap][data-roster-id="' + CSS.escape(_ridMA) + '"]');
+    var _maToggle = document.querySelector('[data-mgr-access-toggle][data-roster-id="' + CSS.escape(_ridMA) + '"]');
+    var _maPermLink = document.querySelector('[data-mgr-access-permlink][data-roster-id="' + CSS.escape(_ridMA) + '"]');
+    if (_maStatus) _renderManagerAccessSection(emp, { statusEl: _maStatus, toggleWrap: _maToggleWrap, toggleEl: _maToggle, permLinkEl: _maPermLink });
+  } catch (e) { console.warn('[Manager Access section] wiring failed', e); }
 
   // Load time off history
   const forms = JSON.parse(localStorage.getItem('emp_forms') || '[]');
@@ -50106,6 +50298,18 @@ function openEditStaff(idx) {
   document.getElementById('staff-hard-delete-btn').style.display = 'block';
   document.getElementById('staff-save-msg').textContent = '';
   document.getElementById('staff-modal').style.display = 'block';
+  // Stage 1: Manager Access section on the Edit tab -- fixed ids, one
+  // instance reused per employee open (unlike the View tab's
+  // per-roster-id data attributes).
+  try {
+    _renderManagerAccessSection(emp, {
+      wrapEl: document.getElementById('staff-edit-mgr-access-wrap'),
+      statusEl: document.getElementById('staff-edit-mgr-access-status'),
+      toggleWrap: document.getElementById('staff-edit-mgr-access-toggle-wrap'),
+      toggleEl: document.getElementById('staff-edit-mgr-access-toggle'),
+      permLinkEl: document.getElementById('staff-edit-mgr-access-permlink')
+    });
+  } catch (e) { console.warn('[Manager Access section] edit-tab wiring failed', e); }
   showStaffTab('view');
 }
 
@@ -61994,6 +62198,17 @@ function _p3dPage(dir) {
         </label>
         <input type="file" accept="image/*" id="staff-doc-ssn" style="display:none" onchange="previewStaffDoc(this,'ssn')">
         <div id="staff-doc-ssn-preview" style="margin-top:6px"></div>
+      </div>
+
+      <!-- MANAGER ACCESS (Stage 1) -->
+      <div id="staff-edit-mgr-access-wrap" style="margin-bottom:14px;display:none">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:20px 0 12px">Manager Access</div>
+        <div id="staff-edit-mgr-access-status" style="font-size:13px;color:var(--muted);margin-bottom:10px">Loading…</div>
+        <label id="staff-edit-mgr-access-toggle-wrap" style="display:none;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 0">
+          <span style="font-size:13px;font-weight:600">Give manager access</span>
+          <input type="checkbox" id="staff-edit-mgr-access-toggle" style="width:20px;height:20px;accent-color:var(--accent)">
+        </label>
+        <div id="staff-edit-mgr-access-permlink" style="margin-top:6px;font-size:12px;color:var(--muted);display:none">Full access by default — per-permission toggles are coming in the next update.</div>
       </div>
 
       <!-- NOTES -->
