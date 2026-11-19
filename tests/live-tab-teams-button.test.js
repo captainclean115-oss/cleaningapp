@@ -43,10 +43,13 @@ const openTeamManagerDefs = (src.match(/async function openTeamManager\(/g) || [
 check('exactly one openTeamManager() function definition exists (not duplicated)', openTeamManagerDefs, 1);
 
 // --- Both buttons invoke the same function ---
-const scheduleBtnMatch = src.match(/<button onclick="openTeamManager\(dateKey\(calDate\)\)"[^>]*>👥 Teams<\/button>/);
+// Stage 2 added id="cal-team-assignments-btn" / id="gps-team-assignments-btn"
+// (for permission-based show/hide) between <button and onclick= -- the
+// pattern tolerates an optional id attribute there now.
+const scheduleBtnMatch = src.match(/<button(?: id="[^"]*")? onclick="openTeamManager\(dateKey\(calDate\)\)"[^>]*>👥 Teams<\/button>/);
 check('Schedule tab button passes calDate (PR #145) -- no longer defaults to today regardless of the date being viewed', !!scheduleBtnMatch, true);
 
-const liveBtnMatch = src.match(/<button onclick="openTeamManager\(document\.getElementById\('gps-date-picker'\)\.value\)"[^>]*>👥 Teams<\/button>/);
+const liveBtnMatch = src.match(/<button(?: id="[^"]*")? onclick="openTeamManager\(document\.getElementById\('gps-date-picker'\)\.value\)"[^>]*>👥 Teams<\/button>/);
 check('Live tab button calls openTeamManager(...) with the Live tab\'s own date-picker value', !!liveBtnMatch, true);
 
 // --- Same styling (visual consistency) ---

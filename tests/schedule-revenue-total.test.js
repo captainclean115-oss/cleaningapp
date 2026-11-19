@@ -307,7 +307,10 @@ async function main() {
 //    rebuilding each one's full sandbox).
 // ============================================================================
 {
-  check('the Schedule tab\'s per-team tile calc calls the shared resolver', src.indexOf('var teamRev = teamJobs.filter(function(j){ return !j.cancelled; }).reduce(function(sum,j){\n          return sum + _pentaResolveJobPrice(j).amount;') !== -1);
+  // Stage 2 wrapped this in a see_team_revenue permission check (a
+  // restricted manager gets 0 instead of the real number) -- the
+  // resolver call itself is unchanged, just inside that conditional now.
+  check('the Schedule tab\'s per-team tile calc calls the shared resolver', src.indexOf('teamJobs.filter(function(j){ return !j.cancelled; }).reduce(function(sum,j){\n          return sum + _pentaResolveJobPrice(j).amount;') !== -1);
   check('_teamDayStats (Team Assignments tiles) calls the shared resolver', /revenue \+= _pentaResolveJobPrice\(j\)\.amount;/.test(src));
   check('Claire\'s revenue_summary (_rsPrice) calls the shared resolver', /function _rsPrice\(j\)\{\s*return _pentaResolveJobPrice\(j\)\.amount;\s*\}/.test(src));
   check('Claire\'s team_performance (_tpPrice) calls the shared resolver', /function _tpPrice\(j\)\{\s*return _pentaResolveJobPrice\(j\)\.amount;\s*\}/.test(src));
