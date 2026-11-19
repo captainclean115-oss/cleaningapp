@@ -96,7 +96,10 @@ const NORATE_RD = {
 function makeFakeDom() {
   const nodes = {};
   function el(id) {
-    if (!nodes[id]) nodes[id] = { id, innerHTML: '' };
+    // Stage 2 added an el.style.display toggle (payroll visibility
+    // permission) to renderPayrollCostCard -- real elements always have
+    // .style, so this fake one needs it too.
+    if (!nodes[id]) nodes[id] = { id, innerHTML: '', style: {} };
     return nodes[id];
   }
   return { nodes, getElementById: (id) => el(id) };

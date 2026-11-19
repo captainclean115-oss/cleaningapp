@@ -4863,7 +4863,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
     </div>
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <div style="display:flex;align-items:center;gap:10px">
-        <button onclick="openTeamManager(dateKey(calDate))" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
+        <button id="cal-team-assignments-btn" onclick="openTeamManager(dateKey(calDate))" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
 
         <button id="cal-day-rev" onclick="cycleRevMode()" style="background:none;border:none;color:#22c55e;font-size:15px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;padding:0;"></button>
         <!-- Schedule-revenue-total fix: tappable "N jobs have no price"
@@ -4878,7 +4878,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
       </div>
 
       <div style="display:flex;align-items:center;gap:8px">
-        <button onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
+        <button id="add-job-btn" onclick="openJobModal(null)" style="background:var(--accent);border:none;color:#fff;font-family:DM Sans,sans-serif;font-size:13px;font-weight:500;padding:7px 14px;border-radius:20px;cursor:pointer;">➕ Add Job</button>
       </div>
     </div>
     <!-- Schedule Save Queue (schedule-save-queue branch): owner/admin/
@@ -5547,7 +5547,7 @@ body:has(#pentaPreviewChip) #staff-panel { padding-top: calc(48px + env(safe-are
        passes the Live tab's own currently-selected date instead of
        defaulting to today. -->
   <div style="padding:0 12px 12px">
-    <button onclick="openTeamManager(document.getElementById('gps-date-picker').value)" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
+    <button id="gps-team-assignments-btn" onclick="openTeamManager(document.getElementById('gps-date-picker').value)" style="background:var(--accent);border:none;color:#fff;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;cursor:pointer">👥 Teams</button>
   </div>
   <!-- v11.0.19: Hours Worked is sibling of gps-main-section so it renders
        even when MyGeotab is not connected. Data source is time_entries. -->
@@ -16345,6 +16345,10 @@ function openContactSheet(clientId) {
     console.warn('[contact-sheet] non-manager blocked');
     return;
   }
+  if (typeof _pentaCan === 'function' && !_pentaCan('see_client_contact')) {
+    alert("You don't have permission to see client contact info.");
+    return;
+  }
   var displayName = c.fn ? ((c.fn + ' ' + (c.ln || '')).trim()) : (c.name || 'Client');
   document.getElementById('contact-name').textContent = displayName;
   document.getElementById('contact-phone-display').textContent = c.ph || 'No phone on file';
@@ -17166,6 +17170,14 @@ function getMonthRevenue(anchorDate) {
 function updateRevDisplay() {
   const el = document.getElementById('cal-day-rev');
   if (!el) return;
+  // Stage 2: hidden, not just blank -- a restricted manager must never
+  // see this element at all, including its tappable missing-price badge.
+  if (typeof _pentaCan === 'function' && !_pentaCan('see_revenue_total')) {
+    el.style.display = 'none';
+    _renderRevMissingPriceBadge([]);
+    return;
+  }
+  el.style.display = '';
   let rev = 0, label = '';
   var missingJobs = [];
   if (revMode === 'day') {
@@ -17310,6 +17322,10 @@ function _getDayRevenueDetail(dateStr) {
       var _c = PentaClients.getClient(j.clientId);
       if (_c && (_c.status === 'paused' || _c.status === 'inactive')) return false;
     }
+    // Stage 2: a team hidden from a restricted manager never
+    // contributes to any total she sees -- keeps every revenue figure
+    // self-consistent with what she can actually drill into.
+    if (typeof _pentaCanSeeTeam === 'function' && !_pentaCanSeeTeam(j.team)) return false;
     return true;
   });
   var total = 0;
@@ -17471,6 +17487,15 @@ function jobsForDate(d) {
 }
 
 function showTab(tab) {
+  // Stage 2: a restricted manager with the Claire tab hidden can't
+  // navigate into it even by calling showTab('claire') directly.
+  if (tab === 'claire' && typeof _pentaCan === 'function' && !_pentaCan('see_claire_tab')) {
+    tab = 'home';
+  }
+  try {
+    var _navClaire = document.getElementById('nav-claire');
+    if (_navClaire) _navClaire.style.display = ((typeof _pentaCan !== 'function') || _pentaCan('see_claire_tab')) ? '' : 'none';
+  } catch (e) {}
   sessionStorage.setItem('cc_tab', tab);
   // Dock is only visible on the home screen — iOS-style. Swipe-right goes
   // back to home from any feature view, which re-adds the class.
@@ -17672,6 +17697,13 @@ function renderCal() {
     // for whichever date is now selected. Never reassigns calDate --
     // only reads it.
     if (typeof _closeDaySyncHeader === 'function') _closeDaySyncHeader();
+    // Stage 2: the header's + Add Job button is a per-permission entry
+    // point like Close Day above -- hidden, not disabled.
+    try {
+      var _addJobBtn = document.getElementById('add-job-btn');
+      if (_addJobBtn) _addJobBtn.style.display = ((typeof _pentaCan !== 'function') || _pentaCan('do_add_job')) ? '' : 'none';
+    } catch (e) {}
+    try { if (typeof _pentaSyncTeamAssignmentsButtons === 'function') _pentaSyncTeamAssignmentsButtons(); } catch (e) {}
     // Schedule Save Queue (schedule-save-queue branch): refresh the
     // pill/badges for whatever is currently queued, and opportunistically
     // retry -- covers "app foreground" and "just signed in" without a
@@ -17691,8 +17723,12 @@ function renderCal() {
       const isTd = dateKey(d) === dateKey(today);
       const dJobs = jobsForDate(d);
       const hasJobs = dJobs.length > 0;
-      const dRev = getDayRevenue(dateKey(d));
-      const revStr = dRev > 0 ? '$' + (dRev >= 1000 ? (dRev/1000).toFixed(1)+'k' : dRev.toLocaleString()) : '';
+      // Stage 2: compute nothing at all when hidden -- not just a
+      // CSS-hidden span, since this string gets built into the strip's
+      // HTML either way.
+      const _canSeeDayRev = (typeof _pentaCan !== 'function') || _pentaCan('see_day_revenue');
+      const dRev = _canSeeDayRev ? getDayRevenue(dateKey(d)) : 0;
+      const revStr = (_canSeeDayRev && dRev > 0) ? '$' + (dRev >= 1000 ? (dRev/1000).toFixed(1)+'k' : dRev.toLocaleString()) : '';
       var _wxIso = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
       stripHtml += '<div class="week-day'+(isActive?' active':'')+(isTd&&!isActive?' today':'')+(hasJobs?' has-jobs':'')+'" data-ts="'+d.getTime()+'" data-scroller-date="'+_wxIso+'" onclick="calDate=new Date('+d.getTime()+');renderCal()">'
         +'<span class="wd-name">'+DAYS[d.getDay()]+'</span>'
@@ -17703,8 +17739,17 @@ function renderCal() {
     stripHtml += '</div>';
 
     // Jobs for selected day - team rows with horizontal scrollable squares
-    const dayJobs = jobsForDate(calDate);
-    const allTeams = _pentaTeamNames();
+    var dayJobs = jobsForDate(calDate);
+    // Stage 2: a hidden team disappears from the schedule entirely --
+    // the filter bubbles, the day's job list, and (below) the single-
+    // team filtered view all come from these two filtered arrays now.
+    if (typeof _pentaCanSeeTeam === 'function') {
+      dayJobs = dayJobs.filter(function(j){ return _pentaCanSeeTeam(j.team); });
+    }
+    var allTeams = _pentaTeamNames();
+    if (typeof _pentaCanSeeTeam === 'function') {
+      allTeams = allTeams.filter(function(t){ return _pentaCanSeeTeam(t); });
+    }
     const teamsWithJobs = allTeams.filter(function(t) {
       return dayJobs.some(function(j){ return j.team === t; });
     });
@@ -17745,6 +17790,9 @@ function renderCal() {
       // Collect all team data first
       var teamRows = [];
       teamsWithJobs.forEach(function(team) {
+        // Stage 2: a hidden team must disappear from the schedule
+        // entirely, not just its revenue -- the whole row is skipped.
+        if (typeof _pentaCanSeeTeam === 'function' && !_pentaCanSeeTeam(team)) return;
         var tc = _calTeamColor(team);
         var teamJobs = (window.calTeamFilter
           ? (window.calTeamFilter === team ? dayJobs.filter(function(j){ return j.team === team; }) : [])
@@ -17764,9 +17812,10 @@ function renderCal() {
             return toMins(a.flexible ? null : a.time) - toMins(b.flexible ? null : b.time);
           });
         if (!teamJobs.length) return;
-        var teamRev = teamJobs.filter(function(j){ return !j.cancelled; }).reduce(function(sum,j){
+        var _canSeeTeamRev = (typeof _pentaCan !== 'function') || _pentaCan('see_team_revenue');
+        var teamRev = _canSeeTeamRev ? teamJobs.filter(function(j){ return !j.cancelled; }).reduce(function(sum,j){
           return sum + _pentaResolveJobPrice(j).amount;
-        },0);
+        },0) : 0;
         teamRows.push({ team: team, tc: tc, jobs: teamJobs, rev: teamRev });
       });
 
@@ -18009,7 +18058,7 @@ function renderCal() {
         <div class="wg-num${isTd?' today':''}" style="cursor:pointer" onclick="calDate=new Date(${d.getTime()});setCalMode('day')">${d.getDate()}</div>
         ${visible.map(j => `<div class="wg-job${j.done?' done':''}" style="border-left-color:${_calTeamColor(j.team||(getClientExtras(j.clientId||'')).team||'')}" onclick="calDate=new Date(${d.getTime()});setCalMode('day')" title="${j.clientName}">${j.flexible?'~':(j.time?(function(t){ var p=t.split(':'),h=parseInt(p[0]),m=parseInt(p[1]||0),ap=h>=12?'p':'a'; if(h>12)h-=12; if(h===0)h=12; return h+(m?':'+String(m).padStart(2,'0'):'')+ap; })(j.time):'?')} ${j.clientName.split(' ')[0]}</div>`).join('')}
         ${extra > 0 ? `<div class="wg-more">+${extra} more</div>` : ''}
-        <div class="wg-add" onclick="calDate=new Date(${d.getTime()});openJobModal(null)">+</div>
+        ${((typeof _pentaCan !== 'function') || _pentaCan('do_add_job')) ? `<div class="wg-add" onclick="calDate=new Date(${d.getTime()});openJobModal(null)">+</div>` : ''}
       </div>`;
     }
     gridHtml += '</div>';
@@ -18040,6 +18089,14 @@ async function toggleJobDone(id) {
 function openJobModal(jobId) {
   editingJob = jobId ? jobs.find(j => j.id === jobId) : null;
   const isNew = !editingJob;
+  // Stage 2: backstop for every add/edit entry point, found or not --
+  // the individual buttons are hidden too, but this is the one place
+  // that catches anything that calls straight in (Claire, voice
+  // commands, a future button nobody remembered to gate here too).
+  if (typeof _pentaCan === 'function') {
+    if (isNew && !_pentaCan('do_add_job')) { alert("You don't have permission to add a job."); return; }
+    if (!isNew && !_pentaCan('do_edit_job')) { alert("You don't have permission to edit this job."); return; }
+  }
 
   // Pre-fill date as currently selected cal date
   const dateStr = editingJob ? editingJob.date : dateKey(calDate);
@@ -18092,12 +18149,12 @@ function openJobModal(jobId) {
           <label class="form-label">Notes</label>
           <textarea class="form-textarea" id="job-notes" placeholder="Any special instructions...">${editingJob ? (editingJob.notes||'') : ''}</textarea>
         </div>
-        <div class="form-group">
+        ${((typeof _pentaCan !== 'function') || _pentaCan('do_change_price')) ? `<div class="form-group">
           <label class="form-label">Price</label>
           <input type="text" class="form-input" id="job-price" placeholder="e.g. 185" value="${editingJob ? (editingJob.price||'') : ''}">
-        </div>
+        </div>` : ''}
         <div class="modal-btns">
-          ${!isNew ? `<button class="modal-btn danger" onclick="deleteJob('${editingJob.id}')">Delete</button><button class="modal-btn" style="background:rgba(251,191,36,0.15);color:var(--amber);border:1px solid rgba(251,191,36,0.3)" onclick="cancelJob('${editingJob.id}')">${editingJob.cancelled ? 'Uncancel' : 'Cancel'}</button>` : ''}
+          ${(!isNew && ((typeof _pentaCan !== 'function') || _pentaCan('do_cancel_job'))) ? `<button class="modal-btn danger" onclick="deleteJob('${editingJob.id}')">Delete</button><button class="modal-btn" style="background:rgba(251,191,36,0.15);color:var(--amber);border:1px solid rgba(251,191,36,0.3)" onclick="cancelJob('${editingJob.id}')">${editingJob.cancelled ? 'Uncancel' : 'Cancel'}</button>` : ''}
           <button class="modal-btn cancel" onclick="closeJobModal()">Cancel</button>
           <button class="modal-btn primary" onclick="saveJob()">Save</button>
         </div>
@@ -18241,6 +18298,11 @@ var CANCEL_REASONS = {
 async function cancelJob(id) {
   const job = jobs.find(j => j.id === id);
   if (!job) return;
+  // Stage 2: backstop, same reasoning as openJobModal's own guard.
+  if (typeof _pentaCan === 'function' && !_pentaCan('do_cancel_job')) {
+    alert("You don't have permission to cancel/uncancel jobs.");
+    return;
+  }
   if (job.cancelled) {
     // Uncancel path stays one-tap — nothing to capture.
     job.cancelled = false;
@@ -27475,9 +27537,35 @@ function _claireAmendLastToolResult(extra) {
     }
   }
 }
+// Stage 2: one permission key per Claire tool that touches something a
+// restricted manager might have hidden. Checked BEFORE the tool runs,
+// not after -- the whole point is that asking Claire can never surface
+// a number or action the same manager can't get to on the actual
+// schedule screen. Tools not listed here are unaffected (schedule-
+// reading/non-sensitive tools Stage 2 doesn't restrict).
+var CLAIRE_TOOL_PERMISSION_MAP = {
+  schedule_clean: 'do_add_job',
+  cancel_clean: 'do_cancel_job',
+  uncancel_clean: 'do_cancel_job',
+  move_clean: 'do_move_job',
+  get_revenue: 'see_revenue_total',
+  revenue_summary: 'see_revenue_total',
+  team_performance: 'see_team_revenue',
+  change_price: 'do_change_price',
+  record_payment: 'do_record_payment',
+  edit_employee_hours: 'do_edit_hours',
+  batch_edit_employee_hours: 'do_edit_hours'
+};
+
 async function _executeClaireToolCallInner(toolCall, message) {
   var input = toolCall.input || {};
   var name = toolCall.name;
+
+  // Stage 2: deny BEFORE running -- never a partial/leaky execution.
+  var _requiredPerm = CLAIRE_TOOL_PERMISSION_MAP[name];
+  if (_requiredPerm && typeof _pentaCan === 'function' && !_pentaCan(_requiredPerm)) {
+    throw new Error("you don't have permission to do that.");
+  }
 
   // ── SCHEDULE ──
   if (name === 'schedule_clean') {
@@ -29995,6 +30083,10 @@ function resetTeamColors() {
 // was any OTHER date -- the write and the visible recalc landed on two
 // different days, which looked like "the live recalc doesn't work").
 async function openTeamManager(dateStr) {
+  if (typeof _pentaCan === 'function' && !_pentaCan('see_team_assignments')) {
+    alert("You don't have permission to see Team Assignments.");
+    return;
+  }
   const overlay = document.getElementById('team-manager-overlay');
   overlay.style.display = 'flex';
   const picker = document.getElementById('team-mgr-date');
@@ -30065,7 +30157,9 @@ async function renderTeamManager(opts) {
   const dateStr = document.getElementById('team-mgr-date').value;
   const date = new Date(dateStr + 'T00:00:00');
 
-  const teams = _pentaTeamNames();
+  var teams = _pentaTeamNames();
+  // Stage 2: a hidden team disappears from Team Assignments too.
+  if (typeof _pentaCanSeeTeam === 'function') teams = teams.filter(function (t) { return _pentaCanSeeTeam(t); });
   let html = '';
 
   // Bug fix: getEmployeeTeam reads the legacy localStorage-backed
@@ -30183,9 +30277,10 @@ async function renderTeamManager(opts) {
     const hLabel = stats.mins >= 60
       ? Math.floor(stats.mins / 60) + 'h' + (stats.mins % 60 ? ' ' + (stats.mins % 60) + 'm' : '')
       : stats.mins + 'm';
-    const revLabel = stats.revenue >= 1000
+    var _canSeeTAssignRev = (typeof _pentaCan !== 'function') || _pentaCan('see_team_revenue');
+    const revLabel = !_canSeeTAssignRev ? '' : (stats.revenue >= 1000
       ? '$' + (stats.revenue / 1000).toFixed(1) + 'k'
-      : '$' + Math.round(stats.revenue);
+      : '$' + Math.round(stats.revenue));
 
     // Worked-hours line (team-hours-visible-save): sum of SAVED
     // manual_hour_overrides for this team/day, read via the exact same
@@ -32800,6 +32895,10 @@ function getTeamEmployees(team, dateStr) {
 }
 
 async function assignEmployee(employeeId, team, dateStr, extra) {
+  if (typeof _pentaCan === 'function' && !_pentaCan('do_assign_teams')) {
+    alert("You don't have permission to assign teams.");
+    return;
+  }
   const key = dateStr + '_' + employeeId;
   const prevValue = dailyAssignments[key]; // undefined if there was no override yet
   const prevDetail = dailyAssignmentDetails[key]; // undefined if no prior category/notes
@@ -36165,6 +36264,13 @@ function onEmpTeamChange(empId, dk, newTeam, dateMs) {
 }
 
 async function saveEmpDayHours(empId, empName, dk) {
+  // Stage 2: same reasoning as the salaried-admin block right below --
+  // reachable by id/name/date alone, so the real guard has to live
+  // here, not just on whichever button happens to call this today.
+  if (typeof _pentaCan === 'function' && !_pentaCan('do_edit_hours')) {
+    alert("You don't have permission to edit hours.");
+    return;
+  }
   // Salaried Admin/Office (follow-up to migration 113): hard-block the
   // actual write too, not just the UI entry point above -- defense in
   // depth, since this is reachable by id/name/date alone from
@@ -36850,6 +36956,8 @@ function setPayrollCardSort(mode) {
 async function renderPayrollCostCard(days, weekHoursData, empHoursMapData) {
   var el = document.getElementById('payroll-cost-card');
   if (!el) return;
+  if (typeof _pentaCan === 'function' && !_pentaCan('see_payroll')) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
   _payrollCardLastArgs = { days: days, weekHoursData: weekHoursData, empHoursMapData: empHoursMapData };
   // Captured now, synchronously, BEFORE the settings await below -- so
   // a fast week-navigation click in the meantime can't make this
@@ -37049,7 +37157,9 @@ function renderHoursTable(days, dayNames) {
   if (!Array.isArray(dayNames) || dayNames.length !== days.length) {
     dayNames = days.map(function (d) { return d.toLocaleDateString('en-US', { weekday: 'short' }); });
   }
-  const teams = _pentaTeamNames();
+  var teams = _pentaTeamNames();
+  // Stage 2: a hidden team disappears from Hours too.
+  if (typeof _pentaCanSeeTeam === 'function') teams = teams.filter(function (t) { return _pentaCanSeeTeam(t); });
   const today = new Date(); today.setHours(0,0,0,0);
   const empHoursMap = window._empHoursMap || {};
   const gpsVerified = !!window._hoursGeotabAvailable;
@@ -38173,7 +38283,10 @@ function _tdrSyncButtonVisibility(btnId) {
   var btn = document.getElementById(btnId);
   if (!btn) return;
   var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
-  btn.style.display = (['owner', 'admin', 'manager'].indexOf(role) !== -1) ? '' : 'none';
+  var roleOk = ['owner', 'admin', 'manager'].indexOf(role) !== -1;
+  // Stage 2: a restricted manager can have exports hidden too.
+  var permOk = (typeof _pentaCan !== 'function') || _pentaCan('see_exports');
+  btn.style.display = (roleOk && permOk) ? '' : 'none';
 }
 
 // Fetches one team+date's GPS detail exactly once per report session
@@ -38796,6 +38909,10 @@ function openTeamDayReport() {
   var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
   if (['owner', 'admin', 'manager'].indexOf(role) === -1) {
     alert('Only owners, admins, and managers can view the Team Day Report.');
+    return;
+  }
+  if (typeof _pentaCan === 'function' && !_pentaCan('see_exports')) {
+    alert("You don't have permission to view reports.");
     return;
   }
   var old = document.getElementById('team-day-report-overlay');
@@ -39513,7 +39630,18 @@ function _closeDayFmt12(d) {
 // ─────────────────────────────────────────
 function _closeDayCanUse() {
   var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
-  return ['owner', 'admin'].indexOf(role) !== -1;
+  if (role === 'owner' || role === 'admin') return true;
+  // Stage 2: Close Day has never been available to ANY manager -- only
+  // owner/admin, hardcoded. To keep every existing manager's access
+  // exactly as it is today, this stays opt-IN for a manager (she needs
+  // BOTH permission keys explicitly set true), never opt-out --
+  // missing keys here mean "no Close Day," the opposite of every other
+  // permission's "missing = full access" default. A manager who has
+  // never had this configured gets exactly what she has today: none.
+  if (role === 'manager') {
+    return (typeof _pentaCan === 'function') && _pentaCan('see_close_day_button') && _pentaCan('do_close_day');
+  }
+  return false;
 }
 
 // Called from renderCal()'s day-mode branch. Never resets calDate --
@@ -39736,7 +39864,7 @@ function _closeDayRenderStepA() {
   var s = _closeDaySession;
   var teams = Object.keys(s.perTeam);
   var html = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Add, cancel, or move jobs and employees for this day using the normal screens. Come back here when the schedule looks right.</div>'
-    + '<button onclick="openJobModal(null)" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:13px;font-weight:600;padding:10px;border-radius:10px;cursor:pointer;margin-bottom:14px">➕ Add job for this day</button>';
+    + (((typeof _pentaCan !== 'function') || _pentaCan('do_add_job')) ? '<button onclick="openJobModal(null)" style="width:100%;background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:13px;font-weight:600;padding:10px;border-radius:10px;cursor:pointer;margin-bottom:14px">➕ Add job for this day</button>' : '');
   if (!teams.length) html += '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No teams scheduled or assigned this day.</div>';
   teams.forEach(function (team) {
     var t = s.perTeam[team];
@@ -39748,11 +39876,14 @@ function _closeDayRenderStepA() {
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">👤 ' + t.elig.included.length + ' employee(s) scheduled</div>'
       + t.teamJobs.map(function (j) {
           var timeLabel = j.flexible ? 'Flexible' : (j.time || '—');
+          var _seeP = (typeof _pentaCan !== 'function') || _pentaCan('see_job_price');
+          var _canEdit = (typeof _pentaCan !== 'function') || _pentaCan('do_edit_job');
+          var _canCancel = (typeof _pentaCan !== 'function') || _pentaCan('do_cancel_job');
           return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--border);font-size:13px">'
-            + '<span>' + _adminEsc(timeLabel) + ' — ' + _adminEsc(j.clientName || '') + (j.price ? ' · $' + _adminEsc(String(j.price)) : '') + '</span>'
+            + '<span>' + _adminEsc(timeLabel) + ' — ' + _adminEsc(j.clientName || '') + ((_seeP && j.price) ? ' · $' + _adminEsc(String(j.price)) : '') + '</span>'
             + '<span style="display:flex;gap:6px">'
-            + '<button onclick="openJobModal(\'' + j.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Edit</button>'
-            + '<button onclick="cancelJob(\'' + j.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Cancel</button>'
+            + (_canEdit ? '<button onclick="openJobModal(\'' + j.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--accent);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Edit</button>' : '')
+            + (_canCancel ? '<button onclick="cancelJob(\'' + j.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:10px;cursor:pointer">Cancel</button>' : '')
             + '</span></div>';
         }).join('')
       + (t.teamJobs.length === 0 ? '<div style="color:var(--muted);font-size:12px;padding:4px 0">No scheduled jobs.</div>' : '')
@@ -39780,7 +39911,7 @@ function _closeDayRenderStepB() {
         + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + _adminEsc(f.job.clientName || '') + ' — ' + _adminEsc(f.reason || '') + '</div>'
         + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
         + '<button onclick="_closeDayConfirmCleaned(\'' + team + '\',\'' + f.job.id + '\')" style="background:var(--accent);border:none;color:#fff;font-family:inherit;font-size:11px;font-weight:600;padding:5px 10px;border-radius:10px;cursor:pointer">Confirm it was cleaned</button>'
-        + '<button onclick="cancelJob(\'' + f.job.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Mark cancelled/not done</button>'
+        + (((typeof _pentaCan !== 'function') || _pentaCan('do_cancel_job')) ? '<button onclick="cancelJob(\'' + f.job.id + '\')" style="background:var(--surface);border:1px solid rgba(239,68,68,0.3);color:var(--red);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Mark cancelled/not done</button>' : '')
         + '<button onclick="_closeDayLeaveForReview(\'' + team + '\',\'' + f.job.id + '\')" style="background:var(--surface);border:1px solid var(--border);color:var(--muted);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:10px;cursor:pointer">Leave for review</button>'
         + '</div></div>';
     });
@@ -42494,6 +42625,7 @@ function _renderGPSStopRow(s, includeDriveInfo, ctx) {
 }
 
 function renderGPS() {
+  try { if (typeof _pentaSyncTeamAssignmentsButtons === 'function') _pentaSyncTeamAssignmentsButtons(); } catch (e) {}
   const moving = gpsVehicles.filter(v => v.isMoving).length;
   const stopped = gpsVehicles.filter(v => !v.isMoving).length;
   const totalJobs = gpsVehicles.reduce((s,v) => s + v.trips.length, 0);
@@ -44029,7 +44161,7 @@ function openClientEdit(clientId) {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">Price / Clean</div>
-        <input id="ce-price" class="field-input" value="${c.current_price != null ? c.current_price : (ex.avgRev || CLIENT_PRICES[c.ln.toLowerCase()] || '')}" style="width:100%" placeholder="e.g. $180">
+        <input id="ce-price" class="field-input" value="${c.current_price != null ? c.current_price : (ex.avgRev || CLIENT_PRICES[c.ln.toLowerCase()] || '')}" style="width:100%" placeholder="e.g. $180" ${((typeof _pentaCan !== 'function') || _pentaCan('do_change_price')) ? '' : 'readonly disabled'}>
       </div>
       <div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:4px;font-weight:500">One-time discount (next clean only)</div>
@@ -49288,7 +49420,7 @@ function renderStaffList() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
+          ${((typeof _pentaCan !== 'function') || _pentaCan('see_payroll')) ? ((typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')) : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
           ${_phoneHtml}
@@ -49566,7 +49698,14 @@ async function _pentaSetManagerAccess(emp, enable) {
       last_name: lastN,
       phone: (emp.phone || '').replace(/\D/g, '') || null,
       role: 'manager',
-      manager_permissions: {}
+      // Stage 2: every brand-new promotion through THIS switch starts
+      // from the Limited manager preset, not full access -- Tom picks
+      // which teams she can see and opens the Permissions panel to
+      // loosen anything further. Re-promoting someone who already had a
+      // users row (the `existing` branch above) keeps her prior
+      // permissions instead -- this insert path only runs for someone
+      // who has never had a users row at all.
+      manager_permissions: (typeof PRESET_PERMISSIONS !== 'undefined' && PRESET_PERMISSIONS.limited_manager) ? Object.assign({}, PRESET_PERMISSIONS.limited_manager) : {}
     };
     if (emp.auth_user_id) {
       userRow.id = emp.auth_user_id;
@@ -49645,7 +49784,167 @@ async function _renderManagerAccessSection(emp, els) {
       _renderManagerAccessSection(emp, els);
     };
   }
-  if (els.permLinkEl && hasManagerAccess) els.permLinkEl.style.display = 'block';
+  // Stage 2: the placeholder text from Stage 1 is now a real button
+  // that opens the Manager Permissions panel.
+  if (els.permLinkEl && hasManagerAccess) {
+    els.permLinkEl.style.display = 'block';
+    els.permLinkEl.textContent = 'Manage permissions →';
+    els.permLinkEl.style.cursor = 'pointer';
+    els.permLinkEl.style.color = 'var(--accent)';
+    els.permLinkEl.style.fontWeight = '600';
+    els.permLinkEl.onclick = function () {
+      if (typeof openManagerPermissionsModal === 'function') openManagerPermissionsModal(emp);
+    };
+  }
+}
+
+// Stage 2: the "Manager Permissions" panel. Presets apply instantly to
+// the in-memory checkbox state (not saved until Save is tapped), so
+// Tom can start from a preset and still hand-tweak individual items.
+async function openManagerPermissionsModal(emp) {
+  if (!_pentaIsOwnerOrAdmin()) { alert('Only an owner or admin can change permissions.'); return; }
+  var blob = (typeof _pentaParseAuthToken === 'function') ? _pentaParseAuthToken() : null;
+  var viewerAuthId = blob && blob.user && blob.user.id;
+  if (emp.auth_user_id && viewerAuthId && emp.auth_user_id === viewerAuthId) {
+    alert("You can't change your own permissions.");
+    return;
+  }
+  var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
+  if (!sb) { alert('Supabase client not ready. Reload and try again.'); return; }
+
+  var existing = await _pentaFetchUserRoleRow(emp);
+  if (!existing || existing.role !== 'manager') {
+    alert('Grant manager access first, then set permissions.');
+    return;
+  }
+
+  var savedPerms = existing.manager_permissions || {};
+  var perms = Object.assign({}, SCHEDULE_PERMISSION_DEFAULTS, savedPerms);
+  var teamsVisible = Array.isArray(savedPerms.teams_visible) ? savedPerms.teams_visible.slice() : null; // null = all
+
+  var SEE_ITEMS = [
+    ['see_schedule', 'See the schedule tab'],
+    ['see_revenue_total', 'See revenue total (top of schedule)'],
+    ['see_day_revenue', 'See revenue under each day'],
+    ['see_team_revenue', 'See revenue under each team'],
+    ['see_job_price', 'See client price on job cards'],
+    ['see_client_contact', 'See client phone/address/notes'],
+    ['see_close_day_button', 'See the Close Day button'],
+    ['see_team_assignments', 'See Team Assignments'],
+    ['admin_hours_report', 'See the Hours tab'],
+    ['see_payroll', 'See pay rates / payroll'],
+    ['see_exports', 'See export buttons / Team Day Report'],
+    ['see_claire_tab', 'See the Claire tab']
+  ];
+  var DO_ITEMS = [
+    ['do_add_job', 'Add a job'],
+    ['do_edit_job', 'Edit a job'],
+    ['do_move_job', 'Move a job'],
+    ['do_cancel_job', 'Cancel / uncancel a job'],
+    ['do_assign_teams', 'Assign teams'],
+    ['do_change_price', 'Change prices'],
+    ['do_record_payment', 'Record payments'],
+    ['do_close_day', 'Run Close Day'],
+    ['do_edit_hours', 'Edit hours'],
+    ['do_invite_promote', 'Invite / promote people']
+  ];
+
+  function toggleRow(key, label) {
+    var checked = perms[key] !== false;
+    return '<label style="display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+      + '<span style="font-size:13px">' + label + '</span>'
+      + '<input type="checkbox" data-perm-key="' + key + '"' + (checked ? ' checked' : '') + ' style="width:19px;height:19px;accent-color:var(--accent)">'
+      + '</label>';
+  }
+
+  var teamNames = (typeof _pentaTeamNames === 'function') ? _pentaTeamNames() : [];
+  var teamsHtml = teamNames.map(function (t) {
+    var checked = (teamsVisible === null) || teamsVisible.indexOf(t) !== -1;
+    return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer">'
+      + '<input type="checkbox" data-team-visible="' + t + '"' + (checked ? ' checked' : '') + ' style="width:17px;height:17px;accent-color:var(--accent)">'
+      + '<span style="font-size:13px">' + t + '</span>'
+      + '</label>';
+  }).join('');
+
+  var presetsHtml = PRESET_LABELS.map(function (p) {
+    return '<button type="button" data-preset-key="' + p.key + '"' + (p.disabled ? ' disabled' : '') + ' style="display:block;width:100%;text-align:left;padding:10px 12px;margin-bottom:6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;cursor:' + (p.disabled ? 'not-allowed' : 'pointer') + ';opacity:' + (p.disabled ? '0.5' : '1') + '">'
+      + '<div style="font-size:13px;font-weight:600">' + p.label + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + p.note + '</div>'
+      + '</button>';
+  }).join('');
+
+  var modal = document.createElement('div');
+  modal.id = 'mgr-perms-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:600;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end';
+  modal.onclick = function (e) { if (e.target === modal) modal.remove(); };
+  var sheet = document.createElement('div');
+  sheet.style.cssText = 'background:var(--surface);width:100%;max-height:92vh;overflow-y:auto;border-radius:16px 16px 0 0;border-top:1px solid var(--border2)';
+  sheet.innerHTML = '<div style="padding:18px 20px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1;display:flex;justify-content:space-between;align-items:center">'
+    + '<div><div style="font-size:18px;font-weight:700">Manager Permissions — ' + _escapeHtmlMgr(emp.name || '') + '</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Presets set permissions only — they never change her role.</div></div>'
+    + '<button onclick="document.getElementById(\'mgr-perms-modal\').remove()" style="background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer">×</button>'
+    + '</div>'
+    + '<div style="padding:16px 20px 32px">'
+    + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-bottom:8px">Presets</div>'
+    + presetsHtml
+    + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:18px 0 8px">See</div>'
+    + SEE_ITEMS.map(function (x) { return toggleRow(x[0], x[1]); }).join('')
+    + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:18px 0 8px">Do</div>'
+    + DO_ITEMS.map(function (x) { return toggleRow(x[0], x[1]); }).join('')
+    + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin:18px 0 8px">Which teams can she see</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">All teams are visible unless you uncheck any below.</div>'
+    + teamsHtml
+    + '<div id="mgr-perms-save-msg" style="margin-top:14px;font-size:13px;min-height:18px"></div>'
+    + '<button type="button" id="mgr-perms-save-btn" style="width:100%;margin-top:6px;padding:14px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer">Save</button>'
+    + '</div>';
+  modal.appendChild(sheet);
+  document.body.appendChild(modal);
+
+  Array.prototype.forEach.call(sheet.querySelectorAll('[data-preset-key]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var key = btn.getAttribute('data-preset-key');
+      var preset = PRESET_PERMISSIONS[key];
+      if (!preset) return; // grokbot placeholder, disabled anyway
+      var merged = Object.assign({}, SCHEDULE_PERMISSION_DEFAULTS, preset);
+      Array.prototype.forEach.call(sheet.querySelectorAll('[data-perm-key]'), function (cb) {
+        cb.checked = merged[cb.getAttribute('data-perm-key')] !== false;
+      });
+      var presetTeams = Array.isArray(preset.teams_visible) ? preset.teams_visible : null;
+      Array.prototype.forEach.call(sheet.querySelectorAll('[data-team-visible]'), function (cb) {
+        cb.checked = presetTeams === null ? true : presetTeams.indexOf(cb.getAttribute('data-team-visible')) !== -1;
+      });
+    });
+  });
+
+  document.getElementById('mgr-perms-save-btn').addEventListener('click', async function () {
+    var btn = this;
+    btn.disabled = true;
+    var msgEl = document.getElementById('mgr-perms-save-msg');
+    var newPerms = {};
+    Array.prototype.forEach.call(sheet.querySelectorAll('[data-perm-key]'), function (cb) {
+      newPerms[cb.getAttribute('data-perm-key')] = cb.checked;
+    });
+    var checkedTeams = [];
+    var uncheckedAny = false;
+    Array.prototype.forEach.call(sheet.querySelectorAll('[data-team-visible]'), function (cb) {
+      if (cb.checked) checkedTeams.push(cb.getAttribute('data-team-visible'));
+      else uncheckedAny = true;
+    });
+    // "all checked" is stored as "no teams_visible key at all" -- same
+    // meaning as a manager who's never had this set.
+    if (uncheckedAny) newPerms.teams_visible = checkedTeams;
+
+    try {
+      var up = await sb.from('users').update({ manager_permissions: newPerms }).eq('id', existing.id);
+      if (up.error) { msgEl.textContent = 'Could not save: ' + up.error.message; msgEl.style.color = 'var(--red)'; btn.disabled = false; return; }
+      msgEl.textContent = '✓ Saved. Takes effect on her next screen load.';
+      msgEl.style.color = 'var(--green)';
+      setTimeout(function () { modal.remove(); }, 900);
+    } catch (e) {
+      msgEl.textContent = 'Save failed: ' + (e.message || e);
+      msgEl.style.color = 'var(--red)';
+      btn.disabled = false;
+    }
+  });
 }
 
 function renderStaffView() {
@@ -49731,7 +50030,7 @@ function renderStaffView() {
 
     ${section('Employment', [
       row('Team', emp.team),
-      row('Pay Rate', emp.payRate ? '$' + emp.payRate + '/hr' : ''),
+      row('Pay Rate', ((typeof _pentaCan !== 'function') || _pentaCan('see_payroll')) ? (emp.payRate ? '$' + emp.payRate + '/hr' : '') : ''),
       row('Shirt Size', emp.shirtSize),
       row('Pants Size', emp.pantsSize),
       row('Work Auth', emp.workAuth),
@@ -49837,6 +50136,14 @@ function renderStaffView() {
     var _fixBt  = document.querySelector('[data-action="fix-login"][data-roster-id="' + CSS.escape(_rid) + '"]');
     if (_sendBt) _sendBt.addEventListener('click', function() { pentaSendInvite(_rid); });
     if (_pwBt)   _pwBt.addEventListener('click',   function() { pentaShowSetTempPasswordModal(_rid); });
+    // Stage 2: do_invite_promote is the master toggle for bringing
+    // anyone new into the system -- checked IN ADDITION to the
+    // existing per-icon send_employee_invites/set_employee_password
+    // keys above, not instead of them.
+    if (typeof _pentaCan === 'function' && !_pentaCan('do_invite_promote')) {
+      if (_sendBt) _sendBt.style.display = 'none';
+      if (_pwBt) _pwBt.style.display = 'none';
+    }
     if (_fixBt)  _fixBt.addEventListener('click',  function() { pentaFixLogin(_rid); });
     if (_chip && typeof pentaRenderInviteChip === 'function') pentaRenderInviteChip(_rid, _chip, _sendBt);
     if (typeof applyPermissions === 'function') applyPermissions();
@@ -56208,7 +56515,7 @@ function renderStaffSubview() {
         <div style="font-size:15px;font-weight:600">${emp.name}${_leaderStar}</div>
         <div style="font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px;margin-top:2px">
           <span style="color:${color};font-weight:600">${_teamName}</span>
-          ${(typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')}
+          ${((typeof _pentaCan !== 'function') || _pentaCan('see_payroll')) ? ((typeof isSalariedAdmin === 'function' && isSalariedAdmin(emp)) ? '<span style="color:#fbbf24;font-weight:700">Salaried</span>' : (emp.payRate ? `<span style="color:var(--green)">$${parseFloat(emp.payRate).toFixed(2)}/hr</span>` : '')) : ''}
           <span>${langLabel}</span>
           ${emp.status==='inactive'?'<span style="color:var(--red)">Inactive</span>':''}
         </div>
@@ -57356,6 +57663,10 @@ function closeCalJobCard() {
 async function nudgeJobTime(jobId, deltaMins) {
   var j = jobs.find(function(x){ return x.id === jobId; });
   if (!j || !j.time) return;
+  if (typeof _pentaCan === 'function' && !_pentaCan('do_move_job')) {
+    alert("You don't have permission to move jobs.");
+    return;
+  }
   var startM = jobStartMins(j);
   if (startM === null) return;
   var newM = startM + deltaMins;
@@ -57402,7 +57713,10 @@ function _renderJobCardContent(j, opts) {
   var ex = (j.clientId && typeof getClientExtras === 'function') ? (getClientExtras(j.clientId) || {}) : {};
   var team = j.team || '';
   var tc = (typeof _pentaTeamColor === 'function') ? _pentaTeamColor(team, '#6b7280') : '#6b7280';
-  var price = j.price ? '$' + j.price : ((c && typeof CLIENT_PRICES !== 'undefined') ? (CLIENT_PRICES[c.ln.toLowerCase().replace(/[^a-z\s\-]/g, '')] || '') : '');
+  var _canSeeJobPrice = (typeof _pentaCan !== 'function') || _pentaCan('see_job_price');
+  var _canSeeClientContact = (typeof _pentaCan !== 'function') || _pentaCan('see_client_contact');
+  var _canMoveJob = (typeof _pentaCan !== 'function') || _pentaCan('do_move_job');
+  var price = _canSeeJobPrice ? (j.price ? '$' + j.price : ((c && typeof CLIENT_PRICES !== 'undefined') ? (CLIENT_PRICES[c.ln.toLowerCase().replace(/[^a-z\s\-]/g, '')] || '') : '')) : '';
   var key = (c && typeof getClientKey === 'function') ? getClientKey(c.ln) : null;
   var keyStr = key && key.key ? key.key : '—';
   var addr = j.addr || (c ? c.addr + ', ' + (c.city || '') : '—');
@@ -57447,19 +57761,25 @@ function _renderJobCardContent(j, opts) {
     + '<div class="mgr-payments-section" id="cjc-payments-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
     // v11.0.17 (Phase B.5): Client Requests section placeholder.
     + '<div class="mgr-requests-section" id="cjc-requests-' + safeId + '" style="display:none;margin-bottom:12px"></div>'
-    + '<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
-    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
-    + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
-    + (keyStr && keyStr !== '—' ? '<div style="background:rgba(251,191,36,0.18);color:var(--amber);border:1px solid rgba(251,191,36,0.45);border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0">🔑 ' + keyStr + '</div>' : '')
-    + '</div>'
-    + '<div style="font-size:14px;font-weight:500;margin-bottom:8px">' + addr + '</div>'
-    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-    + '<a href="' + mapsUrl + '" target="_blank" style="display:inline-flex;align-items:center;gap:5px;background:#34a853;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">📍 Maps</a>'
-    + '<a href="https://waze.com/ul?q=' + encodeURIComponent(addr) + '" target="_blank" style="display:inline-flex;align-items:center;gap:5px;background:#33ccff;color:#000;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">🔵 Waze</a>'
-    + '</div>'
-    + '</div>'
+    + (_canSeeClientContact ?
+      ('<div style="background:var(--surface2);border-radius:12px;padding:12px 14px;margin-bottom:12px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">'
+      + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Address</div>'
+      + (keyStr && keyStr !== '—' ? '<div style="background:rgba(251,191,36,0.18);color:var(--amber);border:1px solid rgba(251,191,36,0.45);border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0">🔑 ' + keyStr + '</div>' : '')
+      + '</div>'
+      + '<div style="font-size:14px;font-weight:500;margin-bottom:8px">' + addr + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + '<a href="' + mapsUrl + '" target="_blank" style="display:inline-flex;align-items:center;gap:5px;background:#34a853;color:#fff;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">📍 Maps</a>'
+      + '<a href="https://waze.com/ul?q=' + encodeURIComponent(addr) + '" target="_blank" style="display:inline-flex;align-items:center;gap:5px;background:#33ccff;color:#000;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;text-decoration:none">🔵 Waze</a>'
+      + '</div>'
+      + '</div>')
+      : '')
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">'
-    + (timeStr ? '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;grid-column:span 2"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">⏱ Time</div><div style="display:flex;align-items:center;justify-content:space-between"><button onclick="nudgeJobTime(\'' + safeId + '\',-15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">◄ 15m</button><div style="font-size:16px;font-weight:700" id="cjc-time-display-' + safeId + '">' + timeStr + endTimeStr + '</div><button onclick="nudgeJobTime(\'' + safeId + '\',15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">15m ►</button></div></div>' : '')
+    + (timeStr ? ('<div style="background:var(--surface2);border-radius:10px;padding:10px 12px;grid-column:span 2"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">⏱ Time</div><div style="display:flex;align-items:center;justify-content:space-between">'
+        + (_canMoveJob ? '<button onclick="nudgeJobTime(\'' + safeId + '\',-15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">◄ 15m</button>' : '<span></span>')
+        + '<div style="font-size:16px;font-weight:700" id="cjc-time-display-' + safeId + '">' + timeStr + endTimeStr + '</div>'
+        + (_canMoveJob ? '<button onclick="nudgeJobTime(\'' + safeId + '\',15)" style="background:var(--bg);border:1px solid var(--border);color:var(--accent);border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;font-family:DM Sans,sans-serif">15m ►</button>' : '<span></span>')
+        + '</div></div>') : '')
     + '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Next Clean</div><div style="font-size:14px;font-weight:600">' + nextClean + '</div></div>'
     + (price ? '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Price</div><div style="font-size:18px;font-weight:700;color:var(--green)">' + price + '</div></div>' : '<div></div>')
     + ((c && (c.pref_day || c.pref_time)) ? (
@@ -57467,8 +57787,8 @@ function _renderJobCardContent(j, opts) {
         + '<div style="background:var(--surface2);border-radius:10px;padding:10px 12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Preferred Time</div><div style="font-size:14px;font-weight:600">' + (c.pref_time && typeof PREF_TIME_LABEL !== 'undefined' ? (PREF_TIME_LABEL[c.pref_time] || c.pref_time) : '—') + '</div></div>'
       ) : '')
     + '</div>'
-    + (perCleanNote ? '<div style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:12px;margin-bottom:8px"><div style="font-size:10px;color:var(--amber);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-bottom:4px">&#9888; Today Note</div><div style="font-size:13px;line-height:1.5;color:var(--text)">' + perCleanNote + '</div></div>' : '')
-    + (permanentNotes ? '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">&#128203; Client Notes</div><div style="font-size:13px;line-height:1.5;color:var(--text)">' + permanentNotes + '</div></div>' : '')
+    + (_canSeeClientContact && perCleanNote ? '<div style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.35);border-radius:10px;padding:12px;margin-bottom:8px"><div style="font-size:10px;color:var(--amber);text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-bottom:4px">&#9888; Today Note</div><div style="font-size:13px;line-height:1.5;color:var(--text)">' + perCleanNote + '</div></div>' : '')
+    + (_canSeeClientContact && permanentNotes ? '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">&#128203; Client Notes</div><div style="font-size:13px;line-height:1.5;color:var(--text)">' + permanentNotes + '</div></div>' : '')
     + '<div style="display:flex;gap:8px" id="cjc-action-row-' + safeId + '"></div>'
     + '</div>';
 }
@@ -58020,19 +58340,21 @@ function _attachJobCardActions(rootEl, j) {
   var contactBtn = document.createElement('button');
   contactBtn.textContent = '📱 Contact';
   contactBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
-  if (typeof isManagerRole !== 'function' || !isManagerRole() || !j.clientId) contactBtn.style.display = 'none';
+  var _canSeeContact = (typeof _pentaCan !== 'function') || _pentaCan('see_client_contact');
+  var _canEditJob = (typeof _pentaCan !== 'function') || _pentaCan('do_edit_job');
+  if (typeof isManagerRole !== 'function' || !isManagerRole() || !j.clientId || !_canSeeContact) contactBtn.style.display = 'none';
   contactBtn.onclick = function(){ closeCalJobCard(); setTimeout(function(){ if (typeof openContactSheet === 'function') openContactSheet(j.clientId); }, 250); };
 
   var clientBtn = document.createElement('button');
   clientBtn.textContent = '👤 View Client';
   clientBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
-  if (!j.clientId) clientBtn.style.display = 'none';
+  if (!j.clientId || !_canSeeContact) clientBtn.style.display = 'none';
   clientBtn.onclick = function(){ closeCalJobCard(); if (typeof openClientEdit === 'function') openClientEdit(j.clientId); };
 
   var editBtn = document.createElement('button');
   editBtn.textContent = '\u270f\ufe0f Edit';
   editBtn.style.cssText = 'flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer';
-  if (typeof isManagerRole !== 'function' || !isManagerRole()) editBtn.style.display = 'none';
+  if (typeof isManagerRole !== 'function' || !isManagerRole() || !_canEditJob) editBtn.style.display = 'none';
   editBtn.onclick = function(){ closeCalJobCard(); if (typeof openJobModal === 'function') openJobModal(j.id); };
 
   actionRow.appendChild(doneBtn);
@@ -59428,6 +59750,152 @@ function _wxPaintCells(forecast) {
 // No DOMContentLoaded hooks, no intervals, no render-function wrappers.
 // applyPermissions() is invoked only by renderHomeScreen's last line.
 // ═══════════════════════════════════════════════════════════════════════
+// Stage 2: Schedule-screen + Claire permission keys (all true here --
+// this is the "missing key = full access" fallback every EXISTING
+// manager with no saved manager_permissions still gets). A restricted
+// manager has some of these explicitly set to false in her own DB row;
+// see PRESET_PERMISSIONS below for the payloads the "Manager
+// Permissions" panel writes.
+//
+// teams_visible is NOT a boolean like the others -- it's an array of
+// team name strings (job.team's own values, e.g. 'B3'), or absent/null,
+// which means "all teams" (matches today's behavior for everyone who
+// has never had this set). _pentaCanSeeTeam() is the one place that
+// interprets it; every schedule/Hours/Team-Assignments/Claire surface
+// that lists or counts by team calls through that function rather than
+// reading manager_permissions.teams_visible directly.
+// Close Day's two keys are the ONE exception to "missing key = full
+// access": Close Day has never been available to any manager, ever --
+// hardcoded owner/admin-only before this stage. Defaulting these two
+// to false (opt-IN, not opt-out) means every existing manager keeps
+// exactly zero Close Day access unless Tom explicitly grants it --
+// nothing else here changes that keeps "existing managers keep exactly
+// today's access" true for this one capability too.
+var SCHEDULE_PERMISSION_DEFAULTS = {
+  see_schedule: true,
+  see_revenue_total: true,
+  see_day_revenue: true,
+  see_team_revenue: true,
+  see_job_price: true,
+  see_client_contact: true,
+  see_close_day_button: false,
+  see_team_assignments: true,
+  // Hours-tab visibility reuses the EXISTING admin_hours_report key
+  // (already wired to the Reports admin section via data-permission) --
+  // no new key needed, so it's deliberately absent here.
+  see_payroll: true,
+  see_exports: true,
+  see_claire_tab: true,
+  do_add_job: true,
+  do_edit_job: true,
+  do_move_job: true,
+  do_cancel_job: true,
+  do_assign_teams: true,
+  do_change_price: true,
+  do_record_payment: true,
+  do_close_day: false,
+  do_edit_hours: true,
+  do_invite_promote: true
+};
+
+// Payloads the "Manager Permissions" panel's preset buttons write to
+// users.manager_permissions. Every preset is written as EXPLICIT keys
+// (true where it differs from the all-true default would matter, false
+// where restricted) -- never as "delete the restricting keys," so a
+// preset always produces the same result regardless of what was there
+// before. "Full manager" / "Owner (everything)" both resolve to {}
+// (nothing restricted) -- this panel only ever sets role='manager' (see
+// Stage 1), so "Owner (everything)" sets PERMISSIONS only, same as Full
+// manager; it can never make someone an actual owner. The UI says this
+// plainly so it's never misread as a role change.
+var PRESET_PERMISSIONS = {
+  owner_everything: {},
+  full_manager: {},
+  office_manager: {
+    see_revenue_total: false, see_day_revenue: false, see_team_revenue: false,
+    see_job_price: false, see_payroll: false,
+    see_close_day_button: false, do_close_day: false
+  },
+  view_only_schedule: {
+    see_revenue_total: false, see_day_revenue: false, see_team_revenue: false,
+    see_job_price: false, see_payroll: false, see_exports: false,
+    see_close_day_button: false,
+    do_add_job: false, do_edit_job: false, do_move_job: false, do_cancel_job: false,
+    do_assign_teams: false, do_change_price: false, do_record_payment: false,
+    do_close_day: false, do_edit_hours: false, do_invite_promote: false
+  },
+  limited_manager: {
+    see_revenue_total: false, see_day_revenue: false, see_team_revenue: false,
+    see_job_price: false, see_payroll: false, see_exports: false,
+    see_close_day_button: false,
+    do_add_job: false, do_edit_job: false, do_move_job: false, do_cancel_job: false,
+    do_assign_teams: false, do_change_price: false, do_record_payment: false,
+    do_close_day: false, do_invite_promote: false,
+    teams_visible: []
+  }
+};
+var PRESET_LABELS = [
+  { key: 'owner_everything',  label: 'Owner (everything)', note: 'Sets permissions only -- does not change her role.' },
+  { key: 'full_manager',      label: 'Full manager',        note: 'Same access as any manager today.' },
+  { key: 'office_manager',    label: 'Office manager',      note: 'Everything except revenue, pay, and Close Day.' },
+  { key: 'view_only_schedule', label: 'View-only schedule', note: 'Can see the schedule; cannot change anything.' },
+  { key: 'limited_manager',   label: 'Limited manager',     note: 'No revenue, no pay, no Close Day, no add/edit/cancel. Pick which teams she can see below.' },
+  { key: 'grokbot',           label: 'Grokbot',             note: 'Coming in Stage 3.', disabled: true }
+];
+
+function _pentaScheduleDefaultPerms() { return Object.assign({}, SCHEDULE_PERMISSION_DEFAULTS); }
+
+// Single choke point every enforcement site in this stage calls instead
+// of a direct role/manager_permissions check. Owner/admin fast-pathed
+// to always true explicitly -- getPermissions() returning all-true for
+// them covers every ordinary key, but NOT the two Close Day keys below
+// (their shared default is false, the one deliberate exception to
+// "missing = full access"), so without this explicit check an owner
+// calling _pentaCan('do_close_day') directly would get false. Every
+// other call site that needs owner/admin to bypass checks the role
+// first anyway; this just makes _pentaCan itself safe to call for
+// ANY key without having to remember that exception at every call site.
+function _pentaCan(key) {
+  var role = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
+  if (role === 'owner' || role === 'admin') return true;
+  var perms = getPermissions();
+  var manager = Object.assign({}, SCHEDULE_PERMISSION_DEFAULTS, perms.manager || {});
+  return manager[key] !== false;
+}
+
+// null = all teams visible (today's behavior, and every existing
+// manager who has never had this set). An array restricts to exactly
+// those team name strings.
+function _pentaVisibleTeams() {
+  var perms = getPermissions();
+  var tv = perms.manager && perms.manager.teams_visible;
+  return Array.isArray(tv) ? tv : null;
+}
+function _pentaCanSeeTeam(teamName) {
+  var visible = _pentaVisibleTeams();
+  if (visible === null) return true;
+  if (!teamName) return true;
+  return visible.indexOf(teamName) !== -1;
+}
+// Convenience for list/report code that needs to drop hidden-team rows
+// out of an array of {team: '...'} -shaped objects (jobs, assignments,
+// hours rows) in one line instead of repeating the filter predicate.
+function _pentaFilterVisibleTeams(items, teamKey) {
+  teamKey = teamKey || 'team';
+  if (_pentaVisibleTeams() === null) return items;
+  return (items || []).filter(function (it) { return _pentaCanSeeTeam(it && it[teamKey]); });
+}
+
+// Both "👥 Teams" buttons (Schedule tab + Live/GPS tab) open the same
+// openTeamManager -- one shared toggle so they never drift.
+function _pentaSyncTeamAssignmentsButtons() {
+  var canSee = (typeof _pentaCan !== 'function') || _pentaCan('see_team_assignments');
+  ['cal-team-assignments-btn', 'gps-team-assignments-btn'].forEach(function (id) {
+    var btn = document.getElementById(id);
+    if (btn) btn.style.display = canSee ? '' : 'none';
+  });
+}
+
 var DEFAULT_PERMISSIONS = {
   manager: {
     analytics_icon: true, churn_icon: true, inbox_icon: true,
@@ -59443,7 +59911,17 @@ var DEFAULT_PERMISSIONS = {
     learn: true,
     send_employee_banner: true,
     send_employee_invites: true,
-    set_employee_password: true
+    set_employee_password: true,
+    // Stage 2 schedule/Claire/payroll permission keys, merged in here
+    // too so any existing code that reads DEFAULT_PERMISSIONS.manager
+    // directly (rather than through _pentaCan) still sees them.
+    see_schedule: true, see_revenue_total: true, see_day_revenue: true,
+    see_team_revenue: true, see_job_price: true, see_client_contact: true,
+    see_close_day_button: false, see_team_assignments: true,
+    see_payroll: true, see_exports: true, see_claire_tab: true,
+    do_add_job: true, do_edit_job: true, do_move_job: true, do_cancel_job: true,
+    do_assign_teams: true, do_change_price: true, do_record_payment: true,
+    do_close_day: false, do_edit_hours: true, do_invite_promote: true
   },
   employee: {
     learn: true,
@@ -59474,9 +59952,14 @@ function getPermissions() {
 
   // Owner: nothing is restricted. Return all-true for both manager + employee
   // namespaces so applyPermissions never hides anything for owners.
+  // Stage 2: see_close_day_button/do_close_day default to FALSE in
+  // DEFAULT_PERMISSIONS.manager (the one deliberate exception, so an
+  // existing manager's missing key means "no Close Day," not "full
+  // access") -- override them back to true here so this still means
+  // what its own comment says: owner sees/can do everything, full stop.
   if (role === 'owner' || role === 'admin') {
     return {
-      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager),
+      manager:  Object.assign({}, DEFAULT_PERMISSIONS.manager, { see_close_day_button: true, do_close_day: true }),
       employee: Object.assign({}, DEFAULT_PERMISSIONS.employee)
     };
   }

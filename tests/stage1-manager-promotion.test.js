@@ -32,6 +32,12 @@ function extract(startMarker, endMarker) {
 }
 
 const helperSrc = extract('function _pentaIsOwnerOrAdmin() {', '\nfunction renderStaffView() {');
+// Stage 2a added PRESET_PERMISSIONS.limited_manager, which
+// _pentaSetManagerAccess's new-promotion path now defaults to -- it's
+// defined much later in the file (same script, so the real app sees it
+// fine by the time this ever actually runs), but this sandbox needs it
+// pulled in explicitly since it only extracts the helper block above.
+const presetSrc = extract('var SCHEDULE_PERMISSION_DEFAULTS = {', '\nfunction _pentaCan(key) {');
 
 function buildSandbox(opts) {
   opts = opts || {};
@@ -94,6 +100,7 @@ function buildSandbox(opts) {
     pentaSendInvite: function (rid) { state.inviteCalls.push(rid); return Promise.resolve(); }
   };
   vm.createContext(sandbox);
+  vm.runInContext(presetSrc, sandbox);
   vm.runInContext(helperSrc, sandbox);
   return { sandbox: sandbox, state: state };
 }
@@ -144,6 +151,7 @@ async function main() {
     check('no prompt was shown -- nothing was missing', state.alerts.some(function (m) { return /phone number/i.test(m); }), false);
     check('an invite was sent', state.inviteCalls.length, 1);
     check('the invite targets the right roster id', state.inviteCalls[0], 'e_fake_1');
+    check('Stage 2a: a brand-new promotion starts from the Limited manager preset, not full access', state.usersTable[0].manager_permissions, sandbox.PRESET_PERMISSIONS.limited_manager);
   }
 
   // ---- Owner promotes someone with no login and no phone: asks for
