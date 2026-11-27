@@ -18205,7 +18205,22 @@ async function saveJob() {
   const time = flex ? '' : document.getElementById('job-time').value;
   const endTime = flex ? '' : (document.getElementById('job-end-time').value || '');
   const notes = document.getElementById('job-notes').value.trim();
-  const jobPrice = document.getElementById('job-price') ? document.getElementById('job-price').value.trim() : '';
+  const jobPriceTyped = document.getElementById('job-price') ? document.getElementById('job-price').value.trim() : '';
+  // Price-save fix: jobPrice used to be read here and then never
+  // written anywhere below -- neither the update patch nor the new-job
+  // object included a price field at all, so every save (add OR edit)
+  // silently dropped whatever was typed in the Price box. This is the
+  // confirmed cause of manually-added jobs landing with no price (the
+  // real 2026-11-15 incident: 4 jobs added by hand that night have
+  // price IS NULL in the database to this day). Fix: resolve to the
+  // typed value, or -- if left blank -- the client's own current
+  // price, same fallback _pentaResolveJobPrice already uses for
+  // display, but now actually STORED instead of only computed live.
+  var jobPrice = jobPriceTyped;
+  if (!jobPrice) {
+    var _jpClient = (clientId && typeof PentaClients !== 'undefined' && PentaClients.getClient) ? PentaClients.getClient(clientId) : null;
+    if (_jpClient && _jpClient.current_price != null) jobPrice = String(_jpClient.current_price);
+  }
 
   if (!clientName || !date) { alert('Please enter a client and date.'); return; }
 
@@ -18232,17 +18247,19 @@ async function saveJob() {
     editingJob.notes = notes;
     editingJob.team = team;
     editingJob.color = color;
+    editingJob.price = jobPrice || null;
     // Schedule Save Queue: awaited -- a failure is queued and shown, never console-only.
     await _pentaJobWrite('update', {
       id: editingJob.id,
       patch: { clientId: editingJob.clientId, date: editingJob.date, flexible: editingJob.flexible,
-        time: editingJob.time, endTime: editingJob.endTime, notes: editingJob.notes, team: editingJob.team }
+        time: editingJob.time, endTime: editingJob.endTime, notes: editingJob.notes, team: editingJob.team,
+        price: editingJob.price }
     });
   } else {
     // Schedule Save Queue: a real client-generated uuid (not a
     // Date.now() temp id) so a queued retry upserts safely instead of
     // creating a duplicate row.
-    var _newJob = { id: _generateUuidV4(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, done: false, team, color, quotedMin: getClientQuotedMinutes(clientId) || 120 };
+    var _newJob = { id: _generateUuidV4(), clientName, clientId, addr, date, flexible: flex, time, endTime, notes, price: jobPrice || null, done: false, team, color, quotedMin: getClientQuotedMinutes(clientId) || 120 };
     jobs.push(_newJob);
     await _pentaJobWrite('insert', { job: _newJob });
     logPendingUpdate('Add job: ' + clientName, (flex ? 'Flexible time' : (time||'No time')) + ' on ' + dateDisp, null, clientId || null);
@@ -26196,7 +26213,7 @@ var CLAIRE_TOOLS = [
 // is one inline <script> after all of the page's HTML). The
 // showTab('claire') call site re-renders the same constant too
 // (harmless, just keeps a long-lived open tab's display consistent).
-var CLAIRE_BUILD_STAMP = '2026-11-19';
+var CLAIRE_BUILD_STAMP = '2026-11-26';
 function _claireRenderBuildStamp() {
   var el = document.getElementById('claire-build-stamp');
   if (el) el.textContent = 'Version ' + CLAIRE_BUILD_STAMP;
