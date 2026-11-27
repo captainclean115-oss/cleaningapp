@@ -49629,6 +49629,40 @@ function showStaffTab(tab) {
 // helpers for the "Manager access" section on both the Staff View and
 // Edit tabs. Role lives in the SEPARATE `users` table, not `employees`.
 
+// manage-permissions-button-fix: classifies a saved manager_permissions
+// object against the known presets, so the Manager Access status line
+// can show "Limited manager" / "Full manager" / "Custom" without
+// opening the Permissions panel. An exact key-for-key match (not just
+// "looks similar") against a preset's payload -- anything else is
+// "Custom" rather than guessing which preset it's closest to.
+function _pentaPermsObjectsMatch(a, b) {
+  a = a || {}; b = b || {};
+  var keysA = Object.keys(a), keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (var i = 0; i < keysA.length; i++) {
+    var k = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return false;
+  }
+  return true;
+}
+function _pentaDescribePreset(perms) {
+  perms = perms || {};
+  if (Object.keys(perms).length === 0) return 'Full manager (no restrictions)';
+  if (typeof PRESET_LABELS === 'undefined' || typeof PRESET_PERMISSIONS === 'undefined') return 'Custom';
+  for (var i = 0; i < PRESET_LABELS.length; i++) {
+    var p = PRESET_LABELS[i];
+    if (p.disabled) continue;
+    var preset = PRESET_PERMISSIONS[p.key];
+    // Skip the two presets that are themselves {} -- already handled
+    // by the "no restrictions" check above, and would otherwise always
+    // match first regardless of what the real preset was.
+    if (preset && Object.keys(preset).length === 0) continue;
+    if (preset && _pentaPermsObjectsMatch(perms, preset)) return p.label;
+  }
+  return 'Custom';
+}
+
 function _pentaIsOwnerOrAdmin() {
   var r = (typeof getCurrentAppRole === 'function') ? getCurrentAppRole() : null;
   return r === 'owner' || r === 'admin';
@@ -49692,7 +49726,19 @@ async function _pentaSetManagerAccess(emp, enable) {
         alert('This person already has owner/admin access.');
         return true;
       }
-      var on = await sb.from('users').update({ role: 'manager' }).eq('id', existing.id);
+      var updatePatch = { role: 'manager' };
+      // Bug fix: a genuinely NEW promotion must start from Limited
+      // manager even when a users row already existed (e.g. role was
+      // 'employee') -- only the brand-new-row insert path below was
+      // applying this preset. Skip it ONLY when she was already a
+      // manager before (demote-then-re-promote), which should restore
+      // her prior custom permissions instead of resetting them.
+      var wasAlreadyManagerBefore = existing.role === 'manager';
+      var hasNoSavedPermsYet = !existing.manager_permissions || Object.keys(existing.manager_permissions).length === 0;
+      if (!wasAlreadyManagerBefore && hasNoSavedPermsYet && typeof PRESET_PERMISSIONS !== 'undefined' && PRESET_PERMISSIONS.limited_manager) {
+        updatePatch.manager_permissions = Object.assign({}, PRESET_PERMISSIONS.limited_manager);
+      }
+      var on = await sb.from('users').update(updatePatch).eq('id', existing.id);
       if (on.error) { alert('Could not grant manager access: ' + on.error.message); return false; }
       return true;
     }
@@ -49773,7 +49819,25 @@ async function _renderManagerAccessSection(emp, els) {
   var viewerAuthId = blob && blob.user && blob.user.id;
   var isSelf = !!(emp.auth_user_id && viewerAuthId && emp.auth_user_id === viewerAuthId);
 
-  var row = await _pentaFetchUserRoleRow(emp);
+  // manage-permissions-button-fix: a stalled network call used to leave
+  // this stuck on "Loading..." forever, with no way to tell it apart
+  // from a slow-but-working load. Race it against a timeout and show a
+  // clear, tappable-to-retry message instead.
+  var row;
+  try {
+    row = (typeof _pentaWithTimeout === 'function')
+      ? await _pentaWithTimeout(_pentaFetchUserRoleRow(emp), 18000)
+      : await _pentaFetchUserRoleRow(emp);
+  } catch (e) {
+    var _timedOut = e && e.message === 'penta-login-timeout';
+    els.statusEl.innerHTML = '';
+    els.statusEl.textContent = _timedOut
+      ? "Couldn't load access status: taking too long to respond. Tap to retry."
+      : "Couldn't load access status: " + (e && e.message || 'unknown error') + '. Tap to retry.';
+    els.statusEl.style.cursor = 'pointer';
+    els.statusEl.onclick = function () { _renderManagerAccessSection(emp, els); };
+    return;
+  }
   var role = row && row.role;
 
   if (role === 'owner' || role === 'admin') {
@@ -49782,7 +49846,9 @@ async function _renderManagerAccessSection(emp, els) {
   }
 
   var hasManagerAccess = role === 'manager';
-  els.statusEl.textContent = hasManagerAccess ? 'Manager access: ON (full access, same as every manager today)' : 'Employee access only.';
+  els.statusEl.textContent = hasManagerAccess
+    ? ('Manager access: ON — ' + _pentaDescribePreset(row && row.manager_permissions))
+    : 'Employee access only.';
 
   if (!viewerIsOwnerOrAdmin || isSelf) {
     if (isSelf) els.statusEl.textContent += ' You can\u2019t change your own access.';
@@ -49818,7 +49884,7 @@ async function _renderManagerAccessSection(emp, els) {
 // Stage 2: the "Manager Permissions" panel. Presets apply instantly to
 // the in-memory checkbox state (not saved until Save is tapped), so
 // Tom can start from a preset and still hand-tweak individual items.
-async function openManagerPermissionsModal(emp) {
+async function _openManagerPermissionsModalInner(emp) {
   if (!_pentaIsOwnerOrAdmin()) { alert('Only an owner or admin can change permissions.'); return; }
   var blob = (typeof _pentaParseAuthToken === 'function') ? _pentaParseAuthToken() : null;
   var viewerAuthId = blob && blob.user && blob.user.id;
@@ -49829,7 +49895,9 @@ async function openManagerPermissionsModal(emp) {
   var sb = window.supabaseClient || (window.PentaAuth && window.PentaAuth.client);
   if (!sb) { alert('Supabase client not ready. Reload and try again.'); return; }
 
-  var existing = await _pentaFetchUserRoleRow(emp);
+  var existing = (typeof _pentaWithTimeout === 'function')
+    ? await _pentaWithTimeout(_pentaFetchUserRoleRow(emp), 18000)
+    : await _pentaFetchUserRoleRow(emp);
   if (!existing || existing.role !== 'manager') {
     alert('Grant manager access first, then set permissions.');
     return;
@@ -49962,6 +50030,21 @@ async function openManagerPermissionsModal(emp) {
       btn.disabled = false;
     }
   });
+}
+
+// manage-permissions-button-fix: the real public entry point. Always
+// catches -- a timeout, a thrown error, anything -- so tapping "Manage
+// permissions" can never again do nothing with no visible sign of why.
+async function openManagerPermissionsModal(emp) {
+  try {
+    await _openManagerPermissionsModalInner(emp);
+  } catch (e) {
+    var msg = (e && e.message === 'penta-login-timeout')
+      ? "Couldn't open permissions: taking too long to respond. Tap Manage permissions to try again."
+      : "Couldn't open permissions: " + (e && e.message || 'unknown error') + '. Tap Manage permissions to try again.';
+    console.error('[openManagerPermissionsModal]', e);
+    alert(msg);
+  }
 }
 
 function renderStaffView() {
